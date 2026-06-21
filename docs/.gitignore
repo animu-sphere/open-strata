@@ -1,0 +1,18 @@
+# Documentation sources (*.md, schemas, diagrams) are tracked.
+# Only generated output and local scratch are ignored here.
+
+# Rendered/static-site output (mdBook, mkdocs, etc.)
+/book/
+/site/
+/_site/
+/.vitepress/cache/
+/.vitepress/dist/
+
+# Local-only drafts and scratch notes
+_local/
+_drafts/
+*.local.md
+
+# Editor/render byproducts
+*.pdf
+*.html
