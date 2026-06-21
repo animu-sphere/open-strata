@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://openstrata.dev/schemas/project.schema.json",
+  "title": "OpenStrata Project Manifest",
+  "description": "The openstrata.toml authored at a project root.",
+  "type": "object",
+  "required": ["project", "requires"],
+  "additionalProperties": false,
+  "properties": {
+    "project": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "default": "0.1.0" },
+        "description": { "type": "string" }
+      }
+    },
+    "requires": {
+      "type": "object",
+      "required": ["platform"],
+      "additionalProperties": false,
+      "properties": {
+        "platform": { "type": "string", "pattern": "^cy[0-9]{4}$" },
+        "profile": { "type": "string", "default": "core" },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "extensions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

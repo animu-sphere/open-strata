@@ -1,0 +1,29 @@
+# VFX Reference Platform — Calendar Year 2027 (draft / projected)
+# https://vfxplatform.com/
+id: cy2027
+source:
+  kind: vfx-reference-platform
+  status: draft
+
+core:
+  python: "3.13.x"
+  qt: "6.9.x"
+  pyside: "6.9.x"
+  numpy: "2.2.x"
+  boost: "1.89.x"
+  openexr: "3.4.x"
+  ocio: "2.5.x"
+  oiio: "3.1.x"
+  openvdb: "13.x"
+  opensubdiv: "3.7.x"
+  alembic: "1.8.x"
+  ptex: "2.4.x"
+  blosc: "1.21.x"
+  tbb: "2022.x"
+  cxx_standard: "20"
+  gcc: "14.2"
+  glibc: "2.34"
+
+notes: >
+  CY2027 is a draft projection used to exercise diffs and forward-looking
+  resolution. Values are provisional until the upstream spec is ratified.

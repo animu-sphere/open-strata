@@ -1,0 +1,15 @@
+[package]
+name = "ost-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "VFX Reference Platform calendar-year manifests: model, loader, diff."
+
+[dependencies]
+ost-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+indexmap.workspace = true

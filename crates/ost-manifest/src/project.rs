@@ -1,0 +1,79 @@
+//! The project manifest: `openstrata.toml`.
+//!
+//! Capabilities are requested by *what they do*, not by package name (§3.5).
+//! A project pins a platform year and a profile, and may request additional
+//! capabilities and named extensions on top of that profile.
+
+use serde::{Deserialize, Serialize};
+
+use ost_core::paths::PROJECT_MANIFEST;
+use ost_core::{Error, Result};
+
+/// `[project]` table — identity and metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectMeta {
+    pub name: String,
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+fn default_version() -> String {
+    "0.1.0".into()
+}
+
+/// `[requires]` table — the runtime contract this project builds against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Requires {
+    /// Platform calendar-year id, e.g. `cy2026`.
+    pub platform: String,
+    /// Profile name, e.g. `usd` or `lookdev`.
+    #[serde(default = "default_profile")]
+    pub profile: String,
+    /// Extra capabilities beyond those implied by the profile (§4.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    /// Named certified extensions to include (§4.4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<String>,
+}
+
+fn default_profile() -> String {
+    "core".into()
+}
+
+/// The whole `openstrata.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Project {
+    pub project: ProjectMeta,
+    pub requires: Requires,
+}
+
+impl Project {
+    /// A sensible starter manifest for `ost init`.
+    pub fn scaffold(name: impl Into<String>, platform: impl Into<String>) -> Project {
+        Project {
+            project: ProjectMeta {
+                name: name.into(),
+                version: default_version(),
+                description: None,
+            },
+            requires: Requires {
+                platform: platform.into(),
+                profile: "usd".into(),
+                capabilities: Vec::new(),
+                extensions: Vec::new(),
+            },
+        }
+    }
+
+    pub fn from_toml(src: &str) -> Result<Project> {
+        toml::from_str(src).map_err(|e| Error::parse(PROJECT_MANIFEST, anyhow::Error::new(e)))
+    }
+
+    pub fn to_toml(&self) -> Result<String> {
+        toml::to_string_pretty(self)
+            .map_err(|e| Error::parse(PROJECT_MANIFEST, anyhow::Error::new(e)))
+    }
+}

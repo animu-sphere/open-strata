@@ -1,0 +1,15 @@
+[package]
+name = "ost-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenStrata core types: paths, host descriptor, target variant, errors."
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+camino.workspace = true
+directories.workspace = true

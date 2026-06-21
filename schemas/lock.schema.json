@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://openstrata.dev/schemas/lock.schema.json",
+  "title": "OpenStrata Lockfile",
+  "description": "The generated strata.lock pinning a reproducible runtime + session.",
+  "type": "object",
+  "required": ["runtime", "python", "validation"],
+  "properties": {
+    "lock_version": { "type": "integer", "minimum": 1, "default": 1 },
+    "runtime": {
+      "type": "object",
+      "required": ["id", "platform", "profile", "variant"],
+      "properties": {
+        "id": { "type": "string" },
+        "platform": { "type": "string" },
+        "profile": { "type": "string" },
+        "variant": {
+          "type": "object",
+          "required": ["os", "arch", "abi", "python"],
+          "properties": {
+            "os": { "type": "string", "enum": ["linux", "macos", "windows"] },
+            "arch": { "type": "string", "enum": ["x86_64", "arm64"] },
+            "abi": {
+              "type": "object",
+              "description": "Tagged ABI: glibc | msvc | native."
+            },
+            "python": { "type": "string" }
+          }
+        },
+        "digest": { "type": "string" }
+      }
+    },
+    "python": {
+      "type": "object",
+      "required": ["version", "abi"],
+      "properties": {
+        "version": { "type": "string" },
+        "abi": { "type": "string" },
+        "manager": { "type": "string", "default": "uv" },
+        "uv_lock_hash": { "type": "string" }
+      }
+    },
+    "validation": {
+      "type": "string",
+      "enum": ["passed", "failed", "pending"]
+    }
+  }
+}

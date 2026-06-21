@@ -1,0 +1,29 @@
+# VFX Reference Platform — Calendar Year 2025
+# https://vfxplatform.com/
+id: cy2025
+source:
+  kind: vfx-reference-platform
+  status: final
+
+core:
+  python: "3.11.x"
+  qt: "6.5.x"
+  pyside: "6.5.x"
+  numpy: "1.26.x"
+  boost: "1.85.x"
+  openexr: "3.3.x"
+  ocio: "2.4.x"
+  oiio: "2.5.x"
+  openvdb: "12.x"
+  opensubdiv: "3.6.x"
+  alembic: "1.8.x"
+  ptex: "2.4.x"
+  blosc: "1.21.x"
+  tbb: "2021.x"
+  cxx_standard: "17"
+  gcc: "11.2.1"
+  glibc: "2.28"
+
+notes: >
+  CY2025 standardises on the GCC 11.2.1 / C++17 toolchain and the OpenEXR 3.3
+  line. Used as the prior-year baseline for diffs against CY2026.
