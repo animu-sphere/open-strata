@@ -1,0 +1,13 @@
+# Lookdev profile: USD + MaterialX + OCIO + Hydra preview (§6.3).
+id: lookdev
+description: Look development — USD shading, MaterialX, OCIO display, Hydra preview.
+requires:
+  capabilities:
+    - python-tooling
+    - image-io
+    - color-management
+    - usd-stage-read
+    - usd-shading
+    - usd-materialx
+    - ocio-display
+    - hydra-preview

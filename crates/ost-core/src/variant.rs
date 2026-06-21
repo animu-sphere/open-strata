@@ -70,6 +70,8 @@ impl Variant {
     }
 
     /// Render the canonical slug, e.g. `linux-x86_64-glibc228-py313`.
+    ///
+    /// This is the full artifact variant recorded in lockfiles and diagnostics.
     pub fn slug(&self) -> String {
         let mut parts = vec![self.os.as_str().to_string(), self.arch.as_str().to_string()];
         if let Some(tok) = self.abi.token() {
@@ -77,6 +79,19 @@ impl Variant {
         }
         parts.push(format!("py{}", self.python));
         parts.join("-")
+    }
+
+    /// Render the short slug without the ABI token, e.g. `linux-x86_64-py313`.
+    ///
+    /// Used in human-facing runtime ids (§4.2), where the ABI is implied by the
+    /// platform and need not clutter the identifier.
+    pub fn short_slug(&self) -> String {
+        format!(
+            "{}-{}-py{}",
+            self.os.as_str(),
+            self.arch.as_str(),
+            self.python
+        )
     }
 }
 
@@ -98,6 +113,7 @@ mod tests {
         };
         let v = Variant::new(&host, Abi::default_for(Os::Linux), "313");
         assert_eq!(v.slug(), "linux-x86_64-glibc228-py313");
+        assert_eq!(v.short_slug(), "linux-x86_64-py313");
     }
 
     #[test]

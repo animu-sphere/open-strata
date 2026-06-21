@@ -1,0 +1,11 @@
+# USD profile: a stage-capable OpenUSD runtime.
+id: usd
+description: OpenUSD stage read/write and shading on top of the core runtime.
+requires:
+  capabilities:
+    - python-tooling
+    - image-io
+    - color-management
+    - usd-stage-read
+    - usd-stage-write
+    - usd-shading

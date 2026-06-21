@@ -1,0 +1,8 @@
+# Core profile: the minimal certified runtime layer.
+id: core
+description: Minimal certified runtime — interpreter and core C++ libraries only.
+requires:
+  capabilities:
+    - python-tooling
+    - image-io
+    - color-management

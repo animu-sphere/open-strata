@@ -1,0 +1,10 @@
+# Dev profile: core plus the tooling needed to build extensions.
+id: dev
+description: Core runtime plus compilers, CMake, and Python build tooling.
+requires:
+  capabilities:
+    - python-tooling
+    - image-io
+    - color-management
+    - qt-ui
+    - cmake-build
