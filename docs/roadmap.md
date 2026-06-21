@@ -31,8 +31,12 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
 - ✅ Digest-bearing runtime manifest (`runtime.json`, deterministic digest)
 - ✅ `ost doctor` (host descriptor, host tool detection, runtime report;
   deterministic exit: 0 healthy / 1 issues)
-- ⬜ `ost runtime explain | validate`
+- ✅ `ost runtime validate` (schema, digest integrity, layout; records outcome
+  in the manifest; deterministic exit)
+- ⬜ `ost runtime explain`
 - ⬜ Real artifact backend behind `pull` (currently mock prefix layout)
+- ⬜ Richer runtime validation (Python import, native library load, USD stage
+  open) once the real backend lands
 
 ## Phase 2 — CMake target build ⬜
 

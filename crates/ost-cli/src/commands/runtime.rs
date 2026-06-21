@@ -11,7 +11,7 @@ use clap::Subcommand;
 
 use ost_core::paths::Store;
 use ost_core::{Error, Result};
-use ost_runtime::{python_minor, RuntimeManifest, MANIFEST_FILE};
+use ost_runtime::{python_minor, RuntimeManifest, Validation, MANIFEST_FILE};
 
 use crate::commands::resolve;
 use crate::output::{self, Format};
@@ -39,6 +39,14 @@ pub enum RuntimeCmd {
         #[arg(long, default_value = "core")]
         profile: String,
     },
+    /// Validate a pulled runtime and record the outcome in its manifest.
+    Validate {
+        /// Platform calendar-year id, e.g. `cy2026`.
+        platform: String,
+        /// Profile, e.g. `usd`.
+        #[arg(long, default_value = "core")]
+        profile: String,
+    },
 }
 
 pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
@@ -50,6 +58,7 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
         } => pull(&platform, &profile, force, fmt),
         RuntimeCmd::List => list(fmt),
         RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
+        RuntimeCmd::Validate { platform, profile } => validate(&platform, &profile, fmt),
     }
 }
 
@@ -217,6 +226,81 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         println!("  - {cap}");
     }
     Ok(())
+}
+
+fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
+    let r = resolve(platform, profile)?;
+    let manifest_path = r.prefix.join(MANIFEST_FILE);
+    if !manifest_path.as_std_path().is_file() {
+        return Err(Error::Operation(format!(
+            "runtime '{}' is not pulled (run `ost runtime pull {} --profile {}`)",
+            r.runtime.id(),
+            platform,
+            profile
+        )));
+    }
+    let src = std::fs::read_to_string(manifest_path.as_std_path())
+        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+    let mut manifest = RuntimeManifest::from_json(&src)
+        .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
+
+    let report = ost_runtime::validate(&r.prefix, &manifest);
+    let passed = report.passed();
+
+    // Record the outcome back into the manifest (digest is unaffected).
+    manifest.set_validation(if passed {
+        Validation::Passed
+    } else {
+        Validation::Failed
+    });
+    let json = manifest
+        .to_json()
+        .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
+    std::fs::write(manifest_path.as_std_path(), format!("{json}\n"))
+        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+
+    if fmt.is_json() {
+        let checks: Vec<_> = report
+            .checks
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "name": c.name,
+                    "passed": c.passed,
+                    "detail": c.detail,
+                })
+            })
+            .collect();
+        output::json(&serde_json::json!({
+            "runtime": manifest.id,
+            "validation": if passed { "passed" } else { "failed" },
+            "checks": checks,
+        }));
+    } else {
+        println!("Validating {}", manifest.id);
+        for c in &report.checks {
+            let mark = if c.passed { "ok  " } else { "FAIL" };
+            match &c.detail {
+                Some(d) => println!("  [{mark}] {} — {d}", c.name),
+                None => println!("  [{mark}] {}", c.name),
+            }
+        }
+        println!(
+            "\n{}",
+            if passed {
+                "Result: passed"
+            } else {
+                "Result: FAILED"
+            }
+        );
+    }
+
+    // Deterministic exit for CI.
+    if passed {
+        Ok(())
+    } else {
+        std::process::exit(1);
+    }
 }
 
 fn short_digest(digest: &str) -> String {

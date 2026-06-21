@@ -103,11 +103,72 @@ impl RuntimeManifest {
         }
     }
 
+    /// The schema version this build of OpenStrata writes and expects.
+    pub const SCHEMA_VERSION: u32 = SCHEMA;
+
+    /// Recompute the canonical digest from the manifest's own fields. A correct
+    /// manifest satisfies `compute_digest() == digest`.
+    pub fn compute_digest(&self) -> String {
+        let canonical = Canonical {
+            schema: self.schema,
+            id: self.id.clone(),
+            platform: self.platform.clone(),
+            profile: self.profile.clone(),
+            variant: self.variant.clone(),
+            python: self.python.clone(),
+            capabilities: self.capabilities.clone(),
+            layout: self.layout.clone(),
+        };
+        let bytes = serde_json::to_vec(&canonical).expect("canonical serializes");
+        digest::sha256_hex(&bytes)
+    }
+
+    pub fn set_validation(&mut self, validation: Validation) {
+        self.validation = validation;
+    }
+
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
 
     pub fn from_json(src: &str) -> Result<RuntimeManifest, serde_json::Error> {
         serde_json::from_str(src)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ost_core::host::{Arch, Os};
+    use ost_core::Host;
+
+    fn sample() -> RuntimeManifest {
+        let host = Host {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        };
+        let rt = Runtime::resolve("cy2026", "usd", &host, "3.13.x");
+        RuntimeManifest::build(
+            &rt,
+            "3.13.x",
+            vec!["usd-stage-read".into()],
+            vec!["bin".into(), "lib".into()],
+            1_700_000_000,
+            true,
+        )
+    }
+
+    #[test]
+    fn digest_roundtrips() {
+        let m = sample();
+        assert_eq!(m.compute_digest(), m.digest);
+    }
+
+    #[test]
+    fn validation_change_does_not_affect_digest() {
+        let mut m = sample();
+        let before = m.digest.clone();
+        m.set_validation(Validation::Passed);
+        assert_eq!(m.compute_digest(), before);
     }
 }
