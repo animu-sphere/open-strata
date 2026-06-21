@@ -9,7 +9,7 @@ mod output;
 
 use clap::{Parser, Subcommand};
 
-use commands::{devshell, doctor, env, init, platform, runtime};
+use commands::{configure, devshell, doctor, env, init, platform, runtime};
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
 #[derive(Debug, Parser)]
@@ -44,6 +44,9 @@ enum Command {
 
     /// Diagnose host, tools, and (optionally) a runtime.
     Doctor(doctor::DoctorArgs),
+
+    /// Generate CMake toolchain and presets for a target.
+    Configure(configure::ConfigureArgs),
 }
 
 fn main() -> std::process::ExitCode {
@@ -57,6 +60,7 @@ fn main() -> std::process::ExitCode {
         Command::Env(args) => env::run(args, fmt),
         Command::Devshell(args) => devshell::run(args),
         Command::Doctor(args) => doctor::run(args, fmt),
+        Command::Configure(args) => configure::run(args, fmt),
     };
 
     match result {

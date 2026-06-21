@@ -38,11 +38,14 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
 - ⬜ Richer runtime validation (Python import, native library load, USD stage
   open) once the real backend lands
 
-## Phase 2 — CMake target build ⬜
+## Phase 2 — CMake target build 🚧
 
-- ⬜ Target resolver
-- ⬜ `toolchain.cmake` + `CMakePresets.json` generation
-- ⬜ Ninja build wrapper: `ost configure | build | validate | package`
+- ✅ Target model + id (`cy2026-linux-x86_64-py313-usd`) in `ost-build`
+- ✅ `ost configure`: `toolchain.cmake`, `env.json`, `target.lock.json`,
+  per-target `CMakePresets.json`, and a root `CMakePresets.json` that includes
+  each target (verified with `cmake --list-presets`)
+- ⬜ Ninja build wrapper: `ost build | validate | package`
+- ⬜ `cmake --preset` configure + `cmake --build` invocation from `ost build`
 
 ## Phase 3 — OpenUSD / MaterialX profiles ⬜
 

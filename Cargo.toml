@@ -8,6 +8,7 @@ members = [
     "crates/ost-platform",
     "crates/ost-manifest",
     "crates/ost-runtime",
+    "crates/ost-build",
 ]
 
 [workspace.package]
@@ -22,6 +23,7 @@ ost-core = { path = "crates/ost-core" }
 ost-platform = { path = "crates/ost-platform" }
 ost-manifest = { path = "crates/ost-manifest" }
 ost-runtime = { path = "crates/ost-runtime" }
+ost-build = { path = "crates/ost-build" }
 
 # Versions are pinned to keep the whole dependency tree on edition <= 2021 so
 # the project builds on the pinned Rust 1.69 toolchain. Bump deliberately
