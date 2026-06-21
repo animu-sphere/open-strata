@@ -35,6 +35,15 @@ impl Abi {
         }
     }
 
+    /// Human-readable description, e.g. `glibc 2.28`, `msvc 143`, `native`.
+    pub fn describe(&self) -> String {
+        match self {
+            Abi::Glibc { version } => format!("glibc {version}"),
+            Abi::Msvc { toolset } => format!("msvc {toolset}"),
+            Abi::Native => "native".to_string(),
+        }
+    }
+
     /// Pick a sensible default ABI for a host OS.
     pub fn default_for(os: Os) -> Abi {
         match os {

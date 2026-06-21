@@ -29,8 +29,9 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
 - ✅ `ost env` and `ost devshell` (bash/pwsh)
 - ✅ `ost runtime pull | list | show` against a local/mock backend
 - ✅ Digest-bearing runtime manifest (`runtime.json`, deterministic digest)
+- ✅ `ost doctor` (host descriptor, host tool detection, runtime report;
+  deterministic exit: 0 healthy / 1 issues)
 - ⬜ `ost runtime explain | validate`
-- ⬜ `ost doctor` (runtime identity + host capability report)
 - ⬜ Real artifact backend behind `pull` (currently mock prefix layout)
 
 ## Phase 2 — CMake target build ⬜

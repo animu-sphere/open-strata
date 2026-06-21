@@ -9,6 +9,7 @@ pub mod digest;
 pub mod error;
 pub mod host;
 pub mod paths;
+pub mod tools;
 pub mod variant;
 
 pub use error::{Error, Result};
