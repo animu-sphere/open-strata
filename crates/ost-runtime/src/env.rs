@@ -32,6 +32,15 @@ impl Shell {
             _ => Shell::Bash,
         }
     }
+
+    /// The executable to launch for an interactive devshell, with any leading
+    /// arguments. Returns the primary candidate; callers handle "not found".
+    pub fn launch_command(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            Shell::Bash => ("bash", &["-i"]),
+            Shell::Pwsh => ("pwsh", &["-NoLogo"]),
+        }
+    }
 }
 
 /// How a variable is applied.
@@ -125,6 +134,51 @@ impl EnvSet {
             out.push('\n');
         }
         out
+    }
+
+    /// Resolve the set against the current process environment, returning the
+    /// final `(key, value)` pairs. `Prepend` ops read the existing value (and
+    /// any earlier op on the same key) so repeated keys compose correctly.
+    pub fn resolve(&self) -> Vec<(String, String)> {
+        use std::collections::HashMap;
+        let mut overlay: HashMap<String, String> = HashMap::new();
+        // Preserve order of first appearance for a stable result.
+        let mut order: Vec<String> = Vec::new();
+        for v in &self.vars {
+            if !overlay.contains_key(&v.key) {
+                order.push(v.key.clone());
+            }
+            match &v.op {
+                EnvOp::Set(val) => {
+                    overlay.insert(v.key.clone(), val.clone());
+                }
+                EnvOp::Prepend(val) => {
+                    let existing = overlay
+                        .get(&v.key)
+                        .cloned()
+                        .or_else(|| std::env::var(&v.key).ok());
+                    let next = match existing {
+                        Some(e) if !e.is_empty() => format!("{val}{}{e}", self.sep),
+                        _ => val.clone(),
+                    };
+                    overlay.insert(v.key.clone(), next);
+                }
+            }
+        }
+        order
+            .into_iter()
+            .map(|k| {
+                let val = overlay.remove(&k).unwrap_or_default();
+                (k, val)
+            })
+            .collect()
+    }
+
+    /// Apply the resolved environment to a child process command.
+    pub fn apply(&self, cmd: &mut std::process::Command) {
+        for (k, v) in self.resolve() {
+            cmd.env(k, v);
+        }
     }
 
     /// The variables as `(key, rendered-value)` pairs, for `--json` output.

@@ -9,7 +9,7 @@ mod output;
 
 use clap::{Parser, Subcommand};
 
-use commands::{env, init, platform};
+use commands::{devshell, env, init, platform};
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
 #[derive(Debug, Parser)]
@@ -34,6 +34,9 @@ enum Command {
 
     /// Print the environment that activates a runtime (for `eval`).
     Env(env::EnvArgs),
+
+    /// Enter an interactive shell with a runtime activated.
+    Devshell(devshell::DevshellArgs),
 }
 
 fn main() -> std::process::ExitCode {
@@ -44,6 +47,7 @@ fn main() -> std::process::ExitCode {
         Command::Platform(cmd) => platform::run(cmd, fmt),
         Command::Init(args) => init::run(args, fmt),
         Command::Env(args) => env::run(args, fmt),
+        Command::Devshell(args) => devshell::run(args),
     };
 
     match result {

@@ -12,11 +12,9 @@
 
 use clap::Args;
 
-use ost_core::paths::Store;
-use ost_core::{Error, Host, Result};
-use ost_platform::Catalog;
-use ost_runtime::{python_minor, EnvSet, ProfileCatalog, Runtime, Shell};
+use ost_core::{Host, Result};
 
+use crate::commands::resolve;
 use crate::output::{self, Format};
 
 #[derive(Debug, Args)]
@@ -34,52 +32,25 @@ pub struct EnvArgs {
 }
 
 pub fn run(args: EnvArgs, fmt: Format) -> Result<()> {
-    let platforms = Catalog::load()?;
-    let platform = platforms.get(&args.platform)?;
-    let python_version = platform.component("python").ok_or_else(|| {
-        Error::InvalidManifest(format!(
-            "platform '{}' does not define a 'python' version",
-            platform.id
-        ))
-    })?;
-
-    let profiles = ProfileCatalog::load()?;
-    let profile = profiles.get(&args.profile)?;
-
-    let host = Host::detect();
-    let shell = match &args.shell {
-        Some(name) => Shell::from_name(name)
-            .ok_or_else(|| Error::InvalidManifest(format!("unknown shell '{name}'")))?,
-        None => Shell::default_for(host.os),
-    };
-
-    let runtime = Runtime::resolve(&platform.id, &profile.id, &host, python_version);
-    let store = Store::discover();
-    let prefix = runtime.prefix(&store);
-
-    let usd_plugins = profile
-        .capabilities()
-        .iter()
-        .any(|c| c.starts_with("usd"));
-    let env = EnvSet::for_runtime(&prefix, host.os, &python_minor(python_version), usd_plugins);
-
-    let pulled = prefix.as_std_path().is_dir();
+    let r = resolve(&args.platform, &args.profile)?;
+    let shell = super::devshell::pick_shell(args.shell.as_deref(), Host::detect().os)?;
 
     if fmt.is_json() {
         // An ordered array, not a map: prepend order matters and keys can repeat
         // (on Windows both bin and lib land on PATH).
-        let vars: Vec<serde_json::Value> = env
+        let vars: Vec<serde_json::Value> = r
+            .env
             .pairs()
             .into_iter()
             .map(|(k, v)| serde_json::json!({ "name": k, "value": v }))
             .collect();
         output::json(&serde_json::json!({
-            "runtime": runtime.id(),
-            "platform": runtime.platform,
-            "profile": runtime.profile,
-            "variant": runtime.variant.slug(),
-            "prefix": prefix.to_string(),
-            "pulled": pulled,
+            "runtime": r.runtime.id(),
+            "platform": r.runtime.platform,
+            "profile": r.runtime.profile,
+            "variant": r.runtime.variant.slug(),
+            "prefix": r.prefix.to_string(),
+            "pulled": r.pulled,
             "shell": format!("{shell:?}").to_lowercase(),
             "env": vars,
         }));
@@ -87,12 +58,15 @@ pub fn run(args: EnvArgs, fmt: Format) -> Result<()> {
     }
 
     // Header comments are valid in both bash and pwsh, so `eval` stays safe.
-    println!("# OpenStrata environment for {}", runtime.id());
-    println!("# variant: {}", runtime.variant.slug());
-    if !pulled {
+    println!("# OpenStrata environment for {}", r.runtime.id());
+    println!("# variant: {}", r.runtime.variant.slug());
+    if !r.pulled {
         println!("# note: runtime not yet pulled; paths are prospective");
-        println!("#       (run `ost runtime pull {}` once available)", runtime.platform);
+        println!(
+            "#       (run `ost runtime pull {}` once available)",
+            r.runtime.platform
+        );
     }
-    print!("{}", env.render(shell));
+    print!("{}", r.env.render(shell));
     Ok(())
 }

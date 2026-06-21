@@ -263,6 +263,7 @@ name = "ost-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "camino",
  "clap",
  "ost-core",
  "ost-manifest",
