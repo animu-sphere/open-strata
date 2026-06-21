@@ -15,6 +15,10 @@ pub enum Error {
     #[error("manifest is invalid: {0}")]
     InvalidManifest(String),
 
+    /// An operational failure with a self-contained, actionable message.
+    #[error("{0}")]
+    Operation(String),
+
     #[error("a project already exists here: {0}")]
     ProjectExists(String),
 

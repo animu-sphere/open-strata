@@ -2,20 +2,25 @@ pub mod devshell;
 pub mod env;
 pub mod init;
 pub mod platform;
+pub mod runtime;
 
 use camino::Utf8PathBuf;
 
 use ost_core::paths::Store;
 use ost_core::{Error, Host, Result};
 use ost_platform::Catalog;
-use ost_runtime::{python_minor, EnvSet, ProfileCatalog, Runtime};
+use ost_runtime::{python_minor, EnvSet, ProfileCatalog, Runtime, MANIFEST_FILE};
 
-/// Everything needed to activate a runtime, shared by `env` and `devshell`.
+/// Everything needed to activate a runtime, shared by `env`, `devshell`, `runtime`.
 pub struct Resolved {
     pub runtime: Runtime,
     pub prefix: Utf8PathBuf,
     pub env: EnvSet,
-    /// Whether the runtime prefix actually exists on disk yet.
+    /// Platform Python version, e.g. `3.13.x`.
+    pub python_version: String,
+    /// Capabilities provided by the selected profile.
+    pub capabilities: Vec<String>,
+    /// Whether the runtime has been pulled (its manifest exists on disk).
     pub pulled: bool,
 }
 
@@ -40,14 +45,17 @@ pub fn resolve(platform_id: &str, profile_id: &str) -> Result<Resolved> {
     let store = Store::discover();
     let prefix = runtime.prefix(&store);
 
-    let usd_plugins = profile.capabilities().iter().any(|c| c.starts_with("usd"));
+    let capabilities = profile.capabilities().to_vec();
+    let usd_plugins = capabilities.iter().any(|c| c.starts_with("usd"));
     let env = EnvSet::for_runtime(&prefix, host.os, &python_minor(python_version), usd_plugins);
-    let pulled = prefix.as_std_path().is_dir();
+    let pulled = prefix.join(MANIFEST_FILE).as_std_path().is_file();
 
     Ok(Resolved {
         runtime,
         prefix,
         env,
+        python_version: python_version.to_string(),
+        capabilities,
         pulled,
     })
 }

@@ -1,0 +1,228 @@
+//! `ost runtime` — pull / list / show runtimes (§14.2).
+//!
+//! The first backend is local/mock: `pull` materializes the prospective prefix
+//! layout under `~/.ost/runtimes/<id>` and writes a digest-bearing
+//! `runtime.json`. This makes `ost env` / `ost devshell` report the runtime as
+//! pulled and is the seam where a real artifact backend slots in later.
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use clap::Subcommand;
+
+use ost_core::paths::Store;
+use ost_core::{Error, Result};
+use ost_runtime::{python_minor, RuntimeManifest, MANIFEST_FILE};
+
+use crate::commands::resolve;
+use crate::output::{self, Format};
+
+#[derive(Debug, Subcommand)]
+pub enum RuntimeCmd {
+    /// Materialize a runtime into the local store.
+    Pull {
+        /// Platform calendar-year id, e.g. `cy2026`.
+        platform: String,
+        /// Profile to pull, e.g. `usd` or `lookdev`.
+        #[arg(long, default_value = "core")]
+        profile: String,
+        /// Re-pull even if the runtime already exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List runtimes present in the local store.
+    List,
+    /// Show the manifest of a pulled runtime.
+    Show {
+        /// Platform calendar-year id, e.g. `cy2026`.
+        platform: String,
+        /// Profile, e.g. `usd`.
+        #[arg(long, default_value = "core")]
+        profile: String,
+    },
+}
+
+pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
+    match cmd {
+        RuntimeCmd::Pull {
+            platform,
+            profile,
+            force,
+        } => pull(&platform, &profile, force, fmt),
+        RuntimeCmd::List => list(fmt),
+        RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
+    }
+}
+
+/// Subdirectories the local backend creates inside a runtime prefix.
+fn layout_dirs(python_version: &str, has_usd: bool) -> Vec<String> {
+    let mut dirs = vec![
+        "bin".to_string(),
+        "lib".to_string(),
+        format!("lib/python{}/site-packages", python_minor(python_version)),
+        "include".to_string(),
+        "share/cmake".to_string(),
+    ];
+    if has_usd {
+        dirs.push("plugin/usd".to_string());
+    }
+    dirs
+}
+
+fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
+    let r = resolve(platform, profile)?;
+
+    if r.pulled && !force {
+        return Err(Error::Operation(format!(
+            "runtime '{}' already pulled (use --force to re-pull)",
+            r.runtime.id()
+        )));
+    }
+
+    let has_usd = r.capabilities.iter().any(|c| c.starts_with("usd"));
+    let layout = layout_dirs(&r.python_version, has_usd);
+
+    // Materialize the prefix layout.
+    for sub in &layout {
+        let dir = r.prefix.join(sub);
+        std::fs::create_dir_all(dir.as_std_path())
+            .map_err(|e| Error::io(dir.to_string(), e))?;
+    }
+
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let manifest = RuntimeManifest::build(
+        &r.runtime,
+        &r.python_version,
+        r.capabilities.clone(),
+        layout.clone(),
+        created,
+        true, // mock backend
+    );
+
+    let manifest_path = r.prefix.join(MANIFEST_FILE);
+    let json = manifest
+        .to_json()
+        .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
+    std::fs::write(manifest_path.as_std_path(), format!("{json}\n"))
+        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+
+    if fmt.is_json() {
+        output::json(&serde_json::json!({
+            "pulled": true,
+            "runtime": manifest.id,
+            "prefix": r.prefix.to_string(),
+            "digest": manifest.digest,
+            "mock": manifest.mock,
+            "layout": manifest.layout,
+        }));
+        return Ok(());
+    }
+
+    println!("Pulled runtime {} (mock)", manifest.id);
+    println!("  prefix:  {}", r.prefix);
+    println!("  digest:  {}", manifest.digest);
+    println!("  layout:  {}", layout.join(", "));
+    println!("\nActivate with:");
+    println!("  ost devshell {} --profile {}", platform, profile);
+    Ok(())
+}
+
+fn list(fmt: Format) -> Result<()> {
+    let store = Store::discover();
+    let runtimes_dir = store.runtimes();
+
+    let mut manifests: Vec<RuntimeManifest> = Vec::new();
+    if runtimes_dir.as_std_path().is_dir() {
+        let entries = std::fs::read_dir(runtimes_dir.as_std_path())
+            .map_err(|e| Error::io(runtimes_dir.to_string(), e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| Error::io(runtimes_dir.to_string(), e))?;
+            let manifest_path = entry.path().join(MANIFEST_FILE);
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let src = std::fs::read_to_string(&manifest_path)
+                .map_err(|e| Error::io(manifest_path.display().to_string(), e))?;
+            if let Ok(m) = RuntimeManifest::from_json(&src) {
+                manifests.push(m);
+            }
+        }
+    }
+    manifests.sort_by(|a, b| a.id.cmp(&b.id));
+
+    if fmt.is_json() {
+        let items: Vec<_> = manifests
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "platform": m.platform,
+                    "profile": m.profile,
+                    "validation": m.validation,
+                    "digest": m.digest,
+                    "mock": m.mock,
+                })
+            })
+            .collect();
+        output::json(&serde_json::json!({ "runtimes": items }));
+        return Ok(());
+    }
+
+    if manifests.is_empty() {
+        println!("No runtimes pulled. Try `ost runtime pull cy2026 --profile usd`.");
+        return Ok(());
+    }
+    println!("{:<48}  {:<9}  {}", "RUNTIME", "VALIDATE", "DIGEST");
+    for m in &manifests {
+        let validation = format!("{:?}", m.validation).to_lowercase();
+        println!("{:<48}  {:<9}  {}", m.id, validation, short_digest(&m.digest));
+    }
+    Ok(())
+}
+
+fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
+    let r = resolve(platform, profile)?;
+    let manifest_path = r.prefix.join(MANIFEST_FILE);
+    if !manifest_path.as_std_path().is_file() {
+        return Err(Error::Operation(format!(
+            "runtime '{}' is not pulled (run `ost runtime pull {} --profile {}`)",
+            r.runtime.id(),
+            platform,
+            profile
+        )));
+    }
+    let src = std::fs::read_to_string(manifest_path.as_std_path())
+        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+    let manifest =
+        RuntimeManifest::from_json(&src).map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
+
+    if fmt.is_json() {
+        output::json(&serde_json::to_value(&manifest).expect("manifest serializes"));
+        return Ok(());
+    }
+
+    println!("Runtime:    {}", manifest.id);
+    println!("Platform:   {}", manifest.platform);
+    println!("Profile:    {}", manifest.profile);
+    println!("Variant:    {}", manifest.variant.slug());
+    println!("Python:     {}", manifest.python);
+    println!("Digest:     {}", manifest.digest);
+    println!("Validation: {:?}", manifest.validation);
+    println!("Backend:    {}", if manifest.mock { "mock" } else { "artifact" });
+    println!("Prefix:     {}", r.prefix);
+    println!("Capabilities:");
+    for cap in &manifest.capabilities {
+        println!("  - {cap}");
+    }
+    Ok(())
+}
+
+fn short_digest(digest: &str) -> String {
+    // `sha256:abcd...` -> `sha256:abcd1234`
+    match digest.split_once(':') {
+        Some((algo, hex)) => format!("{algo}:{}", &hex[..hex.len().min(12)]),
+        None => digest.to_string(),
+    }
+}

@@ -36,3 +36,4 @@ toml = "=0.8.19"
 indexmap = { version = "=2.2.6", features = ["serde"] }
 camino = { version = "=1.1.7", features = ["serde1"] }
 directories = "=5.0.1"
+sha2 = "=0.10.8"

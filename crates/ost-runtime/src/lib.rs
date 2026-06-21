@@ -7,9 +7,11 @@
 //! `ost env <platform> --profile <p>` produces correct shell output today.
 
 mod env;
+mod manifest;
 mod profile;
 mod runtime;
 
 pub use env::{EnvOp, EnvSet, EnvVar, Shell};
+pub use manifest::{RuntimeManifest, Validation, MANIFEST_FILE};
 pub use profile::{Profile, ProfileCatalog, Requires};
 pub use runtime::{python_abi_tag, python_minor, Runtime};

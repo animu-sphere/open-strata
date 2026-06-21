@@ -22,12 +22,16 @@ and lock schemas.
 
 Resolve a runtime manifest, lay it out locally, generate environment, enter a shell.
 
-- ⬜ Runtime target model + resolver (`ost-runtime`)
-- ⬜ `ost runtime pull | list | show | explain | validate`
-- ⬜ Environment generation (`PATH`, `LD_LIBRARY_PATH`/`DYLD_*`/`PATH`, `PYTHONPATH`,
+- ✅ Runtime target model + resolver (`ost-runtime`)
+- ✅ Profile model + loader (`core`/`dev`/`usd`/`lookdev`)
+- ✅ Environment generation (`PATH`, `LD_LIBRARY_PATH`/`DYLD_*`/`PATH`, `PYTHONPATH`,
   `CMAKE_PREFIX_PATH`, `PXR_PLUGINPATH_NAME`)
-- ⬜ `ost env` and `ost devshell` against a mock/local runtime
+- ✅ `ost env` and `ost devshell` (bash/pwsh)
+- ✅ `ost runtime pull | list | show` against a local/mock backend
+- ✅ Digest-bearing runtime manifest (`runtime.json`, deterministic digest)
+- ⬜ `ost runtime explain | validate`
 - ⬜ `ost doctor` (runtime identity + host capability report)
+- ⬜ Real artifact backend behind `pull` (currently mock prefix layout)
 
 ## Phase 2 — CMake target build ⬜
 

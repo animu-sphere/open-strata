@@ -12,5 +12,6 @@ ost-platform.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 serde_yaml.workspace = true
 camino.workspace = true

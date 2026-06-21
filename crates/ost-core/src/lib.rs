@@ -5,6 +5,7 @@
 //! describe the machine we are running on ([`host`]), and how a build/runtime
 //! variant is identified ([`variant`]).
 
+pub mod digest;
 pub mod error;
 pub mod host;
 pub mod paths;
