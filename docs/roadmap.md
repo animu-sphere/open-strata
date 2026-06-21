@@ -44,8 +44,13 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
 - ✅ `ost configure`: `toolchain.cmake`, `env.json`, `target.lock.json`,
   per-target `CMakePresets.json`, and a root `CMakePresets.json` that includes
   each target (verified with `cmake --list-presets`)
-- ⬜ Ninja build wrapper: `ost build | validate | package`
-- ⬜ `cmake --preset` configure + `cmake --build` invocation from `ost build`
+- ✅ `ost build`: regenerates the target then runs `cmake --preset` +
+  `cmake --build`; locates ninja on PATH / `OST_NINJA` / `--ninja`; `--dry-run`
+  and `--jobs`; propagates the build exit code (verified end-to-end: a real
+  MSVC+Ninja build of a sample project produced and ran an executable)
+- ⬜ `ost validate | package` for build artifacts
+- ⬜ Windows MSVC-env (`vcvars`) bootstrap inside `ost build` (currently the
+  caller provides the developer environment)
 
 ## Phase 3 — OpenUSD / MaterialX profiles ⬜
 

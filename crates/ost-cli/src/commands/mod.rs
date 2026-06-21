@@ -1,3 +1,4 @@
+pub mod build;
 pub mod configure;
 pub mod devshell;
 pub mod doctor;
