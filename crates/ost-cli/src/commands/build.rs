@@ -13,6 +13,7 @@ use std::process::Command;
 use camino::Utf8Path;
 use clap::Args;
 
+use ost_core::host::Os;
 use ost_core::{tools, Error, Result};
 
 use crate::commands::configure::{generate, resolve_selection};
@@ -39,6 +40,10 @@ pub struct BuildArgs {
     /// Path to the ninja executable if it is not on PATH.
     #[arg(long)]
     ninja: Option<String>,
+
+    /// Do not auto-load the MSVC developer environment (Windows).
+    #[arg(long)]
+    no_vcvars: bool,
 }
 
 pub fn run(args: BuildArgs, _fmt: Format) -> Result<()> {
@@ -52,6 +57,11 @@ pub fn run(args: BuildArgs, _fmt: Format) -> Result<()> {
         args.ninja.clone().or_else(|| std::env::var("OST_NINJA").ok()),
     );
 
+    // On Windows we may auto-load the MSVC dev environment, which also puts a
+    // Ninja on PATH — so an explicit ninja is not strictly required there.
+    let will_bootstrap_msvc =
+        g.target.os() == Os::Windows && !args.no_vcvars && tools::which("cl").is_none();
+
     if !args.dry_run {
         if !g.pulled {
             return Err(Error::Operation(format!(
@@ -60,11 +70,9 @@ pub fn run(args: BuildArgs, _fmt: Format) -> Result<()> {
             )));
         }
         if cmake.is_none() {
-            return Err(Error::Operation(
-                "`cmake` not found on PATH".to_string(),
-            ));
+            return Err(Error::Operation("`cmake` not found on PATH".to_string()));
         }
-        if ninja.is_none() {
+        if ninja.is_none() && !will_bootstrap_msvc {
             return Err(Error::Operation(
                 "`ninja` not found — add it to PATH, set OST_NINJA, or pass --ninja <path>"
                     .to_string(),
@@ -93,15 +101,37 @@ pub fn run(args: BuildArgs, _fmt: Format) -> Result<()> {
 
     if args.dry_run {
         println!("# dry run — would execute in {root}:");
+        if will_bootstrap_msvc {
+            println!("# (would auto-load the MSVC environment via vcvars64.bat)");
+        }
         println!("{}", render_cmd(&cmake_prog, &configure_args));
         println!("{}", render_cmd(&cmake_prog, &build_args));
         return Ok(());
     }
 
+    // Inject the MSVC developer environment (cl.exe, Windows SDK) if needed.
+    let mut extra_env: Vec<(String, String)> = Vec::new();
+    if will_bootstrap_msvc {
+        match ost_build::msvc::bootstrap() {
+            Ok(Some(env)) => {
+                println!(
+                    "==> msvc env   {} ({} vars)",
+                    env.vcvars.display(),
+                    env.vars.len()
+                );
+                extra_env = env.vars;
+            }
+            Ok(None) => eprintln!(
+                "warning: MSVC not found; relying on the current environment (cl must be on PATH)"
+            ),
+            Err(e) => eprintln!("warning: failed to load the MSVC environment: {e}"),
+        }
+    }
+
     println!("==> configure  {}", render_cmd(&cmake_prog, &configure_args));
-    run_step(&cmake_prog, &configure_args, &root)?;
+    run_step(&cmake_prog, &configure_args, &root, &extra_env)?;
     println!("==> build      {}", render_cmd(&cmake_prog, &build_args));
-    run_step(&cmake_prog, &build_args, &root)?;
+    run_step(&cmake_prog, &build_args, &root, &extra_env)?;
     println!("\nBuilt target {id}");
     Ok(())
 }
@@ -134,10 +164,11 @@ fn quote(s: &str) -> String {
     }
 }
 
-fn run_step(program: &Path, args: &[String], cwd: &Utf8Path) -> Result<()> {
+fn run_step(program: &Path, args: &[String], cwd: &Utf8Path, env: &[(String, String)]) -> Result<()> {
     let status = Command::new(program)
         .args(args)
         .current_dir(cwd.as_std_path())
+        .envs(env.iter().map(|(k, v)| (k.clone(), v.clone())))
         .status()
         .map_err(|e| Error::io(format!("run {}", program.display()), e))?;
     if !status.success() {

@@ -10,6 +10,7 @@
 //! This crate renders those artifacts as strings/values; the CLI owns the I/O.
 
 mod lock;
+pub mod msvc;
 mod presets;
 mod target;
 mod toolchain;

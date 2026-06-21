@@ -48,9 +48,11 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   `cmake --build`; locates ninja on PATH / `OST_NINJA` / `--ninja`; `--dry-run`
   and `--jobs`; propagates the build exit code (verified end-to-end: a real
   MSVC+Ninja build of a sample project produced and ran an executable)
+- ✅ Windows MSVC-env auto-bootstrap inside `ost build`: locates `vcvars64.bat`
+  (vswhere or known paths), captures the env delta, injects it into CMake/Ninja;
+  `--no-vcvars` to opt out (verified: a plain shell with no developer prompt
+  builds and runs an executable)
 - ⬜ `ost validate | package` for build artifacts
-- ⬜ Windows MSVC-env (`vcvars`) bootstrap inside `ost build` (currently the
-  caller provides the developer environment)
 
 ## Phase 3 — OpenUSD / MaterialX profiles ⬜
 
