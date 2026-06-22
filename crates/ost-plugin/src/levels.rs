@@ -1,4 +1,4 @@
-//! Execution levels 2–5 (harness §11), run against a *real* OpenUSD runtime.
+//! Execution levels 2–6 (harness §11), run against a *real* OpenUSD runtime.
 //!
 //! Unlike levels 0–1 (static manifest + filesystem checks), these run the
 //! runtime's tools inside the composed session env and interpret the result:
@@ -10,6 +10,8 @@
 //! - **L4 `python.stage_open`** — `Usd.Stage.Open()` opens the fixture.
 //! - **L5 `golden.roundtrip`** — `usdcat --flatten` output matches a committed
 //!   golden, when one exists (else SKIP).
+//! - **L6 `usdview.launch`** — `usdview --quitAfterStartup` opens the stage and
+//!   exits cleanly (SKIP when usdview or a display is unavailable).
 //!
 //! Process execution is behind the [`Probe`] trait so the level logic is unit
 //! testable without a real runtime: tests inject canned tool results.
@@ -47,13 +49,18 @@ pub trait Probe {
 }
 
 /// What tool executables to invoke and where the session points. The CLI builds
-/// this from the resolved runtime; `usdcat`/`python` are `None` when not found.
+/// this from the resolved runtime; tools are `None` when not found.
 pub struct Session<'a> {
     pub probe: &'a dyn Probe,
     /// `usdcat` executable (absolute path or bare name), if located.
     pub usdcat: Option<String>,
     /// Python interpreter that can `import pxr`, if located.
     pub python: Option<String>,
+    /// `usdview` executable (the `.cmd` wrapper on Windows), if located.
+    pub usdview: Option<String>,
+    /// Whether a display is available for GUI tools (Level 6). The CLI sets this
+    /// false on headless Linux so `usdview` is SKIPped, not falsely FAILed.
+    pub has_display: bool,
 }
 
 /// Run execution levels 2..=`up_to` for `bundle` against `session`.
@@ -71,7 +78,16 @@ pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnost
     if up_to >= 5 {
         diags.push(level5_golden(bundle, session));
     }
+    if up_to >= 6 {
+        diags.push(level6_usdview(bundle, session, None));
+    }
     diags
+}
+
+/// Run only the Level 6 `usdview` check against an explicit `fixture` (or the
+/// smoke fixture when `None`). Used by `ost plugin test-view`.
+pub fn usdview_check(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> Diagnostic {
+    level6_usdview(bundle, session, fixture)
 }
 
 /// The file extension this fileformat plugin registers, from `provides`
@@ -252,6 +268,50 @@ fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
     }
 }
 
+fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> Diagnostic {
+    const ID: &str = "usdview.launch";
+    let Some(usdview) = &session.usdview else {
+        return Diagnostic::skip(ID, 6, "usdview not in the runtime (build with usdview enabled)");
+    };
+    if !session.has_display {
+        return Diagnostic::skip(ID, 6, "no display available for usdview");
+    };
+    let path = match fixture {
+        Some(f) => bundle.path(f),
+        None => match smoke_fixture(bundle) {
+            Some(p) => p,
+            None => return Diagnostic::skip(ID, 6, "no fixture to open"),
+        },
+    };
+    if !path.as_std_path().is_file() {
+        return Diagnostic::fail(ID, 6, format!("fixture '{path}' is missing"), vec![]);
+    }
+
+    // `--quitAfterStartup` opens the stage in usdview then exits: a non-interactive
+    // launch probe. The exit code is the signal — usdview prints many benign
+    // warnings (e.g. no numpy) on stderr even on a clean startup.
+    let out = session
+        .probe
+        .run(usdview, &[path.as_str(), "--quitAfterStartup"]);
+    if out.unspawned() {
+        return Diagnostic::fail(ID, 6, format!("could not run usdview ({usdview})"), vec![]);
+    }
+    if out.ok() {
+        Diagnostic::pass(
+            ID,
+            6,
+            format!("usdview opened '{}' and exited cleanly", path.file_name().unwrap_or("")),
+        )
+    } else {
+        Diagnostic::fail(
+            ID,
+            6,
+            format!("usdview failed to launch/open the stage: {}", tail(&out.stderr)),
+            vec!["run `ost plugin view` to see the full usdview output".into()],
+        )
+    }
+}
+
 /// Normalize USDA text for comparison: trim trailing whitespace per line and
 /// ignore leading/trailing blank lines and line-ending differences.
 fn normalize(s: &str) -> String {
@@ -353,6 +413,8 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
             probe: &probe,
             usdcat: Some("usdcat".into()),
             python: Some("python".into()),
+            usdview: None,
+            has_display: false,
         };
         let diags = run_levels(&bundle, &session, 4);
         let by_id = |id: &str| diags.iter().find(|d| d.id == id).unwrap().status;
@@ -369,6 +431,8 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
             probe: &probe,
             usdcat: None,
             python: Some("python".into()),
+            usdview: None,
+            has_display: false,
         };
         let d = &run_levels(&bundle, &session, 2)[0];
         assert_eq!(d.status, Status::Fail);
@@ -384,6 +448,8 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
             probe: &probe,
             usdcat: None,
             python: None,
+            usdview: None,
+            has_display: false,
         };
         let d = &run_levels(&bundle, &session, 3)[1];
         assert_eq!(d.id, "usdcat.read");
@@ -398,10 +464,61 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
             probe: &probe,
             usdcat: Some("usdcat".into()),
             python: None,
+            usdview: None,
+            has_display: false,
         };
         let diags = run_levels(&bundle, &session, 5);
         let golden = diags.iter().find(|d| d.id == "golden.roundtrip").unwrap();
         assert_eq!(golden.status, Status::Skip);
+    }
+
+    #[test]
+    fn usdview_level_passes_skips_and_reports() {
+        let (_d, bundle) = bundle_with_fixture();
+
+        // Clean exit (even with benign stderr) -> PASS.
+        let probe = FakeProbe::new().on("usdview", Some(0), "", "no numpy; harmless");
+        let pass = usdview_check(
+            &bundle,
+            &Session {
+                probe: &probe,
+                usdcat: None,
+                python: None,
+                usdview: Some("usdview".into()),
+                has_display: true,
+            },
+            None,
+        );
+        assert_eq!(pass.id, "usdview.launch");
+        assert_eq!(pass.status, Status::Pass);
+
+        // No display -> SKIP (not a false FAIL on headless CI).
+        let skip = usdview_check(
+            &bundle,
+            &Session {
+                probe: &probe,
+                usdcat: None,
+                python: None,
+                usdview: Some("usdview".into()),
+                has_display: false,
+            },
+            None,
+        );
+        assert_eq!(skip.status, Status::Skip);
+
+        // usdview missing -> SKIP.
+        let none = usdview_check(
+            &bundle,
+            &Session {
+                probe: &probe,
+                usdcat: None,
+                python: None,
+                usdview: None,
+                has_display: true,
+            },
+            None,
+        );
+        assert_eq!(none.status, Status::Skip);
     }
 
     /// Minimal scoped temp directory helper (no external dev-deps).
