@@ -10,7 +10,7 @@ mod output;
 use clap::{Parser, Subcommand};
 
 use commands::{
-    build, configure, devshell, doctor, env, extension, init, lock, package, platform, runtime,
+    build, configure, devshell, doctor, env, extension, init, lock, package, platform, runtime, uv,
     validate,
 };
 
@@ -66,6 +66,9 @@ enum Command {
 
     /// Generate or verify the project lockfile (strata.lock).
     Lock(lock::LockArgs),
+
+    /// Run `uv` pinned to the project's runtime Python.
+    Uv(uv::UvArgs),
 }
 
 fn main() -> std::process::ExitCode {
@@ -85,6 +88,7 @@ fn main() -> std::process::ExitCode {
         Command::Validate(args) => validate::run(args, fmt),
         Command::Extension(cmd) => extension::run(cmd, fmt),
         Command::Lock(args) => lock::run(args, fmt),
+        Command::Uv(args) => uv::run(args, fmt),
     };
 
     match result {
