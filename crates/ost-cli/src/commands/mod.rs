@@ -83,7 +83,11 @@ pub fn resolve(platform_id: &str, profile_id: &str) -> Result<Resolved> {
     let (artifact_prefix, env) = match &manifest {
         Some(m) if m.source.is_real() => {
             let ep = Utf8PathBuf::from(m.effective_prefix(&prefix));
-            let env = EnvSet::for_usd_install(&ep, host.os);
+            let mut env = EnvSet::for_usd_install(&ep, host.os);
+            // A build linked against external deps needs their lib dirs at runtime.
+            for dep in &m.runtime_deps {
+                env.add_dep_libs(camino::Utf8Path::new(dep), host.os);
+            }
             (ep, env)
         }
         _ => {

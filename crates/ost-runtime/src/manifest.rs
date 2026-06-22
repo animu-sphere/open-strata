@@ -120,6 +120,12 @@ pub struct RuntimeManifest {
     /// live under. `None` means the store prefix is the root (mock/build).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_prefix: Option<String>,
+    /// Dependency prefixes a `build` runtime links against at runtime (e.g. the
+    /// `--deps` of a CMake-direct build). Their lib dirs join the session env so
+    /// the built USD can load external shared libraries. Empty when the build is
+    /// self-contained (build_usd.py installs deps into the prefix).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_deps: Vec<String>,
 }
 
 // Bumped to 3 when `mock: bool` generalized to `source` (Phase 4b backend
@@ -169,6 +175,7 @@ impl RuntimeManifest {
             created_unix,
             source,
             external_prefix: None,
+            runtime_deps: Vec::new(),
         }
     }
 
