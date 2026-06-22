@@ -28,8 +28,13 @@ pub struct ResolvedExtension {
     pub features: BTreeSet<String>,
     pub packages: BTreeSet<String>,
     pub allowed_range: Option<String>,
-    /// Chosen certified build point, if the extension declares any (§5.3).
+    /// Chosen certified build point covering the enabled features (§5.3).
+    /// `None` if the extension declares none, or if none covers — see
+    /// [`ResolvedExtension::uncertified`].
     pub certified: Option<Certified>,
+    /// True when the extension declares certified build points but none covers
+    /// the enabled feature set: the resolved combination is *not* certified.
+    pub uncertified: bool,
 }
 
 /// The full resolution result.
@@ -71,7 +76,9 @@ pub fn resolve(catalog: &Catalog, capabilities: &[String]) -> Resolution {
     // Choose a certified build point per extension that declares them.
     for resolved in acc.values_mut() {
         if let Some(ext) = catalog.get(&resolved.id) {
-            resolved.certified = choose_certified(ext, &resolved.features);
+            let (certified, uncertified) = choose_certified(ext, &resolved.features);
+            resolved.certified = certified;
+            resolved.uncertified = uncertified;
         }
     }
 
@@ -138,23 +145,30 @@ fn ensure(acc: &mut BTreeMap<String, ResolvedExtension>, ext: &Extension) {
         packages: BTreeSet::new(),
         allowed_range: ext.allowed_range.clone(),
         certified: None,
+        uncertified: false,
     });
 }
 
-/// Pick the first certified point whose feature set covers the enabled
-/// features; fall back to the last (latest) declared point.
-fn choose_certified(ext: &Extension, enabled: &BTreeSet<String>) -> Option<Certified> {
+/// Pick the first certified point whose feature set covers the enabled features.
+///
+/// Returns `(chosen, uncertified)`:
+/// - `(None, false)` — the extension declares no certified points.
+/// - `(Some(point), false)` — a covering certified point was found.
+/// - `(None, true)` — certified points exist but none covers the enabled
+///   feature set, so the resolved combination is *not* certified. We do **not**
+///   fall back to an arbitrary point, since that would misreport an
+///   uncertified build as certified (§5.3).
+fn choose_certified(ext: &Extension, enabled: &BTreeSet<String>) -> (Option<Certified>, bool) {
     if ext.certified.is_empty() {
-        return None;
+        return (None, false);
     }
-    ext.certified
-        .iter()
-        .find(|c| {
-            let have: BTreeSet<&str> = c.features.iter().map(String::as_str).collect();
-            enabled.iter().all(|f| have.contains(f.as_str()))
-        })
-        .or_else(|| ext.certified.last())
-        .cloned()
+    match ext.certified.iter().find(|c| {
+        let have: BTreeSet<&str> = c.features.iter().map(String::as_str).collect();
+        enabled.iter().all(|f| have.contains(f.as_str()))
+    }) {
+        Some(point) => (Some(point.clone()), false),
+        None => (None, true),
+    }
 }
 
 #[cfg(test)]
@@ -185,6 +199,34 @@ mod tests {
         assert!(res.extensions.iter().any(|e| e.id == "materialx"));
         // A certified build point is chosen.
         assert!(openusd.certified.is_some());
+    }
+
+    #[test]
+    fn uncovered_feature_set_is_flagged_not_silently_certified() {
+        // An extension whose only certified point covers `core`, while the
+        // resolution enables `imaging` too — no point covers the combination.
+        let ext: Extension = serde_yaml::from_str(
+            r#"
+id: demo
+type: solution.demo
+version: "1.0.0"
+certified:
+  - version: "1.0.0"
+    features: [core]
+"#,
+        )
+        .expect("extension parses");
+
+        let enabled: BTreeSet<String> = ["core", "imaging"].iter().map(|s| s.to_string()).collect();
+        let (chosen, uncertified) = choose_certified(&ext, &enabled);
+        assert!(chosen.is_none(), "must not pick a non-covering point");
+        assert!(uncertified, "uncovered combination must be flagged");
+
+        // A covering subset still resolves cleanly.
+        let core_only: BTreeSet<String> = ["core"].iter().map(|s| s.to_string()).collect();
+        let (chosen, uncertified) = choose_certified(&ext, &core_only);
+        assert_eq!(chosen.map(|c| c.version), Some("1.0.0".to_string()));
+        assert!(!uncertified);
     }
 
     #[test]

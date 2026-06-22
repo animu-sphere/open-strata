@@ -344,6 +344,7 @@ fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
                         "features": c.features,
                         "validation": c.validation,
                     })),
+                    "uncertified": e.uncertified,
                 })
             })
             .collect();
@@ -398,6 +399,12 @@ fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
                 } else {
                     println!("    certified: {} [{}] ({val})", c.version, c.features.join(", "));
                 }
+            } else if ext.uncertified {
+                let feats: Vec<_> = ext.features.iter().cloned().collect();
+                println!(
+                    "    certified: NONE — no certified build covers [{}] (UNCERTIFIED)",
+                    feats.join(", ")
+                );
             }
             if let Some(range) = &ext.allowed_range {
                 println!("    range:     {range}");
