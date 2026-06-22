@@ -78,19 +78,27 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   is required by a profile (direct + transitive), and record it in
   `openstrata.toml` (idempotent, validated against the catalog)
 
-## Phase 4 — OpenUSD plugin verification harness ⬜
+## Phase 4 — OpenUSD plugin verification harness 🚧
 
 Direction: [phase-4-plugin-harness.md](phase-4-plugin-harness.md). Split around
 the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mock).
 
-**4a — framework + static verification (mock backend, no real runtime):**
+**4a — framework + static verification (mock backend, no real runtime): ✅**
 
-- ⬜ `ost-plugin` crate + Plugin Bundle contract (`openstrata.plugin.yaml`)
-- ⬜ `ost plugin new` templates (C++ + `plugInfo.json` + CMake + fixtures)
-- ⬜ `ost plugin inspect` (Level 0) and `ost plugin build` (reuses `ost-build`)
-- ⬜ `ost plugin doctor` skeleton: Levels 0–1 + session-env preview; Levels 2+
-  reported as `SKIP (needs real runtime)`
-- ⬜ reports (`.strata/reports/…`) + stable error ids + JSON schema
+- ✅ `ost-plugin` crate + Plugin Bundle contract (`openstrata.plugin.yaml`):
+  manifest model, bundle loader, dependency-free version-range checks
+- ✅ `ost plugin new` scaffold from the embedded `usd-fileformat-cpp` template
+  (C++ `SdfFileFormat` + `plugInfo.json` + `CMakeLists` + fixtures + manifest)
+- ✅ `ost plugin inspect` (Level 0 structure) and `ost plugin build` (generates a
+  toolchain via `ost-build` and drives CMake; `--dry-run`)
+- ✅ `ost plugin doctor`: Levels 0–1 (manifest, plugInfo, shared library,
+  fixtures; OpenUSD range / ABI / required components) with stable diagnostic ids
+  + session-env preview; Levels 2+ reported as `SKIP (needs real runtime)` —
+  never a false PASS
+- ✅ reports under `.strata/reports/<plugin>/<UTC>/` (`report.json` /
+  `summary.txt` / `environment.json`) + published
+  [plugin-report JSON schema](../schemas/plugin-report.schema.json);
+  human + `--json`, deterministic exit codes
 
 **4b — execution levels (gated on a real OpenUSD runtime backend):**
 

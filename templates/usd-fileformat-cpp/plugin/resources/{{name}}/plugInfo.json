@@ -1,0 +1,23 @@
+{
+    "Plugins": [
+        {
+            "Type": "library",
+            "Name": "{{Name}}FileFormat",
+            "Root": ".",
+            "LibraryPath": "lib{{Name}}FileFormat.so",
+            "ResourcePath": ".",
+            "Info": {
+                "Types": {
+                    "{{Name}}FileFormat": {
+                        "bases": ["SdfFileFormat"],
+                        "displayName": "{{Name}} File Format",
+                        "extensions": ["{{extension}}"],
+                        "formatId": "{{extension}}",
+                        "primary": true,
+                        "target": "usd"
+                    }
+                }
+            }
+        }
+    ]
+}

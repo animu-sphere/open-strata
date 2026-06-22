@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://openstrata.dev/schemas/plugin-report.schema.json",
+  "title": "OpenStrata Plugin Verification Report",
+  "description": "report.json written under .strata/reports/<plugin>/<UTC-timestamp>/ by `ost plugin doctor|inspect|test`.",
+  "type": "object",
+  "required": ["schema", "plugin", "kind", "passed", "summary", "diagnostics"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "type": "integer", "const": 1 },
+    "plugin": { "type": "string", "minLength": 1 },
+    "version": { "type": "string" },
+    "kind": {
+      "type": "string",
+      "enum": ["usd-fileformat", "usd-asset-resolver", "usd-schema"]
+    },
+    "passed": { "type": "boolean" },
+    "summary": {
+      "type": "object",
+      "required": ["pass", "fail", "skip"],
+      "additionalProperties": false,
+      "properties": {
+        "pass": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "skip": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "level", "status", "observed", "suggested_actions"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable diagnostic id, e.g. bundle.manifest, runtime.openusd.version, dependency.<component>.",
+            "minLength": 1
+          },
+          "level": {
+            "type": "integer",
+            "description": "Verification pyramid level (0=structure .. 6=usdview).",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pass", "fail", "skip"]
+          },
+          "observed": { "type": "string" },
+          "suggested_actions": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

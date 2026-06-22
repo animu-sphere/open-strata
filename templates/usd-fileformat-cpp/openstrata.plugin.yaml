@@ -1,0 +1,24 @@
+# OpenStrata plugin bundle manifest.
+# A plugin is a self-describing bundle, not a bare shared library: this file is
+# the contract `ost plugin inspect|build|doctor|test` resolve against.
+plugin:
+  name: {{name}}
+  version: 0.1.0
+  kind: usd-fileformat
+runtime:
+  # The OpenUSD version range this plugin tolerates. The runtime supplies the
+  # certified point within it.
+  openusd: ">=25.05,<26.0"
+  # C++ ABI the plugin is built against. Must match the runtime's.
+  cxx_abi: libstdcxx
+provides:
+  - usd-fileformat:{{extension}}
+requires:
+  capabilities: [usd-stage-read]
+usd:
+  # Where this bundle's plugInfo.json lives, relative to the bundle root.
+  plug_info: plugin/resources/{{name}}/plugInfo.json
+tests:
+  smoke: [tests/fixtures/basic.{{extension}}]
+  roundtrip: [tests/fixtures/basic.{{extension}}]
+  negative: [tests/fixtures/invalid.{{extension}}]

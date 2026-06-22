@@ -396,6 +396,7 @@ dependencies = [
  "ost-extension",
  "ost-manifest",
  "ost-platform",
+ "ost-plugin",
  "ost-runtime",
  "serde",
  "serde_json",
@@ -447,6 +448,21 @@ dependencies = [
  "indexmap",
  "ost-core",
  "serde",
+ "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
+name = "ost-plugin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "camino",
+ "indexmap",
+ "ost-core",
+ "ost-runtime",
+ "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror",
 ]
