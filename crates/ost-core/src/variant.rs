@@ -111,11 +111,7 @@ impl Variant {
             Os::Macos => "darwin",
             Os::Windows => "windows-msvc",
         };
-        format!(
-            "cpython-{}-{}-{os_suffix}",
-            self.python,
-            self.arch.as_str()
-        )
+        format!("cpython-{}-{}-{os_suffix}", self.python, self.arch.as_str())
     }
 }
 
@@ -153,17 +149,33 @@ mod tests {
     #[test]
     fn python_abi_tag_per_os() {
         let linux = Variant::new(
-            &Host { os: Os::Linux, arch: Arch::X86_64 },
+            &Host {
+                os: Os::Linux,
+                arch: Arch::X86_64,
+            },
             Abi::default_for(Os::Linux),
             "313",
         );
         assert_eq!(linux.python_abi(), "cpython-313-x86_64-linux-gnu");
 
         let win = Variant::new(
-            &Host { os: Os::Windows, arch: Arch::X86_64 },
+            &Host {
+                os: Os::Windows,
+                arch: Arch::X86_64,
+            },
             Abi::default_for(Os::Windows),
             "313",
         );
         assert_eq!(win.python_abi(), "cpython-313-x86_64-windows-msvc");
+
+        let mac = Variant::new(
+            &Host {
+                os: Os::Macos,
+                arch: Arch::Arm64,
+            },
+            Abi::default_for(Os::Macos),
+            "313",
+        );
+        assert_eq!(mac.python_abi(), "cpython-313-arm64-darwin");
     }
 }
