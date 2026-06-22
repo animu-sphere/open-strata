@@ -209,12 +209,7 @@ fn pull(
         src.deps.clone()
     } else {
         env_nonempty("OST_USD_DEPS")
-            .map(|v| {
-                v.split([';', ':'])
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
+            .map(|v| split_dep_prefixes(&v))
             .unwrap_or_default()
     };
 
@@ -279,6 +274,17 @@ fn pull(
     println!("\nValidate with:");
     println!("  ost runtime validate {} --profile {}", platform, profile);
     Ok(())
+}
+
+/// Split an `OST_USD_DEPS` value into dependency prefixes using the platform's
+/// PATH separator (`;` on Windows, `:` elsewhere). Using the OS separator —
+/// rather than splitting on both — keeps Windows drive letters (`C:/deps`)
+/// intact.
+fn split_dep_prefixes(value: &str) -> Vec<String> {
+    std::env::split_paths(value)
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Materialize the mock prefix layout (no real OpenUSD): the original backend.
@@ -978,5 +984,24 @@ mod tests {
         let args = cmake_build_args(&Utf8PathBuf::from("/cache/build"), Some(4));
         assert!(args.windows(2).any(|w| w == ["--target", "install"]));
         assert!(args.windows(2).any(|w| w == ["--parallel", "4"]));
+    }
+
+    #[test]
+    fn dep_prefixes_split_on_the_os_path_separator() {
+        // Empty entries are dropped.
+        assert!(split_dep_prefixes("").is_empty());
+
+        // Splitting uses the platform separator, so Windows drive letters in an
+        // absolute path survive intact rather than being torn at the colon.
+        #[cfg(windows)]
+        {
+            let deps = split_dep_prefixes(r"C:\deps\a;D:\deps\b");
+            assert_eq!(deps, vec![r"C:\deps\a".to_string(), r"D:\deps\b".to_string()]);
+        }
+        #[cfg(not(windows))]
+        {
+            let deps = split_dep_prefixes("/deps/a:/deps/b");
+            assert_eq!(deps, vec!["/deps/a".to_string(), "/deps/b".to_string()]);
+        }
     }
 }
