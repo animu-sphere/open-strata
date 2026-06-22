@@ -3,6 +3,7 @@ pub mod configure;
 pub mod devshell;
 pub mod doctor;
 pub mod env;
+pub mod extension;
 pub mod init;
 pub mod package;
 pub mod platform;

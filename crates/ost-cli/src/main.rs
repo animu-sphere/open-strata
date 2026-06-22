@@ -10,7 +10,7 @@ mod output;
 use clap::{Parser, Subcommand};
 
 use commands::{
-    build, configure, devshell, doctor, env, init, package, platform, runtime, validate,
+    build, configure, devshell, doctor, env, extension, init, package, platform, runtime, validate,
 };
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
@@ -58,6 +58,10 @@ enum Command {
 
     /// Validate a built/packaged target.
     Validate(validate::ValidateArgs),
+
+    /// Inspect and request controlled extensions.
+    #[command(subcommand)]
+    Extension(extension::ExtensionCmd),
 }
 
 fn main() -> std::process::ExitCode {
@@ -75,6 +79,7 @@ fn main() -> std::process::ExitCode {
         Command::Build(args) => build::run(args, fmt),
         Command::Package(args) => package::run(args, fmt),
         Command::Validate(args) => validate::run(args, fmt),
+        Command::Extension(cmd) => extension::run(cmd, fmt),
     };
 
     match result {
