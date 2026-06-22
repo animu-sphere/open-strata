@@ -19,7 +19,7 @@ use camino::Utf8PathBuf;
 use clap::Subcommand;
 
 use ost_core::host::Os;
-use ost_core::paths::{find_project_root, PROJECT_MANIFEST, STATE_DIR};
+use ost_core::paths::{find_project_root, STATE_DIR};
 use ost_core::{tools, Error, Host, Result};
 use ost_plugin::{
     diagnose, scaffold, session_env, Bundle, DoctorReport, PluginKind, RuntimeContext, Status,
@@ -322,8 +322,6 @@ fn selection(target: Option<String>, profile: Option<String>) -> Option<(String,
     let cwd = std::env::current_dir().ok()?;
     let root = find_project_root(&cwd)?;
     let root = Utf8PathBuf::from_path_buf(root).ok()?;
-    // The presence of a manifest is implied by find_project_root.
-    let _ = root.join(PROJECT_MANIFEST);
     let project = load_project(&root).ok()?;
     Some((
         project.requires.platform,

@@ -101,7 +101,7 @@ pub struct DoctorReport {
 }
 
 impl DoctorReport {
-    /// The highest level for which we ran a non-skip check.
+    /// Whether the run passed: no diagnostic failed (SKIPs do not fail a run).
     pub fn passed(&self) -> bool {
         !self.diagnostics.iter().any(|d| d.status == Status::Fail)
     }

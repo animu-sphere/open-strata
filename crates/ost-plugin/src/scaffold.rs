@@ -114,6 +114,21 @@ fn validate_name(name: &str) -> Result<()> {
     }
 }
 
+/// Validate a file extension: lowercase alphanumerics only. The extension is
+/// substituted into generated file *paths* (e.g. `tests/fixtures/basic.<ext>`),
+/// so anything path-like (`/`, `\`, `.`, `..`) must be rejected to keep
+/// scaffolding confined to the destination directory.
+fn validate_extension(ext: &str) -> Result<()> {
+    let ok = !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric());
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Operation(format!(
+            "invalid extension '{ext}': use lowercase letters and digits only (no '.', '/', or path separators)"
+        )))
+    }
+}
+
 /// Scaffold a new bundle of `kind` named `name` into `dest` (the bundle root).
 ///
 /// `extension` is required for file-format plugins. Returns the list of files
@@ -138,7 +153,10 @@ pub fn scaffold(
     };
 
     let extension = match (kind, extension) {
-        (PluginKind::UsdFileformat, Some(e)) => e.to_string(),
+        (PluginKind::UsdFileformat, Some(e)) => {
+            validate_extension(e)?;
+            e.to_string()
+        }
         (PluginKind::UsdFileformat, None) => {
             return Err(Error::Operation(
                 "usd-fileformat needs --extension <ext> (the file extension it reads)".into(),
@@ -197,6 +215,21 @@ mod tests {
         assert!(validate_name("9bad").is_err());
         assert!(validate_name("has space").is_err());
         assert!(validate_name("ok-name_2").is_ok());
+    }
+
+    #[test]
+    fn rejects_path_like_extensions() {
+        // The extension is substituted into generated file paths, so anything
+        // path-like must be rejected to prevent escaping the destination.
+        assert!(validate_extension("").is_err());
+        assert!(validate_extension("../../etc").is_err());
+        assert!(validate_extension("a/b").is_err());
+        assert!(validate_extension("a.b").is_err());
+        assert!(validate_extension("toy").is_ok());
+        // And the scaffold entry point rejects it too.
+        let dir = unique_tmp("scaffold-badext");
+        assert!(scaffold(PluginKind::UsdFileformat, "toy", Some("../evil"), &dir).is_err());
+        assert!(!dir.as_std_path().exists());
     }
 
     #[test]
