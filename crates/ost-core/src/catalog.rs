@@ -38,8 +38,8 @@ where
     }
 
     if user_dir.as_std_path().is_dir() {
-        let entries =
-            std::fs::read_dir(user_dir.as_std_path()).map_err(|e| Error::io(user_dir.to_string(), e))?;
+        let entries = std::fs::read_dir(user_dir.as_std_path())
+            .map_err(|e| Error::io(user_dir.to_string(), e))?;
         for entry in entries {
             let entry = entry.map_err(|e| Error::io(user_dir.to_string(), e))?;
             let path = entry.path();
@@ -52,8 +52,7 @@ where
                 continue;
             }
             let label = path.display().to_string();
-            let src =
-                std::fs::read_to_string(&path).map_err(|e| Error::io(label.clone(), e))?;
+            let src = std::fs::read_to_string(&path).map_err(|e| Error::io(label.clone(), e))?;
             insert(&mut items, parse(&label, &src)?, &label)?;
         }
     }

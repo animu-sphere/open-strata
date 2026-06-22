@@ -117,8 +117,7 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
     // Materialize the prefix layout.
     for sub in &layout {
         let dir = r.prefix.join(sub);
-        std::fs::create_dir_all(dir.as_std_path())
-            .map_err(|e| Error::io(dir.to_string(), e))?;
+        std::fs::create_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))?;
     }
 
     let created = SystemTime::now()
@@ -150,7 +149,7 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
             "digest": manifest.digest,
             "mock": manifest.mock,
             "layout": manifest.layout,
-            "extensions": manifest.extensions.iter().map(|e| &e.id).collect::<Vec<_>>(),
+            "extensions": manifest.extensions,
         }));
         return Ok(());
     }
@@ -220,7 +219,12 @@ fn list(fmt: Format) -> Result<()> {
     println!("{:<48}  {:<9}  DIGEST", "RUNTIME", "VALIDATE");
     for m in &manifests {
         let validation = format!("{:?}", m.validation).to_lowercase();
-        println!("{:<48}  {:<9}  {}", m.id, validation, short_digest(&m.digest));
+        println!(
+            "{:<48}  {:<9}  {}",
+            m.id,
+            validation,
+            short_digest(&m.digest)
+        );
     }
     Ok(())
 }
@@ -238,8 +242,8 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     }
     let src = std::fs::read_to_string(manifest_path.as_std_path())
         .map_err(|e| Error::io(manifest_path.to_string(), e))?;
-    let manifest =
-        RuntimeManifest::from_json(&src).map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
+    let manifest = RuntimeManifest::from_json(&src)
+        .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
 
     if fmt.is_json() {
         output::json(&serde_json::to_value(&manifest).expect("manifest serializes"));
@@ -253,7 +257,10 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     println!("Python:     {}", manifest.python);
     println!("Digest:     {}", manifest.digest);
     println!("Validation: {:?}", manifest.validation);
-    println!("Backend:    {}", if manifest.mock { "mock" } else { "artifact" });
+    println!(
+        "Backend:    {}",
+        if manifest.mock { "mock" } else { "artifact" }
+    );
     println!("Prefix:     {}", r.prefix);
     println!("Capabilities:");
     for cap in &manifest.capabilities {
@@ -265,7 +272,12 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
             if ext.features.is_empty() {
                 println!("  - {} {}", ext.id, ext.version);
             } else {
-                println!("  - {} {} [{}]", ext.id, ext.version, ext.features.join(", "));
+                println!(
+                    "  - {} {} [{}]",
+                    ext.id,
+                    ext.version,
+                    ext.features.join(", ")
+                );
             }
         }
     }
@@ -432,7 +444,11 @@ fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
                 if c.features.is_empty() {
                     println!("    certified: {} ({val})", c.version);
                 } else {
-                    println!("    certified: {} [{}] ({val})", c.version, c.features.join(", "));
+                    println!(
+                        "    certified: {} [{}] ({val})",
+                        c.version,
+                        c.features.join(", ")
+                    );
                 }
             } else if ext.uncertified {
                 let feats: Vec<_> = ext.features.iter().cloned().collect();

@@ -74,7 +74,11 @@ pub struct RuntimeManifest {
     pub mock: bool,
 }
 
-const SCHEMA: u32 = 1;
+// Bumped to 2 when `extensions` joined the canonical digest input: a v1
+// manifest's stored digest was computed without that field, so it would fail
+// `digest-integrity` after upgrade. The schema check now flags it explicitly
+// (re-pull to migrate) instead of surfacing a confusing digest mismatch.
+const SCHEMA: u32 = 2;
 
 impl RuntimeManifest {
     /// Build a manifest for a resolved runtime, computing the digest.
