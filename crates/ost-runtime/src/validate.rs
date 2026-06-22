@@ -93,5 +93,41 @@ pub fn validate(prefix: &Utf8Path, manifest: &RuntimeManifest) -> ValidationRepo
         ));
     }
 
+    // 4. Real runtimes carry actual OpenUSD: assert the tools and bindings are
+    //    present. Skipped for the mock backend, whose layout is empty stubs.
+    if manifest.source.is_real() {
+        checks.extend(real_runtime_checks(prefix));
+    }
+
     ValidationReport { checks }
+}
+
+/// Structural checks that only make sense against a real OpenUSD install
+/// (`local`/`build`/`artifact`): the `usdcat` tool and the `pxr` Python package.
+fn real_runtime_checks(prefix: &Utf8Path) -> Vec<Check> {
+    let mut checks = Vec::new();
+
+    let bin = prefix.join("bin");
+    let has_usdcat = bin.join("usdcat").as_std_path().is_file()
+        || bin.join("usdcat.exe").as_std_path().is_file();
+    if has_usdcat {
+        checks.push(Check::pass("usdcat-present"));
+    } else {
+        checks.push(Check::fail(
+            "usdcat-present",
+            format!("no usdcat in {bin}"),
+        ));
+    }
+
+    let pxr = prefix.join("lib").join("python").join("pxr");
+    if pxr.as_std_path().is_dir() {
+        checks.push(Check::pass("pxr-package"));
+    } else {
+        checks.push(Check::fail(
+            "pxr-package",
+            format!("no pxr package at {pxr}"),
+        ));
+    }
+
+    checks
 }

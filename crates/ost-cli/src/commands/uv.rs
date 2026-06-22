@@ -47,7 +47,7 @@ pub fn run(args: UvArgs, fmt: Format) -> Result<()> {
     }
 
     // The interpreter uv must use, never one it picks itself.
-    let uv_python = runtime_python(&r.prefix, r.runtime.variant.os);
+    let uv_python = runtime_python(&r.artifact_prefix, r.runtime.variant.os);
 
     // No args: show how uv would be pinned, without invoking it.
     if args.args.is_empty() {

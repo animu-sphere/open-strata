@@ -100,12 +100,21 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
   [plugin-report JSON schema](../schemas/plugin-report.schema.json);
   human + `--json`, deterministic exit codes
 
-**4b — execution levels (gated on a real OpenUSD runtime backend):**
+**4b — execution levels (gated on a real OpenUSD runtime backend): 🚧**
 
-- ⬜ real runtime backend behind `pull` (source TBD: build / prebuilt artifacts)
+- ✅ pluggable runtime backend **sources** behind `pull`
+  (`mock|local|build|artifact`), recorded in the manifest (`mock: bool` →
+  `source`); `source`-aware validation and provenance everywhere
+- ✅ **`local`/adopt source** — `ost runtime pull … --from-usd <path>` (or
+  `OST_USD_ROOT`) adopts an existing OpenUSD install in place; `EnvSet` maps
+  USD's own layout (`lib/python`, `plugin/usd`); `runtime validate` asserts
+  `usdcat` + `pxr`; `plugin doctor` L1 surfaces the source (real but not
+  reproducible/certified)
 - ⬜ `ost plugin run` session launcher; Levels 2–5 (discovery, `usdcat`,
   Python Stage Open, golden); `ost plugin test` orchestration
+- ⬜ `build` source (OpenUSD from source, one-time, digested into the store)
 - ⬜ `ost plugin view | test-view` (Level 6), `package | publish`, CI matrix
+  (`artifact` source lands with Phase 6)
 
 ## Phase 5 — CI / Jenkins ⬜
 
