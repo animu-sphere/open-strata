@@ -8,6 +8,7 @@ pub mod init;
 pub mod lock;
 pub mod package;
 pub mod platform;
+pub mod plugin;
 pub mod runtime;
 pub mod uv;
 pub mod validate;

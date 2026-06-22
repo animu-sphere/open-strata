@@ -17,6 +17,7 @@ ost-manifest.workspace = true
 ost-runtime.workspace = true
 ost-build.workspace = true
 ost-extension.workspace = true
+ost-plugin.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
