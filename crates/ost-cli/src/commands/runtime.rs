@@ -11,7 +11,7 @@ use clap::Subcommand;
 
 use ost_core::paths::Store;
 use ost_core::{Error, Result};
-use ost_runtime::{python_minor, RuntimeManifest, Validation, MANIFEST_FILE};
+use ost_runtime::{python_minor, ExtensionRecord, RuntimeManifest, Validation, MANIFEST_FILE};
 
 use crate::commands::resolve;
 use crate::output::{self, Format};
@@ -96,14 +96,28 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
         )));
     }
 
-    let has_usd = r.capabilities.iter().any(|c| c.starts_with("usd"));
+    // Resolve the profile's capabilities to concrete extensions. This drives
+    // both the prefix layout (USD plugins) and the recorded provenance, so
+    // `pull` agrees with `runtime explain`.
+    let catalog = ost_extension::load_all()?;
+    let resolution = ost_extension::resolve(&catalog, &r.capabilities);
+    let has_usd = resolution.extensions.iter().any(|e| e.id == "openusd");
+    let extensions: Vec<ExtensionRecord> = resolution
+        .extensions
+        .iter()
+        .map(|e| ExtensionRecord {
+            id: e.id.clone(),
+            version: e.version.clone(),
+            features: e.features.iter().cloned().collect(),
+        })
+        .collect();
+
     let layout = layout_dirs(&r.python_version, has_usd);
 
     // Materialize the prefix layout.
     for sub in &layout {
         let dir = r.prefix.join(sub);
-        std::fs::create_dir_all(dir.as_std_path())
-            .map_err(|e| Error::io(dir.to_string(), e))?;
+        std::fs::create_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))?;
     }
 
     let created = SystemTime::now()
@@ -115,6 +129,7 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
         &r.python_version,
         r.capabilities.clone(),
         layout.clone(),
+        extensions,
         created,
         true, // mock backend
     );
@@ -134,6 +149,7 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
             "digest": manifest.digest,
             "mock": manifest.mock,
             "layout": manifest.layout,
+            "extensions": manifest.extensions,
         }));
         return Ok(());
     }
@@ -142,6 +158,14 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
     println!("  prefix:  {}", r.prefix);
     println!("  digest:  {}", manifest.digest);
     println!("  layout:  {}", layout.join(", "));
+    if !manifest.extensions.is_empty() {
+        let names: Vec<String> = manifest
+            .extensions
+            .iter()
+            .map(|e| format!("{} {}", e.id, e.version))
+            .collect();
+        println!("  extensions: {}", names.join(", "));
+    }
     println!("\nActivate with:");
     println!("  ost devshell {} --profile {}", platform, profile);
     Ok(())
@@ -192,10 +216,15 @@ fn list(fmt: Format) -> Result<()> {
         println!("No runtimes pulled. Try `ost runtime pull cy2026 --profile usd`.");
         return Ok(());
     }
-    println!("{:<48}  {:<9}  {}", "RUNTIME", "VALIDATE", "DIGEST");
+    println!("{:<48}  {:<9}  DIGEST", "RUNTIME", "VALIDATE");
     for m in &manifests {
         let validation = format!("{:?}", m.validation).to_lowercase();
-        println!("{:<48}  {:<9}  {}", m.id, validation, short_digest(&m.digest));
+        println!(
+            "{:<48}  {:<9}  {}",
+            m.id,
+            validation,
+            short_digest(&m.digest)
+        );
     }
     Ok(())
 }
@@ -213,8 +242,8 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     }
     let src = std::fs::read_to_string(manifest_path.as_std_path())
         .map_err(|e| Error::io(manifest_path.to_string(), e))?;
-    let manifest =
-        RuntimeManifest::from_json(&src).map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
+    let manifest = RuntimeManifest::from_json(&src)
+        .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
 
     if fmt.is_json() {
         output::json(&serde_json::to_value(&manifest).expect("manifest serializes"));
@@ -228,11 +257,29 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     println!("Python:     {}", manifest.python);
     println!("Digest:     {}", manifest.digest);
     println!("Validation: {:?}", manifest.validation);
-    println!("Backend:    {}", if manifest.mock { "mock" } else { "artifact" });
+    println!(
+        "Backend:    {}",
+        if manifest.mock { "mock" } else { "artifact" }
+    );
     println!("Prefix:     {}", r.prefix);
     println!("Capabilities:");
     for cap in &manifest.capabilities {
         println!("  - {cap}");
+    }
+    if !manifest.extensions.is_empty() {
+        println!("Extensions:");
+        for ext in &manifest.extensions {
+            if ext.features.is_empty() {
+                println!("  - {} {}", ext.id, ext.version);
+            } else {
+                println!(
+                    "  - {} {} [{}]",
+                    ext.id,
+                    ext.version,
+                    ext.features.join(", ")
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -397,7 +444,11 @@ fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
                 if c.features.is_empty() {
                     println!("    certified: {} ({val})", c.version);
                 } else {
-                    println!("    certified: {} [{}] ({val})", c.version, c.features.join(", "));
+                    println!(
+                        "    certified: {} [{}] ({val})",
+                        c.version,
+                        c.features.join(", ")
+                    );
                 }
             } else if ext.uncertified {
                 let feats: Vec<_> = ext.features.iter().cloned().collect();

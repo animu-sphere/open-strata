@@ -36,6 +36,12 @@ impl Profile {
     }
 }
 
+impl ost_core::catalog::Identified for Profile {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 const BUILTINS: &[(&str, &str)] = &[
     ("core", include_str!("../../../profiles/core.yaml")),
     ("dev", include_str!("../../../profiles/dev.yaml")),
@@ -50,34 +56,8 @@ pub struct ProfileCatalog {
 
 impl ProfileCatalog {
     pub fn load() -> Result<ProfileCatalog> {
-        let mut profiles = BTreeMap::new();
-        for (id, src) in BUILTINS {
-            let p = parse(id, src)?;
-            profiles.insert(p.id.clone(), p);
-        }
-
         let user_dir = Store::discover().root.join("profiles");
-        if user_dir.as_std_path().is_dir() {
-            let entries = std::fs::read_dir(user_dir.as_std_path())
-                .map_err(|e| Error::io(user_dir.to_string(), e))?;
-            for entry in entries {
-                let entry = entry.map_err(|e| Error::io(user_dir.to_string(), e))?;
-                let path = entry.path();
-                let is_yaml = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e == "yaml" || e == "yml")
-                    .unwrap_or(false);
-                if !is_yaml {
-                    continue;
-                }
-                let src = std::fs::read_to_string(&path)
-                    .map_err(|e| Error::io(path.display().to_string(), e))?;
-                let p = parse(&path.display().to_string(), &src)?;
-                profiles.insert(p.id.clone(), p);
-            }
-        }
-
+        let profiles = ost_core::catalog::load(BUILTINS, &user_dir, parse)?;
         Ok(ProfileCatalog { profiles })
     }
 
@@ -93,12 +73,5 @@ impl ProfileCatalog {
 }
 
 fn parse(label: &str, src: &str) -> Result<Profile> {
-    let p: Profile =
-        serde_yaml::from_str(src).map_err(|e| Error::parse(format!("profile '{label}'"), e))?;
-    if p.id.is_empty() {
-        return Err(Error::InvalidManifest(format!(
-            "profile '{label}' is missing an 'id'"
-        )));
-    }
-    Ok(p)
+    serde_yaml::from_str(src).map_err(|e| Error::parse(format!("profile '{label}'"), e))
 }

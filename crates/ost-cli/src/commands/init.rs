@@ -1,6 +1,6 @@
 //! `ost init` — scaffold an OpenStrata project in the current directory.
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use clap::Args;
 
@@ -53,7 +53,7 @@ pub fn run(args: InitArgs, fmt: Format) -> Result<()> {
 
     let project = Project::scaffold(&name, &platform);
     let toml = project.to_toml()?;
-    std::fs::write(&manifest_path, &toml)
+    std::fs::write(&manifest_path, toml)
         .map_err(|e| Error::io(manifest_path.display().to_string(), e))?;
 
     // Create the generated-state directory and keep it out of git.
@@ -85,7 +85,7 @@ fn write_state_gitignore(state_dir: &std::path::Path) -> Result<()> {
         .map_err(|e| Error::io(gitignore.display().to_string(), e))
 }
 
-fn report(manifest_path: &PathBuf, name: &str, platform: &str, fmt: Format) {
+fn report(manifest_path: &Path, name: &str, platform: &str, fmt: Format) {
     if fmt.is_json() {
         output::json(&serde_json::json!({
             "initialized": true,

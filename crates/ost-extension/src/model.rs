@@ -70,3 +70,9 @@ impl Extension {
         self.features.get(name)
     }
 }
+
+impl ost_core::catalog::Identified for Extension {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
