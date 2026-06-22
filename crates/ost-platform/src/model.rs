@@ -58,3 +58,9 @@ impl Platform {
         self.core.get(name).map(String::as_str)
     }
 }
+
+impl ost_core::catalog::Identified for Platform {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}

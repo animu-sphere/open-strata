@@ -24,6 +24,15 @@ pub enum Validation {
     Pending,
 }
 
+/// A resolved extension recorded in a runtime (provenance + identity).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionRecord {
+    pub id: String,
+    pub version: String,
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+
 /// The canonical, digestable description of a runtime. Field order is fixed and
 /// `BTreeMap`-free so the serialized form is stable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +45,7 @@ struct Canonical {
     python: String,
     capabilities: Vec<String>,
     layout: Vec<String>,
+    extensions: Vec<ExtensionRecord>,
 }
 
 /// A written runtime manifest.
@@ -51,6 +61,9 @@ pub struct RuntimeManifest {
     pub capabilities: Vec<String>,
     /// Subdirectories materialized under the prefix.
     pub layout: Vec<String>,
+    /// Extensions this runtime resolves to (id/version/enabled features).
+    #[serde(default)]
+    pub extensions: Vec<ExtensionRecord>,
     /// `sha256:...` over the canonical fields (excludes `created_unix`).
     pub digest: String,
     pub validation: Validation,
@@ -65,11 +78,13 @@ const SCHEMA: u32 = 1;
 
 impl RuntimeManifest {
     /// Build a manifest for a resolved runtime, computing the digest.
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         runtime: &Runtime,
         python_version: &str,
         capabilities: Vec<String>,
         layout: Vec<String>,
+        extensions: Vec<ExtensionRecord>,
         created_unix: u64,
         mock: bool,
     ) -> RuntimeManifest {
@@ -80,8 +95,9 @@ impl RuntimeManifest {
             profile: runtime.profile.clone(),
             variant: runtime.variant.clone(),
             python: python_version.to_string(),
-            capabilities: capabilities.clone(),
-            layout: layout.clone(),
+            capabilities,
+            layout,
+            extensions,
         };
         // Serialization of a fixed-field struct is deterministic.
         let bytes = serde_json::to_vec(&canonical).expect("canonical serializes");
@@ -96,6 +112,7 @@ impl RuntimeManifest {
             python: canonical.python,
             capabilities: canonical.capabilities,
             layout: canonical.layout,
+            extensions: canonical.extensions,
             digest,
             validation: Validation::Pending,
             created_unix,
@@ -118,6 +135,7 @@ impl RuntimeManifest {
             python: self.python.clone(),
             capabilities: self.capabilities.clone(),
             layout: self.layout.clone(),
+            extensions: self.extensions.clone(),
         };
         let bytes = serde_json::to_vec(&canonical).expect("canonical serializes");
         digest::sha256_hex(&bytes)
@@ -153,6 +171,11 @@ mod tests {
             "3.13.x",
             vec!["usd-stage-read".into()],
             vec!["bin".into(), "lib".into()],
+            vec![ExtensionRecord {
+                id: "openusd".into(),
+                version: "25.05.01".into(),
+                features: vec!["core".into()],
+            }],
             1_700_000_000,
             true,
         )

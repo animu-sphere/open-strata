@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 .strata/
+
+# Local Claude Code config (not shared)
+.claude/

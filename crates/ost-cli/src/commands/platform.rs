@@ -53,7 +53,7 @@ fn list(catalog: &Catalog, fmt: Format) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<10}  {:<11}  {}", "PLATFORM", "STATUS", "PYTHON");
+    println!("{:<10}  {:<11}  PYTHON", "PLATFORM", "STATUS");
     for p in catalog.iter() {
         let status = format!("{:?}", p.source.status).to_lowercase();
         println!(

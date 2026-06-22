@@ -62,7 +62,7 @@ fn list(fmt: Format) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<12}  {:<20}  {:<10}  {}", "EXTENSION", "TYPE", "VERSION", "PROVIDES");
+    println!("{:<12}  {:<20}  {:<10}  PROVIDES", "EXTENSION", "TYPE", "VERSION");
     for e in catalog.iter() {
         let provides: Vec<&str> = e.provides.keys().map(String::as_str).collect();
         println!(

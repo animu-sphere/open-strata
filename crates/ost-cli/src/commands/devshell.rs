@@ -61,7 +61,7 @@ pub fn run(args: DevshellArgs) -> Result<()> {
     r.env.apply(&mut cmd);
     // Markers so tools (and the user's prompt) can detect the active runtime.
     cmd.env("OST_DEVSHELL", r.runtime.id());
-    cmd.env("OST_RUNTIME_PREFIX", r.prefix.to_string());
+    cmd.env("OST_RUNTIME_PREFIX", &r.prefix);
 
     let status = cmd.status().map_err(|e| {
         Error::io(

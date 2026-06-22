@@ -11,7 +11,7 @@ use clap::Subcommand;
 
 use ost_core::paths::Store;
 use ost_core::{Error, Result};
-use ost_runtime::{python_minor, RuntimeManifest, Validation, MANIFEST_FILE};
+use ost_runtime::{python_minor, ExtensionRecord, RuntimeManifest, Validation, MANIFEST_FILE};
 
 use crate::commands::resolve;
 use crate::output::{self, Format};
@@ -96,7 +96,22 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
         )));
     }
 
-    let has_usd = r.capabilities.iter().any(|c| c.starts_with("usd"));
+    // Resolve the profile's capabilities to concrete extensions. This drives
+    // both the prefix layout (USD plugins) and the recorded provenance, so
+    // `pull` agrees with `runtime explain`.
+    let catalog = ost_extension::load_all()?;
+    let resolution = ost_extension::resolve(&catalog, &r.capabilities);
+    let has_usd = resolution.extensions.iter().any(|e| e.id == "openusd");
+    let extensions: Vec<ExtensionRecord> = resolution
+        .extensions
+        .iter()
+        .map(|e| ExtensionRecord {
+            id: e.id.clone(),
+            version: e.version.clone(),
+            features: e.features.iter().cloned().collect(),
+        })
+        .collect();
+
     let layout = layout_dirs(&r.python_version, has_usd);
 
     // Materialize the prefix layout.
@@ -115,6 +130,7 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
         &r.python_version,
         r.capabilities.clone(),
         layout.clone(),
+        extensions,
         created,
         true, // mock backend
     );
@@ -134,6 +150,7 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
             "digest": manifest.digest,
             "mock": manifest.mock,
             "layout": manifest.layout,
+            "extensions": manifest.extensions.iter().map(|e| &e.id).collect::<Vec<_>>(),
         }));
         return Ok(());
     }
@@ -142,6 +159,14 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
     println!("  prefix:  {}", r.prefix);
     println!("  digest:  {}", manifest.digest);
     println!("  layout:  {}", layout.join(", "));
+    if !manifest.extensions.is_empty() {
+        let names: Vec<String> = manifest
+            .extensions
+            .iter()
+            .map(|e| format!("{} {}", e.id, e.version))
+            .collect();
+        println!("  extensions: {}", names.join(", "));
+    }
     println!("\nActivate with:");
     println!("  ost devshell {} --profile {}", platform, profile);
     Ok(())
@@ -192,7 +217,7 @@ fn list(fmt: Format) -> Result<()> {
         println!("No runtimes pulled. Try `ost runtime pull cy2026 --profile usd`.");
         return Ok(());
     }
-    println!("{:<48}  {:<9}  {}", "RUNTIME", "VALIDATE", "DIGEST");
+    println!("{:<48}  {:<9}  DIGEST", "RUNTIME", "VALIDATE");
     for m in &manifests {
         let validation = format!("{:?}", m.validation).to_lowercase();
         println!("{:<48}  {:<9}  {}", m.id, validation, short_digest(&m.digest));
@@ -233,6 +258,16 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     println!("Capabilities:");
     for cap in &manifest.capabilities {
         println!("  - {cap}");
+    }
+    if !manifest.extensions.is_empty() {
+        println!("Extensions:");
+        for ext in &manifest.extensions {
+            if ext.features.is_empty() {
+                println!("  - {} {}", ext.id, ext.version);
+            } else {
+                println!("  - {} {} [{}]", ext.id, ext.version, ext.features.join(", "));
+            }
+        }
     }
     Ok(())
 }
