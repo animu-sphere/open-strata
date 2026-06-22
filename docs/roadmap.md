@@ -110,8 +110,14 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
   USD's own layout (`lib/python`, `plugin/usd`); `runtime validate` asserts
   `usdcat` + `pxr`; `plugin doctor` L1 surfaces the source (real but not
   reproducible/certified)
-- ⬜ `ost plugin run` session launcher; Levels 2–5 (discovery, `usdcat`,
-  Python Stage Open, golden); `ost plugin test` orchestration
+- ✅ `ost plugin run` session launcher (composes the runtime `EnvSet` + bundle
+  roots, execs a command, propagates the exit code; no global mutation)
+- ✅ Levels 2–5 executed against a real runtime via a `Probe` seam (unit-test
+  injectable): L2 discovery (`Sdf.FileFormat.FindByExtension`), L3 `usdcat`
+  read, L4 `Usd.Stage.Open`, L5 golden round-trip (`usdcat --flatten` vs
+  `<fixture>.golden.usda`); `ost plugin test` orchestrates L0..L5 + report.
+  `EnvSet::for_usd_install` probes `lib/python` vs `lib/site-packages`.
+  Verified end-to-end against a real OpenUSD 25.05 build.
 - ⬜ `build` source (OpenUSD from source, one-time, digested into the store)
 - ⬜ `ost plugin view | test-view` (Level 6), `package | publish`, CI matrix
   (`artifact` source lands with Phase 6)

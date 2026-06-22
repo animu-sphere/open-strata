@@ -235,19 +235,26 @@ fn adopt_local(
     }
 
     // Probe USD's install layout. Require at least one strong marker so we don't
-    // silently adopt an unrelated directory.
-    let candidates = ["bin", "lib", "lib/python", "plugin/usd", "include"];
+    // silently adopt an unrelated directory. The `pxr` Python package may live
+    // under lib/python or lib/site-packages depending on the build.
+    let candidates = [
+        "bin",
+        "lib",
+        "lib/python",
+        "lib/site-packages",
+        "plugin/usd",
+        "include",
+    ];
     let layout: Vec<String> = candidates
         .iter()
         .filter(|s| root.join(s).as_std_path().is_dir())
         .map(|s| s.to_string())
         .collect();
-    let looks_like_usd = ["lib/python", "plugin/usd"]
-        .iter()
-        .any(|s| root.join(s).as_std_path().is_dir());
+    let looks_like_usd = root.join("plugin/usd").as_std_path().is_dir()
+        || ost_runtime::usd_python_dir(&root).join("pxr").as_std_path().is_dir();
     if !looks_like_usd {
         return Err(Error::Operation(format!(
-            "'{root}' does not look like an OpenUSD install (no lib/python or plugin/usd)"
+            "'{root}' does not look like an OpenUSD install (no plugin/usd or lib/**/pxr)"
         )));
     }
 

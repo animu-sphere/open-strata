@@ -7,9 +7,9 @@
 //! reported as `SKIP` with a reason — never a false `PASS` (harness §12, the 4a
 //! definition of done).
 //!
-//! Levels 0–1 are static (manifest + filesystem + runtime manifest) and run on
-//! today's mock backend. Levels 2+ (discovery, `usdcat`, Python stage open,
-//! golden) are emitted as `SKIP` until the real runtime backend lands in 4b.
+//! `doctor` covers the static Levels 0–1 (manifest + filesystem + runtime
+//! manifest); it emits `SKIP` for Levels 2+ and points at `ost plugin test`,
+//! which executes those against a real runtime (see [`crate::run_levels`]).
 
 use indexmap::IndexMap;
 
@@ -46,7 +46,7 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    fn pass(id: &str, level: u8, observed: impl Into<String>) -> Diagnostic {
+    pub(crate) fn pass(id: &str, level: u8, observed: impl Into<String>) -> Diagnostic {
         Diagnostic {
             id: id.into(),
             level,
@@ -56,7 +56,12 @@ impl Diagnostic {
         }
     }
 
-    fn fail(id: &str, level: u8, observed: impl Into<String>, actions: Vec<String>) -> Diagnostic {
+    pub(crate) fn fail(
+        id: &str,
+        level: u8,
+        observed: impl Into<String>,
+        actions: Vec<String>,
+    ) -> Diagnostic {
         Diagnostic {
             id: id.into(),
             level,
@@ -66,7 +71,7 @@ impl Diagnostic {
         }
     }
 
-    fn skip(id: &str, level: u8, reason: impl Into<String>) -> Diagnostic {
+    pub(crate) fn skip(id: &str, level: u8, reason: impl Into<String>) -> Diagnostic {
         Diagnostic {
             id: id.into(),
             level,
@@ -132,13 +137,18 @@ pub fn diagnose(bundle: &Bundle, ctx: &RuntimeContext, up_to_level: u8) -> Docto
         diags.extend(level1(bundle, ctx));
     }
 
-    // ---- Levels 2+: need a real OpenUSD runtime — SKIP, never false PASS ----
+    // ---- Levels 2+: executed by `ost plugin test`, not `doctor`. SKIP here,
+    //      with a reason that depends on whether a real runtime is available. ----
     if up_to_level >= 2 {
-        const REASON: &str = "needs a real OpenUSD runtime (current backend is mock)";
-        diags.push(Diagnostic::skip("plugin.discovery", 2, REASON));
-        diags.push(Diagnostic::skip("usdcat.read", 3, REASON));
-        diags.push(Diagnostic::skip("python.stage_open", 4, REASON));
-        diags.push(Diagnostic::skip("golden.roundtrip", 5, REASON));
+        let reason = if ctx.real {
+            "execute with `ost plugin test` (a real runtime is available)"
+        } else {
+            "needs a real OpenUSD runtime (current backend is mock or absent)"
+        };
+        diags.push(Diagnostic::skip("plugin.discovery", 2, reason));
+        diags.push(Diagnostic::skip("usdcat.read", 3, reason));
+        diags.push(Diagnostic::skip("python.stage_open", 4, reason));
+        diags.push(Diagnostic::skip("golden.roundtrip", 5, reason));
     }
 
     DoctorReport { diagnostics: diags }

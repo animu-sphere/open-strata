@@ -1,15 +1,19 @@
-//! `ost plugin` — OpenUSD plugin bundles (Phase 4a surface).
+//! `ost plugin` — OpenUSD plugin bundles.
 //!
 //! - `new`     scaffold a bundle from a template.
 //! - `inspect` Level 0 bundle structure report (no runtime needed).
 //! - `build`   build the shared library + stage plugInfo, reusing `ost-build`'s
 //!             toolchain generation against the resolved runtime.
-//! - `doctor`  staged diagnostics (L0–L1 now; L2+ SKIP until a real runtime),
-//!             with a preview of the session env it *would* set, and a report
-//!             written under `.strata/reports/`.
+//! - `doctor`  static diagnostics (L0–L1) + a preview of the session env it
+//!             *would* set; L2+ SKIP (run them with `test`).
+//! - `run`     compose the runtime session and exec a command in it (needs a
+//!             real runtime).
+//! - `test`    orchestrate the verification pyramid L0..L5 — executing the
+//!             runtime's tools for L2+ — and write a report under
+//!             `.strata/reports/`.
 //!
 //! The CLI stays thin: it resolves paths and the runtime, then calls into
-//! `ost-plugin` for the model, checks, and report shapes.
+//! `ost-plugin` for the model, checks, execution levels, and report shapes.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -22,7 +26,8 @@ use ost_core::host::Os;
 use ost_core::paths::{find_project_root, STATE_DIR};
 use ost_core::{tools, Error, Host, Result};
 use ost_plugin::{
-    diagnose, scaffold, session_env, Bundle, DoctorReport, PluginKind, RuntimeContext, Status,
+    diagnose, run_levels, scaffold, session_env, Bundle, DoctorReport, PluginKind, Probe,
+    RuntimeContext, Session, Status, ToolOutput,
 };
 use ost_runtime::{EnvSet, RuntimeManifest, MANIFEST_FILE};
 
@@ -78,6 +83,34 @@ pub enum PluginCmd {
         #[arg(long)]
         profile: Option<String>,
     },
+    /// Launch a command inside the plugin's runtime session (needs a real runtime).
+    Run {
+        /// Path to the bundle directory.
+        bundle: String,
+        /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
+        #[arg(long)]
+        target: Option<String>,
+        /// Profile to activate. Defaults to the enclosing project's.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Command to execute after `--`, e.g. `-- usdcat fixture.toy`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Orchestrate the verification pyramid (L0..L5) and write a report.
+    Test {
+        /// Path to the bundle directory.
+        bundle: String,
+        /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
+        #[arg(long)]
+        target: Option<String>,
+        /// Profile to test against. Defaults to the enclosing project's.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Highest verification level to run (0..=5).
+        #[arg(long, default_value_t = 5)]
+        up_to: u8,
+    },
 }
 
 pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
@@ -101,6 +134,18 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             target,
             profile,
         } => doctor(&bundle, target, profile, fmt),
+        PluginCmd::Run {
+            bundle,
+            target,
+            profile,
+            command,
+        } => run_session(&bundle, target, profile, command, fmt),
+        PluginCmd::Test {
+            bundle,
+            target,
+            profile,
+            up_to,
+        } => test(&bundle, target, profile, up_to, fmt),
     }
 }
 
@@ -305,6 +350,163 @@ fn build(
     Ok(())
 }
 
+/// `ost plugin run` — compose the runtime session and exec a command in it.
+fn run_session(
+    bundle_path: &str,
+    target: Option<String>,
+    profile: Option<String>,
+    command: Vec<String>,
+    _fmt: Format,
+) -> Result<()> {
+    let bundle = load_bundle(bundle_path)?;
+    let host = Host::detect();
+    let r = require_real_runtime(target, profile)?;
+
+    let session = session_env(&r.env, &bundle, host.os);
+    let (prog, rest) = command.split_first().expect("clap requires >=1 arg");
+
+    let mut cmd = Command::new(prog);
+    cmd.args(rest);
+    session.apply(&mut cmd); // overlay the resolved session env, no global mutation
+    let status = cmd
+        .status()
+        .map_err(|e| Error::io(format!("run {prog}"), e))?;
+    // Propagate the child's exit code for CI.
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
+/// `ost plugin test` — run the verification pyramid L0..=`up_to` and write a report.
+fn test(
+    bundle_path: &str,
+    target: Option<String>,
+    profile: Option<String>,
+    up_to: u8,
+    fmt: Format,
+) -> Result<()> {
+    let bundle = load_bundle(bundle_path)?;
+    let host = Host::detect();
+
+    let resolved = resolve_runtime(target, profile)?;
+    let ctx = resolved.as_ref().map(runtime_context).unwrap_or_default();
+    let session = match &resolved {
+        Some(r) => session_env(&r.env, &bundle, host.os),
+        None => EnvSet {
+            sep: if host.os == Os::Windows { ';' } else { ':' },
+            vars: ost_plugin::bundle_vars(&bundle, host.os),
+        },
+    };
+
+    // L0 + L1 are static. L2..up_to execute the runtime's tools — but only when a
+    // real runtime is present; otherwise keep the honest SKIPs.
+    let mut report = diagnose(&bundle, &ctx, 1);
+    if up_to >= 2 {
+        if ctx.real {
+            let probe = ProcessProbe::new(session.resolve());
+            let tools = locate_tools(resolved.as_ref(), &probe);
+            let sess = Session {
+                probe: &probe,
+                usdcat: tools.usdcat,
+                python: tools.python,
+            };
+            report
+                .diagnostics
+                .extend(run_levels(&bundle, &sess, up_to.min(5)));
+        } else {
+            // Reuse diagnose's SKIP placeholders for the execution levels.
+            let skips = diagnose(&bundle, &ctx, up_to.min(5))
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.level >= 2);
+            report.diagnostics.extend(skips);
+        }
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let reports_root = bundle.root.join(STATE_DIR).join("reports");
+    let report_dir = ost_plugin::write_report(&reports_root, &bundle, &report, &session, now)?;
+
+    if fmt.is_json() {
+        let mut body = ost_plugin::report_json(&bundle, &report);
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert(
+                "report_dir".into(),
+                serde_json::Value::String(report_dir.to_string()),
+            );
+        }
+        output::json(&body);
+    } else {
+        print_report(&bundle, &report);
+        println!("\nReport: {report_dir}");
+    }
+    finish(&report)
+}
+
+/// A [`Probe`] that spawns real processes with the resolved session env applied
+/// on top of the current environment (no global mutation).
+struct ProcessProbe {
+    env: Vec<(String, String)>,
+}
+
+impl ProcessProbe {
+    fn new(env: Vec<(String, String)>) -> ProcessProbe {
+        ProcessProbe { env }
+    }
+}
+
+impl Probe for ProcessProbe {
+    fn run(&self, program: &str, args: &[&str]) -> ToolOutput {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        for (k, v) in &self.env {
+            cmd.env(k, v);
+        }
+        match cmd.output() {
+            Ok(o) => ToolOutput {
+                code: o.status.code(),
+                stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+            },
+            Err(_) => ToolOutput {
+                code: None,
+                stdout: String::new(),
+                stderr: format!("could not spawn {program}"),
+            },
+        }
+    }
+}
+
+struct Tools {
+    usdcat: Option<String>,
+    python: Option<String>,
+}
+
+/// Locate the tools the execution levels need, using the session env: `usdcat`
+/// from the runtime's `bin/`, and a python interpreter that can import `pxr`.
+fn locate_tools(resolved: Option<&crate::commands::Resolved>, probe: &ProcessProbe) -> Tools {
+    let usdcat = resolved.and_then(|r| {
+        let bin = r.artifact_prefix.join("bin");
+        for name in ["usdcat", "usdcat.exe"] {
+            let p = bin.join(name);
+            if p.as_std_path().is_file() {
+                return Some(p.to_string());
+            }
+        }
+        None
+    });
+    // Probe for a python interpreter on the session PATH (cheap `--version`).
+    let python = ["python", "python3"]
+        .into_iter()
+        .find(|p| probe.run(p, &["--version"]).code.is_some())
+        .map(str::to_string);
+    Tools { usdcat, python }
+}
+
 // ---- helpers ----
 
 /// Load a bundle from a path, with an actionable error if it is not a bundle.
@@ -338,6 +540,38 @@ fn resolve_runtime(
         Some((platform, profile)) => Ok(Some(resolve(&platform, &profile)?)),
         None => Ok(None),
     }
+}
+
+/// Resolve a runtime that must be pulled and carry real OpenUSD artifacts.
+/// `ost plugin run` and the execution levels cannot work against mock/absent.
+fn require_real_runtime(
+    target: Option<String>,
+    profile: Option<String>,
+) -> Result<crate::commands::Resolved> {
+    let (platform, profile) = selection(target, profile).ok_or_else(|| {
+        Error::Operation(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile"
+                .into(),
+        )
+    })?;
+    let r = resolve(&platform, &profile)?;
+    if !r.pulled {
+        return Err(Error::Operation(format!(
+            "runtime '{}' not pulled — adopt one with `ost runtime pull {platform} --profile {profile} --from-usd <path>`",
+            r.runtime.id()
+        )));
+    }
+    // Read the manifest to confirm the source is real (not mock).
+    let manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
+        .ok()
+        .and_then(|s| RuntimeManifest::from_json(&s).ok());
+    let real = manifest.map(|m| m.source.is_real()).unwrap_or(false);
+    if !real {
+        return Err(Error::Operation(
+            "runtime is mock — a real OpenUSD runtime is required (adopt with `--from-usd`)".into(),
+        ));
+    }
+    Ok(r)
 }
 
 /// Build the Level 1 runtime context from a resolved runtime and its manifest.
