@@ -47,6 +47,15 @@ fn default_manager() -> String {
     "uv".into()
 }
 
+/// An extension pinned in the lock (id/version/enabled features).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockExtension {
+    pub id: String,
+    pub version: String,
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+
 /// The whole `strata.lock`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lock {
@@ -55,6 +64,9 @@ pub struct Lock {
     pub lock_version: u32,
     pub runtime: LockRuntime,
     pub python: LockPython,
+    /// Extensions the runtime resolves to (§9.4).
+    #[serde(default)]
+    pub extensions: Vec<LockExtension>,
     pub validation: Validation,
 }
 

@@ -165,6 +165,10 @@ pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result
     let root_presets = root_presets_with_include(existing.as_ref(), &include_rel);
     write(&root_presets_path, &pretty(&root_presets)?)?;
 
+    // 6. Refresh the project lockfile so it tracks the configured runtime.
+    let lock = crate::commands::lock::build_lock(root, platform, profile)?;
+    crate::commands::lock::write_lock(root, &lock)?;
+
     Ok(Generated {
         id,
         target,
@@ -222,6 +226,7 @@ fn report(g: &Generated, fmt: Format) {
     );
     println!("    toolchain.cmake  env.json  target.lock.json  CMakePresets.json");
     println!("  updated CMakePresets.json (include) at project root");
+    println!("  refreshed strata.lock");
     println!("\nNext:");
     println!("  cmake --preset {id}    (or `ost build`)");
 }

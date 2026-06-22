@@ -5,6 +5,7 @@ pub mod doctor;
 pub mod env;
 pub mod extension;
 pub mod init;
+pub mod lock;
 pub mod package;
 pub mod platform;
 pub mod runtime;
