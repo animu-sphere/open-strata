@@ -132,7 +132,16 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
 
   `--jobs` and `--build-arg` (hyphen-allowed) tune either mode. Both verified by
   building a real OpenUSD 25.05 and running `ost plugin test` against it.
-- ⬜ `ost plugin view | test-view` (Level 6), `package | publish`, CI matrix
+- ✅ Level 6 — `ost plugin view <bundle> <fixture>` opens a fixture in usdview
+  inside the runtime session; `ost plugin test-view` (and `test --up-to 6`) runs
+  the non-interactive `usdview --quitAfterStartup` launch probe (`usdview.launch`
+  diagnostic), SKIPping cleanly when usdview or a display is unavailable.
+  Verified against a real usdview-enabled OpenUSD 25.05 build.
+- ⬜ Multi-plugin sessions (`ost plugin run/view --with <bundle>…`) and
+  bundle-declared `requires.runtime_libs` (extra non-USD runtime lib dirs, e.g. a
+  plugin's zlib) — replaces hand-rolled usdview launch batch files for the
+  multi-plugin + 3rd-party-dep case
+- ⬜ `ost plugin package | publish` and the runtime×plugin CI matrix
   (`artifact` source lands with Phase 6)
 
 ## Phase 5 — CI / Jenkins ⬜
@@ -218,6 +227,34 @@ This covers the **`ost` tool** itself; runtime/extension/plugin *content*
 artifacts are distributed via the content-addressed store and the artifact
 registry (Phase 6).
 
+## Licensing & third-party attribution ⬜
+
+OpenStrata must ship with a clear license of its own and **complete** attribution
+for everything it bundles, links, or distributes. Today only the `Cargo.toml`
+`license = "Apache-2.0"` field exists; the files and discipline below are still
+to land.
+
+- ⬜ **OpenStrata's own license.** Add a top-level `LICENSE` (Apache-2.0, matching
+  the manifests) and a `NOTICE`; add SPDX headers
+  (`// SPDX-License-Identifier: Apache-2.0`) to source files.
+- ⬜ **Rust dependency attribution.** Generate and commit `THIRD_PARTY_NOTICES.md`
+  for the crate tree with `cargo-about`, and gate licenses in CI with
+  `cargo-deny` (allowlist of acceptable SPDX licenses; deny copyleft/unknown).
+- ⬜ **Runtime/extension content attribution.** Anything OpenStrata builds or
+  distributes (OpenUSD, MaterialX, TBB, OpenSubdiv, OpenEXR, OCIO, …, and their
+  transitive deps) carries its upstream license. Each runtime/extension manifest
+  records license metadata; built/adopted runtimes collect the upstream
+  `LICENSE`/`NOTICE` files, and a runtime's licenses are inspectable
+  (e.g. `ost runtime licenses <cy> --profile <p>`).
+- ⬜ **Per-artifact notices + SBOM.** Every published artifact (runtime, plugin
+  bundle, `ost` binary) includes its `LICENSE`/`NOTICE`/`THIRD_PARTY_NOTICES`
+  and a generated SBOM (SPDX or CycloneDX); the package manifest/provenance lists
+  component licenses by digest. **No artifact ships without complete third-party
+  attribution** — this is a release gate.
+- ⬜ **Plugin bundle license field.** `openstrata.plugin.yaml` gains a `license`
+  (SPDX) and optional third-party notices, surfaced by `ost plugin inspect` and
+  carried into `ost plugin package`.
+
 ## Quality bar (applies to every phase)
 
 - CLI errors must be actionable.
@@ -225,4 +262,6 @@ registry (Phase 6).
 - Runtime and extension identities always include version + target + digest.
 - No hidden environment mutation outside `ost devshell` / `ost env`.
 - Every published artifact includes provenance and validation result.
+- Every published artifact carries complete third-party attribution (no missing
+  upstream licenses/notices).
 - OpenStrata must work without a preinstalled Python environment.

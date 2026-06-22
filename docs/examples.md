@@ -137,6 +137,11 @@ ost plugin test toy --json
 
 # launch any command inside the composed runtime session (real runtime)
 ost plugin run toy --target cy2026 --profile usd -- usdcat tests/fixtures/basic.toy
+
+# Level 6: open a fixture in usdview, or verify it launches (needs usdview + display)
+ost plugin view      toy tests/fixtures/basic.toy --target cy2026 --profile usd
+ost plugin test-view toy tests/fixtures/basic.toy --target cy2026 --profile usd
+ost plugin test toy --up-to 6 --target cy2026 --profile usd   # full pyramid incl. L6
 ```
 
 Reports land under `<bundle>/.strata/reports/<plugin>/<UTC>/`

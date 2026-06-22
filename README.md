@@ -44,7 +44,7 @@ ost build [--dry-run] [--jobs N] [--ninja <p>]      configure + cmake build (Nin
 ost package                                         install + tar.zst artifact + manifest
 ost validate                                        validate a built/packaged target
 ost extension  list | why <id> | add <id>           inspect/request controlled extensions
-ost plugin     new | inspect | build | doctor | run | test   OpenUSD plugin bundles
+ost plugin     new | inspect | build | doctor | run | test | view | test-view   OpenUSD plugin bundles
 ost lock [--check]                                  generate/verify strata.lock
 ost uv <args...>                                    run uv pinned to the runtime Python
 ```

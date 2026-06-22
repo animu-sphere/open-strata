@@ -8,9 +8,11 @@
 //!             *would* set; L2+ SKIP (run them with `test`).
 //! - `run`     compose the runtime session and exec a command in it (needs a
 //!             real runtime).
-//! - `test`    orchestrate the verification pyramid L0..L5 — executing the
+//! - `test`    orchestrate the verification pyramid L0..L6 — executing the
 //!             runtime's tools for L2+ — and write a report under
 //!             `.strata/reports/`.
+//! - `view`    open a fixture in usdview inside the session (interactive, L6).
+//! - `test-view` non-interactive usdview launch probe (L6) + report.
 //!
 //! The CLI stays thin: it resolves paths and the runtime, then calls into
 //! `ost-plugin` for the model, checks, execution levels, and report shapes.
@@ -26,8 +28,8 @@ use ost_core::host::Os;
 use ost_core::paths::{find_project_root, STATE_DIR};
 use ost_core::{tools, Error, Host, Result};
 use ost_plugin::{
-    diagnose, run_levels, scaffold, session_env, Bundle, DoctorReport, PluginKind, Probe,
-    RuntimeContext, Session, Status, ToolOutput,
+    diagnose, run_levels, scaffold, session_env, usdview_check, Bundle, DoctorReport, PluginKind,
+    Probe, RuntimeContext, Session, Status, ToolOutput,
 };
 use ost_runtime::{EnvSet, RuntimeManifest, MANIFEST_FILE};
 
@@ -97,7 +99,7 @@ pub enum PluginCmd {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
-    /// Orchestrate the verification pyramid (L0..L5) and write a report.
+    /// Orchestrate the verification pyramid (L0..L6) and write a report.
     Test {
         /// Path to the bundle directory.
         bundle: String,
@@ -107,9 +109,35 @@ pub enum PluginCmd {
         /// Profile to test against. Defaults to the enclosing project's.
         #[arg(long)]
         profile: Option<String>,
-        /// Highest verification level to run (0..=5).
+        /// Highest verification level to run (0..=6). Default 5; 6 adds usdview.
         #[arg(long, default_value_t = 5)]
         up_to: u8,
+    },
+    /// Open a fixture in usdview inside the plugin's runtime session (Level 6).
+    View {
+        /// Path to the bundle directory.
+        bundle: String,
+        /// Fixture to open (relative to the bundle, or an absolute path).
+        fixture: String,
+        /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
+        #[arg(long)]
+        target: Option<String>,
+        /// Profile to activate. Defaults to the enclosing project's.
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    /// Verify usdview launches on a fixture (Level 6) and write a report.
+    TestView {
+        /// Path to the bundle directory.
+        bundle: String,
+        /// Fixture to open (relative to the bundle, or an absolute path).
+        fixture: String,
+        /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
+        #[arg(long)]
+        target: Option<String>,
+        /// Profile to test against. Defaults to the enclosing project's.
+        #[arg(long)]
+        profile: Option<String>,
     },
 }
 
@@ -146,6 +174,18 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             profile,
             up_to,
         } => test(&bundle, target, profile, up_to, fmt),
+        PluginCmd::View {
+            bundle,
+            fixture,
+            target,
+            profile,
+        } => view(&bundle, &fixture, target, profile),
+        PluginCmd::TestView {
+            bundle,
+            fixture,
+            target,
+            profile,
+        } => test_view(&bundle, &fixture, target, profile, fmt),
     }
 }
 
@@ -410,10 +450,12 @@ fn test(
                 probe: &probe,
                 usdcat: tools.usdcat,
                 python: tools.python,
+                usdview: tools.usdview,
+                has_display: has_display(host.os),
             };
             report
                 .diagnostics
-                .extend(run_levels(&bundle, &sess, up_to.min(5)));
+                .extend(run_levels(&bundle, &sess, up_to.min(6)));
         } else {
             // Reuse diagnose's SKIP placeholders for the execution levels.
             let skips = diagnose(&bundle, &ctx, up_to.min(5))
@@ -423,6 +465,88 @@ fn test(
             report.diagnostics.extend(skips);
         }
     }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let reports_root = bundle.root.join(STATE_DIR).join("reports");
+    let report_dir = ost_plugin::write_report(&reports_root, &bundle, &report, &session, now)?;
+
+    if fmt.is_json() {
+        let mut body = ost_plugin::report_json(&bundle, &report);
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert(
+                "report_dir".into(),
+                serde_json::Value::String(report_dir.to_string()),
+            );
+        }
+        output::json(&body);
+    } else {
+        print_report(&bundle, &report);
+        println!("\nReport: {report_dir}");
+    }
+    finish(&report)
+}
+
+/// `ost plugin view` — open a fixture in usdview inside the runtime session.
+fn view(
+    bundle_path: &str,
+    fixture: &str,
+    target: Option<String>,
+    profile: Option<String>,
+) -> Result<()> {
+    let bundle = load_bundle(bundle_path)?;
+    let host = Host::detect();
+    let r = require_real_runtime(target, profile)?;
+
+    let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"])
+        .ok_or_else(|| {
+            Error::Operation(
+                "usdview not found in the runtime (build/adopt one with usdview enabled)".into(),
+            )
+        })?;
+    let fixture_path = bundle.path(fixture); // absolute passes through; else under the bundle
+
+    let session = session_env(&r.env, &bundle, host.os);
+    let mut cmd = Command::new(&usdview);
+    cmd.arg(fixture_path.as_str());
+    session.apply(&mut cmd); // overlay the session env, no global mutation
+    let status = cmd
+        .status()
+        .map_err(|e| Error::io(format!("run {usdview}"), e))?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
+/// `ost plugin test-view` — run the Level 6 usdview check on a fixture + report.
+fn test_view(
+    bundle_path: &str,
+    fixture: &str,
+    target: Option<String>,
+    profile: Option<String>,
+    fmt: Format,
+) -> Result<()> {
+    let bundle = load_bundle(bundle_path)?;
+    let host = Host::detect();
+    let r = require_real_runtime(target, profile)?;
+
+    let session = session_env(&r.env, &bundle, host.os);
+    let probe = ProcessProbe::new(session.resolve());
+    let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"]);
+    let sess = Session {
+        probe: &probe,
+        usdcat: None,
+        python: None,
+        usdview,
+        has_display: has_display(host.os),
+    };
+
+    let report = DoctorReport {
+        diagnostics: vec![usdview_check(&bundle, &sess, Some(fixture))],
+    };
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -484,27 +608,50 @@ impl Probe for ProcessProbe {
 struct Tools {
     usdcat: Option<String>,
     python: Option<String>,
+    usdview: Option<String>,
+}
+
+/// Find a runtime tool in `<artifact_prefix>/bin` by trying each candidate name.
+fn locate_runtime_tool(
+    resolved: Option<&crate::commands::Resolved>,
+    names: &[&str],
+) -> Option<String> {
+    let r = resolved?;
+    let bin = r.artifact_prefix.join("bin");
+    names.iter().find_map(|name| {
+        let p = bin.join(name);
+        p.as_std_path().is_file().then(|| p.to_string())
+    })
 }
 
 /// Locate the tools the execution levels need, using the session env: `usdcat`
-/// from the runtime's `bin/`, and a python interpreter that can import `pxr`.
+/// and `usdview` from the runtime's `bin/`, and a python interpreter that can
+/// import `pxr`.
 fn locate_tools(resolved: Option<&crate::commands::Resolved>, probe: &ProcessProbe) -> Tools {
-    let usdcat = resolved.and_then(|r| {
-        let bin = r.artifact_prefix.join("bin");
-        for name in ["usdcat", "usdcat.exe"] {
-            let p = bin.join(name);
-            if p.as_std_path().is_file() {
-                return Some(p.to_string());
-            }
-        }
-        None
-    });
+    let usdcat = locate_runtime_tool(resolved, &["usdcat", "usdcat.exe"]);
+    // usdview is a wrapper: `usdview.cmd` on Windows, a bare `usdview` elsewhere.
+    let usdview = locate_runtime_tool(resolved, &["usdview.cmd", "usdview.exe", "usdview"]);
     // Probe for a python interpreter on the session PATH (cheap `--version`).
     let python = ["python", "python3"]
         .into_iter()
         .find(|p| probe.run(p, &["--version"]).code.is_some())
         .map(str::to_string);
-    Tools { usdcat, python }
+    Tools {
+        usdcat,
+        python,
+        usdview,
+    }
+}
+
+/// Whether a display is available for GUI tools (Level 6). Headless Linux/CI has
+/// no `DISPLAY`/`WAYLAND_DISPLAY`; Windows and macOS always have one.
+fn has_display(os: Os) -> bool {
+    match os {
+        Os::Linux => {
+            std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+        }
+        Os::Windows | Os::Macos => true,
+    }
 }
 
 // ---- helpers ----
