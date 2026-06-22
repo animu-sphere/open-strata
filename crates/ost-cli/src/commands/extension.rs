@@ -7,11 +7,11 @@
 
 use clap::Subcommand;
 
-use ost_core::paths::PROJECT_MANIFEST;
+use ost_core::paths::{find_project_root, PROJECT_MANIFEST};
 use ost_core::{Error, Result};
-use ost_extension::load_all;
+use ost_extension::{load_all, RequirementReason};
 
-use crate::commands::configure::{load_project, resolve_selection};
+use crate::commands::configure::resolve_selection;
 use crate::commands::resolve as resolve_runtime;
 use crate::output::{self, Format};
 
@@ -86,62 +86,17 @@ fn why(name: &str, profile_override: Option<String>, fmt: Format) -> Result<()> 
         )));
     }
     let resolution = ost_extension::resolve(&catalog, &r.capabilities);
-
-    let mut reasons: Vec<String> = Vec::new();
-
-    // Direct: a requested capability is provided by this extension.
-    for edge in &resolution.edges {
-        if edge.extension.as_deref() == Some(name) {
-            match &edge.feature {
-                Some(f) => reasons.push(format!(
-                    "capability '{}' is provided by {name}[{f}]",
-                    edge.capability
-                )),
-                None => reasons.push(format!(
-                    "capability '{}' is provided by {name}",
-                    edge.capability
-                )),
-            }
-        }
-    }
-
-    // Transitive: another resolved extension's feature requires this one.
-    for ext in &resolution.extensions {
-        if ext.id == name {
-            continue;
-        }
-        let Some(src) = catalog.get(&ext.id) else { continue };
-        for feature in &ext.features {
-            let Some(spec) = src.feature(feature) else { continue };
-            if spec.requires_extensions.iter().any(|d| d == name) {
-                let cap = resolution
-                    .edges
-                    .iter()
-                    .find(|e| {
-                        e.extension.as_deref() == Some(ext.id.as_str())
-                            && e.feature.as_deref() == Some(feature.as_str())
-                    })
-                    .map(|e| e.capability.clone());
-                match cap {
-                    Some(c) => reasons.push(format!(
-                        "pulled in by {}[{feature}] (required by capability '{c}')",
-                        ext.id
-                    )),
-                    None => reasons.push(format!("pulled in by {}[{feature}]", ext.id)),
-                }
-            }
-        }
-    }
-
+    let reasons = ost_extension::why(&catalog, &resolution, name);
     let required = resolution.extensions.iter().any(|e| e.id == name);
 
     if fmt.is_json() {
+        let rendered: Vec<String> = reasons.iter().map(|r| render_reason(name, r)).collect();
         output::json(&serde_json::json!({
             "extension": name,
             "platform": platform,
             "profile": profile,
             "required": required,
-            "reasons": reasons,
+            "reasons": rendered,
         }));
         return Ok(());
     }
@@ -151,15 +106,31 @@ fn why(name: &str, profile_override: Option<String>, fmt: Format) -> Result<()> 
         println!("  It is not required by this profile.");
     } else {
         for reason in &reasons {
-            println!("  - {reason}");
+            println!("  - {}", render_reason(name, reason));
         }
     }
     Ok(())
 }
 
-fn add(name: &str, fmt: Format) -> Result<()> {
-    let (root, _platform, _profile) = resolve_selection(None, None)?;
+/// Render a [`RequirementReason`] as a human-readable line.
+fn render_reason(name: &str, reason: &RequirementReason) -> String {
+    match reason {
+        RequirementReason::Direct { capability, feature } => match feature {
+            Some(f) => format!("capability '{capability}' is provided by {name}[{f}]"),
+            None => format!("capability '{capability}' is provided by {name}"),
+        },
+        RequirementReason::Transitive {
+            extension,
+            feature,
+            capability,
+        } => match capability {
+            Some(c) => format!("pulled in by {extension}[{feature}] (required by capability '{c}')"),
+            None => format!("pulled in by {extension}[{feature}]"),
+        },
+    }
+}
 
+fn add(name: &str, fmt: Format) -> Result<()> {
     let catalog = load_all()?;
     if catalog.get(name).is_none() {
         return Err(Error::Operation(format!(
@@ -167,27 +138,31 @@ fn add(name: &str, fmt: Format) -> Result<()> {
         )));
     }
 
-    let mut project = load_project(&root)?;
-    if project.requires.extensions.iter().any(|e| e == name) {
-        if fmt.is_json() {
-            output::json(&serde_json::json!({ "added": false, "extension": name, "reason": "already present" }));
-        } else {
-            println!("Extension '{name}' is already in the project manifest.");
-        }
-        return Ok(());
-    }
-
-    project.requires.extensions.push(name.to_string());
-    project.requires.extensions.sort();
-    let toml = project.to_toml()?;
+    let cwd = std::env::current_dir().map_err(|e| Error::io(".", e))?;
+    let root =
+        find_project_root(&cwd).ok_or_else(|| Error::ProjectNotFound(cwd.display().to_string()))?;
     let manifest_path = root.join(PROJECT_MANIFEST);
-    std::fs::write(manifest_path.as_std_path(), toml)
-        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+    let src = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| Error::io(manifest_path.display().to_string(), e))?;
 
-    if fmt.is_json() {
-        output::json(&serde_json::json!({ "added": true, "extension": name }));
-    } else {
-        println!("Added extension '{name}' to {}", manifest_path);
+    // Edit the manifest in place so comments and unmodelled sections survive.
+    match ost_manifest::add_extension(&src, name)? {
+        None => {
+            if fmt.is_json() {
+                output::json(&serde_json::json!({ "added": false, "extension": name, "reason": "already present" }));
+            } else {
+                println!("Extension '{name}' is already in the project manifest.");
+            }
+        }
+        Some(updated) => {
+            std::fs::write(&manifest_path, updated)
+                .map_err(|e| Error::io(manifest_path.display().to_string(), e))?;
+            if fmt.is_json() {
+                output::json(&serde_json::json!({ "added": true, "extension": name }));
+            } else {
+                println!("Added extension '{name}' to {}", manifest_path.display());
+            }
+        }
     }
     Ok(())
 }
