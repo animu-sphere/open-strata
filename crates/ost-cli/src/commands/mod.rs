@@ -7,6 +7,7 @@ pub mod init;
 pub mod package;
 pub mod platform;
 pub mod runtime;
+pub mod validate;
 
 use camino::Utf8PathBuf;
 

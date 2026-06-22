@@ -38,7 +38,7 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
 - ⬜ Richer runtime validation (Python import, native library load, USD stage
   open) once the real backend lands
 
-## Phase 2 — CMake target build 🚧
+## Phase 2 — CMake target build ✅
 
 - ✅ Target model + id (`cy2026-linux-x86_64-py313-usd`) in `ost-build`
 - ✅ `ost configure`: `toolchain.cmake`, `env.json`, `target.lock.json`,
@@ -56,7 +56,10 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   `dist/<name>/<version>/<target>/*.tar.zst` with per-file SHA-256, a
   content-addressed `manifest.json` (provenance + runtime digest + validation),
   and `SHA256SUMS` (verified: archive extracts and the binary runs)
-- ⬜ `ost validate` for build artifacts
+- ✅ `ost validate`: checks configured / built / runtime-compatible (digest
+  drift) / artifact-integrity (recomputed archive digest); skips the artifact
+  check when not packaged; deterministic exit 0/1 (verified: tampering the
+  archive fails the check)
 
 ## Phase 3 — OpenUSD / MaterialX profiles ⬜
 
