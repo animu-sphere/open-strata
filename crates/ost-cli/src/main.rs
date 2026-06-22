@@ -9,7 +9,7 @@ mod output;
 
 use clap::{Parser, Subcommand};
 
-use commands::{build, configure, devshell, doctor, env, init, platform, runtime};
+use commands::{build, configure, devshell, doctor, env, init, package, platform, runtime};
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
 #[derive(Debug, Parser)]
@@ -50,6 +50,9 @@ enum Command {
 
     /// Configure and build a target with CMake + Ninja.
     Build(build::BuildArgs),
+
+    /// Install and pack a built target into a tar.zst artifact.
+    Package(package::PackageArgs),
 }
 
 fn main() -> std::process::ExitCode {
@@ -65,6 +68,7 @@ fn main() -> std::process::ExitCode {
         Command::Doctor(args) => doctor::run(args, fmt),
         Command::Configure(args) => configure::run(args, fmt),
         Command::Build(args) => build::run(args, fmt),
+        Command::Package(args) => package::run(args, fmt),
     };
 
     match result {

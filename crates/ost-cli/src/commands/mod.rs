@@ -4,6 +4,7 @@ pub mod devshell;
 pub mod doctor;
 pub mod env;
 pub mod init;
+pub mod package;
 pub mod platform;
 pub mod runtime;
 

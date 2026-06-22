@@ -52,7 +52,11 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   (vswhere or known paths), captures the env delta, injects it into CMake/Ninja;
   `--no-vcvars` to opt out (verified: a plain shell with no developer prompt
   builds and runs an executable)
-- ⬜ `ost validate | package` for build artifacts
+- ✅ `ost package`: `cmake --install` into a stage tree, pack to
+  `dist/<name>/<version>/<target>/*.tar.zst` with per-file SHA-256, a
+  content-addressed `manifest.json` (provenance + runtime digest + validation),
+  and `SHA256SUMS` (verified: archive extracts and the binary runs)
+- ⬜ `ost validate` for build artifacts
 
 ## Phase 3 — OpenUSD / MaterialX profiles ⬜
 

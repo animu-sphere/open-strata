@@ -21,7 +21,7 @@ use ost_core::{Error, Result};
 use ost_manifest::Project;
 use ost_runtime::{RuntimeManifest, MANIFEST_FILE};
 
-use crate::commands::resolve;
+use crate::commands::{resolve, Resolved};
 use crate::output::{self, Format};
 
 #[derive(Debug, Args)]
@@ -72,9 +72,17 @@ pub(crate) fn resolve_selection(
     Ok((root, platform, profile))
 }
 
-/// Resolve the runtime and write all of a target's CMake files. Returns the
-/// generated target so callers (e.g. `ost build`) can act on it.
-pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result<Generated> {
+/// Load the project manifest at a known project root.
+pub(crate) fn load_project(root: &Utf8Path) -> Result<Project> {
+    let manifest_path = root.join(PROJECT_MANIFEST);
+    let src = std::fs::read_to_string(manifest_path.as_std_path())
+        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+    Project::from_toml(&src)
+}
+
+/// Resolve a platform+profile into a build [`Target`] and its [`Resolved`]
+/// runtime, without writing anything. Shared by configure/build/package.
+pub(crate) fn build_target(platform: &str, profile: &str) -> Result<(Target, Resolved)> {
     let r = resolve(platform, profile)?;
 
     // Pull the digest from the runtime manifest when available.
@@ -99,6 +107,13 @@ pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result
         capabilities: r.capabilities.clone(),
         generator: "Ninja".to_string(),
     };
+    Ok((target, r))
+}
+
+/// Resolve the runtime and write all of a target's CMake files. Returns the
+/// generated target so callers (e.g. `ost build`) can act on it.
+pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result<Generated> {
+    let (target, r) = build_target(platform, profile)?;
     let id = target.id();
 
     let target_dir = root.join(STATE_DIR).join("targets").join(&id);

@@ -11,11 +11,13 @@
 
 mod lock;
 pub mod msvc;
+pub mod package;
 mod presets;
 mod target;
 mod toolchain;
 
 pub use lock::TargetLock;
+pub use package::{pack_dir, FileEntry, PackResult};
 pub use presets::{render_target_presets, root_presets_with_include};
 pub use target::Target;
 pub use toolchain::render_toolchain;
