@@ -78,7 +78,12 @@ impl EnvSet {
             Os::Macos => "DYLD_LIBRARY_PATH",
             Os::Windows => "PATH",
         };
-        // Join components one at a time so the OS separator stays consistent.
+        // Emit forward slashes everywhere: they are portable (accepted by
+        // Windows APIs and CMake) and avoid the ugly `/`+`\` mix that arises
+        // when the store root uses `/` and `Utf8Path::join` adds `\`. On Linux
+        // this is already a no-op.
+        let path = |p: &Utf8Path| p.to_string().replace('\\', "/");
+
         let site = if os == Os::Windows {
             prefix.join("Lib").join("site-packages")
         } else {
@@ -91,25 +96,25 @@ impl EnvSet {
         let mut vars = vec![
             EnvVar {
                 key: "PATH".into(),
-                op: EnvOp::Prepend(prefix.join("bin").to_string()),
+                op: EnvOp::Prepend(path(&prefix.join("bin"))),
             },
             EnvVar {
                 key: lib_key.into(),
-                op: EnvOp::Prepend(prefix.join("lib").to_string()),
+                op: EnvOp::Prepend(path(&prefix.join("lib"))),
             },
             EnvVar {
                 key: "PYTHONPATH".into(),
-                op: EnvOp::Prepend(site.to_string()),
+                op: EnvOp::Prepend(path(&site)),
             },
             EnvVar {
                 key: "CMAKE_PREFIX_PATH".into(),
-                op: EnvOp::Prepend(prefix.to_string()),
+                op: EnvOp::Prepend(path(prefix)),
             },
         ];
         if usd_plugins {
             vars.push(EnvVar {
                 key: "PXR_PLUGINPATH_NAME".into(),
-                op: EnvOp::Prepend(prefix.join("plugin").join("usd").to_string()),
+                op: EnvOp::Prepend(path(&prefix.join("plugin").join("usd"))),
             });
         }
         EnvSet { sep, vars }
@@ -222,6 +227,16 @@ mod tests {
         assert!(rendered.starts_with("export PATH=\""));
         assert!(rendered.contains("${PATH:+:$PATH}\""));
         assert!(!rendered.contains("PXR_PLUGINPATH_NAME"));
+    }
+
+    #[test]
+    fn paths_are_forward_slashed() {
+        // Even given a backslash-laden prefix, emitted values use `/` only.
+        let win_prefix = Utf8PathBuf::from(r"C:\store\runtimes\rt");
+        let set = EnvSet::for_runtime(&win_prefix, Os::Windows, "3.13", true);
+        for (key, value) in set.pairs() {
+            assert!(!value.contains('\\'), "{key} still has a backslash: {value}");
+        }
     }
 
     #[test]
