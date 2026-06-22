@@ -61,7 +61,7 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   check when not packaged; deterministic exit 0/1 (verified: tampering the
   archive fails the check)
 
-## Phase 3 — OpenUSD / MaterialX profiles 🚧
+## Phase 3 — OpenUSD / MaterialX profiles ✅
 
 - ✅ OpenUSD extension family with feature sets (core/python/imaging/materialx/…)
   and MaterialX, in the new `ost-extension` crate (embedded + overlay loader)
@@ -70,7 +70,9 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   packages each feature needs
 - ✅ Compatible range vs certified build point (chosen per resolved feature set)
 - ✅ `ost runtime explain` (capability → provider/extension graph, human/--json)
-- ⬜ `ost extension list | why | add`
+- ✅ `ost extension list | why | add`: list the catalog, trace why an extension
+  is required by a profile (direct + transitive), and record it in
+  `openstrata.toml` (idempotent, validated against the catalog)
 
 ## Phase 4 — USD file format plugin lifecycle ⬜
 

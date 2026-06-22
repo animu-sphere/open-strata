@@ -9,4 +9,4 @@ mod lock;
 mod project;
 
 pub use lock::{Lock, LockPython, LockRuntime};
-pub use project::{Project, ProjectMeta, Requires};
+pub use project::{add_extension, Project, ProjectMeta, Requires};

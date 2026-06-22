@@ -13,4 +13,4 @@ mod resolve;
 
 pub use loader::{Catalog, load_all};
 pub use model::{Certified, Extension, Feature, Provide};
-pub use resolve::{resolve, ProviderEdge, ResolvedExtension, Resolution};
+pub use resolve::{resolve, why, ProviderEdge, RequirementReason, Resolution, ResolvedExtension};
