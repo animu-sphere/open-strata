@@ -86,6 +86,8 @@ pub struct RuntimeContext {
     pub pulled: bool,
     /// Backend source of the runtime (`mock`/`local`/`build`/`artifact`).
     pub source: Option<String>,
+    /// Whether the source carries real OpenUSD artifacts (anything but `mock`).
+    pub real: bool,
     /// Whether the source is reproducible (`build`/`artifact`) vs adopted/mock.
     pub reproducible: bool,
     /// Concrete OpenUSD version the runtime provides, e.g. `24.11`.
@@ -265,11 +267,15 @@ fn level1(bundle: &Bundle, ctx: &RuntimeContext) -> Vec<Diagnostic> {
         return diags;
     }
 
-    // runtime.source — surface the backend source as an observed fact. An
-    // adopted (`local`) or mock runtime is real-but-not-reproducible; that is
-    // not a failure, but it is recorded so reports never imply certification.
+    // runtime.source — surface the backend source as an observed fact. Three
+    // tiers: a `mock` runtime carries no real OpenUSD; an adopted (`local`)
+    // runtime is real but not reproducible; only `build`/`artifact` are
+    // reproducible. None are failures, but the tier is recorded so reports
+    // never imply certification.
     if let Some(src) = &ctx.source {
-        let observed = if ctx.reproducible {
+        let observed = if !ctx.real {
+            format!("runtime source is '{src}' (mock — no real OpenUSD)")
+        } else if ctx.reproducible {
             format!("runtime source is '{src}' (reproducible)")
         } else {
             format!("runtime source is '{src}' (real but not reproducible/certified)")

@@ -351,6 +351,7 @@ fn runtime_context(r: &crate::commands::Resolved) -> RuntimeContext {
         if let Ok(src) = std::fs::read_to_string(manifest_path.as_std_path()) {
             if let Ok(m) = RuntimeManifest::from_json(&src) {
                 ctx.source = Some(m.source.as_str().to_string());
+                ctx.real = m.source.is_real();
                 ctx.reproducible = m.source.is_reproducible();
                 for ext in &m.extensions {
                     ctx.components.insert(ext.id.clone(), ext.version.clone());

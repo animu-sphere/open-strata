@@ -131,3 +131,97 @@ fn real_runtime_checks(prefix: &Utf8Path) -> Vec<Check> {
 
     checks
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::{ExtensionRecord, RuntimeSource};
+    use crate::Runtime;
+    use camino::Utf8PathBuf;
+    use ost_core::host::{Arch, Os};
+    use ost_core::Host;
+
+    fn manifest(source: RuntimeSource, layout: Vec<String>) -> RuntimeManifest {
+        let host = Host {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        };
+        let rt = Runtime::resolve("cy2026", "usd", &host, "3.13.x");
+        RuntimeManifest::build(
+            &rt,
+            "3.13.x",
+            vec!["usd-stage-read".into()],
+            layout,
+            vec![ExtensionRecord {
+                id: "openusd".into(),
+                version: "25.05.01".into(),
+                features: vec!["core".into()],
+            }],
+            1_700_000_000,
+            source,
+        )
+    }
+
+    fn tmp_dir(tag: &str) -> Utf8PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut dir = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
+        dir.push(format!("ost-validate-{tag}-{}-{nanos}", std::process::id()));
+        dir
+    }
+
+    fn named(report: &ValidationReport, name: &str) -> Option<bool> {
+        report.checks.iter().find(|c| c.name == name).map(|c| c.passed)
+    }
+
+    #[test]
+    fn mock_skips_real_runtime_checks() {
+        let prefix = tmp_dir("mock");
+        std::fs::create_dir_all(prefix.join("bin").as_std_path()).unwrap();
+        std::fs::create_dir_all(prefix.join("lib").as_std_path()).unwrap();
+        let m = manifest(RuntimeSource::Mock, vec!["bin".into(), "lib".into()]);
+
+        let report = validate(&prefix, &m);
+        // The real-runtime checks must not even be emitted for a mock backend.
+        assert_eq!(named(&report, "usdcat-present"), None);
+        assert_eq!(named(&report, "pxr-package"), None);
+
+        std::fs::remove_dir_all(prefix.as_std_path()).ok();
+    }
+
+    #[test]
+    fn real_runtime_with_usdcat_and_pxr_passes() {
+        let prefix = tmp_dir("real-ok");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(bin.as_std_path()).unwrap();
+        std::fs::create_dir_all(prefix.join("lib").as_std_path()).unwrap();
+        std::fs::create_dir_all(prefix.join("lib/python/pxr").as_std_path()).unwrap();
+        // Cover the .exe fallback on non-Windows too: either name satisfies it.
+        std::fs::write(bin.join("usdcat").as_std_path(), b"").unwrap();
+        let m = manifest(RuntimeSource::Local, vec!["bin".into(), "lib".into()]);
+
+        let report = validate(&prefix, &m);
+        assert_eq!(named(&report, "usdcat-present"), Some(true));
+        assert_eq!(named(&report, "pxr-package"), Some(true));
+
+        std::fs::remove_dir_all(prefix.as_std_path()).ok();
+    }
+
+    #[test]
+    fn real_runtime_missing_artifacts_fails() {
+        let prefix = tmp_dir("real-missing");
+        std::fs::create_dir_all(prefix.join("bin").as_std_path()).unwrap();
+        std::fs::create_dir_all(prefix.join("lib").as_std_path()).unwrap();
+        // No usdcat, no pxr package.
+        let m = manifest(RuntimeSource::Local, vec!["bin".into(), "lib".into()]);
+
+        let report = validate(&prefix, &m);
+        assert_eq!(named(&report, "usdcat-present"), Some(false));
+        assert_eq!(named(&report, "pxr-package"), Some(false));
+        assert!(!report.passed());
+
+        std::fs::remove_dir_all(prefix.as_std_path()).ok();
+    }
+}

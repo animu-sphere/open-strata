@@ -255,4 +255,44 @@ mod tests {
         m.set_validation(Validation::Passed);
         assert_eq!(m.compute_digest(), before);
     }
+
+    #[test]
+    fn source_trust_tiers() {
+        assert!(!RuntimeSource::Mock.is_real());
+        assert!(RuntimeSource::Local.is_real());
+        assert!(RuntimeSource::Build.is_real());
+        assert!(RuntimeSource::Artifact.is_real());
+
+        // Only sources we produced or fetched by digest are reproducible.
+        assert!(!RuntimeSource::Mock.is_reproducible());
+        assert!(!RuntimeSource::Local.is_reproducible());
+        assert!(RuntimeSource::Build.is_reproducible());
+        assert!(RuntimeSource::Artifact.is_reproducible());
+    }
+
+    #[test]
+    fn effective_prefix_follows_external_root_for_local() {
+        let store = Utf8Path::new("/store/runtimes/cy2026-usd");
+
+        // No external_prefix (mock/build): the store prefix is the root.
+        let m = sample();
+        assert_eq!(m.effective_prefix(store), store);
+
+        // Adopted local: the external root wins over the store prefix.
+        let mut adopted = sample();
+        adopted.external_prefix = Some("/opt/usd".into());
+        assert_eq!(adopted.effective_prefix(store), Utf8Path::new("/opt/usd"));
+    }
+
+    #[test]
+    fn source_is_not_part_of_digest() {
+        // Provenance, not identity: changing only the source must not move the
+        // digest (§23 — manifests are deterministic over their canonical form).
+        let mock = sample();
+        let mut local = sample();
+        local.source = RuntimeSource::Local;
+        local.external_prefix = Some("/opt/usd".into());
+        // Recompute from the canonical form: source/external_prefix are excluded.
+        assert_eq!(local.compute_digest(), mock.digest);
+    }
 }
