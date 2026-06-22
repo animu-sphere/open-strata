@@ -108,6 +108,16 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
 - ⬜ AI runtime profiles (`ai-cuda124`, `ai-rocm`, `ai-mps`, hybrid `cy2026-lookdev-ai`)
 - ⬜ Jenkins GPU routing labels; smoke tests
 
+## Python / uv (§9)
+
+- ✅ `ost uv <args>`: runs `uv` pinned to the project's runtime Python — applies
+  the runtime environment and sets `UV_PYTHON` to the runtime interpreter, so uv
+  never silently substitutes a different Python (§9.3, §20.3). No-args prints the
+  pinning; `uv` is located via `OST_UV` or PATH. `uv.lock` is already hashed into
+  `strata.lock`.
+- ⬜ Diagnose/refuse app-local `uv` deps that shadow ABI-sensitive runtime
+  packages (USD/Qt/OpenEXR bindings), recommending the matching extension.
+
 ## Quality bar (applies to every phase)
 
 - CLI errors must be actionable.
