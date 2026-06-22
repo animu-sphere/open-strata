@@ -852,8 +852,6 @@ Platform
 - Runtime / Plugin Compatibility Matrix
 - Jenkins による Matrix 検証
 
-Vitrakiln は、ビルド済み Runtime / Plugin Bundle の成果物配布先として連携候補になる。
-
 ### Phase 3 — Host Adapter
 
 目的: Standalone 成功状態を、DCC の実行環境へ持ち込む。

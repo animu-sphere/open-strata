@@ -94,7 +94,7 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
 
 **4b — execution levels (gated on a real OpenUSD runtime backend):**
 
-- ⬜ real runtime backend behind `pull` (source TBD: build / Vitrakiln / vendor)
+- ⬜ real runtime backend behind `pull` (source TBD: build / prebuilt artifacts)
 - ⬜ `ost plugin run` session launcher; Levels 2–5 (discovery, `usdcat`,
   Python Stage Open, golden); `ost plugin test` orchestration
 - ⬜ `ost plugin view | test-view` (Level 6), `package | publish`, CI matrix

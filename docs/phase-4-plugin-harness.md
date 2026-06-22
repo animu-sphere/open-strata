@@ -155,7 +155,7 @@ ost plugin package <name>                          bundle artifact (overlaps Pha
 **Phase 4b — light up execution levels (gated on a real OpenUSD runtime):**
 
 - a real runtime artifact backend behind `runtime pull` — built locally or
-  fetched from an artifact source (Vitrakiln is the candidate per harness §18)
+  fetched from an artifact source
 - session launcher `ost plugin run`
 - Levels 2–5 (discovery, `usdcat`, Python Stage Open, golden) and
   `ost plugin test` orchestration; `verify`/`snapshot`
@@ -170,8 +170,8 @@ Jenkins runtime×plugin matrix, then DCC host adapters (separate repos).
    new/inspect/build`, `doctor` skeleton (Levels 0–1), and reports + JSON schema.
    Independently useful and de-risks the contract before the heavy runtime work.
 2. **Real OpenUSD runtime source — deferred to 4b (decided).** 4a completes on
-   the mock backend; the source for a real runtime (build ourselves, consume
-   Vitrakiln artifacts, or a vendor build) is chosen when 4b starts.
+   the mock backend; the source for a real runtime (build ourselves or consume
+   prebuilt artifacts) is chosen when 4b starts.
 3. **Bundle vs extension — separate (decided).** User plugins are a *new*
    artifact kind (`ost-plugin`), distinct from runtime-provided `ost-extension`,
    sharing the capability vocabulary.
