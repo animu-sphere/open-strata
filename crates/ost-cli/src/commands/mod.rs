@@ -19,7 +19,7 @@ use ost_core::paths::Store;
 use ost_core::{Error, Host, Result};
 use ost_platform::Catalog;
 use ost_runtime::{
-    python_minor, EnvSet, ProfileCatalog, Runtime, RuntimeManifest, RuntimeSource, MANIFEST_FILE,
+    python_minor, EnvSet, ProfileCatalog, Runtime, RuntimeManifest, MANIFEST_FILE,
 };
 
 /// Everything needed to activate a runtime, shared by `env`, `devshell`, `runtime`.
@@ -78,8 +78,10 @@ pub fn resolve(platform_id: &str, profile_id: &str) -> Result<Resolved> {
         None
     };
 
+    // Real OpenUSD runtimes (adopted `local`, built `build`, fetched `artifact`)
+    // carry USD's own install layout; the mock backend uses the OpenStrata layout.
     let (artifact_prefix, env) = match &manifest {
-        Some(m) if m.source == RuntimeSource::Local => {
+        Some(m) if m.source.is_real() => {
             let ep = Utf8PathBuf::from(m.effective_prefix(&prefix));
             let env = EnvSet::for_usd_install(&ep, host.os);
             (ep, env)
