@@ -1,0 +1,21 @@
+# MaterialX — a Tier 1 controlled extension (§6).
+# Not part of the VFX Reference Platform core, but required by OpenUSD shading /
+# UsdMtlx / lookdev workflows. Usually pulled in transitively by openusd[materialx].
+id: materialx
+type: library.materialx
+tier: strata-certified-extension
+version: "1.39.x"
+allowed_range: ">=1.38,<1.40"
+
+provides:
+  materialx-document-io: {}
+  materialx-shadergen: {}
+  materialx-usd-interop: {}
+
+certified:
+  - version: "1.39.3"
+    validation: passed
+
+validation:
+  - materialx-import
+  - shadergen-smoke

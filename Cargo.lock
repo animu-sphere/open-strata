@@ -393,6 +393,7 @@ dependencies = [
  "clap",
  "ost-build",
  "ost-core",
+ "ost-extension",
  "ost-manifest",
  "ost-platform",
  "ost-runtime",
@@ -410,6 +411,18 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "ost-extension"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "indexmap",
+ "ost-core",
+ "serde",
+ "serde_yaml",
  "thiserror",
 ]
 
