@@ -1,24 +1,36 @@
 //! `ost runtime` — pull / list / show runtimes (§14.2).
 //!
-//! The first backend is local/mock: `pull` materializes the prospective prefix
-//! layout under `~/.ost/runtimes/<id>` and writes a digest-bearing
-//! `runtime.json`. This makes `ost env` / `ost devshell` report the runtime as
-//! pulled and is the seam where a real artifact backend slots in later.
+//! `pull` writes a digest-bearing `runtime.json` under `~/.ost/runtimes/<id>`
+//! from one of several backend **sources** (§ Phase 4b): `mock` materializes a
+//! placeholder layout; `local` (`--from-usd`) adopts an existing OpenUSD install
+//! in place; `build` (`--build <usd-src>`) builds OpenUSD from source into the
+//! store via `build_usd.py`. The `artifact` source (fetch prebuilt) lands with
+//! Phase 6.
 
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Subcommand;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 
+use ost_core::host::Os;
 use ost_core::paths::Store;
-use ost_core::{Error, Result};
+use ost_core::{tools, Error, Host, Result};
 use ost_runtime::{
     python_minor, ExtensionRecord, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
 };
 
 use crate::commands::resolve;
 use crate::output::{self, Format};
+
+/// Read an environment variable, treating empty as unset.
+fn env_nonempty(key: &str) -> Option<String> {
+    match std::env::var(key) {
+        Ok(v) if !v.is_empty() => Some(v),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Subcommand)]
 pub enum RuntimeCmd {
@@ -37,6 +49,18 @@ pub enum RuntimeCmd {
         /// `OST_USD_ROOT` when unset.
         #[arg(long)]
         from_usd: Option<String>,
+        /// Build OpenUSD from source into the store (`build` source), via the
+        /// source tree's `build_scripts/build_usd.py`. Falls back to
+        /// `OST_USD_SRC` when no path is given.
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        build: Option<String>,
+        /// Parallel build jobs for `--build` (passed to build_usd.py as `-j`).
+        #[arg(long)]
+        jobs: Option<u32>,
+        /// Extra argument forwarded to build_usd.py (repeatable), e.g.
+        /// `--build-arg --no-imaging`. Hyphen-prefixed values are allowed.
+        #[arg(long = "build-arg", allow_hyphen_values = true)]
+        build_args: Vec<String>,
     },
     /// List runtimes present in the local store.
     List,
@@ -73,7 +97,21 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             profile,
             force,
             from_usd,
-        } => pull(&platform, &profile, force, from_usd, fmt),
+            build,
+            jobs,
+            build_args,
+        } => pull(
+            &platform,
+            &profile,
+            force,
+            PullSource {
+                from_usd,
+                build,
+                jobs,
+                build_args,
+            },
+            fmt,
+        ),
         RuntimeCmd::List => list(fmt),
         RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
         RuntimeCmd::Validate { platform, profile } => validate(&platform, &profile, fmt),
@@ -96,11 +134,22 @@ fn layout_dirs(python_version: &str, has_usd: bool) -> Vec<String> {
     dirs
 }
 
+/// How `pull` should obtain the runtime: mock (default), adopt, or build.
+pub struct PullSource {
+    /// `--from-usd <path>` (or `OST_USD_ROOT`): adopt an existing install.
+    pub from_usd: Option<String>,
+    /// `--build [<path>]` (or `OST_USD_SRC`): build from source. `Some("")`
+    /// means the flag was given without a path (use the env fallback).
+    pub build: Option<String>,
+    pub jobs: Option<u32>,
+    pub build_args: Vec<String>,
+}
+
 fn pull(
     platform: &str,
     profile: &str,
     force: bool,
-    from_usd: Option<String>,
+    src: PullSource,
     fmt: Format,
 ) -> Result<()> {
     let r = resolve(platform, profile)?;
@@ -133,16 +182,22 @@ fn pull(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // Choose the backend source: an adopted USD install (`--from-usd` or
-    // `OST_USD_ROOT`) → `local`; otherwise the mock layout.
-    let adopt = from_usd.or_else(|| match std::env::var("OST_USD_ROOT") {
-        Ok(v) if !v.is_empty() => Some(v),
-        _ => None,
+    // Choose the backend source. Precedence: build > adopt > mock.
+    let adopt = src.from_usd.or_else(|| env_nonempty("OST_USD_ROOT"));
+    let build_src = src.build.map(|p| {
+        if p.is_empty() {
+            env_nonempty("OST_USD_SRC").unwrap_or_default()
+        } else {
+            p
+        }
     });
 
-    let manifest = match adopt {
-        Some(usd_root) => adopt_local(&r, &usd_root, extensions, created)?,
-        None => materialize_mock(&r, has_usd, extensions, created)?,
+    let manifest = if let Some(usd_src) = build_src {
+        build_from_source(&r, &usd_src, src.jobs, &src.build_args, extensions, created)?
+    } else if let Some(usd_root) = adopt {
+        adopt_local(&r, &usd_root, extensions, created)?
+    } else {
+        materialize_mock(&r, has_usd, extensions, created)?
     };
 
     let manifest_path = r.prefix.join(MANIFEST_FILE);
@@ -168,10 +223,10 @@ fn pull(
 
     println!(
         "{} runtime {} ({})",
-        if manifest.source == RuntimeSource::Local {
-            "Adopted"
-        } else {
-            "Pulled"
+        match manifest.source {
+            RuntimeSource::Local => "Adopted",
+            RuntimeSource::Build => "Built",
+            _ => "Pulled",
         },
         manifest.id,
         manifest.source.as_str()
@@ -234,25 +289,7 @@ fn adopt_local(
         )));
     }
 
-    // Probe USD's install layout. Require at least one strong marker so we don't
-    // silently adopt an unrelated directory. The `pxr` Python package may live
-    // under lib/python or lib/site-packages depending on the build.
-    let candidates = [
-        "bin",
-        "lib",
-        "lib/python",
-        "lib/site-packages",
-        "plugin/usd",
-        "include",
-    ];
-    let layout: Vec<String> = candidates
-        .iter()
-        .filter(|s| root.join(s).as_std_path().is_dir())
-        .map(|s| s.to_string())
-        .collect();
-    let looks_like_usd = root.join("plugin/usd").as_std_path().is_dir()
-        || ost_runtime::usd_python_dir(&root).join("pxr").as_std_path().is_dir();
-    if !looks_like_usd {
+    if !looks_like_usd(&root) {
         return Err(Error::Operation(format!(
             "'{root}' does not look like an OpenUSD install (no plugin/usd or lib/**/pxr)"
         )));
@@ -266,13 +303,139 @@ fn adopt_local(
         &r.runtime,
         &r.python_version,
         r.capabilities.clone(),
-        layout,
+        probe_usd_layout(&root),
         extensions,
         created,
         RuntimeSource::Local,
     );
     manifest.external_prefix = Some(root.to_string().replace('\\', "/"));
     Ok(manifest)
+}
+
+/// The USD-install subdirectories present under `root`. The `pxr` Python package
+/// may live under `lib/python` or `lib/site-packages` depending on the build.
+fn probe_usd_layout(root: &Utf8Path) -> Vec<String> {
+    [
+        "bin",
+        "lib",
+        "lib/python",
+        "lib/site-packages",
+        "plugin/usd",
+        "include",
+    ]
+    .iter()
+    .filter(|s| root.join(s).as_std_path().is_dir())
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Whether `root` looks like an OpenUSD install (a strong marker is present).
+fn looks_like_usd(root: &Utf8Path) -> bool {
+    root.join("plugin/usd").as_std_path().is_dir()
+        || ost_runtime::usd_python_dir(root).join("pxr").as_std_path().is_dir()
+}
+
+/// The arguments to pass to `python` to run build_usd.py: the script, default
+/// trims (kept lean; the user can re-enable via `--build-arg`), optional `-j`,
+/// any forwarded args, then the install directory (build_usd.py's positional).
+fn build_usd_args(
+    script: &Utf8Path,
+    install_dir: &Utf8Path,
+    jobs: Option<u32>,
+    extra: &[String],
+) -> Vec<String> {
+    let mut args = vec![script.to_string()];
+    for trim in ["--no-examples", "--no-tutorials", "--no-docs", "--no-tests"] {
+        args.push(trim.to_string());
+    }
+    if let Some(j) = jobs {
+        args.push("-j".to_string());
+        args.push(j.to_string());
+    }
+    args.extend(extra.iter().cloned());
+    args.push(install_dir.to_string());
+    args
+}
+
+/// Build OpenUSD from source into the store prefix (`build` source) by driving
+/// the source tree's `build_scripts/build_usd.py`. The artifacts land in the
+/// store with USD's own layout, so re-pull is a cache hit.
+fn build_from_source(
+    r: &crate::commands::Resolved,
+    usd_src: &str,
+    jobs: Option<u32>,
+    extra: &[String],
+    extensions: Vec<ExtensionRecord>,
+    created: u64,
+) -> Result<RuntimeManifest> {
+    if usd_src.is_empty() {
+        return Err(Error::Operation(
+            "no OpenUSD source: pass `--build <path>` or set OST_USD_SRC".into(),
+        ));
+    }
+    let src = Utf8PathBuf::from(usd_src);
+    let script = src.join("build_scripts").join("build_usd.py");
+    if !script.as_std_path().is_file() {
+        return Err(Error::Operation(format!(
+            "no build_scripts/build_usd.py under '{src}' (point --build at an OpenUSD checkout)"
+        )));
+    }
+    let python = tools::which("python")
+        .or_else(|| tools::which("python3"))
+        .ok_or_else(|| Error::Operation("`python` not found — build_usd.py needs it".into()))?;
+
+    std::fs::create_dir_all(r.prefix.as_std_path())
+        .map_err(|e| Error::io(r.prefix.to_string(), e))?;
+
+    let args = build_usd_args(&script, &r.prefix, jobs, extra);
+
+    // build_usd.py drives CMake/compilers; on Windows it needs the MSVC dev
+    // environment, which we inject the same way `ost build` does.
+    let mut extra_env: Vec<(String, String)> = Vec::new();
+    if Host::detect().os == Os::Windows && tools::which("cl").is_none() {
+        match ost_build::msvc::bootstrap() {
+            Ok(Some(env)) => {
+                println!("==> msvc env   {} ({} vars)", env.vcvars.display(), env.vars.len());
+                extra_env = env.vars;
+            }
+            Ok(None) => eprintln!("warning: MSVC not found; relying on the current environment"),
+            Err(e) => eprintln!("warning: could not load the MSVC environment: {e}"),
+        }
+    }
+
+    println!(
+        "==> building OpenUSD from {src} into {} (one-time, heavy)",
+        r.prefix
+    );
+    println!("    python {}", args.join(" "));
+    let status = Command::new(python)
+        .args(&args)
+        .envs(extra_env)
+        .status()
+        .map_err(|e| Error::io("run build_usd.py", e))?;
+    if !status.success() {
+        return Err(Error::Operation(format!(
+            "build_usd.py failed (exit {})",
+            status.code().unwrap_or(-1)
+        )));
+    }
+
+    if !looks_like_usd(&r.prefix) {
+        return Err(Error::Operation(format!(
+            "build finished but no OpenUSD install found under '{}'",
+            r.prefix
+        )));
+    }
+
+    Ok(RuntimeManifest::build(
+        &r.runtime,
+        &r.python_version,
+        r.capabilities.clone(),
+        probe_usd_layout(&r.prefix),
+        extensions,
+        created,
+        RuntimeSource::Build,
+    ))
 }
 
 fn list(fmt: Format) -> Result<()> {
@@ -577,5 +740,29 @@ fn short_digest(digest: &str) -> String {
     match digest.split_once(':') {
         Some((algo, hex)) => format!("{algo}:{}", &hex[..hex.len().min(12)]),
         None => digest.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_usd_args_put_install_dir_last_and_forward_extras() {
+        let script = Utf8PathBuf::from("/src/build_scripts/build_usd.py");
+        let prefix = Utf8PathBuf::from("/store/rt");
+        let args = build_usd_args(
+            &script,
+            &prefix,
+            Some(8),
+            &["--no-imaging".to_string(), "--no-usdview".to_string()],
+        );
+        // Script first, install dir last (build_usd.py's positional).
+        assert_eq!(args.first().unwrap(), "/src/build_scripts/build_usd.py");
+        assert_eq!(args.last().unwrap(), "/store/rt");
+        // Default trims, parallelism, and forwarded extras are all present.
+        assert!(args.iter().any(|a| a == "--no-tests"));
+        assert!(args.windows(2).any(|w| w == ["-j", "8"]));
+        assert!(args.iter().any(|a| a == "--no-imaging"));
     }
 }
