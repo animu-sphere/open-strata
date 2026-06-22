@@ -17,7 +17,7 @@
     "passed": { "type": "boolean" },
     "report_dir": {
       "type": "string",
-      "description": "Only on `doctor --json` stdout: the report directory just written. Absent from the on-disk report.json."
+      "description": "Only on `doctor`/`test` --json stdout: the report directory just written. Absent from the on-disk report.json."
     },
     "environment": {
       "type": "object",

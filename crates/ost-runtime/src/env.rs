@@ -5,9 +5,25 @@
 //! shell to evaluate. The OS adapter decides the dynamic-library variable and
 //! the path separator; everything else is uniform.
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 
 use ost_core::host::Os;
+
+/// Locate the directory holding an adopted USD install's `pxr` Python package.
+///
+/// USD builds vary: official/`build_usd.py` installs use `lib/python`, while
+/// some Windows builds use `lib/site-packages`. Probe for the one that actually
+/// contains `pxr`; fall back to `lib/python` when neither is present so the
+/// emitted env is still well-formed.
+pub fn usd_python_dir(root: &Utf8Path) -> Utf8PathBuf {
+    for candidate in ["lib/python", "lib/site-packages"] {
+        let dir = root.join(candidate);
+        if dir.join("pxr").as_std_path().is_dir() {
+            return dir;
+        }
+    }
+    root.join("lib").join("python")
+}
 
 /// Target shell for rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,9 +138,9 @@ impl EnvSet {
 
     /// Build the environment that activates an *adopted* OpenUSD install at
     /// `root` (Phase 4b `local` source). USD's own install layout differs from
-    /// the OpenStrata prefix: Python bindings live under `lib/python` (not a
-    /// versioned `site-packages`), so this maps the install's real directories
-    /// rather than the store layout.
+    /// the OpenStrata prefix, and even between USD builds: the `pxr` Python
+    /// package sits under `lib/python` on some, `lib/site-packages` on others.
+    /// This probes for the real directory rather than assuming one.
     pub fn for_usd_install(root: &Utf8Path, os: Os) -> EnvSet {
         let sep = if os == Os::Windows { ';' } else { ':' };
         let lib_key = match os {
@@ -145,9 +161,8 @@ impl EnvSet {
                 op: EnvOp::Prepend(path(&root.join("lib"))),
             },
             EnvVar {
-                // USD installs put the `pxr` package under lib/python.
                 key: "PYTHONPATH".into(),
-                op: EnvOp::Prepend(path(&root.join("lib").join("python"))),
+                op: EnvOp::Prepend(path(&usd_python_dir(root))),
             },
             EnvVar {
                 key: "CMAKE_PREFIX_PATH".into(),

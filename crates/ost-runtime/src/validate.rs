@@ -119,13 +119,14 @@ fn real_runtime_checks(prefix: &Utf8Path) -> Vec<Check> {
         ));
     }
 
-    let pxr = prefix.join("lib").join("python").join("pxr");
+    let py_dir = crate::env::usd_python_dir(prefix);
+    let pxr = py_dir.join("pxr");
     if pxr.as_std_path().is_dir() {
         checks.push(Check::pass("pxr-package"));
     } else {
         checks.push(Check::fail(
             "pxr-package",
-            format!("no pxr package at {pxr}"),
+            format!("no pxr package under {}/lib (looked for python/ and site-packages/)", prefix),
         ));
     }
 
