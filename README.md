@@ -8,14 +8,19 @@ Platform calendar year as a machine-readable *target* and turns it into certifie
 reproducible runtime layers, extension artifacts, and builds.
 
 See [`docs/`](docs/) — [overview](docs/overview.md), [architecture](docs/architecture.md),
-[roadmap](docs/roadmap.md), and the full [design](docs/design.md).
+[examples](docs/examples.md), [roadmap](docs/roadmap.md), and the full
+[design](docs/design.md).
 
 ## Status
 
-Phases 0–3 are implemented (Linux x86_64 is the first-class target; other OS
-targets are modeled and partially working — these examples were exercised on
-Windows). Real artifact pulls, the USD plugin lifecycle, CI generation, sessions,
-and GPU/AI are still ahead — see the [roadmap](docs/roadmap.md).
+Phases 0–3 are implemented, and Phase 4 (the OpenUSD plugin verification harness)
+is largely in: a real OpenUSD runtime can be **adopted** (`--from-usd`) or
+**built from source** (`--build`, via build_usd.py or CMake-direct), and the
+plugin pyramid runs Levels 0–5 (`ost plugin new|inspect|build|doctor|run|test`).
+CI generation, sessions, GPU/AI, the fetched artifact registry, and tagged binary
+releases are still ahead. Linux x86_64 is the first-class target; other OS targets
+are modeled and partially working — these examples were exercised on Windows. See
+the [roadmap](docs/roadmap.md).
 
 ## Build
 
@@ -39,12 +44,18 @@ ost build [--dry-run] [--jobs N] [--ninja <p>]      configure + cmake build (Nin
 ost package                                         install + tar.zst artifact + manifest
 ost validate                                        validate a built/packaged target
 ost extension  list | why <id> | add <id>           inspect/request controlled extensions
+ost plugin     new | inspect | build | doctor | run | test   OpenUSD plugin bundles
 ost lock [--check]                                  generate/verify strata.lock
 ost uv <args...>                                    run uv pinned to the runtime Python
 ```
 
 Every command accepts `--json` for machine-readable output and uses deterministic
-exit codes for CI.
+exit codes for CI. See [docs/examples.md](docs/examples.md) for a copy-pasteable
+tour of every command.
+
+`ost runtime pull` materializes a runtime from a backend *source*: a placeholder
+`mock` layout, an adopted existing install (`--from-usd`), or a from-source
+`build` (`--build`, via build_usd.py or CMake-direct with `--deps`).
 
 ## Try it
 
@@ -55,8 +66,9 @@ ost="cargo run -q -p ost-cli --"
 $ost platform show cy2026
 $ost init --name my-show --platform cy2026
 
-# Pull a certified USD runtime (local/mock backend for now)
-$ost runtime pull cy2026 --profile usd
+# Pull a USD runtime: mock (offline), or a real one via --from-usd / --build
+$ost runtime pull cy2026 --profile usd                       # mock layout
+$ost runtime pull cy2026 --profile usd --from-usd /opt/usd   # adopt a real install
 $ost runtime explain cy2026 --profile usd      # capability -> extension graph
 
 # Activate it
@@ -73,6 +85,11 @@ $ost validate
 $ost doctor cy2026 --profile usd
 $ost lock --check
 $ost uv sync --locked
+
+# Scaffold and verify an OpenUSD plugin (L2+ need a real runtime)
+$ost plugin new usd-fileformat toy --extension toy
+$ost plugin build toy --target cy2026 --profile usd
+$ost plugin test  toy --target cy2026 --profile usd   # L0..L5 + report
 ```
 
 On Windows, `ost build` auto-loads the MSVC developer environment (`vcvars64.bat`);
@@ -88,11 +105,13 @@ crates/
   ost-runtime/    runtime identity, profiles, env generation, runtime manifest + validation
   ost-build/      build target model, toolchain/preset generation, packaging, MSVC bootstrap
   ost-extension/  controlled extensions: model, loader, capability resolver
+  ost-plugin/     OpenUSD plugin bundles: model, scaffold, verification levels, reports
   ost-manifest/   project (openstrata.toml) + lock (strata.lock) models
 platforms/        built-in VFX Reference Platform calendar-year manifests
 profiles/         capability bundles (core / dev / usd / lookdev)
 extensions/       controlled extension manifests (openusd / materialx)
-schemas/          JSON schemas for platform / project / lock documents
+templates/        plugin scaffolding templates (usd-fileformat-cpp)
+schemas/          JSON schemas for platform / project / lock / plugin-report documents
 ```
 
 ## Store and overlays
@@ -102,4 +121,6 @@ State lives under `~/.ost` (override with `OST_HOME`): `runtimes/`, `extensions/
 `~/.ost/{platforms,profiles,extensions}/*.yaml` are layered over the built-in
 definitions and override them by id.
 
-Tool overrides for non-PATH installs: `OST_NINJA` (ninja), `OST_UV` (uv).
+Tool overrides for non-PATH installs: `OST_NINJA` (ninja), `OST_UV` (uv). Runtime
+source fallbacks for `ost runtime pull`: `OST_USD_ROOT` (adopt), `OST_USD_SRC`
+(build), `OST_USD_DEPS` (CMake deps).
