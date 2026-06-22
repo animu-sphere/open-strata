@@ -18,7 +18,7 @@ and lock schemas.
 - ✅ JSON schemas for platform / project / lock
 - ✅ `--json` output and deterministic exit codes
 
-## Phase 1 — Runtime and devshell 🚧
+## Phase 1 — Runtime and devshell ✅
 
 Resolve a runtime manifest, lay it out locally, generate environment, enter a shell.
 
@@ -38,9 +38,12 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   `ost configure`: pins runtime id/variant/digest, Python ABI + `uv.lock` hash,
   resolved extensions, and validation status; fully deterministic so `--check`
   gates CI
-- ⬜ Real artifact backend behind `pull` (currently mock prefix layout)
-- ⬜ Richer runtime validation (Python import, native library load, USD stage
-  open) once the real backend lands
+- ✅ Real runtime backends behind `pull` (Phase 4b): `local`/adopt and `build`
+  (build_usd.py / CMake-direct) supersede the mock layout; fetched `artifact`
+  source still ahead (Phase 6)
+- ✅ Richer runtime validation: `runtime validate` asserts `usdcat` + `pxr` on a
+  real runtime; native library load + USD stage open are exercised by the plugin
+  execution levels (L2–L4, Phase 4b)
 
 ## Phase 2 — CMake target build ✅
 
@@ -155,6 +158,26 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
 - ⬜ AI runtime profiles (`ai-cuda124`, `ai-rocm`, `ai-mps`, hybrid `cy2026-lookdev-ai`)
 - ⬜ Jenkins GPU routing labels; smoke tests
 
+## Phase 9 — Kubernetes execution backend ⬜
+
+Direction: [kubernetes.md](kubernetes.md). OpenStrata owns the runtime contract,
+artifacts, and validation; Kubernetes is a pluggable **execution backend** that
+runs those contracts on a cluster. `local` stays first-class; Kubernetes is
+opt-in. Start narrow — generate → submit → monitor → collect a `batch/v1 Job` via
+`kubectl` — not an Operator.
+
+- ⬜ `ost-execution` crate: `ExecutionBackend` trait (`local` + `kubernetes`),
+  domain `ResolvedTask` → `KubernetesJobRequest` → Job YAML separation
+- ⬜ `ost submit build|validate|plugin-test|ai-validate|matrix --backend
+  kubernetes` and `ost jobs list|show|logs|wait|artifacts|cancel`
+  (logical `ostj_…` ids; `--output json` contract)
+- ⬜ Phased: manifest export (`--dry-run --output yaml`) → kubectl submit/status/
+  logs → artifact collection + provenance → matrix (`--max-parallel`,
+  `--fail-fast`) → GPU tasks (with Phase 8) → Jenkins bridge (with Phase 5) →
+  optional native `kube` client → CRD/Operator only if Jobs prove insufficient
+- ⬜ Digest-pinned runtime/extension/source per Job (`latest` rejected);
+  safe-by-default manifests; `ost doctor kubernetes`
+
 ## Python / uv (§9)
 
 - ✅ `ost uv <args>`: runs `uv` pinned to the project's runtime Python — applies
@@ -164,6 +187,36 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
   `strata.lock`.
 - ⬜ Diagnose/refuse app-local `uv` deps that shadow ABI-sensitive runtime
   packages (USD/Qt/OpenEXR bindings), recommending the matching extension.
+
+## Distribution — `ost` binary releases ⬜
+
+The `ost` CLI is a single self-contained binary (no Python/USD dependency), so it
+ships independently of the heavy runtime artifacts. Publish tagged builds to
+GitHub Releases.
+
+- ⬜ **Tag convention.** Releases are cut from an annotated tag `v<semver>` (e.g.
+  `v0.1.0`) on `main`. The tag's version must match the workspace
+  `Cargo.toml` `version`; a CI check fails the release on mismatch. Pre-releases
+  use `-rc.N` / `-beta.N` suffixes and are marked "pre-release".
+- ⬜ **Release workflow** (GitHub Actions, triggered on `v*` tags). A build
+  matrix produces a binary per target, packaged with a checksum:
+  - `linux-x86_64` (first-class), `macos-arm64`, `macos-x86_64`,
+    `windows-x86_64` (modeled from the start; built on a best-effort basis).
+  - Artifacts: `ost-<version>-<target>.tar.gz` (zip on Windows) + a combined
+    `SHA256SUMS`, attached to the GitHub Release. Built on the pinned toolchain
+    (Rust 1.69; see [architecture.md](architecture.md#toolchain-pinning)).
+  - Release notes drawn from the changelog / merged PRs for the tag range.
+- ⬜ **Install ergonomics.** A `cargo binstall` manifest and a `curl | sh`
+  installer script that fetches the right asset for the host and verifies the
+  checksum; document `cargo install --path crates/ost-cli` as the from-source
+  fallback.
+- ⬜ **Provenance (later).** Sign artifacts and attach SLSA/attestation metadata,
+  reusing the digest/manifest discipline OpenStrata already applies to runtime
+  and plugin artifacts.
+
+This covers the **`ost` tool** itself; runtime/extension/plugin *content*
+artifacts are distributed via the content-addressed store and the artifact
+registry (Phase 6).
 
 ## Quality bar (applies to every phase)
 

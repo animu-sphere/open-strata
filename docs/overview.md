@@ -43,27 +43,26 @@ deps), Jenkins (CI orchestration), OCI (transport), and Git (workspace history).
 
 ## Relationship to other projects
 
-OpenStrata's artifact strategy is intentionally aligned with artifact-forge tooling
-(e.g. `vitrakiln`): immutable, versioned artifacts identified by digest, each with a
-manifest and validation report, with generated binaries kept out of Git and only
-small manifest/lock records tracked. OpenStrata can consume such artifacts as
-runtime/extension inputs; it does not duplicate the forge's build pipelines.
+OpenStrata's artifact strategy is intentionally aligned with external
+artifact-forge tooling: immutable, versioned artifacts identified by digest, each
+with a manifest and validation report, with generated binaries kept out of Git and
+only small manifest/lock records tracked. OpenStrata can consume such artifacts as
+runtime/extension inputs; it does not duplicate a forge's build pipelines.
 
 ## First vertical slice
 
 The first meaningful end-to-end demonstration (§21 of the design):
 
 ```bash
-ost platform show cy2026                          # inspect the target
-ost runtime pull cy2026 --profile usd             # certified USD runtime
-ost devshell cy2026 --profile usd                 # enter it
-ost plugin new usd-fileformat toy-cache --extension toy
-ost plugin build  --target cy2026
-ost plugin validate --target cy2026               # discovery + open a fixture
-ost doctor usd                                    # diagnose the USD environment
-ost plugin package --target cy2026                # immutable artifact + manifest
+ost platform show cy2026                                  # inspect the target
+ost runtime pull cy2026 --profile usd --from-usd /opt/usd # a real USD runtime
+ost runtime validate cy2026 --profile usd                 # usdcat + pxr present
+ost plugin new usd-fileformat toy --extension toy         # scaffold a bundle
+ost plugin build toy --target cy2026 --profile usd        # build the .so
+ost plugin test  toy --target cy2026 --profile usd        # L0..L5 + report
 ```
 
-Success = the `toy` extension is discovered by OpenUSD, a `.toy` fixture opens as
-an `SdfLayer` and `UsdStage`, and the artifact manifest records target, runtime
-digest, OpenUSD features, and validation result.
+Success = the `toy` plugin is discovered by OpenUSD (L2), a `.toy` fixture is read
+by `usdcat` (L3) and opens as a `UsdStage` (L4), and the run's `report.json`
+records the runtime source, OpenUSD version, and each level's result.
+`ost plugin package` (an immutable artifact + manifest) follows with Phase 6.
