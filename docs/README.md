@@ -5,6 +5,7 @@
 | [overview.md](overview.md) | What OpenStrata is, who it is for, and the core principles (方針). |
 | [architecture.md](architecture.md) | Workspace layout, crate boundaries, and the domain model. |
 | [roadmap.md](roadmap.md) | Phased delivery plan and current status. |
+| [phase-4-plugin-harness.md](phase-4-plugin-harness.md) | Phase 4 direction: the OpenUSD plugin verification harness, mapped onto the codebase. |
 | [design.md](design.md) | The full canonical design specification (source of truth). |
 
 `design.md` is the long-form spec. The other documents are navigable summaries

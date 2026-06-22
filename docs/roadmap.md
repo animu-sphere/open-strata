@@ -78,12 +78,26 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   is required by a profile (direct + transitive), and record it in
   `openstrata.toml` (idempotent, validated against the catalog)
 
-## Phase 4 — USD file format plugin lifecycle ⬜
+## Phase 4 — OpenUSD plugin verification harness ⬜
 
-- ⬜ Plugin templates; `plugInfo.json` handling
-- ⬜ `PXR_PLUGINPATH_NAME` generation; discovery + fixture validation
-- ⬜ `ost plugin new | build | validate | package | publish`
-- ⬜ `ost doctor usd` (discovered plugins, file formats, conflicts)
+Direction: [phase-4-plugin-harness.md](phase-4-plugin-harness.md). Split around
+the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mock).
+
+**4a — framework + static verification (mock backend, no real runtime):**
+
+- ⬜ `ost-plugin` crate + Plugin Bundle contract (`openstrata.plugin.yaml`)
+- ⬜ `ost plugin new` templates (C++ + `plugInfo.json` + CMake + fixtures)
+- ⬜ `ost plugin inspect` (Level 0) and `ost plugin build` (reuses `ost-build`)
+- ⬜ `ost plugin doctor` skeleton: Levels 0–1 + session-env preview; Levels 2+
+  reported as `SKIP (needs real runtime)`
+- ⬜ reports (`.strata/reports/…`) + stable error ids + JSON schema
+
+**4b — execution levels (gated on a real OpenUSD runtime backend):**
+
+- ⬜ real runtime backend behind `pull` (source TBD: build / Vitrakiln / vendor)
+- ⬜ `ost plugin run` session launcher; Levels 2–5 (discovery, `usdcat`,
+  Python Stage Open, golden); `ost plugin test` orchestration
+- ⬜ `ost plugin view | test-view` (Level 6), `package | publish`, CI matrix
 
 ## Phase 5 — CI / Jenkins ⬜
 
