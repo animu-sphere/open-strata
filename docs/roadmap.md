@@ -33,7 +33,11 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   deterministic exit: 0 healthy / 1 issues)
 - ✅ `ost runtime validate` (schema, digest integrity, layout; records outcome
   in the manifest; deterministic exit)
-- ⬜ `ost runtime explain`
+- ✅ `ost runtime explain` (delivered in Phase 3)
+- ✅ Project lockfile `strata.lock` via `ost lock [--check]` and refreshed by
+  `ost configure`: pins runtime id/variant/digest, Python ABI + `uv.lock` hash,
+  resolved extensions, and validation status; fully deterministic so `--check`
+  gates CI
 - ⬜ Real artifact backend behind `pull` (currently mock prefix layout)
 - ⬜ Richer runtime validation (Python import, native library load, USD stage
   open) once the real backend lands

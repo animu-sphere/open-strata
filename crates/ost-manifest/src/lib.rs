@@ -8,5 +8,5 @@
 mod lock;
 mod project;
 
-pub use lock::{Lock, LockPython, LockRuntime};
+pub use lock::{Lock, LockExtension, LockPython, LockRuntime, Validation};
 pub use project::{add_extension, Project, ProjectMeta, Requires};

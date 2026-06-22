@@ -102,6 +102,17 @@ impl Variant {
             self.python
         )
     }
+
+    /// CPython ABI tag in OpenStrata's normalized form, e.g.
+    /// `cpython-313-x86_64-linux-gnu`. Recorded in `strata.lock` (§9.4).
+    pub fn python_abi(&self) -> String {
+        let os_suffix = match self.os {
+            Os::Linux => "linux-gnu",
+            Os::Macos => "darwin",
+            Os::Windows => "windows-msvc",
+        };
+        format!("cpython-{}-{}-{os_suffix}", self.python, self.arch.as_str())
+    }
 }
 
 impl std::fmt::Display for Variant {
@@ -133,5 +144,38 @@ mod tests {
         };
         let v = Variant::new(&host, Abi::default_for(Os::Macos), "313");
         assert_eq!(v.slug(), "macos-arm64-py313");
+    }
+
+    #[test]
+    fn python_abi_tag_per_os() {
+        let linux = Variant::new(
+            &Host {
+                os: Os::Linux,
+                arch: Arch::X86_64,
+            },
+            Abi::default_for(Os::Linux),
+            "313",
+        );
+        assert_eq!(linux.python_abi(), "cpython-313-x86_64-linux-gnu");
+
+        let win = Variant::new(
+            &Host {
+                os: Os::Windows,
+                arch: Arch::X86_64,
+            },
+            Abi::default_for(Os::Windows),
+            "313",
+        );
+        assert_eq!(win.python_abi(), "cpython-313-x86_64-windows-msvc");
+
+        let mac = Variant::new(
+            &Host {
+                os: Os::Macos,
+                arch: Arch::Arm64,
+            },
+            Abi::default_for(Os::Macos),
+            "313",
+        );
+        assert_eq!(mac.python_abi(), "cpython-313-arm64-darwin");
     }
 }
