@@ -84,6 +84,12 @@ impl Diagnostic {
 pub struct RuntimeContext {
     /// Whether a runtime has been pulled (its manifest exists on disk).
     pub pulled: bool,
+    /// Backend source of the runtime (`mock`/`local`/`build`/`artifact`).
+    pub source: Option<String>,
+    /// Whether the source carries real OpenUSD artifacts (anything but `mock`).
+    pub real: bool,
+    /// Whether the source is reproducible (`build`/`artifact`) vs adopted/mock.
+    pub reproducible: bool,
     /// Concrete OpenUSD version the runtime provides, e.g. `24.11`.
     pub openusd_version: Option<String>,
     /// C++ ABI tag the runtime/platform was built with.
@@ -259,6 +265,22 @@ fn level1(bundle: &Bundle, ctx: &RuntimeContext) -> Vec<Diagnostic> {
             diags.push(Diagnostic::skip(&format!("dependency.{comp}"), 1, reason));
         }
         return diags;
+    }
+
+    // runtime.source — surface the backend source as an observed fact. Three
+    // tiers: a `mock` runtime carries no real OpenUSD; an adopted (`local`)
+    // runtime is real but not reproducible; only `build`/`artifact` are
+    // reproducible. None are failures, but the tier is recorded so reports
+    // never imply certification.
+    if let Some(src) = &ctx.source {
+        let observed = if !ctx.real {
+            format!("runtime source is '{src}' (mock — no real OpenUSD)")
+        } else if ctx.reproducible {
+            format!("runtime source is '{src}' (reproducible)")
+        } else {
+            format!("runtime source is '{src}' (real but not reproducible/certified)")
+        };
+        diags.push(Diagnostic::pass("runtime.source", 1, observed));
     }
 
     // runtime.openusd.version — concrete runtime version satisfies the range.

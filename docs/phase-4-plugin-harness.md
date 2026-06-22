@@ -154,11 +154,30 @@ ost plugin package <name>                          bundle artifact (overlaps Pha
 
 **Phase 4b — light up execution levels (gated on a real OpenUSD runtime):**
 
-- a real runtime artifact backend behind `runtime pull` — built locally or
-  fetched from an artifact source
+The hard dependency is a *real* OpenUSD in the store. Rather than pick one source,
+generalize the backend behind `runtime pull` into pluggable **sources**, all of
+which return the same thing: a real prefix + manifest + validation, with the
+source recorded (today's `mock: bool` becomes `source: mock|local|build|artifact`).
+
+| source | what it does | speed | role |
+| --- | --- | --- | --- |
+| `local`/adopt | register an existing USD install as the prefix (no copy/build) | instant | dev machines, vendor/DCC-bundled USD; fastest path to a real `pxr` |
+| `build` | build OpenUSD from source, materialized + digested into the store | slow (once) | the *producer* of reproducible runtimes; cached so re-pull is a no-op |
+| `artifact` | fetch a prebuilt `tar.zst` and unpack | fast | the *consumer* path; needs the content-addressed store → lands with Phase 6 |
+
+Build order within 4b (decided — see Decisions §4):
+
+- runtime backend **seam** (source-agnostic): real prefix + manifest +
+  `source` + validation
+- **`local`/adopt source first** — `ost runtime pull <plat> --profile usd
+  --from-usd <path>` (or `OST_USD_ROOT`); validate `usdcat`, `import pxr`, and
+  plugin discovery. This unblocks the plugin execution levels with zero build
+  infra.
 - session launcher `ost plugin run`
 - Levels 2–5 (discovery, `usdcat`, Python Stage Open, golden) and
   `ost plugin test` orchestration; `verify`/`snapshot`
+- `build` source (from source, one-time, digested into the store) once the
+  execution levels are proven against an adopted runtime
 
 **Phase 4c — later:** `view`/`test-view` (L6), package/publish (with Phase 6),
 Jenkins runtime×plugin matrix, then DCC host adapters (separate repos).
@@ -169,12 +188,25 @@ Jenkins runtime×plugin matrix, then DCC host adapters (separate repos).
    mock backend: `ost-plugin` crate + Plugin Bundle contract, `ost plugin
    new/inspect/build`, `doctor` skeleton (Levels 0–1), and reports + JSON schema.
    Independently useful and de-risks the contract before the heavy runtime work.
-2. **Real OpenUSD runtime source — deferred to 4b (decided).** 4a completes on
-   the mock backend; the source for a real runtime (build ourselves or consume
-   prebuilt artifacts) is chosen when 4b starts.
+2. **Real OpenUSD runtime source — pluggable, adopt-first (decided for 4b).**
+   The runtime backend is generalized into sources (`mock|local|build|artifact`)
+   behind `runtime pull`, recorded in the manifest. 4b starts with the
+   **`local`/adopt** source (an already-built USD), specified by **both**
+   `--from-usd <path>` and `OST_USD_ROOT` — the fastest way to a real `pxr` and
+   to light up plugin Levels 2–5. `build` (from source, one-time, digested) is
+   the reproducible producer and follows; `artifact` fetch defers to Phase 6
+   (it needs the content-addressed store). Rationale: building OpenUSD is heavy
+   (~30–90 min), so avoiding a rebuild every iteration is a requirement, not a
+   nicety — the store cache makes even `build` one-time, and `local` skips it
+   entirely.
 3. **Bundle vs extension — separate (decided).** User plugins are a *new*
    artifact kind (`ost-plugin`), distinct from runtime-provided `ost-extension`,
    sharing the capability vocabulary.
+4. **Validation honesty across sources (decided).** An adopted (`local`) runtime
+   is *real* but not *reproducible/certified* the way a `build`/`artifact` one
+   is; `runtime validate`, `runtime explain`, and `plugin doctor` (L1) surface
+   the `source` as an observed fact and must not report an adopted runtime as
+   certified.
 
 ## 4a acceptance (definition of done)
 

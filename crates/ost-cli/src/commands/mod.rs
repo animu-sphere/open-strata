@@ -18,12 +18,19 @@ use camino::Utf8PathBuf;
 use ost_core::paths::Store;
 use ost_core::{Error, Host, Result};
 use ost_platform::Catalog;
-use ost_runtime::{python_minor, EnvSet, ProfileCatalog, Runtime, MANIFEST_FILE};
+use ost_runtime::{
+    python_minor, EnvSet, ProfileCatalog, Runtime, RuntimeManifest, RuntimeSource, MANIFEST_FILE,
+};
 
 /// Everything needed to activate a runtime, shared by `env`, `devshell`, `runtime`.
 pub struct Resolved {
     pub runtime: Runtime,
+    /// Store location of the runtime: where its `runtime.json` manifest lives.
     pub prefix: Utf8PathBuf,
+    /// Where the runtime's real artifacts (bin/lib/python) live. Equals `prefix`
+    /// for mock/build runtimes; for an adopted `local` runtime it is the external
+    /// USD install root recorded in the manifest.
+    pub artifact_prefix: Utf8PathBuf,
     pub env: EnvSet,
     /// Platform Python version, e.g. `3.13.x`.
     pub python_version: String,
@@ -58,8 +65,32 @@ pub fn resolve(platform_id: &str, profile_id: &str) -> Result<Resolved> {
 
     let capabilities = profile.capabilities().to_vec();
     let usd_plugins = capabilities.iter().any(|c| c.starts_with("usd"));
-    let env = EnvSet::for_runtime(&prefix, host.os, &python_minor(python_version), usd_plugins);
     let pulled = prefix.join(MANIFEST_FILE).as_std_path().is_file();
+
+    // An adopted (`local`) runtime keeps its manifest in the store but its real
+    // artifacts live at an external root with USD's own layout. Read the manifest
+    // to learn the source, then build the env against the effective prefix.
+    let manifest = if pulled {
+        std::fs::read_to_string(prefix.join(MANIFEST_FILE).as_std_path())
+            .ok()
+            .and_then(|s| RuntimeManifest::from_json(&s).ok())
+    } else {
+        None
+    };
+
+    let (artifact_prefix, env) = match &manifest {
+        Some(m) if m.source == RuntimeSource::Local => {
+            let ep = Utf8PathBuf::from(m.effective_prefix(&prefix));
+            let env = EnvSet::for_usd_install(&ep, host.os);
+            (ep, env)
+        }
+        _ => {
+            let env =
+                EnvSet::for_runtime(&prefix, host.os, &python_minor(python_version), usd_plugins);
+            (prefix.clone(), env)
+        }
+    };
+
     let cxx_standard = platform
         .component("cxx_standard")
         .unwrap_or("17")
@@ -68,6 +99,7 @@ pub fn resolve(platform_id: &str, profile_id: &str) -> Result<Resolved> {
     Ok(Resolved {
         runtime,
         prefix,
+        artifact_prefix,
         env,
         python_version: python_version.to_string(),
         cxx_standard,

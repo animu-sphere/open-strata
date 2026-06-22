@@ -120,6 +120,47 @@ impl EnvSet {
         EnvSet { sep, vars }
     }
 
+    /// Build the environment that activates an *adopted* OpenUSD install at
+    /// `root` (Phase 4b `local` source). USD's own install layout differs from
+    /// the OpenStrata prefix: Python bindings live under `lib/python` (not a
+    /// versioned `site-packages`), so this maps the install's real directories
+    /// rather than the store layout.
+    pub fn for_usd_install(root: &Utf8Path, os: Os) -> EnvSet {
+        let sep = if os == Os::Windows { ';' } else { ':' };
+        let lib_key = match os {
+            Os::Linux => "LD_LIBRARY_PATH",
+            Os::Macos => "DYLD_LIBRARY_PATH",
+            Os::Windows => "PATH",
+        };
+        let path = |p: &Utf8Path| p.to_string().replace('\\', "/");
+
+        let vars = vec![
+            EnvVar {
+                key: "PATH".into(),
+                op: EnvOp::Prepend(path(&root.join("bin"))),
+            },
+            // On Windows lib_key is PATH, so USD's lib/ DLLs land on PATH too.
+            EnvVar {
+                key: lib_key.into(),
+                op: EnvOp::Prepend(path(&root.join("lib"))),
+            },
+            EnvVar {
+                // USD installs put the `pxr` package under lib/python.
+                key: "PYTHONPATH".into(),
+                op: EnvOp::Prepend(path(&root.join("lib").join("python"))),
+            },
+            EnvVar {
+                key: "CMAKE_PREFIX_PATH".into(),
+                op: EnvOp::Prepend(path(root)),
+            },
+            EnvVar {
+                key: "PXR_PLUGINPATH_NAME".into(),
+                op: EnvOp::Prepend(path(&root.join("plugin").join("usd"))),
+            },
+        ];
+        EnvSet { sep, vars }
+    }
+
     /// Render the set as evaluable shell statements (no trailing prose).
     pub fn render(&self, shell: Shell) -> String {
         let mut out = String::new();
@@ -237,6 +278,22 @@ mod tests {
         for (key, value) in set.pairs() {
             assert!(!value.contains('\\'), "{key} still has a backslash: {value}");
         }
+    }
+
+    #[test]
+    fn usd_install_uses_lib_python_for_pythonpath() {
+        let set = EnvSet::for_usd_install(&Utf8PathBuf::from("/opt/usd"), Os::Linux);
+        let py = set
+            .vars
+            .iter()
+            .find(|v| v.key == "PYTHONPATH")
+            .expect("PYTHONPATH present");
+        match &py.op {
+            EnvOp::Prepend(p) => assert!(p.ends_with("lib/python"), "got {p}"),
+            _ => panic!("expected prepend"),
+        }
+        // The adopted install still exposes USD's plugin discovery root.
+        assert!(set.vars.iter().any(|v| v.key == "PXR_PLUGINPATH_NAME"));
     }
 
     #[test]

@@ -121,7 +121,10 @@ pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result
         .map_err(|e| Error::io(target_dir.to_string(), e))?;
 
     // 1. toolchain.cmake
-    write(&target_dir.join("toolchain.cmake"), &render_toolchain(&target, &r.prefix))?;
+    write(
+        &target_dir.join("toolchain.cmake"),
+        &render_toolchain(&target, &r.artifact_prefix),
+    )?;
 
     // 2. env.json (resolved env for build steps to reuse)
     let env_vars: Vec<_> = r

@@ -240,7 +240,7 @@ fn build(
     let toolchain = target_dir.join("toolchain.cmake");
     std::fs::write(
         toolchain.as_std_path(),
-        format!("{}\n", ost_build::render_toolchain(&tgt, &r.prefix)),
+        format!("{}\n", ost_build::render_toolchain(&tgt, &r.artifact_prefix)),
     )
     .map_err(|e| Error::io(toolchain.to_string(), e))?;
 
@@ -350,6 +350,9 @@ fn runtime_context(r: &crate::commands::Resolved) -> RuntimeContext {
         let manifest_path = r.prefix.join(MANIFEST_FILE);
         if let Ok(src) = std::fs::read_to_string(manifest_path.as_std_path()) {
             if let Ok(m) = RuntimeManifest::from_json(&src) {
+                ctx.source = Some(m.source.as_str().to_string());
+                ctx.real = m.source.is_real();
+                ctx.reproducible = m.source.is_reproducible();
                 for ext in &m.extensions {
                     ctx.components.insert(ext.id.clone(), ext.version.clone());
                     if ext.id == "openusd" {

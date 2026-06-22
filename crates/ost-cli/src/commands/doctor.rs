@@ -121,8 +121,10 @@ fn build_runtime_report(r: &crate::commands::Resolved) -> RuntimeReport {
         if let Ok(m) = RuntimeManifest::from_json(&src) {
             digest = Some(m.digest.clone());
             validation = Some(format!("{:?}", m.validation).to_lowercase());
+            // Layout dirs live under the effective artifact prefix (the external
+            // USD root for an adopted runtime).
             for sub in &m.layout {
-                let exists = r.prefix.join(sub).as_std_path().is_dir();
+                let exists = r.artifact_prefix.join(sub).as_std_path().is_dir();
                 layout.push((sub.clone(), exists));
             }
         }

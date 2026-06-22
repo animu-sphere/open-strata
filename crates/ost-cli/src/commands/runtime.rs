@@ -9,9 +9,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Subcommand;
 
+use camino::Utf8PathBuf;
+
 use ost_core::paths::Store;
 use ost_core::{Error, Result};
-use ost_runtime::{python_minor, ExtensionRecord, RuntimeManifest, Validation, MANIFEST_FILE};
+use ost_runtime::{
+    python_minor, ExtensionRecord, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
+};
 
 use crate::commands::resolve;
 use crate::output::{self, Format};
@@ -28,6 +32,11 @@ pub enum RuntimeCmd {
         /// Re-pull even if the runtime already exists.
         #[arg(long)]
         force: bool,
+        /// Adopt an existing OpenUSD install at this path instead of
+        /// materializing a mock layout (`local` source). Falls back to
+        /// `OST_USD_ROOT` when unset.
+        #[arg(long)]
+        from_usd: Option<String>,
     },
     /// List runtimes present in the local store.
     List,
@@ -63,7 +72,8 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             platform,
             profile,
             force,
-        } => pull(&platform, &profile, force, fmt),
+            from_usd,
+        } => pull(&platform, &profile, force, from_usd, fmt),
         RuntimeCmd::List => list(fmt),
         RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
         RuntimeCmd::Validate { platform, profile } => validate(&platform, &profile, fmt),
@@ -86,7 +96,13 @@ fn layout_dirs(python_version: &str, has_usd: bool) -> Vec<String> {
     dirs
 }
 
-fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
+fn pull(
+    platform: &str,
+    profile: &str,
+    force: bool,
+    from_usd: Option<String>,
+    fmt: Format,
+) -> Result<()> {
     let r = resolve(platform, profile)?;
 
     if r.pulled && !force {
@@ -112,27 +128,22 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
         })
         .collect();
 
-    let layout = layout_dirs(&r.python_version, has_usd);
-
-    // Materialize the prefix layout.
-    for sub in &layout {
-        let dir = r.prefix.join(sub);
-        std::fs::create_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))?;
-    }
-
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let manifest = RuntimeManifest::build(
-        &r.runtime,
-        &r.python_version,
-        r.capabilities.clone(),
-        layout.clone(),
-        extensions,
-        created,
-        true, // mock backend
-    );
+
+    // Choose the backend source: an adopted USD install (`--from-usd` or
+    // `OST_USD_ROOT`) → `local`; otherwise the mock layout.
+    let adopt = from_usd.or_else(|| match std::env::var("OST_USD_ROOT") {
+        Ok(v) if !v.is_empty() => Some(v),
+        _ => None,
+    });
+
+    let manifest = match adopt {
+        Some(usd_root) => adopt_local(&r, &usd_root, extensions, created)?,
+        None => materialize_mock(&r, has_usd, extensions, created)?,
+    };
 
     let manifest_path = r.prefix.join(MANIFEST_FILE);
     let json = manifest
@@ -147,17 +158,30 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
             "runtime": manifest.id,
             "prefix": r.prefix.to_string(),
             "digest": manifest.digest,
-            "mock": manifest.mock,
+            "source": manifest.source.as_str(),
+            "external_prefix": manifest.external_prefix,
             "layout": manifest.layout,
             "extensions": manifest.extensions,
         }));
         return Ok(());
     }
 
-    println!("Pulled runtime {} (mock)", manifest.id);
+    println!(
+        "{} runtime {} ({})",
+        if manifest.source == RuntimeSource::Local {
+            "Adopted"
+        } else {
+            "Pulled"
+        },
+        manifest.id,
+        manifest.source.as_str()
+    );
     println!("  prefix:  {}", r.prefix);
+    if let Some(ext) = &manifest.external_prefix {
+        println!("  usd:     {ext}");
+    }
     println!("  digest:  {}", manifest.digest);
-    println!("  layout:  {}", layout.join(", "));
+    println!("  layout:  {}", manifest.layout.join(", "));
     if !manifest.extensions.is_empty() {
         let names: Vec<String> = manifest
             .extensions
@@ -166,9 +190,82 @@ fn pull(platform: &str, profile: &str, force: bool, fmt: Format) -> Result<()> {
             .collect();
         println!("  extensions: {}", names.join(", "));
     }
-    println!("\nActivate with:");
-    println!("  ost devshell {} --profile {}", platform, profile);
+    println!("\nValidate with:");
+    println!("  ost runtime validate {} --profile {}", platform, profile);
     Ok(())
+}
+
+/// Materialize the mock prefix layout (no real OpenUSD): the original backend.
+fn materialize_mock(
+    r: &crate::commands::Resolved,
+    has_usd: bool,
+    extensions: Vec<ExtensionRecord>,
+    created: u64,
+) -> Result<RuntimeManifest> {
+    let layout = layout_dirs(&r.python_version, has_usd);
+    for sub in &layout {
+        let dir = r.prefix.join(sub);
+        std::fs::create_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))?;
+    }
+    Ok(RuntimeManifest::build(
+        &r.runtime,
+        &r.python_version,
+        r.capabilities.clone(),
+        layout,
+        extensions,
+        created,
+        RuntimeSource::Mock,
+    ))
+}
+
+/// Adopt an existing OpenUSD install at `usd_root` in place (`local` source):
+/// record a manifest in the store that points at the external prefix, without
+/// copying or building. The real artifacts keep USD's own layout.
+fn adopt_local(
+    r: &crate::commands::Resolved,
+    usd_root: &str,
+    extensions: Vec<ExtensionRecord>,
+    created: u64,
+) -> Result<RuntimeManifest> {
+    let root = Utf8PathBuf::from(usd_root);
+    if !root.as_std_path().is_dir() {
+        return Err(Error::Operation(format!(
+            "--from-usd path '{root}' is not a directory"
+        )));
+    }
+
+    // Probe USD's install layout. Require at least one strong marker so we don't
+    // silently adopt an unrelated directory.
+    let candidates = ["bin", "lib", "lib/python", "plugin/usd", "include"];
+    let layout: Vec<String> = candidates
+        .iter()
+        .filter(|s| root.join(s).as_std_path().is_dir())
+        .map(|s| s.to_string())
+        .collect();
+    let looks_like_usd = ["lib/python", "plugin/usd"]
+        .iter()
+        .any(|s| root.join(s).as_std_path().is_dir());
+    if !looks_like_usd {
+        return Err(Error::Operation(format!(
+            "'{root}' does not look like an OpenUSD install (no lib/python or plugin/usd)"
+        )));
+    }
+
+    // The store dir holds only the manifest (a pointer to the external root).
+    std::fs::create_dir_all(r.prefix.as_std_path())
+        .map_err(|e| Error::io(r.prefix.to_string(), e))?;
+
+    let mut manifest = RuntimeManifest::build(
+        &r.runtime,
+        &r.python_version,
+        r.capabilities.clone(),
+        layout,
+        extensions,
+        created,
+        RuntimeSource::Local,
+    );
+    manifest.external_prefix = Some(root.to_string().replace('\\', "/"));
+    Ok(manifest)
 }
 
 fn list(fmt: Format) -> Result<()> {
@@ -204,7 +301,7 @@ fn list(fmt: Format) -> Result<()> {
                     "profile": m.profile,
                     "validation": m.validation,
                     "digest": m.digest,
-                    "mock": m.mock,
+                    "source": m.source.as_str(),
                 })
             })
             .collect();
@@ -216,13 +313,14 @@ fn list(fmt: Format) -> Result<()> {
         println!("No runtimes pulled. Try `ost runtime pull cy2026 --profile usd`.");
         return Ok(());
     }
-    println!("{:<48}  {:<9}  DIGEST", "RUNTIME", "VALIDATE");
+    println!("{:<48}  {:<9}  {:<8}  DIGEST", "RUNTIME", "VALIDATE", "SOURCE");
     for m in &manifests {
         let validation = format!("{:?}", m.validation).to_lowercase();
         println!(
-            "{:<48}  {:<9}  {}",
+            "{:<48}  {:<9}  {:<8}  {}",
             m.id,
             validation,
+            m.source.as_str(),
             short_digest(&m.digest)
         );
     }
@@ -257,11 +355,11 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     println!("Python:     {}", manifest.python);
     println!("Digest:     {}", manifest.digest);
     println!("Validation: {:?}", manifest.validation);
-    println!(
-        "Backend:    {}",
-        if manifest.mock { "mock" } else { "artifact" }
-    );
+    println!("Source:     {}", manifest.source.as_str());
     println!("Prefix:     {}", r.prefix);
+    if let Some(ext) = &manifest.external_prefix {
+        println!("USD root:   {ext}");
+    }
     println!("Capabilities:");
     for cap in &manifest.capabilities {
         println!("  - {cap}");
@@ -300,7 +398,9 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     let mut manifest = RuntimeManifest::from_json(&src)
         .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
 
-    let report = ost_runtime::validate(&r.prefix, &manifest);
+    // Validate against the effective artifact prefix (the external USD root for
+    // an adopted runtime; the store prefix otherwise).
+    let report = ost_runtime::validate(&r.artifact_prefix, &manifest);
     let passed = report.passed();
 
     // Record the outcome back into the manifest (digest is unaffected).
