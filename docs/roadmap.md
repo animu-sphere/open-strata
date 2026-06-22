@@ -118,11 +118,17 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
   `<fixture>.golden.usda`); `ost plugin test` orchestrates L0..L5 + report.
   `EnvSet::for_usd_install` probes `lib/python` vs `lib/site-packages`.
   Verified end-to-end against a real OpenUSD 25.05 build.
-- ✅ `build` source — `ost runtime pull … --build <usd-src>` drives the source
-  tree's `build_scripts/build_usd.py` into the store (one-time; re-pull is a
-  cache hit), bootstrapping the MSVC env on Windows like `ost build`;
-  `--jobs` and `--build-arg` (hyphen-allowed) tune it. Verified by building a
-  real OpenUSD 25.05 from source and running `ost plugin test` against it.
+- ✅ `build` source — `ost runtime pull … --build <usd-src>` builds OpenUSD from
+  source into the store (one-time; re-pull is a cache hit), bootstrapping the
+  MSVC env on Windows like `ost build`. Two modes:
+  - **build_usd.py** (default) — drives the source tree's
+    `build_scripts/build_usd.py`, which fetches+builds dependencies itself.
+  - **CMake-direct** (`--deps <prefix>…`) — builds OpenUSD directly with CMake
+    against pre-provided dependency prefixes (`CMAKE_PREFIX_PATH`), faster and
+    aligned with OpenStrata's resolver; sets up deps-as-extensions (Phase 6).
+
+  `--jobs` and `--build-arg` (hyphen-allowed) tune either mode. Both verified by
+  building a real OpenUSD 25.05 and running `ost plugin test` against it.
 - ⬜ `ost plugin view | test-view` (Level 6), `package | publish`, CI matrix
   (`artifact` source lands with Phase 6)
 

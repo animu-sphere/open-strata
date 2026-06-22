@@ -176,6 +176,34 @@ impl EnvSet {
         EnvSet { sep, vars }
     }
 
+    /// Prepend a dependency prefix's runtime library directories to this set, so
+    /// a USD built against *external* deps can load their shared libraries at
+    /// runtime. On Windows DLLs are searched on `PATH` (both `bin` and `lib`);
+    /// elsewhere the dynamic-loader variable points at `lib`.
+    pub fn add_dep_libs(&mut self, dep: &Utf8Path, os: Os) {
+        let path = |p: &Utf8Path| p.to_string().replace('\\', "/");
+        match os {
+            Os::Windows => {
+                self.vars.push(EnvVar {
+                    key: "PATH".into(),
+                    op: EnvOp::Prepend(path(&dep.join("bin"))),
+                });
+                self.vars.push(EnvVar {
+                    key: "PATH".into(),
+                    op: EnvOp::Prepend(path(&dep.join("lib"))),
+                });
+            }
+            Os::Linux => self.vars.push(EnvVar {
+                key: "LD_LIBRARY_PATH".into(),
+                op: EnvOp::Prepend(path(&dep.join("lib"))),
+            }),
+            Os::Macos => self.vars.push(EnvVar {
+                key: "DYLD_LIBRARY_PATH".into(),
+                op: EnvOp::Prepend(path(&dep.join("lib"))),
+            }),
+        }
+    }
+
     /// Render the set as evaluable shell statements (no trailing prose).
     pub fn render(&self, shell: Shell) -> String {
         let mut out = String::new();
@@ -309,6 +337,28 @@ mod tests {
         }
         // The adopted install still exposes USD's plugin discovery root.
         assert!(set.vars.iter().any(|v| v.key == "PXR_PLUGINPATH_NAME"));
+    }
+
+    #[test]
+    fn dep_libs_join_the_session_lib_path() {
+        // Linux: the dep's lib/ lands on LD_LIBRARY_PATH.
+        let mut set = EnvSet::for_usd_install(&Utf8PathBuf::from("/opt/usd"), Os::Linux);
+        set.add_dep_libs(&Utf8PathBuf::from("/deps/tbb"), Os::Linux);
+        assert!(set
+            .vars
+            .iter()
+            .any(|v| v.key == "LD_LIBRARY_PATH"
+                && matches!(&v.op, EnvOp::Prepend(p) if p.ends_with("/deps/tbb/lib"))));
+
+        // Windows: DLLs are searched on PATH (both bin and lib).
+        let mut win = EnvSet::for_usd_install(&Utf8PathBuf::from(r"C:\usd"), Os::Windows);
+        win.add_dep_libs(&Utf8PathBuf::from(r"C:\deps\tbb"), Os::Windows);
+        let path_adds = win
+            .vars
+            .iter()
+            .filter(|v| v.key == "PATH" && matches!(&v.op, EnvOp::Prepend(p) if p.contains("deps/tbb")))
+            .count();
+        assert_eq!(path_adds, 2);
     }
 
     #[test]
