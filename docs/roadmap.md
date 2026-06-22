@@ -61,12 +61,16 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   check when not packaged; deterministic exit 0/1 (verified: tampering the
   archive fails the check)
 
-## Phase 3 — OpenUSD / MaterialX profiles ⬜
+## Phase 3 — OpenUSD / MaterialX profiles 🚧
 
-- ⬜ OpenUSD extension family with feature sets (core/python/imaging/materialx/…)
-- ⬜ Capability resolver; `usd` and `lookdev` profiles
-- ⬜ Compatible range vs certified build point
-- ⬜ `ost extension add | why`, `ost runtime explain`
+- ✅ OpenUSD extension family with feature sets (core/python/imaging/materialx/…)
+  and MaterialX, in the new `ost-extension` crate (embedded + overlay loader)
+- ✅ Capability resolver: capability → providing extension + feature, pulling in
+  transitive extensions (usd-materialx → openusd[materialx] → materialx) and the
+  packages each feature needs
+- ✅ Compatible range vs certified build point (chosen per resolved feature set)
+- ✅ `ost runtime explain` (capability → provider/extension graph, human/--json)
+- ⬜ `ost extension list | why | add`
 
 ## Phase 4 — USD file format plugin lifecycle ⬜
 

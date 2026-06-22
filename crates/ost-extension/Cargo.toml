@@ -1,0 +1,15 @@
+[package]
+name = "ost-extension"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenStrata controlled extensions: model, loader, and capability resolver."
+
+[dependencies]
+ost-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+indexmap.workspace = true

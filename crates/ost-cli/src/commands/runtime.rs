@@ -47,6 +47,14 @@ pub enum RuntimeCmd {
         #[arg(long, default_value = "core")]
         profile: String,
     },
+    /// Explain how a profile resolves to capabilities and extensions.
+    Explain {
+        /// Platform calendar-year id, e.g. `cy2026`.
+        platform: String,
+        /// Profile, e.g. `lookdev`.
+        #[arg(long, default_value = "core")]
+        profile: String,
+    },
 }
 
 pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
@@ -59,6 +67,7 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
         RuntimeCmd::List => list(fmt),
         RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
         RuntimeCmd::Validate { platform, profile } => validate(&platform, &profile, fmt),
+        RuntimeCmd::Explain { platform, profile } => explain(&platform, &profile, fmt),
     }
 }
 
@@ -301,6 +310,108 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     } else {
         std::process::exit(1);
     }
+}
+
+fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
+    let r = resolve(platform, profile)?;
+    let catalog = ost_extension::load_all()?;
+    let resolution = ost_extension::resolve(&catalog, &r.capabilities);
+
+    if fmt.is_json() {
+        let caps: Vec<_> = resolution
+            .edges
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "capability": e.capability,
+                    "provider": e.extension,
+                    "feature": e.feature,
+                })
+            })
+            .collect();
+        let exts: Vec<_> = resolution
+            .extensions
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id,
+                    "version": e.version,
+                    "features": e.features,
+                    "packages": e.packages,
+                    "allowed_range": e.allowed_range,
+                    "certified": e.certified.as_ref().map(|c| serde_json::json!({
+                        "version": c.version,
+                        "features": c.features,
+                        "validation": c.validation,
+                    })),
+                    "uncertified": e.uncertified,
+                })
+            })
+            .collect();
+        output::json(&serde_json::json!({
+            "runtime": r.runtime.id(),
+            "platform": platform,
+            "profile": profile,
+            "capabilities": caps,
+            "extensions": exts,
+            "runtime_provided": resolution.runtime_provided,
+        }));
+        return Ok(());
+    }
+
+    println!("Runtime {}", r.runtime.id());
+    println!("  platform: {platform}   profile: {profile}");
+
+    println!("\nCapabilities:");
+    let width = resolution
+        .edges
+        .iter()
+        .map(|e| e.capability.len())
+        .max()
+        .unwrap_or(0);
+    for edge in &resolution.edges {
+        let provider = match (&edge.extension, &edge.feature) {
+            (Some(ext), Some(feature)) => format!("{ext} [{feature}]"),
+            (Some(ext), None) => ext.clone(),
+            (None, _) => "runtime".to_string(),
+        };
+        println!("  {:<width$}  {provider}", edge.capability);
+    }
+
+    if resolution.extensions.is_empty() {
+        println!("\nExtensions: (none — base runtime only)");
+    } else {
+        println!("\nExtensions:");
+        for ext in &resolution.extensions {
+            println!("  {} {}", ext.id, ext.version);
+            if !ext.features.is_empty() {
+                let feats: Vec<_> = ext.features.iter().cloned().collect();
+                println!("    features:  {}", feats.join(", "));
+            }
+            if !ext.packages.is_empty() {
+                let pkgs: Vec<_> = ext.packages.iter().cloned().collect();
+                println!("    packages:  {}", pkgs.join(", "));
+            }
+            if let Some(c) = &ext.certified {
+                let val = c.validation.as_deref().unwrap_or("unvalidated");
+                if c.features.is_empty() {
+                    println!("    certified: {} ({val})", c.version);
+                } else {
+                    println!("    certified: {} [{}] ({val})", c.version, c.features.join(", "));
+                }
+            } else if ext.uncertified {
+                let feats: Vec<_> = ext.features.iter().cloned().collect();
+                println!(
+                    "    certified: NONE — no certified build covers [{}] (UNCERTIFIED)",
+                    feats.join(", ")
+                );
+            }
+            if let Some(range) = &ext.allowed_range {
+                println!("    range:     {range}");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn short_digest(digest: &str) -> String {

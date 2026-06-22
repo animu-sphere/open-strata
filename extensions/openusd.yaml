@@ -1,0 +1,37 @@
+# OpenUSD — a Strata Certified Extension (§5).
+# OpenUSD is not part of the VFX Reference Platform core, so OpenStrata manages
+# it as a controlled extension with explicit feature sets.
+id: openusd
+type: solution.openusd
+tier: strata-certified-extension
+version: "25.05.01"
+allowed_range: ">=25.05,<26.08"
+
+# capability -> the feature that must be enabled to provide it.
+provides:
+  usd-stage-read: { feature: core }
+  usd-stage-write: { feature: core }
+  usd-shading: { feature: core }
+  usd-asset-resolver: { feature: core }
+  hydra-preview: { feature: imaging }
+  usd-materialx: { feature: materialx }
+
+features:
+  core: {}
+  python:
+    requires_packages: [python, boost, tbb]
+  imaging:
+    requires_packages: [openexr, opensubdiv, ptex]
+  materialx:
+    requires_extensions: [materialx]
+  alembic:
+    requires_packages: [alembic]
+
+certified:
+  - version: "25.05.01"
+    features: [core, python, imaging, materialx, alembic]
+    validation: passed
+
+validation:
+  - usd-stage-open
+  - usd-plugin-discovery
