@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://openstrata.dev/schemas/platform.schema.json",
+  "$id": "https://raw.githubusercontent.com/animu-sphere/open-strata/main/schemas/platform.schema.json",
   "title": "OpenStrata Platform Manifest",
   "description": "A machine-readable VFX Reference Platform calendar-year definition.",
   "type": "object",

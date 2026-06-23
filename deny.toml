@@ -1,0 +1,50 @@
+# cargo-deny configuration — license, advisory, and source gating for the
+# OpenStrata crate tree. Run locally with `cargo deny check`; CI runs the same.
+#
+# Targets are pinned to the platforms OpenStrata distributes the `ost` binary
+# for (see dist-workspace.toml). This scopes the review to what we ship and keeps
+# non-host targets (e.g. wasm) out of the graph.
+[graph]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+all-features = true
+
+[licenses]
+# Anything whose SPDX expression is not satisfied by this allowlist fails the
+# check. Mirrors `accepted` in about.toml: permissive licenses compatible with
+# redistributing OpenStrata under Apache-2.0; copyleft (beyond file-level
+# MPL-2.0) and unknown licenses are rejected by omission.
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Unlicense",
+    # File-level copyleft only; redistributed unmodified via `option-ext`.
+    "MPL-2.0",
+]
+exceptions = []
+
+[bans]
+# Duplicate versions are noise, not a license problem — warn, don't fail.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[advisories]
+yanked = "warn"
+
+[sources]
+# Only crates.io is expected. Flag anything from an unknown registry or git source.
+unknown-registry = "deny"
+unknown-git = "deny"

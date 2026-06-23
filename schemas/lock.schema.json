@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://openstrata.dev/schemas/lock.schema.json",
+  "$id": "https://raw.githubusercontent.com/animu-sphere/open-strata/main/schemas/lock.schema.json",
   "title": "OpenStrata Lockfile",
   "description": "The generated strata.lock pinning a reproducible runtime + session.",
   "type": "object",

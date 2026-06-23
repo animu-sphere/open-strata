@@ -1,0 +1,36 @@
+# cargo-about configuration — generates THIRD_PARTY_NOTICES.md, the upstream
+# attribution for the Rust crates compiled into the `ost` binary.
+#
+#   cargo about generate about.hbs > THIRD_PARTY_NOTICES.md
+#
+# `accepted` mirrors the allowlist in deny.toml: permissive licenses compatible
+# with redistributing OpenStrata under Apache-2.0. A crate carrying anything
+# else makes generation fail, surfacing it for review.
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Unlicense",
+    # File-level copyleft only; redistributed unmodified (via `directories` ->
+    # `option-ext`), so it imposes no obligation on OpenStrata's own source.
+    "MPL-2.0",
+]
+
+# Only the platforms OpenStrata ships the `ost` binary for (keeps non-host
+# targets such as wasm out of the attribution set).
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+# Dev-dependencies are not shipped in the binary, so they need no attribution.
+ignore-dev-dependencies = true
