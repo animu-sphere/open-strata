@@ -1,0 +1,36 @@
+# License / attribution gate. Keeps the dependency tree on permissive licenses,
+# flags security advisories, and verifies THIRD_PARTY_NOTICES.md is in sync with
+# the dependency graph. Ubuntu-only (cheap) so it can run on every PR.
+name: licenses
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  licenses:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Prebuilt cargo-deny / cargo-about (no compile). The toolchain pinned in
+      # rust-toolchain.toml is auto-installed by rustup when cargo is invoked.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-about
+
+      - name: cargo-deny (licenses, advisories, sources, bans)
+        run: cargo deny check
+
+      - name: THIRD_PARTY_NOTICES.md is up to date
+        run: |
+          cargo about generate about.hbs > THIRD_PARTY_NOTICES.check.md
+          if ! diff -u THIRD_PARTY_NOTICES.md THIRD_PARTY_NOTICES.check.md; then
+            echo "::error::THIRD_PARTY_NOTICES.md is stale — run: cargo about generate about.hbs > THIRD_PARTY_NOTICES.md"
+            exit 1
+          fi
+          rm -f THIRD_PARTY_NOTICES.check.md

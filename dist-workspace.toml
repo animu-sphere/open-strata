@@ -18,6 +18,11 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+# Extra files bundled into every release archive. cargo-dist auto-includes
+# LICENSE + README; NOTICE and THIRD_PARTY_NOTICES (Apache-2.0 attribution +
+# upstream Rust crate licenses) are listed explicitly so no artifact ships
+# without complete attribution.
+include = ["NOTICE", "THIRD_PARTY_NOTICES.md"]
 # Only plan (don't run heavy multi-OS builds) on PRs; full builds run on tags.
 pr-run-mode = "plan"
 # Attach GitHub build provenance attestations (SLSA) to release artifacts.
