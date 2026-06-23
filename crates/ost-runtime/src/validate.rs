@@ -114,10 +114,7 @@ fn real_runtime_checks(prefix: &Utf8Path) -> Vec<Check> {
     if has_usdcat {
         checks.push(Check::pass("usdcat-present"));
     } else {
-        checks.push(Check::fail(
-            "usdcat-present",
-            format!("no usdcat in {bin}"),
-        ));
+        checks.push(Check::fail("usdcat-present", format!("no usdcat in {bin}")));
     }
 
     let py_dir = crate::env::usd_python_dir(prefix);
@@ -127,7 +124,10 @@ fn real_runtime_checks(prefix: &Utf8Path) -> Vec<Check> {
     } else {
         checks.push(Check::fail(
             "pxr-package",
-            format!("no pxr package under {}/lib (looked for python/ and site-packages/)", prefix),
+            format!(
+                "no pxr package under {}/lib (looked for python/ and site-packages/)",
+                prefix
+            ),
         ));
     }
 
@@ -175,7 +175,11 @@ mod tests {
     }
 
     fn named(report: &ValidationReport, name: &str) -> Option<bool> {
-        report.checks.iter().find(|c| c.name == name).map(|c| c.passed)
+        report
+            .checks
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| c.passed)
     }
 
     #[test]

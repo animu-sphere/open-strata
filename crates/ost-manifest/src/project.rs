@@ -97,13 +97,19 @@ pub fn add_extension(src: &str, name: &str) -> Result<Option<String>> {
         .get_mut("requires")
         .and_then(Item::as_table_mut)
         .ok_or_else(|| {
-            Error::InvalidManifest(format!("{PROJECT_MANIFEST} is missing the [requires] table"))
+            Error::InvalidManifest(format!(
+                "{PROJECT_MANIFEST} is missing the [requires] table"
+            ))
         })?;
 
     let mut names: Vec<String> = requires
         .get("extensions")
         .and_then(Item::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
 
     if names.iter().any(|e| e == name) {

@@ -105,7 +105,8 @@ deterministic exit codes, so the same commands drive both interactive use and CI
 
 ## Toolchain pinning
 
-The repo currently builds on Rust 1.69. Because several modern crates require a
-newer compiler or edition 2024, top-level dependency versions are pinned in
-`Cargo.toml` and transitive versions are pinned in `Cargo.lock` to keep the whole
-tree on edition ≤ 2021. Bump these deliberately alongside a `rust-version` bump.
+The toolchain is pinned in `rust-toolchain.toml` (currently Rust 1.96) so local,
+CI, and release builds all use the same compiler; `rust-version` in `Cargo.toml`
+records the MSRV floor and is kept in sync. Top-level dependency versions are
+pinned in `Cargo.toml` and transitive versions in `Cargo.lock` for reproducible
+builds; bump them deliberately alongside a toolchain bump.

@@ -133,9 +133,13 @@ pub fn why(catalog: &Catalog, resolution: &Resolution, name: &str) -> Vec<Requir
         if ext.id == name {
             continue;
         }
-        let Some(src) = catalog.get(&ext.id) else { continue };
+        let Some(src) = catalog.get(&ext.id) else {
+            continue;
+        };
         for feature in &ext.features {
-            let Some(spec) = src.feature(feature) else { continue };
+            let Some(spec) = src.feature(feature) else {
+                continue;
+            };
             if spec.requires_extensions.iter().any(|d| d == name) {
                 let capability = resolution
                     .edges
@@ -206,15 +210,16 @@ fn enable(
 }
 
 fn ensure(acc: &mut BTreeMap<String, ResolvedExtension>, ext: &Extension) {
-    acc.entry(ext.id.clone()).or_insert_with(|| ResolvedExtension {
-        id: ext.id.clone(),
-        version: ext.version.clone(),
-        features: BTreeSet::new(),
-        packages: BTreeSet::new(),
-        allowed_range: ext.allowed_range.clone(),
-        certified: None,
-        uncertified: false,
-    });
+    acc.entry(ext.id.clone())
+        .or_insert_with(|| ResolvedExtension {
+            id: ext.id.clone(),
+            version: ext.version.clone(),
+            features: BTreeSet::new(),
+            packages: BTreeSet::new(),
+            allowed_range: ext.allowed_range.clone(),
+            certified: None,
+            uncertified: false,
+        });
 }
 
 /// Pick the first certified point whose feature set covers the enabled features.

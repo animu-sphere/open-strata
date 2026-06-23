@@ -70,14 +70,11 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     let name = &project.project.name;
     let version = &project.project.version;
     let archive_name = format!("{name}-{version}-{id}.tar.zst");
-    let dist_dir = root
-        .join("dist")
-        .join(name)
-        .join(version)
-        .join(&id);
+    let dist_dir = root.join("dist").join(name).join(version).join(&id);
     let archive_path = dist_dir.join(&archive_name);
 
-    let packed = pack_dir(&stage, &archive_path).map_err(|e| Error::io(archive_path.to_string(), e))?;
+    let packed =
+        pack_dir(&stage, &archive_path).map_err(|e| Error::io(archive_path.to_string(), e))?;
 
     if packed.files.is_empty() {
         eprintln!(
@@ -133,7 +130,10 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         .archive_digest
         .strip_prefix("sha256:")
         .unwrap_or(&packed.archive_digest);
-    write(&dist_dir.join("SHA256SUMS"), &format!("{bare}  {archive_name}"))?;
+    write(
+        &dist_dir.join("SHA256SUMS"),
+        &format!("{bare}  {archive_name}"),
+    )?;
 
     report(&id, &archive_path, &packed, &validation, fmt);
     Ok(())

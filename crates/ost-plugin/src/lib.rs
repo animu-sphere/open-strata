@@ -32,9 +32,7 @@ pub use model::{
     PluginIdentity, PluginKind, PluginManifest, Requires, RuntimeReq, Tests, UsdSection,
     PLUGIN_MANIFEST,
 };
-pub use report::{
-    environment_json, report_json, summary_text, write_report, REPORT_SCHEMA,
-};
+pub use report::{environment_json, report_json, summary_text, write_report, REPORT_SCHEMA};
 pub use scaffold::scaffold;
 pub use session::{bundle_vars, session_env};
 pub use version::{satisfies, RangeError};

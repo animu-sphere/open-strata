@@ -146,12 +146,19 @@ fn level2_discovery(bundle: &Bundle, session: &Session) -> Diagnostic {
         );
     }
     if out.ok() {
-        Diagnostic::pass(ID, 2, format!("USD registry resolves '.{ext}' to a file format"))
+        Diagnostic::pass(
+            ID,
+            2,
+            format!("USD registry resolves '.{ext}' to a file format"),
+        )
     } else {
         Diagnostic::fail(
             ID,
             2,
-            format!("USD does not recognize '.{ext}' (discovery failed): {}", tail(&out.stderr)),
+            format!(
+                "USD does not recognize '.{ext}' (discovery failed): {}",
+                tail(&out.stderr)
+            ),
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
                 "verify plugInfo.json LibraryPath resolves and the library loads".into(),
@@ -187,7 +194,14 @@ fn level3_usdcat(bundle: &Bundle, session: &Session) -> Diagnostic {
         return Diagnostic::fail(ID, 3, format!("could not run usdcat ({usdcat})"), vec![]);
     }
     if out.ok() && !out.stdout.trim().is_empty() {
-        Diagnostic::pass(ID, 3, format!("usdcat read '{}' and emitted USDA", fixture.file_name().unwrap_or("")))
+        Diagnostic::pass(
+            ID,
+            3,
+            format!(
+                "usdcat read '{}' and emitted USDA",
+                fixture.file_name().unwrap_or("")
+            ),
+        )
     } else {
         Diagnostic::fail(
             ID,
@@ -272,7 +286,11 @@ fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
 fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> Diagnostic {
     const ID: &str = "usdview.launch";
     let Some(usdview) = &session.usdview else {
-        return Diagnostic::skip(ID, 6, "usdview not in the runtime (build with usdview enabled)");
+        return Diagnostic::skip(
+            ID,
+            6,
+            "usdview not in the runtime (build with usdview enabled)",
+        );
     };
     if !session.has_display {
         return Diagnostic::skip(ID, 6, "no display available for usdview");
@@ -301,13 +319,19 @@ fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> 
         Diagnostic::pass(
             ID,
             6,
-            format!("usdview opened '{}' and exited cleanly", path.file_name().unwrap_or("")),
+            format!(
+                "usdview opened '{}' and exited cleanly",
+                path.file_name().unwrap_or("")
+            ),
         )
     } else {
         Diagnostic::fail(
             ID,
             6,
-            format!("usdview failed to launch/open the stage: {}", tail(&out.stderr)),
+            format!(
+                "usdview failed to launch/open the stage: {}",
+                tail(&out.stderr)
+            ),
             vec!["run `ost plugin view` to see the full usdview output".into()],
         )
     }
@@ -385,8 +409,11 @@ mod tests {
     fn bundle_with_fixture() -> (tempdir_like::Dir, Bundle) {
         let dir = tempdir_like::Dir::new("levels");
         std::fs::create_dir_all(dir.path.join("tests/fixtures").as_std_path()).unwrap();
-        std::fs::write(dir.path.join("tests/fixtures/basic.toy").as_std_path(), "toy 1.0\n")
-            .unwrap();
+        std::fs::write(
+            dir.path.join("tests/fixtures/basic.toy").as_std_path(),
+            "toy 1.0\n",
+        )
+        .unwrap();
         let manifest = PluginManifest::parse(
             r#"
 plugin: { name: toy, version: 0.1.0, kind: usd-fileformat }
@@ -407,9 +434,10 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
     #[test]
     fn discovery_and_read_pass_when_tools_succeed() {
         let (_d, bundle) = bundle_with_fixture();
-        let probe = FakeProbe::new()
-            .on("python", Some(0), "", "")
-            .on("usdcat", Some(0), "#usda 1.0\n", "");
+        let probe =
+            FakeProbe::new()
+                .on("python", Some(0), "", "")
+                .on("usdcat", Some(0), "#usda 1.0\n", "");
         let session = Session {
             probe: &probe,
             usdcat: Some("usdcat".into()),

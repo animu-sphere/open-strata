@@ -158,13 +158,7 @@ pub struct PullSource {
     pub deps: Vec<String>,
 }
 
-fn pull(
-    platform: &str,
-    profile: &str,
-    force: bool,
-    src: PullSource,
-    fmt: Format,
-) -> Result<()> {
+fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format) -> Result<()> {
     let r = resolve(platform, profile)?;
 
     if r.pulled && !force {
@@ -370,7 +364,10 @@ fn probe_usd_layout(root: &Utf8Path) -> Vec<String> {
 /// Whether `root` looks like an OpenUSD install (a strong marker is present).
 fn looks_like_usd(root: &Utf8Path) -> bool {
     root.join("plugin/usd").as_std_path().is_dir()
-        || ost_runtime::usd_python_dir(root).join("pxr").as_std_path().is_dir()
+        || ost_runtime::usd_python_dir(root)
+            .join("pxr")
+            .as_std_path()
+            .is_dir()
 }
 
 /// The arguments to pass to `python` to run build_usd.py: the script, default
@@ -466,7 +463,11 @@ fn msvc_env() -> Vec<(String, String)> {
     }
     match ost_build::msvc::bootstrap() {
         Ok(Some(env)) => {
-            println!("==> msvc env   {} ({} vars)", env.vcvars.display(), env.vars.len());
+            println!(
+                "==> msvc env   {} ({} vars)",
+                env.vcvars.display(),
+                env.vars.len()
+            );
             env.vars
         }
         Ok(None) => {
@@ -529,16 +530,16 @@ fn build_from_source(
     // A CMake-direct build links against external deps; record them so the
     // session env can expose their runtime libraries. build_usd.py is
     // self-contained (deps installed into the prefix), so this stays empty.
-    manifest.runtime_deps = opts
-        .deps
-        .iter()
-        .map(|d| d.replace('\\', "/"))
-        .collect();
+    manifest.runtime_deps = opts.deps.iter().map(|d| d.replace('\\', "/")).collect();
     Ok(manifest)
 }
 
 /// Drive the source tree's `build_scripts/build_usd.py` (handles dependencies).
-fn build_with_script(r: &crate::commands::Resolved, src: &Utf8Path, opts: &BuildOpts) -> Result<()> {
+fn build_with_script(
+    r: &crate::commands::Resolved,
+    src: &Utf8Path,
+    opts: &BuildOpts,
+) -> Result<()> {
     let script = src.join("build_scripts").join("build_usd.py");
     if !script.as_std_path().is_file() {
         return Err(Error::Operation(format!(
@@ -553,7 +554,10 @@ fn build_with_script(r: &crate::commands::Resolved, src: &Utf8Path, opts: &Build
         .map_err(|_| Error::Operation("python path is not UTF-8".into()))?;
 
     let args = build_usd_args(&script, &r.prefix, opts.jobs, &opts.extra);
-    println!("==> building OpenUSD (build_usd.py) into {} (one-time, heavy)", r.prefix);
+    println!(
+        "==> building OpenUSD (build_usd.py) into {} (one-time, heavy)",
+        r.prefix
+    );
     println!("    {python} {}", args.join(" "));
     run_build_step(python.as_str(), &args, &msvc_env(), "build_usd.py")
 }
@@ -563,7 +567,9 @@ fn build_with_script(r: &crate::commands::Resolved, src: &Utf8Path, opts: &Build
 fn build_with_cmake(r: &crate::commands::Resolved, src: &Utf8Path, opts: &BuildOpts) -> Result<()> {
     for dep in &opts.deps {
         if !Utf8PathBuf::from(dep).as_std_path().is_dir() {
-            return Err(Error::Operation(format!("--deps prefix '{dep}' is not a directory")));
+            return Err(Error::Operation(format!(
+                "--deps prefix '{dep}' is not a directory"
+            )));
         }
     }
     let cmake = tools::which("cmake")
@@ -597,7 +603,10 @@ fn build_with_cmake(r: &crate::commands::Resolved, src: &Utf8Path, opts: &BuildO
     );
     let build = cmake_build_args(&build_dir, opts.jobs);
 
-    println!("==> building OpenUSD (cmake) into {} (one-time, heavy)", r.prefix);
+    println!(
+        "==> building OpenUSD (cmake) into {} (one-time, heavy)",
+        r.prefix
+    );
     println!("    cmake {}", configure.join(" "));
     run_build_step(cmake.as_str(), &configure, &env, "cmake configure")?;
     println!("    cmake {}", build.join(" "));
@@ -671,7 +680,10 @@ fn list(fmt: Format) -> Result<()> {
         println!("No runtimes pulled. Try `ost runtime pull cy2026 --profile usd`.");
         return Ok(());
     }
-    println!("{:<48}  {:<9}  {:<8}  DIGEST", "RUNTIME", "VALIDATE", "SOURCE");
+    println!(
+        "{:<48}  {:<9}  {:<8}  DIGEST",
+        "RUNTIME", "VALIDATE", "SOURCE"
+    );
     for m in &manifests {
         let validation = format!("{:?}", m.validation).to_lowercase();
         println!(
@@ -969,14 +981,14 @@ mod tests {
             &["-DPXR_BUILD_IMAGING=OFF".to_string()],
         );
         assert!(args.windows(2).any(|w| w == ["-S", "/src/OpenUSD"]));
-        assert!(args
-            .iter()
-            .any(|a| a == "-DCMAKE_INSTALL_PREFIX=/store/rt"));
+        assert!(args.iter().any(|a| a == "-DCMAKE_INSTALL_PREFIX=/store/rt"));
         // Multiple dep prefixes are joined with ';' into CMAKE_PREFIX_PATH.
         assert!(args
             .iter()
             .any(|a| a == "-DCMAKE_PREFIX_PATH=/deps/a;/deps/b"));
-        assert!(args.iter().any(|a| a == "-DCMAKE_MAKE_PROGRAM=/tools/ninja"));
+        assert!(args
+            .iter()
+            .any(|a| a == "-DCMAKE_MAKE_PROGRAM=/tools/ninja"));
         assert!(args.iter().any(|a| a == "-DPXR_BUILD_IMAGING=OFF"));
     }
 
@@ -997,7 +1009,10 @@ mod tests {
         #[cfg(windows)]
         {
             let deps = split_dep_prefixes(r"C:\deps\a;D:\deps\b");
-            assert_eq!(deps, vec![r"C:\deps\a".to_string(), r"D:\deps\b".to_string()]);
+            assert_eq!(
+                deps,
+                vec![r"C:\deps\a".to_string(), r"D:\deps\b".to_string()]
+            );
         }
         #[cfg(not(windows))]
         {

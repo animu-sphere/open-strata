@@ -43,9 +43,7 @@ pub struct Store {
 
 impl Store {
     pub fn discover() -> Self {
-        Store {
-            root: user_store(),
-        }
+        Store { root: user_store() }
     }
 
     pub fn runtimes(&self) -> Utf8PathBuf {

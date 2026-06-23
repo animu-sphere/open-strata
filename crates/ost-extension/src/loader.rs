@@ -10,7 +10,10 @@ use crate::model::Extension;
 
 const BUILTINS: &[(&str, &str)] = &[
     ("openusd", include_str!("../../../extensions/openusd.yaml")),
-    ("materialx", include_str!("../../../extensions/materialx.yaml")),
+    (
+        "materialx",
+        include_str!("../../../extensions/materialx.yaml"),
+    ),
 ];
 
 /// All known extensions, keyed and ordered by id.

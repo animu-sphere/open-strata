@@ -4,14 +4,13 @@
 //! - `new`     scaffold a bundle from a template.
 //! - `inspect` Level 0 bundle structure report (no runtime needed).
 //! - `build`   build the shared library + stage plugInfo, reusing `ost-build`'s
-//!             toolchain generation against the resolved runtime.
+//!   toolchain generation against the resolved runtime.
 //! - `doctor`  static diagnostics (L0–L1) + a preview of the session env it
-//!             *would* set; L2+ SKIP (run them with `test`).
+//!   *would* set; L2+ SKIP (run them with `test`).
 //! - `run`     compose the runtime session and exec a command in it (needs a
-//!             real runtime).
+//!   real runtime).
 //! - `test`    orchestrate the verification pyramid L0..L6 — executing the
-//!             runtime's tools for L2+ — and write a report under
-//!             `.strata/reports/`.
+//!   runtime's tools for L2+ — and write a report under `.strata/reports/`.
 //! - `view`    open a fixture in usdview inside the session (interactive, L6).
 //! - `test-view` non-interactive usdview launch probe (L6) + report.
 //!
@@ -254,10 +253,7 @@ fn doctor(
     // Resolve the runtime if we can (enclosing project or explicit flags). When
     // we can't, Level 1 honestly SKIPs rather than guessing.
     let resolved = resolve_runtime(target, profile)?;
-    let ctx = resolved
-        .as_ref()
-        .map(runtime_context)
-        .unwrap_or_default();
+    let ctx = resolved.as_ref().map(runtime_context).unwrap_or_default();
 
     // Compose the session env we *would* set (runtime env + bundle roots).
     let session = match &resolved {
@@ -326,15 +322,16 @@ fn build(
     let toolchain = target_dir.join("toolchain.cmake");
     std::fs::write(
         toolchain.as_std_path(),
-        format!("{}\n", ost_build::render_toolchain(&tgt, &r.artifact_prefix)),
+        format!(
+            "{}\n",
+            ost_build::render_toolchain(&tgt, &r.artifact_prefix)
+        ),
     )
     .map_err(|e| Error::io(toolchain.to_string(), e))?;
 
     let build_dir = bundle.root.join("build");
     let cmake = tools::which("cmake");
-    let ninja = ninja
-        .map(PathBuf::from)
-        .or_else(|| tools::which("ninja"));
+    let ninja = ninja.map(PathBuf::from).or_else(|| tools::which("ninja"));
 
     let toolchain_arg = toolchain.to_string().replace('\\', "/");
     let mut configure_args = vec![
@@ -352,7 +349,10 @@ fn build(
             n.display().to_string().replace('\\', "/")
         ));
     }
-    let build_args = vec!["--build".to_string(), build_dir.to_string().replace('\\', "/")];
+    let build_args = vec![
+        "--build".to_string(),
+        build_dir.to_string().replace('\\', "/"),
+    ];
 
     if dry_run {
         println!("# dry run — would generate {toolchain} then:");
@@ -385,7 +385,10 @@ fn build(
         }));
         return Ok(());
     }
-    println!("\nBuilt {} against {}", bundle.manifest.plugin.name, tgt.runtime_id);
+    println!(
+        "\nBuilt {} against {}",
+        bundle.manifest.plugin.name, tgt.runtime_id
+    );
     println!("  lib:       {}", bundle.lib_dir());
     println!("  plugInfo:  {plug_info}");
     Ok(())
