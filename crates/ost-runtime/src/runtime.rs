@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Runtime identity (§4.2).
 //!
 //! A [`Runtime`] is the concrete thing you activate: a platform year, resolved

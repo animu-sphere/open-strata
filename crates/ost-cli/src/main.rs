@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost` — the OpenStrata command-line interface.
 //!
 //! Phase 0 surface area: `ost platform list|show|diff` and `ost init`. The CLI

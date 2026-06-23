@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Artifact variant identity.
 //!
 //! Workflows are portable, but every lockfile and diagnostic must record the

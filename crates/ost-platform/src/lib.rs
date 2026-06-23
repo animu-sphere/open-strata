@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! VFX Reference Platform calendar-year manifests (§4.1).
 //!
 //! A [`Platform`] is a machine-readable snapshot of a VFX Reference Platform

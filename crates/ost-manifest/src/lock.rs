@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The generated lockfile: `strata.lock` (§9.4).
 //!
 //! The lock pins everything needed to reproduce a session: the resolved

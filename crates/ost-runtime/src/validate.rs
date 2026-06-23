@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Runtime validation (§18.1).
 //!
 //! "Installed is not enough" (§3.4): a pulled runtime is only *certified* once

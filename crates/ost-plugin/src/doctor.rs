@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost plugin doctor` — staged diagnostics (harness §12).
 //!
 //! Each check has a **stable id**, a [`Status`] (PASS / FAIL / SKIP), the

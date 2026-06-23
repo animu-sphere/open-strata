@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! A generic "embedded built-ins + user overlay" catalog loader.
 //!
 //! Platforms, profiles, and extensions all load the same way: a set of built-in

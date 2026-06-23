@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost-extension` — controlled VFX-adjacent components (§4.4, §5, §6).
 //!
 //! OpenStrata does not allow arbitrary dependencies. Extensions (OpenUSD,

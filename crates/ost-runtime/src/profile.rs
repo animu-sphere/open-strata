@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Profiles: named bundles of capabilities (§4.3).
 //!
 //! Loading mirrors `ost-platform`: built-in profiles are embedded so they work

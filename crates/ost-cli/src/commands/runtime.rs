@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost runtime` — pull / list / show runtimes (§14.2).
 //!
 //! `pull` writes a digest-bearing `runtime.json` under `~/.ost/runtimes/<id>`

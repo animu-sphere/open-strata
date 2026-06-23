@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Loading a plugin bundle from disk.
 //!
 //! A bundle is a directory containing an `openstrata.plugin.yaml` at its root.

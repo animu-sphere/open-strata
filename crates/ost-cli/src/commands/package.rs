@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost package` — install a built target and pack it as a `tar.zst` artifact.
 //!
 //! Flow (§8.2 tail, §10): `cmake --install` the built target into a clean stage

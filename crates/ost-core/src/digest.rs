@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Content-addressed digests (§10.3).
 //!
 //! All runtime and extension artifacts carry a digest identity. We use SHA-256

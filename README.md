@@ -124,3 +124,15 @@ definitions and override them by id.
 Tool overrides for non-PATH installs: `OST_NINJA` (ninja), `OST_UV` (uv). Runtime
 source fallbacks for `ost runtime pull`: `OST_USD_ROOT` (adopt), `OST_USD_SRC`
 (build), `OST_USD_DEPS` (CMake deps).
+
+## License
+
+OpenStrata is licensed under the [Apache License, Version 2.0](LICENSE); see also
+[NOTICE](NOTICE). Source files carry an SPDX header
+(`SPDX-License-Identifier: Apache-2.0`).
+
+Third-party components that OpenStrata bundles, links, or distributes (Rust
+dependencies and runtime/extension content such as OpenUSD, MaterialX, and their
+transitive dependencies) retain their own upstream licenses. Complete
+per-artifact third-party attribution is tracked in the
+[roadmap](docs/roadmap.md#licensing--third-party-attribution).

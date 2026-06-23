@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Minimal version-range checking for compatibility assertions (Level 1).
 //!
 //! The harness compares a concrete runtime version (e.g. OpenUSD `24.11`)

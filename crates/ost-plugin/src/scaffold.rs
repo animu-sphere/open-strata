@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost plugin new` — scaffold a plugin bundle from an embedded template.
 //!
 //! Templates live under `templates/<kind>-<lang>/` and are compiled into the

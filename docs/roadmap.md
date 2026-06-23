@@ -234,9 +234,10 @@ for everything it bundles, links, or distributes. Today only the `Cargo.toml`
 `license = "Apache-2.0"` field exists; the files and discipline below are still
 to land.
 
-- ⬜ **OpenStrata's own license.** Add a top-level `LICENSE` (Apache-2.0, matching
-  the manifests) and a `NOTICE`; add SPDX headers
-  (`// SPDX-License-Identifier: Apache-2.0`) to source files.
+- ✅ **OpenStrata's own license.** Top-level `LICENSE` (Apache-2.0, matching the
+  manifests) and `NOTICE`; SPDX headers
+  (`// SPDX-License-Identifier: Apache-2.0`) on all source files; `README` License
+  section.
 - ⬜ **Rust dependency attribution.** Generate and commit `THIRD_PARTY_NOTICES.md`
   for the crate tree with `cargo-about`, and gate licenses in CI with
   `cargo-deny` (allowlist of acceptable SPDX licenses; deny copyleft/unknown).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost devshell` — enter an interactive shell with a runtime activated (§14.2).
 //!
 //! Unlike `ost env` (which only prints), `devshell` launches a child shell with

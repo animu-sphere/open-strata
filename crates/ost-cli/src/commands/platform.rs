@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost platform` — list / show / diff calendar-year definitions (§4.1).
 
 use clap::Subcommand;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Host tool discovery.
 //!
 //! OpenStrata detects host capabilities (§12.2 "Detect: yes") but never installs

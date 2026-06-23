@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The project manifest: `openstrata.toml`.
 //!
 //! Capabilities are requested by *what they do*, not by package name (§3.5).

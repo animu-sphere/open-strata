@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost-runtime` — runtime identity, profiles, and environment generation.
 //!
 //! This crate turns a platform + profile selection into a concrete [`Runtime`]

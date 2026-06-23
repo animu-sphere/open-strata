@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The plugin bundle manifest data model (`openstrata.plugin.yaml`).
 //!
 //! A plugin is a *self-describing bundle*, not a bare shared library (harness

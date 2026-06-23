@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost configure` — generate CMake toolchain and presets for a target (§8).
 //!
 //! Resolves the project's platform+profile to a runtime, then writes

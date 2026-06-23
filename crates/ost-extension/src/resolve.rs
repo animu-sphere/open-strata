@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Capability resolution (§3.5, §5.3, §6.2).
 //!
 //! Given the capabilities a profile requests, derive the extensions that must

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Error type shared across OpenStrata crates.
 //!
 //! Per the quality bar ("CLI errors must be actionable"), variants carry the

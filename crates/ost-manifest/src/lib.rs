@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Project manifest and lockfile models.
 //!
 //! * [`Project`] is the human-authored `openstrata.toml` at a project root.

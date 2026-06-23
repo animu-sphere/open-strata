@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The per-runtime manifest written into the store on `pull` (§4.2, §10.2).
 //!
 //! This is the identity record for an installed runtime: what it is, what it

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Structured diff between two platform years (`ost platform diff`).
 
 use std::collections::BTreeSet;

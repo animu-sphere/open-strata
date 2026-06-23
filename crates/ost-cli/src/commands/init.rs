@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost init` — scaffold an OpenStrata project in the current directory.
 
 use std::path::Path;
