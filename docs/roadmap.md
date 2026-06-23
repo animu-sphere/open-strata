@@ -213,7 +213,7 @@ GitHub Releases.
     `windows-x86_64` (modeled from the start; built on a best-effort basis).
   - Artifacts: `ost-<version>-<target>.tar.gz` (zip on Windows) + a combined
     `SHA256SUMS`, attached to the GitHub Release. Built on the pinned toolchain
-    (Rust 1.69; see [architecture.md](architecture.md#toolchain-pinning)).
+    (see [architecture.md](architecture.md#toolchain-pinning)).
   - Release notes drawn from the changelog / merged PRs for the tag range.
 - ⬜ **Install ergonomics.** A `cargo binstall` manifest and a `curl | sh`
   installer script that fetches the right asset for the host and verifies the

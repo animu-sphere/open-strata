@@ -86,9 +86,23 @@ pub fn run(args: DoctorArgs, fmt: Format) -> Result<()> {
     };
 
     if fmt.is_json() {
-        emit_json(&host, &abi, &store, &tools, runtime_section.as_ref(), &issues);
+        emit_json(
+            &host,
+            &abi,
+            &store,
+            &tools,
+            runtime_section.as_ref(),
+            &issues,
+        );
     } else {
-        emit_human(&host, &abi, &store, &tools, runtime_section.as_ref(), &issues);
+        emit_human(
+            &host,
+            &abi,
+            &store,
+            &tools,
+            runtime_section.as_ref(),
+            &issues,
+        );
     }
 
     // Deterministic exit for CI.

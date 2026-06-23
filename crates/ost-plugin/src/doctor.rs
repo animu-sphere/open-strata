@@ -119,7 +119,10 @@ impl DoctorReport {
     }
 
     pub fn count(&self, status: Status) -> usize {
-        self.diagnostics.iter().filter(|d| d.status == status).count()
+        self.diagnostics
+            .iter()
+            .filter(|d| d.status == status)
+            .count()
     }
 }
 
@@ -218,7 +221,10 @@ fn level0(bundle: &Bundle) -> Vec<Diagnostic> {
             "plugin.shared_library",
             0,
             "no shared library (.so/.dll/.dylib) in lib/",
-            vec![format!("build it with `ost plugin build {}`", m.plugin.name)],
+            vec![format!(
+                "build it with `ost plugin build {}`",
+                m.plugin.name
+            )],
         )),
     }
 
@@ -309,11 +315,13 @@ fn level1(bundle: &Bundle, ctx: &RuntimeContext) -> Vec<Diagnostic> {
                     "runtime OpenUSD {have} does not satisfy '{}'",
                     m.runtime.openusd
                 ),
-                vec![
-                    "pull a runtime within the plugin's range, or widen `runtime.openusd`".into(),
-                ],
+                vec!["pull a runtime within the plugin's range, or widen `runtime.openusd`".into()],
             )),
-            Err(e) => diags.push(range_error_diag("runtime.openusd.version", &m.runtime.openusd, e)),
+            Err(e) => diags.push(range_error_diag(
+                "runtime.openusd.version",
+                &m.runtime.openusd,
+                e,
+            )),
         },
         None => diags.push(Diagnostic::skip(
             "runtime.openusd.version",
@@ -381,7 +389,9 @@ fn match_tag(id: &str, declared: Option<&str>, runtime: Option<&str>, label: &st
             id,
             1,
             format!("plugin {label} '{d}' != runtime '{r}'"),
-            vec![format!("rebuild the plugin against the runtime's {label} ('{r}')")],
+            vec![format!(
+                "rebuild the plugin against the runtime's {label} ('{r}')"
+            )],
         ),
         (None, _) => Diagnostic::skip(id, 1, format!("plugin declares no {label}")),
         (Some(_), None) => Diagnostic::skip(id, 1, format!("runtime records no {label}")),
@@ -393,7 +403,10 @@ fn range_error_diag(id: &str, range: &str, e: RangeError) -> Diagnostic {
         id,
         1,
         format!("cannot evaluate range '{range}': {e}"),
-        vec!["fix the version range to a comma-separated comparator list, e.g. `>=24.11,<25.0`".into()],
+        vec![
+            "fix the version range to a comma-separated comparator list, e.g. `>=24.11,<25.0`"
+                .into(),
+        ],
     )
 }
 

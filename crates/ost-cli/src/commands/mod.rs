@@ -19,9 +19,7 @@ use camino::Utf8PathBuf;
 use ost_core::paths::Store;
 use ost_core::{Error, Host, Result};
 use ost_platform::Catalog;
-use ost_runtime::{
-    python_minor, EnvSet, ProfileCatalog, Runtime, RuntimeManifest, MANIFEST_FILE,
-};
+use ost_runtime::{python_minor, EnvSet, ProfileCatalog, Runtime, RuntimeManifest, MANIFEST_FILE};
 
 /// Everything needed to activate a runtime, shared by `env`, `devshell`, `runtime`.
 pub struct Resolved {

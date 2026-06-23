@@ -82,8 +82,7 @@ fn write_state_gitignore(state_dir: &std::path::Path) -> Result<()> {
         return Ok(());
     }
     // The whole generated-state tree is reproducible; never commit it.
-    std::fs::write(&gitignore, "*\n")
-        .map_err(|e| Error::io(gitignore.display().to_string(), e))
+    std::fs::write(&gitignore, "*\n").map_err(|e| Error::io(gitignore.display().to_string(), e))
 }
 
 fn report(manifest_path: &Path, name: &str, platform: &str, fmt: Format) {

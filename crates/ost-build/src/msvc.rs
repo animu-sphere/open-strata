@@ -93,9 +93,7 @@ fn known_install_bases() -> Vec<String> {
     for root in roots.into_iter().flatten() {
         for year in ["2022", "2019"] {
             for edition in ["Community", "Professional", "Enterprise", "BuildTools"] {
-                bases.push(format!(
-                    r"{root}\Microsoft Visual Studio\{year}\{edition}"
-                ));
+                bases.push(format!(r"{root}\Microsoft Visual Studio\{year}\{edition}"));
             }
         }
     }

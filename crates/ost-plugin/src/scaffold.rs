@@ -47,7 +47,9 @@ const USD_FILEFORMAT_CPP: &[TemplateFile] = &[
     ),
     tf(
         "plugin/resources/{{name}}/plugInfo.json",
-        include_str!("../../../templates/usd-fileformat-cpp/plugin/resources/{{name}}/plugInfo.json"),
+        include_str!(
+            "../../../templates/usd-fileformat-cpp/plugin/resources/{{name}}/plugInfo.json"
+        ),
     ),
     tf(
         "tests/fixtures/basic.{{extension}}",
@@ -83,7 +85,7 @@ impl Vars {
 /// Convert a plugin name to a PascalCase C++ identifier base, e.g.
 /// `my-fmt` / `my_fmt` -> `MyFmt`.
 fn to_pascal(name: &str) -> String {
-    name.split(|c: char| c == '-' || c == '_' || c == ' ')
+    name.split(['-', '_', ' '])
         .filter(|w| !w.is_empty())
         .map(|w| {
             let mut chars = w.chars();
@@ -241,9 +243,7 @@ mod tests {
 
         // The manifest and a token-substituted source file landed.
         assert!(files.iter().any(|f| f.as_str() == "openstrata.plugin.yaml"));
-        assert!(files
-            .iter()
-            .any(|f| f.as_str() == "src/ToyFileFormat.cpp"));
+        assert!(files.iter().any(|f| f.as_str() == "src/ToyFileFormat.cpp"));
         assert!(files
             .iter()
             .any(|f| f.as_str() == "plugin/resources/toy/plugInfo.json"));

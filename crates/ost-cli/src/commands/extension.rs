@@ -63,7 +63,10 @@ fn list(fmt: Format) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<12}  {:<20}  {:<10}  PROVIDES", "EXTENSION", "TYPE", "VERSION");
+    println!(
+        "{:<12}  {:<20}  {:<10}  PROVIDES",
+        "EXTENSION", "TYPE", "VERSION"
+    );
     for e in catalog.iter() {
         let provides: Vec<&str> = e.provides.keys().map(String::as_str).collect();
         println!(
@@ -116,7 +119,10 @@ fn why(name: &str, profile_override: Option<String>, fmt: Format) -> Result<()> 
 /// Render a [`RequirementReason`] as a human-readable line.
 fn render_reason(name: &str, reason: &RequirementReason) -> String {
     match reason {
-        RequirementReason::Direct { capability, feature } => match feature {
+        RequirementReason::Direct {
+            capability,
+            feature,
+        } => match feature {
             Some(f) => format!("capability '{capability}' is provided by {name}[{f}]"),
             None => format!("capability '{capability}' is provided by {name}"),
         },
@@ -125,7 +131,9 @@ fn render_reason(name: &str, reason: &RequirementReason) -> String {
             feature,
             capability,
         } => match capability {
-            Some(c) => format!("pulled in by {extension}[{feature}] (required by capability '{c}')"),
+            Some(c) => {
+                format!("pulled in by {extension}[{feature}] (required by capability '{c}')")
+            }
             None => format!("pulled in by {extension}[{feature}]"),
         },
     }
@@ -150,7 +158,9 @@ fn add(name: &str, fmt: Format) -> Result<()> {
     match ost_manifest::add_extension(&src, name)? {
         None => {
             if fmt.is_json() {
-                output::json(&serde_json::json!({ "added": false, "extension": name, "reason": "already present" }));
+                output::json(
+                    &serde_json::json!({ "added": false, "extension": name, "reason": "already present" }),
+                );
             } else {
                 println!("Extension '{name}' is already in the project manifest.");
             }

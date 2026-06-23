@@ -320,7 +320,10 @@ mod tests {
         let win_prefix = Utf8PathBuf::from(r"C:\store\runtimes\rt");
         let set = EnvSet::for_runtime(&win_prefix, Os::Windows, "3.13", true);
         for (key, value) in set.pairs() {
-            assert!(!value.contains('\\'), "{key} still has a backslash: {value}");
+            assert!(
+                !value.contains('\\'),
+                "{key} still has a backslash: {value}"
+            );
         }
     }
 
@@ -345,11 +348,8 @@ mod tests {
         // Linux: the dep's lib/ lands on LD_LIBRARY_PATH.
         let mut set = EnvSet::for_usd_install(&Utf8PathBuf::from("/opt/usd"), Os::Linux);
         set.add_dep_libs(&Utf8PathBuf::from("/deps/tbb"), Os::Linux);
-        assert!(set
-            .vars
-            .iter()
-            .any(|v| v.key == "LD_LIBRARY_PATH"
-                && matches!(&v.op, EnvOp::Prepend(p) if p.ends_with("/deps/tbb/lib"))));
+        assert!(set.vars.iter().any(|v| v.key == "LD_LIBRARY_PATH"
+            && matches!(&v.op, EnvOp::Prepend(p) if p.ends_with("/deps/tbb/lib"))));
 
         // Windows: DLLs are searched on PATH (both bin and lib).
         let mut win = EnvSet::for_usd_install(&Utf8PathBuf::from(r"C:\usd"), Os::Windows);
@@ -357,7 +357,9 @@ mod tests {
         let path_adds = win
             .vars
             .iter()
-            .filter(|v| v.key == "PATH" && matches!(&v.op, EnvOp::Prepend(p) if p.contains("deps/tbb")))
+            .filter(|v| {
+                v.key == "PATH" && matches!(&v.op, EnvOp::Prepend(p) if p.contains("deps/tbb"))
+            })
             .count();
         assert_eq!(path_adds, 2);
     }

@@ -48,9 +48,10 @@ pub fn diff(from: &Platform, to: &Platform) -> PlatformDiff {
                 },
             )),
             (Some(_), Some(_)) => {} // unchanged
-            (None, Some(b)) => {
-                changes.push((name.to_string(), ComponentChange::Added { to: b.to_string() }))
-            }
+            (None, Some(b)) => changes.push((
+                name.to_string(),
+                ComponentChange::Added { to: b.to_string() },
+            )),
             (Some(a), None) => changes.push((
                 name.to_string(),
                 ComponentChange::Removed {

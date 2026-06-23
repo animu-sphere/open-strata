@@ -83,7 +83,10 @@ pub fn summary_text(bundle: &Bundle, report: &DoctorReport) -> String {
             Status::Fail => "FAIL",
             Status::Skip => "SKIP",
         };
-        out.push_str(&format!("[{mark}] L{} {} — {}\n", d.level, d.id, d.observed));
+        out.push_str(&format!(
+            "[{mark}] L{} {} — {}\n",
+            d.level, d.id, d.observed
+        ));
         for action in &d.suggested_actions {
             out.push_str(&format!("        ↳ {action}\n"));
         }

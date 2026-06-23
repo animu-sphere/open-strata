@@ -94,7 +94,7 @@ fn collect_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
     for entry in std::fs::read_dir(dir.as_std_path())? {
         let entry = entry?;
         let path = Utf8PathBuf::from_path_buf(entry.path())
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "non-UTF-8 path in stage tree"))?;
+            .map_err(|_| io::Error::other("non-UTF-8 path in stage tree"))?;
         if path.as_std_path().is_dir() {
             collect_files(&path, out)?;
         } else {

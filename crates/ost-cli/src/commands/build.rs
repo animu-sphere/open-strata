@@ -55,7 +55,9 @@ pub fn run(args: BuildArgs, _fmt: Format) -> Result<()> {
     let cmake = locate("cmake", None);
     let ninja = locate(
         "ninja",
-        args.ninja.clone().or_else(|| std::env::var("OST_NINJA").ok()),
+        args.ninja
+            .clone()
+            .or_else(|| std::env::var("OST_NINJA").ok()),
     );
 
     // On Windows we may auto-load the MSVC dev environment, which also puts a
@@ -129,7 +131,10 @@ pub fn run(args: BuildArgs, _fmt: Format) -> Result<()> {
         }
     }
 
-    println!("==> configure  {}", render_cmd(&cmake_prog, &configure_args));
+    println!(
+        "==> configure  {}",
+        render_cmd(&cmake_prog, &configure_args)
+    );
     run_step(&cmake_prog, &configure_args, &root, &extra_env)?;
     println!("==> build      {}", render_cmd(&cmake_prog, &build_args));
     run_step(&cmake_prog, &build_args, &root, &extra_env)?;
@@ -165,7 +170,12 @@ fn quote(s: &str) -> String {
     }
 }
 
-fn run_step(program: &Path, args: &[String], cwd: &Utf8Path, env: &[(String, String)]) -> Result<()> {
+fn run_step(
+    program: &Path,
+    args: &[String],
+    cwd: &Utf8Path,
+    env: &[(String, String)],
+) -> Result<()> {
     let status = Command::new(program)
         .args(args)
         .current_dir(cwd.as_std_path())

@@ -74,9 +74,7 @@ pub fn run(args: UvArgs, fmt: Format) -> Result<()> {
     }
 
     let uv = locate_uv().ok_or_else(|| {
-        Error::Operation(
-            "`uv` not found — install uv, add it to PATH, or set OST_UV".to_string(),
-        )
+        Error::Operation("`uv` not found — install uv, add it to PATH, or set OST_UV".to_string())
     })?;
 
     let mut cmd = Command::new(&uv);

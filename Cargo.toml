@@ -18,7 +18,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/openstrata/openstrata"
-rust-version = "1.69"
+rust-version = "1.96"
 
 [workspace.dependencies]
 ost-core = { path = "crates/ost-core" }
@@ -29,9 +29,9 @@ ost-build = { path = "crates/ost-build" }
 ost-extension = { path = "crates/ost-extension" }
 ost-plugin = { path = "crates/ost-plugin" }
 
-# Versions are pinned to keep the whole dependency tree on edition <= 2021 so
-# the project builds on the pinned Rust 1.69 toolchain. Bump deliberately
-# alongside a rust-version bump.
+# Top-level dependency versions are pinned for reproducible builds. The tree no
+# longer needs to stay on edition <= 2021 (the toolchain is pinned to a current
+# stable in rust-toolchain.toml); relax or refresh these deliberately.
 anyhow = "=1.0.86"
 thiserror = "=1.0.61"
 clap = { version = "=4.3.24", features = ["derive"] }

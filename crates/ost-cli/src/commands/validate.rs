@@ -58,13 +58,25 @@ struct Check {
 
 impl Check {
     fn pass(name: &'static str) -> Check {
-        Check { name, status: Status::Pass, detail: None }
+        Check {
+            name,
+            status: Status::Pass,
+            detail: None,
+        }
     }
     fn fail(name: &'static str, detail: impl Into<String>) -> Check {
-        Check { name, status: Status::Fail, detail: Some(detail.into()) }
+        Check {
+            name,
+            status: Status::Fail,
+            detail: Some(detail.into()),
+        }
     }
     fn skip(name: &'static str, detail: impl Into<String>) -> Check {
-        Check { name, status: Status::Skip, detail: Some(detail.into()) }
+        Check {
+            name,
+            status: Status::Skip,
+            detail: Some(detail.into()),
+        }
     }
 }
 
@@ -98,7 +110,10 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     if build_dir.as_std_path().is_dir() {
         checks.push(Check::pass("built"));
     } else {
-        checks.push(Check::fail("built", "build directory missing — run `ost build`"));
+        checks.push(Check::fail(
+            "built",
+            "build directory missing — run `ost build`",
+        ));
     }
 
     // 3. runtime-compatible — the runtime is pulled and its digest matches the
@@ -142,7 +157,10 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
             Ok(manifest) => {
                 checks.push(check_artifact(&dist_dir, &manifest));
             }
-            Err(e) => checks.push(Check::fail("artifact-integrity", format!("manifest.json invalid: {e}"))),
+            Err(e) => checks.push(Check::fail(
+                "artifact-integrity",
+                format!("manifest.json invalid: {e}"),
+            )),
         },
         Err(_) => checks.push(Check::skip("artifact-integrity", "not packaged")),
     }
@@ -180,7 +198,11 @@ fn check_artifact(dist_dir: &camino::Utf8Path, manifest: &serde_json::Value) -> 
     } else {
         Check::fail(
             "artifact-integrity",
-            format!("archive digest mismatch: {} != {}", short(&actual), short(expected)),
+            format!(
+                "archive digest mismatch: {} != {}",
+                short(&actual),
+                short(expected)
+            ),
         )
     }
 }
@@ -221,5 +243,12 @@ fn emit(id: &str, checks: &[Check], fmt: Format) {
         }
     }
     let failed = checks.iter().any(|c| c.status == Status::Fail);
-    println!("\n{}", if failed { "Result: FAILED" } else { "Result: passed" });
+    println!(
+        "\n{}",
+        if failed {
+            "Result: FAILED"
+        } else {
+            "Result: passed"
+        }
+    );
 }

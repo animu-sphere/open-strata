@@ -37,7 +37,9 @@ pub fn render_toolchain(target: &Target, prefix: &Utf8Path) -> String {
             out.push_str(&format!("set(CMAKE_CXX_COMPILER \"{root}/bin/clang++\")\n"));
         }
         Os::Windows => {
-            out.push_str("# MSVC toolset is provided by the host; the generator discovers cl.exe.\n");
+            out.push_str(
+                "# MSVC toolset is provided by the host; the generator discovers cl.exe.\n",
+            );
         }
     }
     out.push('\n');
