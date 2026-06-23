@@ -19,9 +19,12 @@ jobs:
 
       # Prebuilt cargo-deny / cargo-about (no compile). The toolchain pinned in
       # rust-toolchain.toml is auto-installed by rustup when cargo is invoked.
+      # Versions are pinned: cargo-about's output formatting can change between
+      # releases, which would make the THIRD_PARTY_NOTICES.md sync check below
+      # fail on an unrelated PR. Bump deliberately and regenerate the file.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,cargo-about
+          tool: cargo-deny@0.19.9,cargo-about@0.9.0
 
       - name: cargo-deny (licenses, advisories, sources, bans)
         run: cargo deny check
