@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://openstrata.dev/schemas/project.schema.json",
+  "$id": "https://raw.githubusercontent.com/animu-sphere/open-strata/main/schemas/project.schema.json",
   "title": "OpenStrata Project Manifest",
   "description": "The openstrata.toml authored at a project root.",
   "type": "object",

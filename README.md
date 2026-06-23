@@ -22,6 +22,30 @@ releases are still ahead. Linux x86_64 is the first-class target; other OS targe
 are modeled and partially working — these examples were exercised on Windows. See
 the [roadmap](docs/roadmap.md).
 
+## Install
+
+`ost` is a single self-contained binary. Tagged releases (`v*`) publish
+prebuilt binaries, checksums, and installers for Linux (static musl), macOS
+(arm64 + x86_64), and Windows via [cargo-dist](https://opensource.axo.dev/cargo-dist/).
+
+```bash
+# Linux / macOS — fetch the installer for your host (from v0.1.0 onward)
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/animu-sphere/open-strata/releases/latest/download/ost-cli-installer.sh | sh
+
+# Windows (PowerShell)
+powershell -c "irm https://github.com/animu-sphere/open-strata/releases/latest/download/ost-cli-installer.ps1 | iex"
+
+# With cargo-binstall (reads the release's dist manifest)
+cargo binstall ost-cli
+```
+
+From source (no prebuilt needed):
+
+```bash
+cargo install --path crates/ost-cli   # installs the `ost` binary
+```
+
 ## Build
 
 ```bash

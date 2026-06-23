@@ -17,7 +17,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/openstrata/openstrata"
+repository = "https://github.com/animu-sphere/open-strata"
 rust-version = "1.96"
 
 [workspace.dependencies]
@@ -46,3 +46,8 @@ directories = "=5.0.1"
 sha2 = "=0.10.8"
 tar = "=0.4.40"
 zstd = "=0.13.2"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://openstrata.dev/schemas/plugin-report.schema.json",
+  "$id": "https://raw.githubusercontent.com/animu-sphere/open-strata/main/schemas/plugin-report.schema.json",
   "title": "OpenStrata Plugin Verification Report",
   "description": "report.json written under .strata/reports/<plugin>/<UTC-timestamp>/ by `ost plugin doctor|inspect|test`. The `ost plugin doctor --json` stdout is a superset of the on-disk file: it additionally carries `report_dir` and `environment`.",
   "type": "object",
