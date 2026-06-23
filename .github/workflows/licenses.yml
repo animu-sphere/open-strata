@@ -30,10 +30,14 @@ jobs:
         run: cargo deny check
 
       - name: THIRD_PARTY_NOTICES.md is up to date
+        # Normalize CRLF -> LF: some upstream license files (e.g. generic-array)
+        # ship CRLF line endings that cargo-about embeds verbatim, while the
+        # committed file is LF (git normalized). Strip CR on both sides so the
+        # check is reproducible regardless of who/where it was generated.
         run: |
-          cargo about generate about.hbs > THIRD_PARTY_NOTICES.check.md
+          cargo about generate about.hbs | tr -d '\r' > THIRD_PARTY_NOTICES.check.md
           if ! diff -u THIRD_PARTY_NOTICES.md THIRD_PARTY_NOTICES.check.md; then
-            echo "::error::THIRD_PARTY_NOTICES.md is stale — run: cargo about generate about.hbs > THIRD_PARTY_NOTICES.md"
+            echo "::error::THIRD_PARTY_NOTICES.md is stale — run: cargo about generate about.hbs | tr -d '\\r' > THIRD_PARTY_NOTICES.md"
             exit 1
           fi
           rm -f THIRD_PARTY_NOTICES.check.md
