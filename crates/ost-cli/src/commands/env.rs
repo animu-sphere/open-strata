@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost env` — print the environment that activates a runtime (§14.2).
 //!
 //! Output is pure, evaluable shell so it composes:

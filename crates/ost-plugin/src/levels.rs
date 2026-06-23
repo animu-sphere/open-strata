@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Execution levels 2–6 (harness §11), run against a *real* OpenUSD runtime.
 //!
 //! Unlike levels 0–1 (static manifest + filesystem checks), these run the

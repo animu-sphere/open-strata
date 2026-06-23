@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Session environment preview (harness §9).
 //!
 //! `ost plugin run` will compose an ephemeral session by taking the runtime's

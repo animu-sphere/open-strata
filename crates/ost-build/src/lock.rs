@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `target.lock.json` — pins a configured target for reproducibility (§8.3).
 
 use serde::{Deserialize, Serialize};

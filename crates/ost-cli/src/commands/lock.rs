@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost lock` — generate or verify the project lockfile `strata.lock` (§9.4).
 //!
 //! The lock pins the resolved runtime (id/variant/digest), the Python ABI and

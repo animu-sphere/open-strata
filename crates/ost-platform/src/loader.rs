@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Loading platform manifests.
 //!
 //! Built-in CY manifests are embedded in the binary so `ost platform list`

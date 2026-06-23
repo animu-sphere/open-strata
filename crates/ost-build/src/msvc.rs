@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! MSVC developer-environment bootstrap (Windows adapter, §11.2).
 //!
 //! On Windows the C++ compiler (`cl.exe`) and the Windows SDK are only on `PATH`

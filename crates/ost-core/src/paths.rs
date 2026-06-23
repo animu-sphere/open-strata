@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! On-disk layout for OpenStrata.
 //!
 //! Two roots matter:

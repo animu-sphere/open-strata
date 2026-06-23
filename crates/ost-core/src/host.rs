@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Host descriptor — what machine are we on?
 //!
 //! OpenStrata keeps workflows portable but records the concrete variant in

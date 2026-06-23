@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Loading extension manifests (embedded built-ins + user overlay).
 
 use std::collections::BTreeMap;

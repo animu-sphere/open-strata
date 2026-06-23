@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost uv` — run `uv` against the project's certified runtime Python (§9.3).
 //!
 //! OpenStrata selects the Python interpreter; `uv` must not silently replace it

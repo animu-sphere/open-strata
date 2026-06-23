@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost extension` — inspect and request controlled extensions (§4.4, §3.5).
 //!
 //! - `list` shows the extension catalog.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `toolchain.cmake` generation (§8.4).
 
 use camino::Utf8Path;

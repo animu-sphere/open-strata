@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Output rendering helpers.
 //!
 //! Every command can render for a human terminal or as JSON (§13.2, §18.3).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `CMakePresets.json` generation (§8.3).
 //!
 //! Each target gets its own presets file under `.strata/targets/<id>/`. The

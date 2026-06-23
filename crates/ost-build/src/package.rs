@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Artifact packaging (§10): `tar.zst` + per-file checksums.
 //!
 //! The MVP artifact format is a zstd-compressed tar of the install/stage tree,

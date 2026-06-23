@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost-plugin` — OpenUSD plugin bundles (Phase 4).
 //!
 //! A plugin is a *self-describing bundle* (`openstrata.plugin.yaml` + sources +

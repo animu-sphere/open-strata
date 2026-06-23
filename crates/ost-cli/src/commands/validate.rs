@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost validate` — validate a built/packaged target (§8.5, §18.2).
 //!
 //! Structural checks over a target's build and (optional) artifact state:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The extension manifest data model (§4.4, §5.2).
 
 use indexmap::IndexMap;

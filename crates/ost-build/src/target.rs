@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The build target (§4.6): platform + OS + arch + Python ABI + profile.
 
 use ost_core::host::Os;

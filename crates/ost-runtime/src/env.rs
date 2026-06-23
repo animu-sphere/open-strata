@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Environment generation and shell rendering (§7.5).
 //!
 //! OpenStrata never mutates the ambient environment silently (§23). Instead it

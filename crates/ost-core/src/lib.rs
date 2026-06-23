@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost-core` — shared primitives for the OpenStrata toolchain.
 //!
 //! This crate intentionally holds no domain logic. It defines the vocabulary

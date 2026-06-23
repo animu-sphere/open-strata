@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost build` — configure and build a target with CMake + Ninja (§8.2).
 //!
 //! `ost build` regenerates the target's CMake files (same as `ost configure`),

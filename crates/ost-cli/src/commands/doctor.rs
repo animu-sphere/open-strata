@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost doctor` — diagnose host, tools, and (optionally) a runtime (§14.2).
 //!
 //! General health check: the OpenStrata install, the host descriptor, and host

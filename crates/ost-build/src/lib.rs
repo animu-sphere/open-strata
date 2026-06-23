@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost-build` — build target model and CMake generation (§8).
 //!
 //! OpenStrata does not replace CMake; it decides *which* target/runtime/ABI to

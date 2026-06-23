@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Report generation (harness §13).
 //!
 //! Every run writes a report under `.strata/reports/<plugin>/<UTC-timestamp>/`

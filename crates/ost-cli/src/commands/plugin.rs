@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `ost plugin` — OpenUSD plugin bundles.
 //!
 //! - `new`     scaffold a bundle from a template.
