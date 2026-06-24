@@ -75,7 +75,15 @@ fn explicit(cc: Option<String>, cxx: Option<String>, source: &str) -> Result<Com
         }
     };
     for (label, path) in [("cc", &cc), ("cxx", &cxx)] {
-        if !std::path::Path::new(path).is_file() {
+        let p = std::path::Path::new(path);
+        // Absolute so the path resolves the same from whatever build directory
+        // CMake is invoked in, not relative to the caller's cwd.
+        if !p.is_absolute() {
+            return Err(Error::Operation(format!(
+                "{label} compiler must be an absolute path: {path}"
+            )));
+        }
+        if !p.is_file() {
             return Err(Error::Operation(format!(
                 "{label} compiler not found: {path}"
             )));
@@ -99,6 +107,11 @@ pub fn to_lock(compiler: &Compiler, prefix: &Utf8Path, os: Os) -> LockCompiler {
 
 /// First line of `<compiler> --version`, or `None` if it cannot be run.
 fn version_of(path: &str) -> Option<String> {
+    // Skip the spawn for prospective paths (e.g. a runtime not yet pulled) that
+    // don't exist on disk — the process launch would just fail anyway.
+    if !std::path::Path::new(path).is_file() {
+        return None;
+    }
     let out = Command::new(path).arg("--version").output().ok()?;
     if !out.status.success() {
         return None;

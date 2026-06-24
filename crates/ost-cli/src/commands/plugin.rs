@@ -323,7 +323,7 @@ fn build(
     let id = tgt.id();
 
     // Compiler policy: CLI flags over the enclosing project's `[build]`, else host.
-    let compiler = resolve_plugin_compiler(&compiler_opts)?;
+    let compiler = resolve_plugin_compiler(&bundle.root, &compiler_opts)?;
 
     // Generate the toolchain that points CMake at the runtime (reusing ost-build).
     // Both the toolchain and the build tree are keyed by target id, so switching
@@ -382,8 +382,21 @@ fn build(
     }
     let cmake = cmake.ok_or_else(|| Error::Operation("`cmake` not found on PATH".into()))?;
 
+    // If the compiler changed since the last build, the cached compiler/ABI in
+    // build/<id> is stale — drop it so this configure is clean (mirrors the
+    // project-level invalidation in `ost configure`).
+    let lock_compiler = compiler::to_lock(&compiler, &r.artifact_prefix, tgt.os());
+    invalidate_plugin_build_tree_if_compiler_changed(&bundle.root, &id, &lock_compiler);
+
     run_step(&cmake, &configure_args)?;
     run_step(&cmake, &build_args)?;
+
+    // Record the compiler so the next build can detect a change. The plugin
+    // build writes no full target lock, so this lives beside the toolchain.
+    let record = target_dir.join("compiler.lock.json");
+    if let Ok(json) = serde_json::to_string_pretty(&lock_compiler) {
+        let _ = std::fs::write(record.as_std_path(), json);
+    }
 
     // plugInfo.json is shipped in the bundle (staged at scaffold time); confirm it.
     let plug_info = bundle.plug_info();
@@ -815,14 +828,45 @@ fn run_step(program: &std::path::Path, args: &[String]) -> Result<()> {
 
 /// Resolve the compiler policy for a plugin build: CLI flags over the enclosing
 /// project's `[build]` table (if the bundle sits inside a project), else host.
-fn resolve_plugin_compiler(opts: &CompilerOpts) -> Result<ost_build::Compiler> {
-    let build = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| find_project_root(&cwd))
+///
+/// The enclosing project is found from the *bundle's* location, not the current
+/// working directory, so `ost plugin build path/to/bundle` honors that bundle's
+/// project regardless of where it is invoked from.
+fn resolve_plugin_compiler(
+    bundle_root: &Utf8Path,
+    opts: &CompilerOpts,
+) -> Result<ost_build::Compiler> {
+    let build = find_project_root(bundle_root.as_std_path())
         .and_then(|r| Utf8PathBuf::from_path_buf(r).ok())
         .and_then(|root| load_project(&root).ok())
         .and_then(|p| p.build);
     compiler::resolve(opts, build.as_ref())
+}
+
+/// Remove the bundle's `build/<id>` when the compiler differs from the last
+/// build. Mirrors `ost configure`'s invalidation: CMake caches the compiler and
+/// its ABI on first configure, and reusing that cache with a different compiler
+/// produces incoherent builds (or a hard `CMAKE_*_COMPILER changed` error). The
+/// previous compiler is read from `compiler.lock.json` beside the toolchain; a
+/// missing/unreadable record means nothing to invalidate.
+fn invalidate_plugin_build_tree_if_compiler_changed(
+    bundle_root: &Utf8Path,
+    id: &str,
+    next: &ost_build::LockCompiler,
+) {
+    let record = target_state_dir(bundle_root, id).join("compiler.lock.json");
+    let previous = std::fs::read_to_string(record.as_std_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<ost_build::LockCompiler>(&s).ok());
+
+    if let Some(prev) = previous {
+        if prev.fingerprint() != next.fingerprint() {
+            let build_dir = target_build_dir(bundle_root, id);
+            if build_dir.as_std_path().exists() {
+                let _ = std::fs::remove_dir_all(build_dir.as_std_path());
+            }
+        }
+    }
 }
 
 /// Per-target toolchain/state directory inside a bundle: `.strata/targets/<id>/`.
