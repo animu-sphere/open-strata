@@ -3,9 +3,12 @@
 //!
 //! Resolves the project's platform+profile to a runtime, then writes
 //! `.strata/targets/<id>/{toolchain.cmake,env.json,target.lock.json,
-//! CMakePresets.json}` and updates the project-root `CMakePresets.json` to
+//! CMakePresets.json}` and refreshes the tool-owned `CMakeUserPresets.json` to
 //! include the per-target presets. CMake then drives the actual configure via
 //! `cmake --preset <id>`.
+//!
+//! The user's committed `CMakePresets.json` is never touched by default; see
+//! `ost presets` to wire the includes into it explicitly and non-destructively.
 //!
 //! The generation here is shared with `ost build` via [`generate`].
 
@@ -14,14 +17,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Args;
 
+use serde_json::{Map, Value};
+
 use ost_build::{
-    render_target_presets, render_toolchain, root_presets_with_include, Target, TargetLock,
+    ensure_includes, includes_of, managed_include, render_target_presets, render_toolchain, Target,
+    TargetLock,
 };
+use ost_core::fs::write_atomic;
 use ost_core::paths::{find_project_root, PROJECT_MANIFEST, STATE_DIR};
 use ost_core::{Error, Result};
 use ost_manifest::Project;
 use ost_runtime::{RuntimeManifest, MANIFEST_FILE};
 
+use crate::commands::presets::{read_presets_object, ROOT_PRESETS, USER_PRESETS};
 use crate::commands::{resolve, Resolved};
 use crate::output::{self, Format};
 
@@ -159,15 +167,10 @@ pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result
         &pretty(&render_target_presets(&target))?,
     )?;
 
-    // 5. root CMakePresets.json (include the per-target file)
-    let include_rel = format!(".strata/targets/{id}/CMakePresets.json");
-    let root_presets_path = root.join("CMakePresets.json");
-    let existing: Option<serde_json::Value> =
-        std::fs::read_to_string(root_presets_path.as_std_path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok());
-    let root_presets = root_presets_with_include(existing.as_ref(), &include_rel);
-    write(&root_presets_path, &pretty(&root_presets)?)?;
+    // 5. Wire the per-target presets into the tool-owned CMakeUserPresets.json
+    //    so `cmake --preset <id>` works out of the box. We never touch the
+    //    user's CMakePresets.json by default (see `ost presets install`).
+    refresh_user_presets(root, &id)?;
 
     // 6. Refresh the project lockfile so it tracks the configured runtime.
     let lock = crate::commands::lock::build_lock(root, platform, profile)?;
@@ -198,6 +201,52 @@ pub(crate) fn target_output_paths(id: &str) -> Vec<String> {
     ]
 }
 
+/// Ensure OpenStrata's `CMakeUserPresets.json` includes target `id`'s presets.
+///
+/// `CMakeUserPresets.json` is tool-owned and developer-local (git-ignored), so
+/// refreshing it never disturbs the user's committed `CMakePresets.json`. If the
+/// user has explicitly wired this include into their own `CMakePresets.json`
+/// (via `ost presets install`), we skip it here — CMake errors on a preset name
+/// defined twice.
+fn refresh_user_presets(root: &Utf8Path, id: &str) -> Result<()> {
+    let include = managed_include(id);
+
+    // Parse-or-error: a malformed CMakePresets.json is never treated as empty.
+    let root_presets_path = root.join(ROOT_PRESETS);
+    if let Some(map) = read_presets_object(&root_presets_path)? {
+        if includes_of(&Value::Object(map)).iter().any(|i| i == &include) {
+            return Ok(());
+        }
+    }
+
+    let user_path = root.join(USER_PRESETS);
+    let mut map: Map<String, Value> = read_presets_object(&user_path)?.unwrap_or_default();
+    ensure_includes(&mut map, std::slice::from_ref(&include));
+    let body = pretty(&Value::Object(map))?;
+    write_atomic(user_path.as_std_path(), format!("{body}\n").as_bytes())?;
+
+    ignore_user_presets(root);
+    Ok(())
+}
+
+/// Best-effort: keep `CMakeUserPresets.json` out of git (it is developer-local).
+/// Appends a single idempotent line to the project root `.gitignore`; failures
+/// are non-fatal since this is a convenience, not correctness.
+fn ignore_user_presets(root: &Utf8Path) {
+    let path = root.join(".gitignore");
+    let current = std::fs::read_to_string(path.as_std_path()).unwrap_or_default();
+    if current.lines().any(|l| l.trim() == USER_PRESETS) {
+        return;
+    }
+    let mut next = current;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(USER_PRESETS);
+    next.push('\n');
+    let _ = std::fs::write(path.as_std_path(), next);
+}
+
 fn write(path: &Utf8PathBuf, contents: &str) -> Result<()> {
     std::fs::write(path.as_std_path(), format!("{contents}\n"))
         .map_err(|e| Error::io(path.to_string(), e))
@@ -222,7 +271,7 @@ fn report(g: &Generated, fmt: Format) {
                 "env": format!(".strata/targets/{id}/env.json"),
                 "lock": format!(".strata/targets/{id}/target.lock.json"),
                 "presets": format!(".strata/targets/{id}/CMakePresets.json"),
-                "root_presets": "CMakePresets.json",
+                "user_presets": USER_PRESETS,
             },
         }));
         return;
@@ -246,8 +295,9 @@ fn report(g: &Generated, fmt: Format) {
         g.root.join(STATE_DIR).join("targets").join(id)
     );
     println!("    toolchain.cmake  env.json  target.lock.json  CMakePresets.json");
-    println!("  updated CMakePresets.json (include) at project root");
+    println!("  refreshed {USER_PRESETS} (your CMakePresets.json is untouched)");
     println!("  refreshed strata.lock");
     println!("\nNext:");
     println!("  cmake --preset {id}    (or `ost build`)");
+    println!("  to wire presets into your committed CMakePresets.json: `ost presets install`");
 }

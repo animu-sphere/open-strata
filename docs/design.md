@@ -724,7 +724,10 @@ ost build --target cy2026
       target.lock.json
 ```
 
-`CMakePresets.json` は project root に生成または include される。
+各 target の `CMakePresets.json` は `.strata/targets/<id>/` に生成される。
+project root では既定でツール所有の `CMakeUserPresets.json` がそれらを
+include し、利用者の `CMakePresets.json` には触れない。`ost presets install`
+で利用者の `CMakePresets.json` へ非破壊的に取り込むこともできる。
 
 ## 8.4 Toolchain example
 

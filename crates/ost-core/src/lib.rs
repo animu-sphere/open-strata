@@ -9,6 +9,7 @@
 pub mod catalog;
 pub mod digest;
 pub mod error;
+pub mod fs;
 pub mod host;
 pub mod paths;
 pub mod tools;

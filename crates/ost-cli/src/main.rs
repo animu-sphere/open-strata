@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 
 use commands::{
     build, configure, devshell, doctor, env, extension, init, lock, package, platform, plugin,
-    runtime, uv, validate,
+    presets, runtime, uv, validate,
 };
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
@@ -52,6 +52,10 @@ enum Command {
     /// Generate CMake toolchain and presets for a target.
     Configure(configure::ConfigureArgs),
 
+    /// Manage OpenStrata's CMake preset includes in CMakePresets.json.
+    #[command(subcommand)]
+    Presets(presets::PresetsCmd),
+
     /// Configure and build a target with CMake + Ninja.
     Build(build::BuildArgs),
 
@@ -88,6 +92,7 @@ fn main() -> std::process::ExitCode {
         Command::Devshell(args) => devshell::run(args),
         Command::Doctor(args) => doctor::run(args, fmt),
         Command::Configure(args) => configure::run(args, fmt),
+        Command::Presets(cmd) => presets::run(cmd, fmt),
         Command::Build(args) => build::run(args, fmt),
         Command::Package(args) => package::run(args, fmt),
         Command::Validate(args) => validate::run(args, fmt),
