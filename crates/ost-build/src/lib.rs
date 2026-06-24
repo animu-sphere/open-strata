@@ -17,14 +17,14 @@ mod presets;
 mod target;
 mod toolchain;
 
-pub use lock::TargetLock;
+pub use lock::{LockCompiler, TargetLock};
 pub use package::{pack_dir, FileEntry, PackResult};
 pub use presets::{
     ensure_includes, includes_of, is_managed_include, managed_include, remove_managed_includes,
     render_target_presets,
 };
 pub use target::Target;
-pub use toolchain::render_toolchain;
+pub use toolchain::{render_toolchain, Compiler};
 
 /// Normalize a path to forward slashes, which CMake accepts on every platform
 /// and which keeps generated files identical across hosts.

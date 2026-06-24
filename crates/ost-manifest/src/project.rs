@@ -44,11 +44,45 @@ fn default_profile() -> String {
     "core".into()
 }
 
+/// `[build]` table — how the project compiles (§ runtime/compiler split).
+///
+/// The runtime supplies the SDK/ABI/prefix; the compiler is chosen separately so
+/// an adopted OpenUSD install can build with the host compiler. Defaults to the
+/// `host` policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildConfig {
+    /// Compiler policy: `host` (default), `runtime`, or `explicit`.
+    #[serde(default = "default_compiler")]
+    pub compiler: String,
+    /// C compiler absolute path (required when `compiler = "explicit"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cc: Option<String>,
+    /// C++ compiler absolute path (required when `compiler = "explicit"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cxx: Option<String>,
+}
+
+fn default_compiler() -> String {
+    "host".into()
+}
+
+impl Default for BuildConfig {
+    fn default() -> Self {
+        BuildConfig {
+            compiler: default_compiler(),
+            cc: None,
+            cxx: None,
+        }
+    }
+}
+
 /// The whole `openstrata.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     pub project: ProjectMeta,
     pub requires: Requires,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildConfig>,
 }
 
 impl Project {
@@ -66,6 +100,7 @@ impl Project {
                 capabilities: Vec::new(),
                 extensions: Vec::new(),
             },
+            build: None,
         }
     }
 
@@ -137,6 +172,34 @@ name = \"demo\"
 platform = \"cy2026\"  # pinned year
 profile = \"lookdev\"
 ";
+
+    #[test]
+    fn build_table_is_optional_and_defaults_to_host() {
+        // No [build] table → None; callers fall back to the host policy.
+        let p = Project::from_toml(SAMPLE).unwrap();
+        assert!(p.build.is_none());
+        assert_eq!(BuildConfig::default().compiler, "host");
+    }
+
+    #[test]
+    fn build_table_parses_explicit_compiler() {
+        let src = format!(
+            "{SAMPLE}\n[build]\ncompiler = \"explicit\"\ncc = \"/usr/bin/clang\"\ncxx = \"/usr/bin/clang++\"\n"
+        );
+        let p = Project::from_toml(&src).unwrap();
+        let b = p.build.expect("build table");
+        assert_eq!(b.compiler, "explicit");
+        assert_eq!(b.cc.as_deref(), Some("/usr/bin/clang"));
+        assert_eq!(b.cxx.as_deref(), Some("/usr/bin/clang++"));
+    }
+
+    #[test]
+    fn build_compiler_defaults_when_table_present_without_field() {
+        // `[build]` present but no `compiler` key → defaults to host.
+        let src = format!("{SAMPLE}\n[build]\n");
+        let p = Project::from_toml(&src).unwrap();
+        assert_eq!(p.build.unwrap().compiler, "host");
+    }
 
     #[test]
     fn add_extension_preserves_comments_and_sorts() {

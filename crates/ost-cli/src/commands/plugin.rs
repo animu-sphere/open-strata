@@ -33,6 +33,7 @@ use ost_plugin::{
 };
 use ost_runtime::{EnvSet, RuntimeManifest, MANIFEST_FILE};
 
+use crate::commands::compiler::{self, CompilerOpts};
 use crate::commands::configure::{build_target, load_project};
 use crate::commands::resolve;
 use crate::output::{self, Format};
@@ -73,6 +74,8 @@ pub enum PluginCmd {
         /// Path to the ninja executable if it is not on PATH.
         #[arg(long)]
         ninja: Option<String>,
+        #[command(flatten)]
+        compiler: CompilerOpts,
     },
     /// Run staged diagnostics (L0–L1) and write a report.
     Doctor {
@@ -156,7 +159,8 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             profile,
             dry_run,
             ninja,
-        } => build(&bundle, target, profile, dry_run, ninja, fmt),
+            compiler,
+        } => build(&bundle, target, profile, dry_run, ninja, compiler, fmt),
         PluginCmd::Doctor {
             bundle,
             target,
@@ -296,12 +300,14 @@ fn doctor(
     finish(&report)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build(
     bundle_path: &str,
     target: Option<String>,
     profile: Option<String>,
     dry_run: bool,
     ninja: Option<String>,
+    compiler_opts: CompilerOpts,
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
@@ -316,6 +322,9 @@ fn build(
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
 
+    // Compiler policy: CLI flags over the enclosing project's `[build]`, else host.
+    let compiler = resolve_plugin_compiler(&compiler_opts)?;
+
     // Generate the toolchain that points CMake at the runtime (reusing ost-build).
     // Both the toolchain and the build tree are keyed by target id, so switching
     // platform/profile/runtime never reuses (and corrupts) another target's
@@ -328,7 +337,7 @@ fn build(
         toolchain.as_std_path(),
         format!(
             "{}\n",
-            ost_build::render_toolchain(&tgt, &r.artifact_prefix)
+            ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler)
         ),
     )
     .map_err(|e| Error::io(toolchain.to_string(), e))?;
@@ -802,6 +811,18 @@ fn run_step(program: &std::path::Path, args: &[String]) -> Result<()> {
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+/// Resolve the compiler policy for a plugin build: CLI flags over the enclosing
+/// project's `[build]` table (if the bundle sits inside a project), else host.
+fn resolve_plugin_compiler(opts: &CompilerOpts) -> Result<ost_build::Compiler> {
+    let build = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| find_project_root(&cwd))
+        .and_then(|r| Utf8PathBuf::from_path_buf(r).ok())
+        .and_then(|root| load_project(&root).ok())
+        .and_then(|p| p.build);
+    compiler::resolve(opts, build.as_ref())
 }
 
 /// Per-target toolchain/state directory inside a bundle: `.strata/targets/<id>/`.
