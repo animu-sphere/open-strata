@@ -89,6 +89,20 @@ pub fn pack_dir(stage: &Utf8Path, archive: &Utf8Path) -> io::Result<PackResult> 
     })
 }
 
+/// Count the regular files under `stage` (recursively).
+///
+/// Used to reject an empty install tree *before* writing an archive, so an
+/// empty `ost package` produces no side effects unless explicitly allowed.
+/// Returns `Ok(0)` if `stage` does not exist.
+pub fn count_files(stage: &Utf8Path) -> io::Result<usize> {
+    if !stage.as_std_path().exists() {
+        return Ok(0);
+    }
+    let mut paths = Vec::new();
+    collect_files(stage, &mut paths)?;
+    Ok(paths.len())
+}
+
 /// Recursively collect regular files under `dir`.
 fn collect_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
     for entry in std::fs::read_dir(dir.as_std_path())? {
@@ -102,4 +116,37 @@ fn collect_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> Utf8PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut d = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
+        d.push(format!("ost-pack-{tag}-{}-{nanos}", std::process::id()));
+        d
+    }
+
+    #[test]
+    fn count_files_handles_missing_empty_and_nested() {
+        let root = tmp("count");
+        // Missing → 0.
+        assert_eq!(count_files(&root).unwrap(), 0);
+
+        // Exists but empty (only subdirs) → 0.
+        std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        assert_eq!(count_files(&root).unwrap(), 0);
+
+        // Nested regular files are counted.
+        std::fs::write(root.join("lib/libfoo.so").as_std_path(), b"x").unwrap();
+        std::fs::write(root.join("plugInfo.json").as_std_path(), b"{}").unwrap();
+        assert_eq!(count_files(&root).unwrap(), 2);
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
 }

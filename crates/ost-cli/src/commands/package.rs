@@ -30,6 +30,11 @@ pub struct PackageArgs {
     /// Profile to package. Defaults to the project's profile.
     #[arg(long)]
     profile: Option<String>,
+
+    /// Allow an empty install tree (a metadata-only artifact). By default an
+    /// empty tree is an error.
+    #[arg(long)]
+    allow_empty: bool,
 }
 
 pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
@@ -66,6 +71,18 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         std::process::exit(status.code().unwrap_or(1));
     }
 
+    // Reject an empty install tree before writing anything — packing it would
+    // produce a useless artifact that silently "succeeds". `--allow-empty` opts
+    // in to a metadata-only artifact.
+    let staged_files = ost_build::count_files(&stage).map_err(|e| Error::io(stage.to_string(), e))?;
+    if staged_files == 0 && !args.allow_empty {
+        return Err(Error::Operation(format!(
+            "the install tree for '{id}' is empty — nothing to package.\n\
+             hint: add `install(TARGETS ...)` (and resource install rules) to CMakeLists.txt, \
+             or pass --allow-empty for a metadata-only artifact"
+        )));
+    }
+
     // Pack the stage tree.
     let name = &project.project.name;
     let version = &project.project.version;
@@ -77,10 +94,8 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         pack_dir(&stage, &archive_path).map_err(|e| Error::io(archive_path.to_string(), e))?;
 
     if packed.files.is_empty() {
-        eprintln!(
-            "warning: the install tree was empty — does {} declare any install() rules?",
-            project.project.name
-        );
+        // Only reachable with --allow-empty (the empty tree was rejected above).
+        eprintln!("note: packaging a metadata-only artifact (empty install tree, --allow-empty)");
     }
 
     // Runtime validation status, for the artifact's provenance.

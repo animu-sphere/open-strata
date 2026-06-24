@@ -106,6 +106,7 @@ ost build --dry-run                    # print the commands + files only
 ost build --jobs 8 --ninja /opt/ninja/ninja
 ost build --no-vcvars                  # Windows: skip MSVC auto-bootstrap
 ost package                            # install + dist/<name>/<ver>/<target>/*.tar.zst
+ost package --allow-empty              # permit a metadata-only artifact (empty install tree)
 ost validate                           # configured / built / runtime / artifact checks
 ```
 
