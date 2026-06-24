@@ -19,7 +19,10 @@ mod toolchain;
 
 pub use lock::TargetLock;
 pub use package::{pack_dir, FileEntry, PackResult};
-pub use presets::{render_target_presets, root_presets_with_include};
+pub use presets::{
+    ensure_includes, includes_of, is_managed_include, managed_include, remove_managed_includes,
+    render_target_presets,
+};
 pub use target::Target;
 pub use toolchain::render_toolchain;
 
