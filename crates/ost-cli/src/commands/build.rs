@@ -24,10 +24,9 @@ use clap::Args;
 
 use ost_build::Target;
 use ost_core::host::Os;
-use ost_core::paths::STATE_DIR;
 use ost_core::{tools, Error, Result};
 
-use crate::commands::configure::{build_target, generate, resolve_selection};
+use crate::commands::configure::{build_target, generate, resolve_selection, target_output_paths};
 use crate::output::{self, Format};
 
 #[derive(Debug, Args)]
@@ -113,14 +112,30 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     // 4. `--dry-run`: show the planned commands and the files that would be
     //    generated, then stop without writing anything.
     if args.dry_run {
+        let configure_cmd = render_cmd(&cmake_prog, &configure_args);
+        let build_cmd = render_cmd(&cmake_prog, &build_args);
+        let files = target_output_paths(&id);
+
+        if fmt.is_json() {
+            output::json(&serde_json::json!({
+                "dry_run": true,
+                "target": id,
+                "root": root.to_string(),
+                "bootstrap_msvc": pre.will_bootstrap_msvc,
+                "commands": [configure_cmd, build_cmd],
+                "would_generate": files,
+            }));
+            return Ok(());
+        }
+
         println!("# dry run — would execute in {root}:");
         if pre.will_bootstrap_msvc {
             println!("# (would auto-load the MSVC environment via vcvars64.bat)");
         }
-        println!("{}", render_cmd(&cmake_prog, &configure_args));
-        println!("{}", render_cmd(&cmake_prog, &build_args));
+        println!("{configure_cmd}");
+        println!("{build_cmd}");
         println!("# would generate:");
-        for f in planned_files(&id) {
+        for f in &files {
             println!("#   {f}");
         }
         return Ok(());
@@ -278,9 +293,10 @@ fn preflight(root: &Utf8Path, target: &Target, pulled: bool, args: &BuildArgs) -
         target.os() == Os::Windows && !args.no_vcvars && tools::which("cl").is_none();
     match &ninja {
         Some(p) => checks.push(Check::ok("ninja", p.display().to_string())),
-        None if will_bootstrap_msvc => {
-            checks.push(Check::ok("ninja", "provided by the MSVC developer environment"))
-        }
+        None if will_bootstrap_msvc => checks.push(Check::ok(
+            "ninja",
+            "not on PATH; expected from the MSVC developer environment (vcvars64.bat)",
+        )),
         None => checks.push(Check::failed(
             "ninja",
             "`ninja` not found",
@@ -319,19 +335,6 @@ fn detect_compiler(os: Os, will_bootstrap_msvc: bool) -> String {
         }
     }
     "not detected (CMake will search at configure time)".to_string()
-}
-
-/// The files `generate` would write for this target, relative to the root.
-fn planned_files(id: &str) -> Vec<String> {
-    let t = format!("{STATE_DIR}/targets/{id}");
-    vec![
-        format!("{t}/toolchain.cmake"),
-        format!("{t}/env.json"),
-        format!("{t}/target.lock.json"),
-        format!("{t}/CMakePresets.json"),
-        "CMakePresets.json".to_string(),
-        "strata.lock".to_string(),
-    ]
 }
 
 /// Render the preflight report for humans or as JSON.
@@ -471,7 +474,7 @@ mod tests {
 
     #[test]
     fn planned_files_cover_target_and_root_outputs() {
-        let files = planned_files("cy2026-linux-x86_64-py313-usd");
+        let files = target_output_paths("cy2026-linux-x86_64-py313-usd");
         assert!(files
             .iter()
             .any(|f| f == ".strata/targets/cy2026-linux-x86_64-py313-usd/toolchain.cmake"));
