@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
 
 use ost_core::host::Os;
@@ -314,9 +314,13 @@ fn build(
         )
     })?;
     let (tgt, r) = build_target(&platform, &profile)?;
+    let id = tgt.id();
 
     // Generate the toolchain that points CMake at the runtime (reusing ost-build).
-    let target_dir = bundle.root.join(STATE_DIR).join("build");
+    // Both the toolchain and the build tree are keyed by target id, so switching
+    // platform/profile/runtime never reuses (and corrupts) another target's
+    // CMake cache — mirroring the project-level `build/<id>` layout.
+    let target_dir = target_state_dir(&bundle.root, &id);
     std::fs::create_dir_all(target_dir.as_std_path())
         .map_err(|e| Error::io(target_dir.to_string(), e))?;
     let toolchain = target_dir.join("toolchain.cmake");
@@ -329,7 +333,7 @@ fn build(
     )
     .map_err(|e| Error::io(toolchain.to_string(), e))?;
 
-    let build_dir = bundle.root.join("build");
+    let build_dir = target_build_dir(&bundle.root, &id);
     let cmake = tools::which("cmake");
     let ninja = ninja.map(PathBuf::from).or_else(|| tools::which("ninja"));
 
@@ -798,4 +802,38 @@ fn run_step(program: &std::path::Path, args: &[String]) -> Result<()> {
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+/// Per-target toolchain/state directory inside a bundle: `.strata/targets/<id>/`.
+/// Keyed by target id so each platform/profile/runtime keeps its own toolchain.
+fn target_state_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
+    root.join(STATE_DIR).join("targets").join(id)
+}
+
+/// Per-target CMake build tree inside a bundle: `build/<id>`. Keeping the build
+/// tree under the target id prevents one target reusing another's CMake cache.
+fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
+    root.join("build").join(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_paths_are_keyed_by_target_id() {
+        let root = Utf8PathBuf::from("/bundle");
+        let id = "cy2026-linux-x86_64-py311-usd";
+
+        let bd = target_build_dir(&root, id);
+        assert_eq!(bd.file_name(), Some(id));
+        assert_eq!(bd.parent().unwrap().file_name(), Some("build"));
+
+        let sd = target_state_dir(&root, id);
+        assert_eq!(sd.file_name(), Some(id));
+        assert_eq!(sd.parent().unwrap().file_name(), Some("targets"));
+
+        // Different targets never share a build tree (no CMake-cache mixing).
+        assert_ne!(bd, target_build_dir(&root, "cy2027-linux-x86_64-py313-usd"));
+    }
 }
