@@ -192,7 +192,11 @@ pub fn scaffold(
     root: &Utf8Path,
     force: bool,
 ) -> Result<Vec<Utf8PathBuf>> {
-    validate_name(name)?;
+    // The name is only substituted into template files, so it need only be a
+    // portable identifier when there are files to write. `Bare` writes none.
+    if !template.files().is_empty() {
+        validate_name(name)?;
+    }
     let vars = Vars::new(name);
 
     // Pre-flight: never clobber an existing file unless --force was given.
@@ -256,6 +260,17 @@ mod tests {
         std::fs::create_dir_all(dir.as_std_path()).unwrap();
         let written = scaffold(Template::Bare, "demo", &dir, false).unwrap();
         assert!(written.is_empty());
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn bare_accepts_non_identifier_names() {
+        // `--bare` substitutes the name into no files, so directory names that
+        // aren't portable identifiers (a leading digit, a dot) must be accepted.
+        let dir = unique_tmp("bare-name");
+        std::fs::create_dir_all(dir.as_std_path()).unwrap();
+        assert!(scaffold(Template::Bare, "2026_show", &dir, false).is_ok());
+        assert!(scaffold(Template::Bare, "show.v2", &dir, false).is_ok());
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
 

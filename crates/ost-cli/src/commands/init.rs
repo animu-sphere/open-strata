@@ -76,8 +76,13 @@ pub fn run(args: InitArgs, fmt: Format) -> Result<()> {
     });
 
     // Validate the name and detect template-file conflicts before any write, so
-    // a failure leaves the work tree untouched.
-    project_template::validate_name(&name)?;
+    // a failure leaves the work tree untouched. The name only needs to be a
+    // portable identifier when it is substituted into template files; `--bare`
+    // writes none, so any directory name accepted by the manifest is fine there
+    // (VFX project dirs are routinely `2026_show`, `seq010`, `show.v2`, …).
+    if template != Template::Bare {
+        project_template::validate_name(&name)?;
+    }
     if !args.force {
         if let Some(first) = project_template::conflicts(template, &name, &root).first() {
             return Err(Error::Operation(format!(
