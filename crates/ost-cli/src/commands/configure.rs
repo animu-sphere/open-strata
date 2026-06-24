@@ -181,6 +181,23 @@ pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result
     })
 }
 
+/// The files [`generate`] writes for a target, relative to the project root.
+///
+/// Single source of truth shared by `ost build`'s `--dry-run` planner so it
+/// cannot drift from what a real build actually produces. Keep this in lockstep
+/// with the writes in [`generate`].
+pub(crate) fn target_output_paths(id: &str) -> Vec<String> {
+    let t = format!("{STATE_DIR}/targets/{id}");
+    vec![
+        format!("{t}/toolchain.cmake"),
+        format!("{t}/env.json"),
+        format!("{t}/target.lock.json"),
+        format!("{t}/CMakePresets.json"),
+        "CMakePresets.json".to_string(),
+        "strata.lock".to_string(),
+    ]
+}
+
 fn write(path: &Utf8PathBuf, contents: &str) -> Result<()> {
     std::fs::write(path.as_std_path(), format!("{contents}\n"))
         .map_err(|e| Error::io(path.to_string(), e))

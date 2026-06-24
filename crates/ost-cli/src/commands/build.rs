@@ -7,6 +7,14 @@
 //! passed to CMake as `CMAKE_MAKE_PROGRAM` so it works even off PATH.
 //!
 //! OpenStrata decides *what* to build; CMake/Ninja remain the build truth.
+//!
+//! Order of operations (P0 "no side effects before checks"):
+//!   1. resolve project root + manifest, then platform/profile/runtime
+//!   2. preflight: CMakeLists.txt, runtime, CMake, Ninja, compiler
+//!   3. `--check`  → report checks and stop (no writes)
+//!   4. `--dry-run`→ show planned commands + files and stop (no writes)
+//!   5. generate the target's `.strata/` files
+//!   6. CMake configure, then CMake build
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,11 +22,12 @@ use std::process::Command;
 use camino::Utf8Path;
 use clap::Args;
 
+use ost_build::Target;
 use ost_core::host::Os;
 use ost_core::{tools, Error, Result};
 
-use crate::commands::configure::{generate, resolve_selection};
-use crate::output::Format;
+use crate::commands::configure::{build_target, generate, resolve_selection, target_output_paths};
+use crate::output::{self, Format};
 
 #[derive(Debug, Args)]
 pub struct BuildArgs {
@@ -30,7 +39,12 @@ pub struct BuildArgs {
     #[arg(long)]
     profile: Option<String>,
 
-    /// Print the commands that would run, without executing them.
+    /// Run preflight checks only, without generating files or building.
+    #[arg(long)]
+    check: bool,
+
+    /// Print the commands and files that would be produced, without executing
+    /// or writing anything.
     #[arg(long)]
     dry_run: bool,
 
@@ -47,45 +61,38 @@ pub struct BuildArgs {
     no_vcvars: bool,
 }
 
-pub fn run(args: BuildArgs, _fmt: Format) -> Result<()> {
+pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
+    // 1. Resolve the project and the effective target. `build_target` resolves
+    //    the runtime without writing anything, so checks and dry-run stay free
+    //    of side effects.
     let (root, platform, profile) = resolve_selection(args.target.clone(), args.profile.clone())?;
-    let g = generate(&root, &platform, &profile)?;
-    let id = g.id.clone();
+    let (target, resolved) = build_target(&platform, &profile)?;
+    let id = target.id();
 
-    let cmake = locate("cmake", None);
-    let ninja = locate(
-        "ninja",
-        args.ninja
-            .clone()
-            .or_else(|| std::env::var("OST_NINJA").ok()),
-    );
+    // 2. Preflight: gather every check without touching the work tree.
+    let pre = preflight(&root, &target, resolved.pulled, &args);
 
-    // On Windows we may auto-load the MSVC dev environment, which also puts a
-    // Ninja on PATH — so an explicit ninja is not strictly required there.
-    let will_bootstrap_msvc =
-        g.target.os() == Os::Windows && !args.no_vcvars && tools::which("cl").is_none();
-
-    if !args.dry_run {
-        if !g.pulled {
-            return Err(Error::Operation(format!(
-                "runtime '{}' not pulled — run `ost runtime pull {} --profile {}` first",
-                g.target.runtime_id, platform, profile
-            )));
-        }
-        if cmake.is_none() {
-            return Err(Error::Operation("`cmake` not found on PATH".to_string()));
-        }
-        if ninja.is_none() && !will_bootstrap_msvc {
-            return Err(Error::Operation(
-                "`ninja` not found — add it to PATH, set OST_NINJA, or pass --ninja <path>"
-                    .to_string(),
-            ));
-        }
+    // 3. `--check`: report and stop. Non-zero exit if any required check failed.
+    if args.check {
+        report_checks(&id, &pre, fmt);
+        return match pre.first_failure() {
+            Some(_) => Err(Error::Operation(format!(
+                "preflight checks failed for target {id}"
+            ))),
+            None => Ok(()),
+        };
     }
 
-    let cmake_prog = cmake.unwrap_or_else(|| PathBuf::from("cmake"));
+    // For a real or planned build, a failing required check is fatal — and we
+    // surface it before any file is written.
+    if let Some(failure) = pre.first_failure() {
+        return Err(failure.to_error());
+    }
+
+    let cmake_prog = pre.cmake.clone().unwrap_or_else(|| PathBuf::from("cmake"));
     // CMake wants forward slashes even on Windows.
-    let ninja_arg = ninja
+    let ninja_arg = pre
+        .ninja
         .as_ref()
         .map(|p| p.display().to_string().replace('\\', "/"));
 
@@ -102,19 +109,45 @@ pub fn run(args: BuildArgs, _fmt: Format) -> Result<()> {
         }
     }
 
+    // 4. `--dry-run`: show the planned commands and the files that would be
+    //    generated, then stop without writing anything.
     if args.dry_run {
+        let configure_cmd = render_cmd(&cmake_prog, &configure_args);
+        let build_cmd = render_cmd(&cmake_prog, &build_args);
+        let files = target_output_paths(&id);
+
+        if fmt.is_json() {
+            output::json(&serde_json::json!({
+                "dry_run": true,
+                "target": id,
+                "root": root.to_string(),
+                "bootstrap_msvc": pre.will_bootstrap_msvc,
+                "commands": [configure_cmd, build_cmd],
+                "would_generate": files,
+            }));
+            return Ok(());
+        }
+
         println!("# dry run — would execute in {root}:");
-        if will_bootstrap_msvc {
+        if pre.will_bootstrap_msvc {
             println!("# (would auto-load the MSVC environment via vcvars64.bat)");
         }
-        println!("{}", render_cmd(&cmake_prog, &configure_args));
-        println!("{}", render_cmd(&cmake_prog, &build_args));
+        println!("{configure_cmd}");
+        println!("{build_cmd}");
+        println!("# would generate:");
+        for f in &files {
+            println!("#   {f}");
+        }
         return Ok(());
     }
 
-    // Inject the MSVC developer environment (cl.exe, Windows SDK) if needed.
+    // 5. Generate the target's `.strata/` files now that checks have passed.
+    let g = generate(&root, &platform, &profile)?;
+    debug_assert_eq!(g.id, id);
+
+    // 6. Inject the MSVC developer environment (cl.exe, Windows SDK) if needed.
     let mut extra_env: Vec<(String, String)> = Vec::new();
-    if will_bootstrap_msvc {
+    if pre.will_bootstrap_msvc {
         match ost_build::msvc::bootstrap() {
             Ok(Some(env)) => {
                 println!(
@@ -140,6 +173,214 @@ pub fn run(args: BuildArgs, _fmt: Format) -> Result<()> {
     run_step(&cmake_prog, &build_args, &root, &extra_env)?;
     println!("\nBuilt target {id}");
     Ok(())
+}
+
+/// A single preflight check and its outcome.
+struct Check {
+    name: &'static str,
+    status: Status,
+}
+
+enum Status {
+    /// Required check passed; carries a short human detail.
+    Ok(String),
+    /// Required check failed; carries the reason and an actionable hint.
+    Failed { detail: String, hint: String },
+    /// Non-gating information (e.g. detected compiler).
+    Info(String),
+}
+
+impl Check {
+    fn ok(name: &'static str, detail: impl Into<String>) -> Self {
+        Check {
+            name,
+            status: Status::Ok(detail.into()),
+        }
+    }
+    fn failed(name: &'static str, detail: impl Into<String>, hint: impl Into<String>) -> Self {
+        Check {
+            name,
+            status: Status::Failed {
+                detail: detail.into(),
+                hint: hint.into(),
+            },
+        }
+    }
+    fn info(name: &'static str, detail: impl Into<String>) -> Self {
+        Check {
+            name,
+            status: Status::Info(detail.into()),
+        }
+    }
+    /// Render a failed check as an actionable error (used on the build path).
+    fn to_error(&self) -> Error {
+        match &self.status {
+            Status::Failed { detail, hint } => Error::Operation(format!("{detail}\nhint: {hint}")),
+            _ => Error::Operation(format!("check '{}' failed", self.name)),
+        }
+    }
+}
+
+/// The outcome of preflight: the per-item checks plus the located tools the
+/// build path will reuse.
+struct Preflight {
+    checks: Vec<Check>,
+    cmake: Option<PathBuf>,
+    ninja: Option<PathBuf>,
+    will_bootstrap_msvc: bool,
+}
+
+impl Preflight {
+    /// First failed required check, if any.
+    fn first_failure(&self) -> Option<&Check> {
+        self.checks
+            .iter()
+            .find(|c| matches!(c.status, Status::Failed { .. }))
+    }
+}
+
+/// Run every preflight check without writing to the work tree.
+fn preflight(root: &Utf8Path, target: &Target, pulled: bool, args: &BuildArgs) -> Preflight {
+    let mut checks = Vec::new();
+
+    // CMakeLists.txt in the project root — without it CMake fails with a raw,
+    // confusing error, so we diagnose it ourselves (P0 first-build path).
+    let cml = root.join("CMakeLists.txt");
+    if cml.as_std_path().is_file() {
+        checks.push(Check::ok("CMakeLists.txt", cml.to_string()));
+    } else {
+        checks.push(Check::failed(
+            "CMakeLists.txt",
+            "no CMakeLists.txt found in project root",
+            "run `ost init --template cpp-library`, or use `ost init --bare` for an existing CMake project",
+        ));
+    }
+
+    // The runtime must be pulled before a real build.
+    if pulled {
+        checks.push(Check::ok("runtime", target.runtime_id.clone()));
+    } else {
+        checks.push(Check::failed(
+            "runtime",
+            format!("runtime '{}' not pulled", target.runtime_id),
+            format!(
+                "run `ost runtime pull {} --profile {}` first",
+                target.platform, target.profile
+            ),
+        ));
+    }
+
+    // CMake itself.
+    let cmake = locate("cmake", None);
+    match &cmake {
+        Some(p) => checks.push(Check::ok("cmake", p.display().to_string())),
+        None => checks.push(Check::failed(
+            "cmake",
+            "`cmake` not found on PATH",
+            "install CMake 3.23 or later and add it to PATH",
+        )),
+    }
+
+    // Ninja. On Windows the MSVC developer environment we auto-load also puts a
+    // Ninja on PATH, so an explicit one is not strictly required there.
+    let ninja = locate(
+        "ninja",
+        args.ninja
+            .clone()
+            .or_else(|| std::env::var("OST_NINJA").ok()),
+    );
+    let will_bootstrap_msvc =
+        target.os() == Os::Windows && !args.no_vcvars && tools::which("cl").is_none();
+    match &ninja {
+        Some(p) => checks.push(Check::ok("ninja", p.display().to_string())),
+        None if will_bootstrap_msvc => checks.push(Check::ok(
+            "ninja",
+            "not on PATH; expected from the MSVC developer environment (vcvars64.bat)",
+        )),
+        None => checks.push(Check::failed(
+            "ninja",
+            "`ninja` not found",
+            "add it to PATH, set OST_NINJA, or pass --ninja <path>",
+        )),
+    }
+
+    // Compiler detection is informational here; compiler *policy* (host vs
+    // runtime vs explicit) is selected at configure time.
+    checks.push(Check::info(
+        "compiler",
+        detect_compiler(target.os(), will_bootstrap_msvc),
+    ));
+
+    Preflight {
+        checks,
+        cmake,
+        ninja,
+        will_bootstrap_msvc,
+    }
+}
+
+/// Best-effort host compiler discovery for the preflight report.
+fn detect_compiler(os: Os, will_bootstrap_msvc: bool) -> String {
+    if os == Os::Windows {
+        if will_bootstrap_msvc {
+            return "MSVC (loaded via vcvars64.bat)".to_string();
+        }
+        if let Some(p) = tools::which("cl") {
+            return format!("MSVC: {}", p.display());
+        }
+    }
+    for c in ["cc", "clang", "gcc"] {
+        if let Some(p) = tools::which(c) {
+            return format!("{c}: {}", p.display());
+        }
+    }
+    "not detected (CMake will search at configure time)".to_string()
+}
+
+/// Render the preflight report for humans or as JSON.
+fn report_checks(id: &str, pre: &Preflight, fmt: Format) {
+    if fmt.is_json() {
+        let checks: Vec<_> = pre
+            .checks
+            .iter()
+            .map(|c| match &c.status {
+                Status::Ok(detail) => {
+                    serde_json::json!({ "name": c.name, "status": "ok", "detail": detail })
+                }
+                Status::Failed { detail, hint } => serde_json::json!({
+                    "name": c.name, "status": "failed", "detail": detail, "hint": hint,
+                }),
+                Status::Info(detail) => {
+                    serde_json::json!({ "name": c.name, "status": "info", "detail": detail })
+                }
+            })
+            .collect();
+        output::json(&serde_json::json!({
+            "target": id,
+            "ok": pre.first_failure().is_none(),
+            "checks": checks,
+        }));
+        return;
+    }
+
+    println!("Preflight checks for target {id}:");
+    let mut failed = 0u32;
+    for c in &pre.checks {
+        match &c.status {
+            Status::Ok(detail) => println!("  [ok]   {:<14} {detail}", c.name),
+            Status::Info(detail) => println!("  [info] {:<14} {detail}", c.name),
+            Status::Failed { detail, hint } => {
+                failed += 1;
+                println!("  [fail] {:<14} {detail}", c.name);
+                println!("         hint: {hint}");
+            }
+        }
+    }
+    if failed == 0 {
+        println!("\nall checks passed");
+    } else {
+        println!("\n{failed} check(s) failed");
+    }
 }
 
 /// Find an executable: an explicit override path first, then PATH.
@@ -187,4 +428,58 @@ fn run_step(
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pre(checks: Vec<Check>) -> Preflight {
+        Preflight {
+            checks,
+            cmake: None,
+            ninja: None,
+            will_bootstrap_msvc: false,
+        }
+    }
+
+    #[test]
+    fn first_failure_skips_ok_and_info() {
+        let p = pre(vec![
+            Check::ok("cmake", "/usr/bin/cmake"),
+            Check::info("compiler", "cc"),
+            Check::failed("runtime", "not pulled", "run `ost runtime pull`"),
+        ]);
+        let f = p.first_failure().expect("a failure");
+        assert_eq!(f.name, "runtime");
+    }
+
+    #[test]
+    fn no_failure_when_all_ok() {
+        let p = pre(vec![Check::ok("cmake", "x"), Check::info("compiler", "cc")]);
+        assert!(p.first_failure().is_none());
+    }
+
+    #[test]
+    fn failed_check_renders_actionable_error() {
+        let c = Check::failed(
+            "CMakeLists.txt",
+            "no CMakeLists.txt found in project root",
+            "run `ost init --template cpp-library`",
+        );
+        let msg = c.to_error().to_string();
+        assert!(msg.contains("no CMakeLists.txt found"));
+        assert!(msg.contains("hint: run `ost init --template cpp-library`"));
+    }
+
+    #[test]
+    fn planned_files_cover_target_and_root_outputs() {
+        let files = target_output_paths("cy2026-linux-x86_64-py313-usd");
+        assert!(files
+            .iter()
+            .any(|f| f == ".strata/targets/cy2026-linux-x86_64-py313-usd/toolchain.cmake"));
+        // The root-level outputs a build would touch must be listed too.
+        assert!(files.iter().any(|f| f == "CMakePresets.json"));
+        assert!(files.iter().any(|f| f == "strata.lock"));
+    }
 }
