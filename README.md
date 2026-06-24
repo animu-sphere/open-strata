@@ -58,13 +58,13 @@ cargo clippy --workspace --all-targets
 
 ```text
 ost platform   list | show <cy> | diff <a> <b>     inspect VFX platform years
-ost init                                            scaffold openstrata.toml + .strata/
+ost init [--template cpp-library|usd-plugin|--bare]  scaffold a buildable project
 ost runtime    pull | list | show | validate | explain   manage runtimes in the store
 ost env <cy> --profile <p> [--shell bash|pwsh]      print the activating environment
 ost devshell <cy> --profile <p>                     enter an interactive runtime shell
 ost doctor [<cy> --profile <p>]                     host + tools + runtime diagnostics
 ost configure [--target <cy>] [--profile <p>]       generate toolchain + CMake presets
-ost build [--dry-run] [--jobs N] [--ninja <p>]      configure + cmake build (Ninja)
+ost build [--check] [--dry-run] [--jobs N]          preflight, then cmake build (Ninja)
 ost package                                         install + tar.zst artifact + manifest
 ost validate                                        validate a built/packaged target
 ost extension  list | why <id> | add <id>           inspect/request controlled extensions
