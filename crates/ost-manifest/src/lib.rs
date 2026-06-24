@@ -10,4 +10,4 @@ mod lock;
 mod project;
 
 pub use lock::{Lock, LockExtension, LockPython, LockRuntime, Validation};
-pub use project::{add_extension, Project, ProjectMeta, Requires};
+pub use project::{add_extension, BuildConfig, Project, ProjectMeta, Requires};

@@ -20,8 +20,8 @@ use clap::Args;
 use serde_json::{Map, Value};
 
 use ost_build::{
-    ensure_includes, includes_of, managed_include, render_target_presets, render_toolchain, Target,
-    TargetLock,
+    ensure_includes, includes_of, managed_include, render_target_presets, render_toolchain,
+    Compiler, Target, TargetLock,
 };
 use ost_core::fs::write_atomic;
 use ost_core::paths::{find_project_root, PROJECT_MANIFEST, STATE_DIR};
@@ -29,6 +29,7 @@ use ost_core::{Error, Result};
 use ost_manifest::Project;
 use ost_runtime::{RuntimeManifest, MANIFEST_FILE};
 
+use crate::commands::compiler::{self, CompilerOpts};
 use crate::commands::presets::{read_presets_object, ROOT_PRESETS, USER_PRESETS};
 use crate::commands::{resolve, Resolved};
 use crate::output::{self, Format};
@@ -42,6 +43,9 @@ pub struct ConfigureArgs {
     /// Profile to build. Defaults to the project's profile.
     #[arg(long)]
     profile: Option<String>,
+
+    #[command(flatten)]
+    compiler: CompilerOpts,
 }
 
 /// The result of generating a target's CMake files.
@@ -50,13 +54,21 @@ pub(crate) struct Generated {
     pub target: Target,
     pub pulled: bool,
     pub root: Utf8PathBuf,
+    pub compiler: Compiler,
 }
 
 pub fn run(args: ConfigureArgs, fmt: Format) -> Result<()> {
     let (root, platform, profile) = resolve_selection(args.target, args.profile)?;
-    let g = generate(&root, &platform, &profile)?;
+    let compiler = resolve_compiler(&root, &args.compiler)?;
+    let g = generate(&root, &platform, &profile, &compiler)?;
     report(&g, fmt);
     Ok(())
+}
+
+/// Resolve the compiler policy from CLI flags over the project's `[build]` table.
+pub(crate) fn resolve_compiler(root: &Utf8Path, opts: &CompilerOpts) -> Result<Compiler> {
+    let build = load_project(root)?.build;
+    compiler::resolve(opts, build.as_ref())
 }
 
 /// Find the project root and resolve the effective platform + profile, applying
@@ -121,7 +133,12 @@ pub(crate) fn build_target(platform: &str, profile: &str) -> Result<(Target, Res
 
 /// Resolve the runtime and write all of a target's CMake files. Returns the
 /// generated target so callers (e.g. `ost build`) can act on it.
-pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result<Generated> {
+pub(crate) fn generate(
+    root: &Utf8Path,
+    platform: &str,
+    profile: &str,
+    compiler: &Compiler,
+) -> Result<Generated> {
     let (target, r) = build_target(platform, profile)?;
     let id = target.id();
 
@@ -129,10 +146,18 @@ pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result
     std::fs::create_dir_all(target_dir.as_std_path())
         .map_err(|e| Error::io(target_dir.to_string(), e))?;
 
+    // The compiler record (policy + resolved paths + versions) goes in the lock.
+    let lock_compiler = compiler::to_lock(compiler, &r.artifact_prefix, target.os());
+
+    // If a previous configure used a different compiler, the CMake cache under
+    // build/<id> is stale (cached compiler/ABI) — drop it so the next configure
+    // is clean. The toolchain/presets themselves are always regenerated below.
+    invalidate_build_tree_if_compiler_changed(root, &id, &lock_compiler);
+
     // 1. toolchain.cmake
     write(
         &target_dir.join("toolchain.cmake"),
-        &render_toolchain(&target, &r.artifact_prefix),
+        &render_toolchain(&target, &r.artifact_prefix, compiler),
     )?;
 
     // 2. env.json (resolved env for build steps to reuse)
@@ -155,7 +180,7 @@ pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let toolchain_rel = format!(".strata/targets/{id}/toolchain.cmake");
-    let lock = TargetLock::from_target(&target, &toolchain_rel, created);
+    let lock = TargetLock::from_target(&target, lock_compiler, &toolchain_rel, created);
     let lock_json = lock
         .to_json()
         .map_err(|e| Error::parse("target.lock.json", anyhow::Error::new(e)))?;
@@ -181,6 +206,7 @@ pub(crate) fn generate(root: &Utf8Path, platform: &str, profile: &str) -> Result
         target,
         pulled: r.pulled,
         root: root.to_path_buf(),
+        compiler: compiler.clone(),
     })
 }
 
@@ -199,6 +225,36 @@ pub(crate) fn target_output_paths(id: &str) -> Vec<String> {
         "CMakePresets.json".to_string(),
         "strata.lock".to_string(),
     ]
+}
+
+/// Remove `build/<id>` when the compiler differs from the last configure.
+///
+/// CMake caches the compiler and its ABI on first configure; reusing that cache
+/// with a different compiler produces incoherent builds. We compare only the
+/// compiler fingerprint (policy + paths) recorded in the previous
+/// `target.lock.json`; a missing/unreadable lock means nothing to invalidate.
+fn invalidate_build_tree_if_compiler_changed(
+    root: &Utf8Path,
+    id: &str,
+    next: &ost_build::LockCompiler,
+) {
+    let lock_path = root
+        .join(STATE_DIR)
+        .join("targets")
+        .join(id)
+        .join("target.lock.json");
+    let previous = std::fs::read_to_string(lock_path.as_std_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<TargetLock>(&s).ok());
+
+    if let Some(prev) = previous {
+        if prev.compiler.fingerprint() != next.fingerprint() {
+            let build_dir = root.join("build").join(id);
+            if build_dir.as_std_path().exists() {
+                let _ = std::fs::remove_dir_all(build_dir.as_std_path());
+            }
+        }
+    }
 }
 
 /// Ensure OpenStrata's `CMakeUserPresets.json` includes target `id`'s presets.
@@ -266,6 +322,7 @@ fn report(g: &Generated, fmt: Format) {
             "pulled": g.pulled,
             "cxx_standard": g.target.cxx_standard,
             "generator": g.target.generator,
+            "compiler": g.compiler.policy(),
             "files": {
                 "toolchain": format!(".strata/targets/{id}/toolchain.cmake"),
                 "env": format!(".strata/targets/{id}/env.json"),
@@ -283,6 +340,7 @@ fn report(g: &Generated, fmt: Format) {
         "  generator: {} (C++{})",
         g.target.generator, g.target.cxx_standard
     );
+    println!("  compiler:  {}", g.compiler.policy());
     if !g.pulled {
         println!("  warning:   runtime not pulled; toolchain paths are prospective");
         println!(

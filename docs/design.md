@@ -731,20 +731,29 @@ include し、利用者の `CMakePresets.json` には触れない。`ost presets
 
 ## 8.4 Toolchain example
 
+The compiler is chosen by policy (`host` by default, or `runtime`/`explicit`);
+the runtime prefix is *prepended* to `CMAKE_PREFIX_PATH` so a project's own
+prefixes survive. Example with the default `host` policy:
+
 ```cmake
-set(CMAKE_C_COMPILER "/runtime/bin/gcc")
-set(CMAKE_CXX_COMPILER "/runtime/bin/g++")
+# Compiler: host policy — CMake selects the host toolchain.
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(CMAKE_PREFIX_PATH "/runtime")
+list(PREPEND CMAKE_PREFIX_PATH "/runtime")
 set(Python_EXECUTABLE "/runtime/bin/python")
 set(Python_ROOT_DIR "/runtime")
 
 set(OpenUSD_ROOT "/runtime")
 set(MaterialX_ROOT "/runtime")
 ```
+
+With `--compiler runtime` the toolchain instead pins the runtime's bundled
+`bin/gcc`/`bin/g++` (Linux) or `bin/clang`/`bin/clang++` (macOS); with
+`--cc`/`--cxx` it pins the given absolute paths. The resolved compiler (policy,
+paths, and `--version`) is recorded in `target.lock.json`, and changing it
+invalidates the target's CMake build tree.
 
 ## 8.5 Essential CLI
 

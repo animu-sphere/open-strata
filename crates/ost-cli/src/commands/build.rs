@@ -26,7 +26,10 @@ use ost_build::Target;
 use ost_core::host::Os;
 use ost_core::{tools, Error, Result};
 
-use crate::commands::configure::{build_target, generate, resolve_selection, target_output_paths};
+use crate::commands::compiler::CompilerOpts;
+use crate::commands::configure::{
+    build_target, generate, resolve_compiler, resolve_selection, target_output_paths,
+};
 use crate::output::{self, Format};
 
 #[derive(Debug, Args)]
@@ -59,6 +62,9 @@ pub struct BuildArgs {
     /// Do not auto-load the MSVC developer environment (Windows).
     #[arg(long)]
     no_vcvars: bool,
+
+    #[command(flatten)]
+    compiler: CompilerOpts,
 }
 
 pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
@@ -68,6 +74,9 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     let (root, platform, profile) = resolve_selection(args.target.clone(), args.profile.clone())?;
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
+
+    // Resolve the compiler policy early so an invalid one fails before any work.
+    let compiler = resolve_compiler(&root, &args.compiler)?;
 
     // 2. Preflight: gather every check without touching the work tree.
     let pre = preflight(&root, &target, resolved.pulled, &args);
@@ -142,7 +151,7 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     }
 
     // 5. Generate the target's `.strata/` files now that checks have passed.
-    let g = generate(&root, &platform, &profile)?;
+    let g = generate(&root, &platform, &profile, &compiler)?;
     debug_assert_eq!(g.id, id);
 
     // 6. Inject the MSVC developer environment (cl.exe, Windows SDK) if needed.
