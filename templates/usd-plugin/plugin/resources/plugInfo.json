@@ -1,0 +1,15 @@
+{
+    "Plugins": [
+        {
+            "Name": "{{name}}",
+            "Type": "library",
+            "Root": "..",
+            "LibraryPath": "../{{name}}.so",
+            "ResourcePath": ".",
+            "Info": {
+                "Types": {
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,4 @@
+# OpenStrata-generated build state and tool-owned presets.
+/build/
+/.strata/
+CMakeUserPresets.json

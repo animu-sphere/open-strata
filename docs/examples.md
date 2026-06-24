@@ -28,12 +28,16 @@ ost platform show cy2026 --json      # machine-readable
 ## init — scaffold a project
 
 ```bash
-ost init                                      # uses the dir name + latest platform
-ost init --name my-show --platform cy2026     # explicit
-ost init --force                              # overwrite an existing openstrata.toml
+ost init                                      # cpp-library template, dir name + latest platform
+ost init --template usd-plugin                # scaffold a USD plugin project
+ost init --name my-show --platform cy2026     # explicit name + platform
+ost init --bare                               # manifest only — adopt an existing CMake project
+ost init --force                              # overwrite an existing manifest / template files
 ```
 
-Writes `openstrata.toml` and a `.strata/` state directory.
+Writes `openstrata.toml`, a `.strata/` state directory, and (unless `--bare`) a
+minimal, buildable CMake project — so `ost build` works straight after
+`ost runtime pull`.
 
 ## runtime — manage runtimes in the store
 
