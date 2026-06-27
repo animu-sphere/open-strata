@@ -10,14 +10,18 @@
 //!   reprints the phase with `… elapsed mm:ss`, and a final `completed in mm:ss`.
 //! - **Plain** (non-TTY / CI): one machine-greppable line per transition,
 //!   `phase=<slug> status=started|completed|failed` with `duration_ms=…`.
+//! - **Json** (`--progress json`): one JSON object per line — `phase_started`,
+//!   `heartbeat`, `phase_completed`, `phase_failed`, `completed` — for tools that
+//!   consume an event stream. Child output is captured to the log only so stdout
+//!   stays a clean stream.
 //!
 //! We never invent a percentage: progress is reported as *phases* plus elapsed
 //! time, with a heartbeat so a quiet child process never looks hung. Child
-//! stdout/stderr is passed through (or, with `--quiet`, captured to the log only)
-//! and always teed to the per-target log so failures point at a real file.
+//! stdout/stderr is passed through (or, with `--quiet`/`json`, captured to the
+//! log only) and always teed to the per-target log so failures point at a file.
 //!
-//! `--progress json` and OS `--notify` are intentionally not here yet; the event
-//! model above is shaped so they slot in without disturbing callers.
+//! With `--notify`, a best-effort OS notification fires on completion (success
+//! or failure); it is a no-op over SSH or in CI (see [`crate::notify`]).
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -31,6 +35,8 @@ use clap::ValueEnum;
 
 use ost_core::{Error, Result};
 
+use crate::notify;
+
 /// How progress is rendered. `auto` picks Human on a TTY, Plain otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "lower")]
@@ -39,6 +45,8 @@ pub enum ProgressMode {
     Auto,
     /// Always emit plain `phase=… status=…` lines (good for CI logs).
     Plain,
+    /// Emit one JSON object per line (a stable event stream for tools).
+    Json,
 }
 
 /// The resolved rendering style (after `auto` detection).
@@ -46,6 +54,7 @@ pub enum ProgressMode {
 enum Style {
     Human,
     Plain,
+    Json,
 }
 
 /// Idle time with no child output before a heartbeat is emitted.
@@ -75,6 +84,11 @@ pub struct Reporter {
     started: Instant,
     log: Option<PathBuf>,
     current: Option<PhaseState>,
+    /// Fire an OS notification on completion. Already gated on the environment
+    /// (false over SSH / in CI even when `--notify` was passed).
+    notify: bool,
+    /// Short command label for the notification, e.g. `ost build`.
+    label: String,
 }
 
 impl Reporter {
@@ -83,6 +97,7 @@ impl Reporter {
     pub fn new(mode: ProgressMode, total: usize, quiet: bool) -> Reporter {
         let style = match mode {
             ProgressMode::Plain => Style::Plain,
+            ProgressMode::Json => Style::Json,
             ProgressMode::Auto => {
                 if std::io::stdout().is_terminal() {
                     Style::Human
@@ -99,13 +114,34 @@ impl Reporter {
             started: Instant::now(),
             log: None,
             current: None,
+            notify: false,
+            label: String::new(),
         }
+    }
+
+    /// Enable an OS notification on completion, labelled `label` (e.g.
+    /// `ost build`). Honours the opt-in `requested` flag but stays off where a
+    /// desktop toast has no audience (SSH / CI), per [`notify::enabled`].
+    pub fn with_notify(mut self, requested: bool, label: &str) -> Reporter {
+        self.notify = requested && notify::enabled();
+        self.label = label.to_string();
+        self
     }
 
     /// Tee child output to (and report) this log file. Created on first write;
     /// a failure to open it is non-fatal (logging is best-effort).
     pub fn set_log(&mut self, path: &Utf8Path) {
         self.log = Some(path.as_std_path().to_path_buf());
+    }
+
+    /// Print an incidental human note (e.g. an env summary). Rendered for Human
+    /// and Plain, but suppressed under `--quiet` and in Json mode so the JSON
+    /// event stream on stdout stays pure.
+    pub fn note(&self, msg: &str) {
+        if self.quiet || matches!(self.style, Style::Json) {
+            return;
+        }
+        println!("      {msg}");
     }
 
     /// Begin a new phase, closing the previous one as completed.
@@ -125,6 +161,13 @@ impl Reporter {
                     now_unix(),
                     state.slug
                 ),
+                Style::Json => emit_json(serde_json::json!({
+                    "event": "phase_started",
+                    "phase": state.slug,
+                    "index": self.index,
+                    "total": self.total,
+                    "timestamp": now_unix(),
+                })),
             }
         }
         self.current = Some(state);
@@ -133,16 +176,27 @@ impl Reporter {
     /// Close the final phase and print the total wall time.
     pub fn done(&mut self) {
         self.close_current(Outcome::Completed);
-        if self.quiet {
-            return;
+        let elapsed = self.started.elapsed();
+        if !self.quiet {
+            match self.style {
+                Style::Human => println!("completed in {}", hms(elapsed)),
+                Style::Plain => println!(
+                    "timestamp={} phase=all status=completed duration_ms={}",
+                    now_unix(),
+                    elapsed.as_millis()
+                ),
+                Style::Json => emit_json(serde_json::json!({
+                    "event": "completed",
+                    "duration_ms": elapsed.as_millis() as u64,
+                    "timestamp": now_unix(),
+                })),
+            }
         }
-        match self.style {
-            Style::Human => println!("completed in {}", hms(self.started.elapsed())),
-            Style::Plain => println!(
-                "timestamp={} phase=all status=completed duration_ms={}",
-                now_unix(),
-                self.started.elapsed().as_millis()
-            ),
+        if self.notify {
+            notify::send(
+                &format!("{} ✓", self.label),
+                &format!("completed in {}", hms(elapsed)),
+            );
         }
     }
 
@@ -176,12 +230,19 @@ impl Reporter {
                         state.slug,
                         dur.as_millis()
                     ),
+                    Style::Json => emit_json(serde_json::json!({
+                        "event": "phase_completed",
+                        "phase": state.slug,
+                        "duration_ms": dur.as_millis() as u64,
+                        "timestamp": now_unix(),
+                    })),
                 }
             }
             // Failures always surface (even under --quiet), naming the phase,
             // the exit code (if any) and the log path.
             Outcome::Failed(exit) => {
                 let code = exit.map(|c| c.to_string());
+                let log = self.log.as_ref().map(|p| p.display().to_string());
                 match self.style {
                     Style::Human => {
                         let exit = code
@@ -194,8 +255,8 @@ impl Reporter {
                             state.name,
                             hms(dur)
                         );
-                        if let Some(log) = &self.log {
-                            eprintln!("      log: {}", log.display());
+                        if let Some(log) = &log {
+                            eprintln!("      log: {log}");
                         }
                     }
                     Style::Plain => {
@@ -208,15 +269,28 @@ impl Reporter {
                             state.slug,
                             dur.as_millis()
                         );
-                        if let Some(log) = &self.log {
+                        if let Some(log) = &log {
                             eprintln!(
-                                "timestamp={} phase={} status=failed log={}",
+                                "timestamp={} phase={} status=failed log={log}",
                                 now_unix(),
                                 state.slug,
-                                log.display()
                             );
                         }
                     }
+                    Style::Json => emit_json(serde_json::json!({
+                        "event": "phase_failed",
+                        "phase": state.slug,
+                        "exit_code": exit,
+                        "duration_ms": dur.as_millis() as u64,
+                        "log": log,
+                        "timestamp": now_unix(),
+                    })),
+                }
+                if self.notify {
+                    notify::send(
+                        &format!("{} ✗", self.label),
+                        &format!("failed at {}", state.name),
+                    );
                 }
             }
         }
@@ -244,6 +318,13 @@ impl Reporter {
                 elapsed.as_millis(),
                 idle.as_millis()
             ),
+            Style::Json => emit_json(serde_json::json!({
+                "event": "heartbeat",
+                "phase": state.slug,
+                "elapsed_ms": elapsed.as_millis() as u64,
+                "last_output_ms": idle.as_millis() as u64,
+                "timestamp": now_unix(),
+            })),
         }
     }
 
@@ -272,7 +353,10 @@ impl Reporter {
         // reader threads as bytes arrive.
         let last_output = Arc::new(Mutex::new(Instant::now()));
         let log = self.open_log();
-        let forward = !self.quiet;
+        // Pass child output through to our stdout/stderr, except when stdout is a
+        // machine stream (Json) or silenced (--quiet) — then it goes to the log
+        // only, keeping the event stream clean.
+        let forward = !self.quiet && !matches!(self.style, Style::Json);
 
         let out = spawn_reader(child.stdout.take(), Sink::Out, last_output.clone(), log.clone(), forward);
         let err = spawn_reader(child.stderr.take(), Sink::Err, last_output.clone(), log.clone(), forward);
@@ -386,6 +470,13 @@ fn spawn_reader<R: Read + Send + 'static>(
     })
 }
 
+/// Emit one JSON event as a single line on stdout (JSON Lines).
+fn emit_json(value: serde_json::Value) {
+    if let Ok(line) = serde_json::to_string(&value) {
+        println!("{line}");
+    }
+}
+
 /// Seconds since the Unix epoch, for plain-mode timestamps.
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -443,5 +534,21 @@ mod tests {
     fn plain_mode_is_forced_regardless_of_tty() {
         let r = Reporter::new(ProgressMode::Plain, 3, false);
         assert!(matches!(r.style, Style::Plain));
+    }
+
+    #[test]
+    fn json_mode_selects_the_stream_style() {
+        let r = Reporter::new(ProgressMode::Json, 3, false);
+        assert!(matches!(r.style, Style::Json));
+    }
+
+    #[test]
+    fn notify_stays_off_until_requested() {
+        // Default: no notification even if the environment would allow one.
+        let r = Reporter::new(ProgressMode::Auto, 1, false);
+        assert!(!r.notify);
+        // Requested but environment-gated: never on under SSH / CI.
+        let gated = Reporter::new(ProgressMode::Auto, 1, false).with_notify(true, "ost build");
+        assert_eq!(gated.notify, notify::enabled());
     }
 }
