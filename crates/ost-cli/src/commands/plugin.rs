@@ -24,6 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
 
+use ost_build::{pack_dir, stage_files};
 use ost_core::host::Os;
 use ost_core::paths::{find_project_root, STATE_DIR};
 use ost_core::variant::{Abi, Variant};
@@ -77,6 +78,17 @@ pub enum PluginCmd {
         ninja: Option<String>,
         #[command(flatten)]
         compiler: CompilerOpts,
+    },
+    /// Pack a built plugin bundle into a target-specific tar.zst artifact.
+    Package {
+        /// Path to the bundle directory.
+        bundle: String,
+        /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
+        #[arg(long)]
+        target: Option<String>,
+        /// Profile to package against. Defaults to the enclosing project's.
+        #[arg(long)]
+        profile: Option<String>,
     },
     /// Run staged diagnostics (L0–L1) and write a report.
     Doctor {
@@ -177,6 +189,11 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             ninja,
             compiler,
         } => build(&bundle, target, profile, dry_run, ninja, compiler, fmt),
+        PluginCmd::Package {
+            bundle,
+            target,
+            profile,
+        } => package(&bundle, target, profile, fmt),
         PluginCmd::Doctor {
             bundle,
             with,
@@ -460,6 +477,149 @@ fn build(
     );
     println!("  lib:       {}", bundle.lib_dir());
     println!("  plugInfo:  {plug_info}");
+    Ok(())
+}
+
+fn package(
+    bundle_path: &str,
+    target: Option<String>,
+    profile: Option<String>,
+    fmt: Format,
+) -> Result<()> {
+    let bundle = load_bundle(bundle_path)?;
+    let host = Host::detect();
+
+    let (platform, profile) = selection(target, profile).ok_or_else(|| {
+        Error::usage(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
+        )
+    })?;
+    let (tgt, r) = build_target(&platform, &profile)?;
+    let id = tgt.id();
+    if !r.pulled {
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' not pulled — run `ost runtime pull {platform} --profile {profile}` first",
+                tgt.runtime_id
+            ),
+        ));
+    }
+
+    let ctx = runtime_context(&r);
+    let mut packaged_manifest = bundle.manifest.clone();
+    packaged_manifest.runtime.cxx_abi = ctx.cxx_abi.clone();
+    packaged_manifest.runtime.python_abi = ctx.python_abi.clone();
+    let packaged_bundle = Bundle {
+        root: bundle.root.clone(),
+        manifest: packaged_manifest.clone(),
+    };
+    let report = diagnose(&packaged_bundle, &ctx, 1);
+    if !report.passed() {
+        return Err(Error::validation(format!(
+            "plugin '{}' did not pass static packaging validation",
+            bundle.manifest.plugin.name
+        ))
+        .with_hint("run `ost plugin doctor` and fix the failing diagnostics before packaging"));
+    }
+
+    let session = session_env_with(&r.env, &packaged_bundle, &[], host.os);
+    let stage = target_state_dir(&bundle.root, &id).join("package-stage");
+    reset_dir(&stage)?;
+    stage_plugin_bundle(&packaged_bundle, &stage)?;
+    write_packaged_manifest(&stage.join(ost_plugin::PLUGIN_MANIFEST), &packaged_manifest)?;
+    write_validation_files(&packaged_bundle, &report, &session, &stage)?;
+
+    let staged = stage_files(&stage).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            Error::validation(e.to_string())
+        } else {
+            Error::io(stage.to_string(), e)
+        }
+    })?;
+    if staged.is_empty() {
+        return Err(Error::validation(format!(
+            "plugin package stage for '{}' is empty",
+            bundle.manifest.plugin.name
+        )));
+    }
+
+    let name = &packaged_manifest.plugin.name;
+    let version = &packaged_manifest.plugin.version;
+    let archive_name = plugin_archive_name(name, version, &id);
+    let dist_dir = plugin_dist_dir(&bundle.root, name, version, &id);
+    let archive_path = dist_dir.join(&archive_name);
+    let packed = pack_dir(&stage, &archive_path, &staged)
+        .map_err(|e| Error::io(archive_path.to_string(), e))?;
+
+    let runtime_manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
+        .ok()
+        .and_then(|s| RuntimeManifest::from_json(&s).ok());
+    let runtime_source = runtime_manifest
+        .as_ref()
+        .map(|m| m.source.as_str().to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let runtime_validation = runtime_manifest
+        .as_ref()
+        .map(|m| format!("{:?}", m.validation).to_lowercase())
+        .unwrap_or_else(|| "unknown".into());
+
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let files_json: Vec<_> = packed
+        .files
+        .iter()
+        .map(|f| serde_json::json!({ "path": f.path, "sha256": f.sha256, "size": f.size }))
+        .collect();
+    let manifest = serde_json::json!({
+        "schema": 1,
+        "kind": "openstrata.plugin-bundle",
+        "plugin": {
+            "name": name,
+            "version": version,
+            "kind": packaged_manifest.kind().as_str(),
+        },
+        "target": id,
+        "archive": archive_name,
+        "archive_digest": packed.archive_digest,
+        "archive_size": packed.archive_size,
+        "total_size": packed.total_size,
+        "created_unix": created,
+        "provenance": {
+            "platform": tgt.platform,
+            "profile": tgt.profile,
+            "variant": tgt.variant.slug(),
+            "cxx_abi": packaged_manifest.runtime.cxx_abi,
+            "python_abi": packaged_manifest.runtime.python_abi,
+            "runtime": {
+                "id": tgt.runtime_id,
+                "digest": tgt.runtime_digest,
+                "source": runtime_source,
+                "validation": runtime_validation,
+            },
+            "validation": {
+                "passed": report.passed(),
+                "report": "validation/report.json",
+                "environment": "validation/environment.json",
+            },
+        },
+        "files": files_json,
+    });
+    write_text(&dist_dir.join("manifest.json"), &pretty_json(&manifest)?)?;
+
+    let bare = packed
+        .archive_digest
+        .strip_prefix("sha256:")
+        .unwrap_or(&packed.archive_digest);
+    write_text(
+        &dist_dir.join("SHA256SUMS"),
+        &format!("{bare}  {archive_name}"),
+    )?;
+
+    report_package(&id, &archive_path, &packed, fmt);
     Ok(())
 }
 
@@ -758,6 +918,186 @@ fn standalone_session_env(bundle: &Bundle, with: &[Bundle], os: Os) -> EnvSet {
     )
 }
 
+fn reset_dir(dir: &Utf8Path) -> Result<()> {
+    if dir.as_std_path().exists() {
+        std::fs::remove_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))?;
+    }
+    std::fs::create_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))
+}
+
+fn stage_plugin_bundle(bundle: &Bundle, stage: &Utf8Path) -> Result<()> {
+    copy_tree_if_exists(&bundle.plug_info_root(), &plug_info_root_rel(bundle), stage)?;
+    copy_tree_if_exists(&bundle.lib_dir(), Utf8Path::new("lib"), stage)?;
+    copy_tree_if_exists(&bundle.python_dir(), Utf8Path::new("python"), stage)?;
+    for dir in &bundle.manifest.requires.runtime_libs {
+        copy_tree_required(&bundle.path(dir), Utf8Path::new(dir), stage)?;
+    }
+    for fixture in bundle.manifest.all_fixtures() {
+        copy_file_required(&bundle.path(fixture), Utf8Path::new(fixture), stage)?;
+    }
+    Ok(())
+}
+
+fn plug_info_root_rel(bundle: &Bundle) -> Utf8PathBuf {
+    Utf8Path::new(&bundle.manifest.usd.plug_info)
+        .parent()
+        .map(Utf8Path::to_path_buf)
+        .unwrap_or_else(Utf8PathBuf::new)
+}
+
+fn copy_tree_if_exists(src: &Utf8Path, rel: &Utf8Path, stage: &Utf8Path) -> Result<()> {
+    if src.as_std_path().exists() {
+        copy_tree_required(src, rel, stage)?;
+    }
+    Ok(())
+}
+
+fn copy_tree_required(src: &Utf8Path, rel: &Utf8Path, stage: &Utf8Path) -> Result<()> {
+    let meta =
+        std::fs::symlink_metadata(src.as_std_path()).map_err(|e| Error::io(src.to_string(), e))?;
+    if meta.file_type().is_symlink() {
+        return Err(Error::validation(format!(
+            "symlink is not allowed in plugin package input: {src}"
+        )));
+    }
+    if !meta.is_dir() {
+        return Err(Error::validation(format!(
+            "expected package input directory at {src}"
+        )));
+    }
+    copy_tree_contents(src, rel, stage)
+}
+
+fn copy_tree_contents(src: &Utf8Path, rel: &Utf8Path, stage: &Utf8Path) -> Result<()> {
+    for entry in std::fs::read_dir(src.as_std_path()).map_err(|e| Error::io(src.to_string(), e))? {
+        let entry = entry.map_err(|e| Error::io(src.to_string(), e))?;
+        let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|p| {
+            Error::config(format!("non-UTF-8 path in plugin bundle: {}", p.display()))
+        })?;
+        let name = path.file_name().ok_or_else(|| {
+            Error::config(format!(
+                "cannot determine file name for package input: {path}"
+            ))
+        })?;
+        let rel_path = rel.join(name);
+        let ty = entry
+            .file_type()
+            .map_err(|e| Error::io(path.to_string(), e))?;
+        if ty.is_symlink() {
+            return Err(Error::validation(format!(
+                "symlink is not allowed in plugin package input: {path}"
+            )));
+        } else if ty.is_dir() {
+            copy_tree_contents(&path, &rel_path, stage)?;
+        } else if ty.is_file() {
+            copy_file_required(&path, &rel_path, stage)?;
+        } else {
+            return Err(Error::validation(format!(
+                "special file is not allowed in plugin package input: {path}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn copy_file_required(src: &Utf8Path, rel: &Utf8Path, stage: &Utf8Path) -> Result<()> {
+    let meta =
+        std::fs::symlink_metadata(src.as_std_path()).map_err(|e| Error::io(src.to_string(), e))?;
+    if meta.file_type().is_symlink() {
+        return Err(Error::validation(format!(
+            "symlink is not allowed in plugin package input: {src}"
+        )));
+    }
+    if !meta.is_file() {
+        return Err(Error::validation(format!(
+            "expected package input file at {src}"
+        )));
+    }
+    let dest = stage.join(rel);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent.as_std_path())
+            .map_err(|e| Error::io(parent.to_string(), e))?;
+    }
+    std::fs::copy(src.as_std_path(), dest.as_std_path())
+        .map(|_| ())
+        .map_err(|e| Error::io(format!("{src} -> {dest}"), e))
+}
+
+fn write_packaged_manifest(path: &Utf8Path, manifest: &ost_plugin::PluginManifest) -> Result<()> {
+    let body = serde_yaml::to_string(manifest)
+        .map_err(|e| Error::parse("openstrata.plugin.yaml", anyhow::Error::new(e)))?;
+    write_text(path, body.trim_end())
+}
+
+fn write_validation_files(
+    bundle: &Bundle,
+    report: &DoctorReport,
+    session: &EnvSet,
+    stage: &Utf8Path,
+) -> Result<()> {
+    let validation = stage.join("validation");
+    std::fs::create_dir_all(validation.as_std_path())
+        .map_err(|e| Error::io(validation.to_string(), e))?;
+    write_text(
+        &validation.join("report.json"),
+        &pretty_json(&ost_plugin::report_json(bundle, report))?,
+    )?;
+    write_text(
+        &validation.join("environment.json"),
+        &pretty_json(&ost_plugin::environment_json(session))?,
+    )
+}
+
+fn plugin_dist_dir(bundle_root: &Utf8Path, name: &str, version: &str, id: &str) -> Utf8PathBuf {
+    bundle_root
+        .join("dist")
+        .join("plugins")
+        .join(name)
+        .join(version)
+        .join(id)
+}
+
+fn plugin_archive_name(name: &str, version: &str, id: &str) -> String {
+    format!("{name}-{version}-{id}.tar.zst")
+}
+
+fn write_text(path: &Utf8Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent.as_std_path())
+            .map_err(|e| Error::io(parent.to_string(), e))?;
+    }
+    std::fs::write(path.as_std_path(), format!("{contents}\n"))
+        .map_err(|e| Error::io(path.to_string(), e))
+}
+
+fn pretty_json(value: &serde_json::Value) -> Result<String> {
+    serde_json::to_string_pretty(value).map_err(|e| Error::parse("json", anyhow::Error::new(e)))
+}
+
+fn report_package(id: &str, archive: &Utf8Path, packed: &ost_build::PackResult, fmt: Format) {
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "packaged": true,
+            "target": id,
+            "archive": archive.to_string(),
+            "archive_digest": packed.archive_digest,
+            "archive_size": packed.archive_size,
+            "files": packed.files.len(),
+        }));
+        return;
+    }
+    println!("Packaged plugin target {id}");
+    println!("  archive:  {archive}");
+    println!("  digest:   {}", packed.archive_digest);
+    println!(
+        "  size:     {} bytes ({} file(s), {} uncompressed)",
+        packed.archive_size,
+        packed.files.len(),
+        packed.total_size
+    );
+    println!("  manifest.json + SHA256SUMS written alongside the archive");
+}
+
 /// Determine platform+profile from explicit flags or the enclosing project.
 /// Returns `None` when neither is available.
 fn selection(target: Option<String>, profile: Option<String>) -> Option<(String, String)> {
@@ -827,6 +1167,7 @@ fn runtime_context(r: &crate::commands::Resolved) -> RuntimeContext {
     let mut ctx = RuntimeContext {
         target_os: Some(r.runtime.variant.os),
         cxx_abi: Some(runtime_cxx_abi(&r.runtime.variant)),
+        python_abi: Some(r.runtime.variant.python_abi()),
         pulled: r.pulled,
         ..RuntimeContext::default()
     };
@@ -1053,6 +1394,20 @@ mod tests {
                 }
             )),
             "msvc143"
+        );
+    }
+
+    #[test]
+    fn plugin_package_paths_are_target_keyed() {
+        let root = Utf8PathBuf::from("/bundle");
+        let id = "cy2026-linux-x86_64-py313-usd";
+        assert_eq!(
+            plugin_archive_name("toy", "0.1.0", id),
+            "toy-0.1.0-cy2026-linux-x86_64-py313-usd.tar.zst"
+        );
+        assert_eq!(
+            plugin_dist_dir(&root, "toy", "0.1.0", id),
+            root.join("dist/plugins/toy/0.1.0").join(id)
         );
     }
 }

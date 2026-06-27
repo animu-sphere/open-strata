@@ -405,6 +405,7 @@ dependencies = [
  "ost-runtime",
  "serde",
  "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

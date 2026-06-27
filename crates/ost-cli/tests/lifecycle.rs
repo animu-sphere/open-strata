@@ -447,6 +447,43 @@ fn generated_plugin_scaffolds_and_inspects() {
         text.contains("plugin.shared_library"),
         "inspect should report the (not-yet-built) shared library:\n{text}"
     );
+
+    let package = sb.ost(&["plugin", "package", "toy"]);
+    assert_eq!(
+        package.status.code(),
+        Some(5),
+        "unbuilt plugin package should fail validation:\n{}",
+        out_text(&package)
+    );
+    assert!(
+        out_text(&package).contains("did not pass static packaging validation"),
+        "package failure should be actionable:\n{}",
+        out_text(&package)
+    );
+
+    let lib = bundle.join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(
+        lib.join(format!("libToyFileFormat{}", std::env::consts::DLL_SUFFIX)),
+        b"fake shared library for static package validation",
+    )
+    .unwrap();
+    let package = sb.ost(&["plugin", "package", "toy"]);
+    assert!(
+        package.status.success(),
+        "plugin package failed:\n{}",
+        out_text(&package)
+    );
+    let dist = bundle.join("dist");
+    assert!(
+        find_first(&dist, "tar.zst").is_some(),
+        "plugin package should write an archive under dist/"
+    );
+    let manifest = find_first(&dist, "manifest.json").expect("plugin manifest exists");
+    let manifest_text = std::fs::read_to_string(manifest).unwrap();
+    assert!(manifest_text.contains("\"kind\": \"openstrata.plugin-bundle\""));
+    assert!(manifest_text.contains("\"cxx_abi\""));
+    assert!(find_first(&dist, "SHA256SUMS").is_some());
 }
 
 /// Find the first file under `dir` whose name ends with `suffix`.

@@ -120,6 +120,7 @@ $ost uv sync --locked
 $ost plugin new usd-fileformat toy --extension toy
 $ost plugin build toy --target cy2026 --profile usd
 $ost plugin test  toy --target cy2026 --profile usd   # L0..L5 + report
+$ost plugin package toy --target cy2026 --profile usd
 ```
 
 On Windows, `ost build` auto-loads the MSVC developer environment (`vcvars64.bat`);
