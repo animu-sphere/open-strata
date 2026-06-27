@@ -824,11 +824,13 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         );
     }
 
-    // Deterministic exit for CI.
+    // The report above is this command's own output (human or JSON envelope),
+    // so on failure exit with the validation category code (§14.4) directly
+    // rather than returning an Err that would render a second document.
     if passed {
         Ok(())
     } else {
-        std::process::exit(1);
+        std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
 }
 

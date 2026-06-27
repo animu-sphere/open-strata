@@ -109,8 +109,8 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
             output::error(&err, fmt);
-            // Deterministic non-zero exit for CI (§13.2).
-            std::process::ExitCode::FAILURE
+            // Deterministic, category-based exit for CI and agents (§13.2/§14.4).
+            std::process::ExitCode::from(err.exit_code())
         }
     }
 }
