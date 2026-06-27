@@ -368,6 +368,9 @@ fn build(
 
     if dry_run {
         println!("# dry run — would generate {toolchain} then:");
+        if tgt.os() == Os::Windows && tools::which("cl").is_none() {
+            println!("# (would auto-load the MSVC environment via vcvars64.bat)");
+        }
         println!("cmake {}", configure_args.join(" "));
         println!("cmake {}", build_args.join(" "));
         return Ok(());
@@ -397,8 +400,14 @@ fn build(
     let lock_compiler = compiler::to_lock(&compiler, &r.artifact_prefix, tgt.os());
     invalidate_plugin_build_tree_if_compiler_changed(&bundle.root, &id, &lock_compiler);
 
-    run_step(&cmake, &configure_args)?;
-    run_step(&cmake, &build_args)?;
+    // On Windows the `host` compiler policy + Ninja needs cl.exe/link.exe (and
+    // Ninja itself) on PATH. When they aren't — a plain shell rather than a VS
+    // Developer Prompt — load the MSVC developer environment the same way
+    // `ost build` does, so a plugin build need not be wrapped in a vcvars shell.
+    let msvc_env = maybe_bootstrap_msvc(tgt.os());
+
+    run_step(&cmake, &configure_args, &msvc_env)?;
+    run_step(&cmake, &build_args, &msvc_env)?;
 
     // Record the compiler so the next build can detect a change. The plugin
     // build writes no full target lock, so this lives beside the toolchain.
@@ -832,16 +841,51 @@ fn finish(report: &DoctorReport) -> Result<()> {
     }
 }
 
-fn run_step(program: &std::path::Path, args: &[String]) -> Result<()> {
+fn run_step(program: &std::path::Path, args: &[String], env: &[(String, String)]) -> Result<()> {
     println!("==> {} {}", program.display(), args.join(" "));
-    let status = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    for (k, v) in env {
+        cmd.env(k, v); // overlay the MSVC delta, no global mutation
+    }
+    let status = cmd
         .status()
         .map_err(|e| Error::io(format!("run {}", program.display()), e))?;
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+/// Load the MSVC developer environment (cl/link/Ninja) as an env delta when the
+/// host build needs it: Windows, with `cl` not already on PATH. Mirrors
+/// `ost build` so a plugin build need not run from a VS Developer Prompt. An
+/// empty vec means "use the current environment" — non-Windows, `cl` already
+/// present, or no Visual Studio found (a warning is printed in that last case).
+fn maybe_bootstrap_msvc(os: Os) -> Vec<(String, String)> {
+    if os != Os::Windows || tools::which("cl").is_some() {
+        return Vec::new();
+    }
+    match ost_build::msvc::bootstrap() {
+        Ok(Some(env)) => {
+            println!(
+                "==> loaded MSVC environment ({} vars) from {}",
+                env.vars.len(),
+                env.vcvars.display()
+            );
+            env.vars
+        }
+        Ok(None) => {
+            eprintln!(
+                "warning: MSVC not found; relying on the current environment (cl must be on PATH)"
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            eprintln!("warning: failed to load the MSVC environment: {e}");
+            Vec::new()
+        }
+    }
 }
 
 /// Resolve the compiler policy for a plugin build: CLI flags over the enclosing

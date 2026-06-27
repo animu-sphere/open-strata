@@ -147,9 +147,81 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
 - ⬜ Multi-plugin sessions (`ost plugin run/view --with <bundle>…`) and
   bundle-declared `requires.runtime_libs` (extra non-USD runtime lib dirs, e.g. a
   plugin's zlib) — replaces hand-rolled usdview launch batch files for the
-  multi-plugin + 3rd-party-dep case
+  multi-plugin + 3rd-party-dep case. Dogfooding (usdVrm, reports #1/#2) surfaced
+  these prerequisites and shapes:
+  - **Prerequisite: absolutize the bundle path at every `ost plugin` boundary**
+    (canonicalize once in `Bundle::load`). A relative `<bundle>` arg today yields
+    a relative `CMAKE_TOOLCHAIN_FILE` (CMake resolves it against the build dir →
+    "toolchain not found") *and* a relative `PXR_PLUGINPATH_NAME` (USD anchors it
+    at its own lib dir → silent discovery failure). Every `--with <bundle>` arg
+    needs the same treatment — its plugInfo root, `lib/`, and any
+    `requires.runtime_libs` dir — or the silent-discovery failure recurs once per
+    added bundle.
+  - **`requires.runtime_libs` → prepend to the session's dynamic-loader path**
+    (`PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`), absolutized. Treat
+    empty/absent as the common case: a plugin that statically links its 3rd-party
+    deps (usdVrm vendors cgltf into one TU, exports no symbols) drags zero extra
+    lib dirs — the opposite of a plugin shipping a sibling `zlib.dll`. The `--with`
+    test matrix should pair a no-runtime-libs plugin with one that declares them.
+  - **`plugInfo.json` `LibraryPath` wants per-platform generation** (suffix +
+    lib-dir), since multi-plugin × multi-OS sessions multiply the scaffold's
+    cross-platform soft spot — either the scaffold generates it via
+    `configure_file`, or `ost` stages the lib next to `plugInfo.json` at
+    session-setup time. See the Phase-4 fix backlog below.
 - ⬜ `ost plugin package | publish` and the runtime×plugin CI matrix
   (`artifact` source lands with Phase 6)
+
+### Phase 4 — fix backlog (from usdVrm dogfooding, reports #1/#2)
+
+A freshly scaffolded `usd-fileformat` bundle did not survive `ost plugin
+build`/`test` on Windows out of the box. Ranked, with the implicated code:
+
+- ⬜ **P1 — absolutize `<bundle>` once** in `Bundle::load`
+  ([bundle.rs](../crates/ost-plugin/src/bundle.rs)) so all derived paths are
+  absolute. One `canonicalize` removes *both* the relative-`CMAKE_TOOLCHAIN_FILE`
+  build break and the relative-`PXR_PLUGINPATH_NAME` discovery break (single root
+  cause). De-UNC the result on Windows (`\\?\` confuses CMake/USD). Highest
+  leverage; prerequisite for `--with` (above).
+- ⬜ **P1 — scaffold `plugInfo.json` can't load its own lib.** Template emits
+  `LibraryPath: "lib{{Name}}FileFormat.so"`
+  ([templates/usd-fileformat-cpp/…/plugInfo.json](../templates/usd-fileformat-cpp/plugin/resources/{{name}}/plugInfo.json)):
+  wrong suffix off-Windows, and points beside `plugInfo.json` while the built lib
+  lands in `lib/` (USD dlopens the absolutized `LibraryPath`, no PATH fallback).
+  Fix via `plugInfo.json.in` + `configure_file`
+  (`${CMAKE_SHARED_LIBRARY_PREFIX/SUFFIX}` + relative path to the lib dir); decide
+  the doctor-L0 `bundle.plug_info` interaction (accept `.in`, or have `build`
+  regenerate the committed file).
+- ⬜ **P1 — scaffold `CMakeLists.txt` stages to `${CMAKE_SOURCE_DIR}/lib`**
+  ([templates/usd-fileformat-cpp/CMakeLists.txt](../templates/usd-fileformat-cpp/CMakeLists.txt)):
+  breaks the moment the bundle is `add_subdirectory()`'d (lib lands at the repo
+  root). Use `CMAKE_CURRENT_SOURCE_DIR`, and guard `find_package(pxr)` with
+  `if(NOT pxr_FOUND)` so a project root can resolve it once.
+- ⬜ **P1 — `ost plugin build` doesn't bootstrap the MSVC env.** `run_step`
+  ([commands/plugin.rs](../crates/ost-cli/src/commands/plugin.rs)) spawns CMake
+  without `cl`/`link` on PATH (host policy + Ninja) → "No CMAKE_CXX_COMPILER".
+  Reuse `ost_build::msvc::bootstrap()` exactly as `ost build`/`runtime pull
+  --build` already do.
+- ⬜ **P2 — default `CMAKE_BUILD_TYPE=Release` for plugin builds.** Ninja
+  single-config + unset type resolves USD's imported targets to Debug → links
+  `tbb12_debug.lib` (absent in a Release-only install) → `LNK1104`. Have the
+  generated toolchain ([toolchain.rs](../crates/ost-build/src/toolchain.rs)) or
+  the configure args default it; the runtime is known Release-only.
+- ⬜ **P2 — adopted-runtime version is the static placeholder.** `--from-usd`
+  records the openusd extension's `25.05.01`
+  ([extensions/openusd.yaml](../extensions/openusd.yaml)) regardless of the real
+  install (a 26.08 install reports 25.05.01, and a py310 install gets a `py313`
+  id) → the version gate enforces nothing. In `adopt_local`
+  ([commands/runtime.rs](../crates/ost-cli/src/commands/runtime.rs)) parse
+  `include/pxr/pxr.h` (`PXR_VERSION`) and the actual Python ABI from the install.
+- ⬜ **P2 — `runtime show`/`validate` reject the id `runtime list` prints.** They
+  accept only `<platform> --profile <profile>`; the full
+  `openstrata-cy2026-…-usd` id → `PLATFORM_NOT_FOUND`. Accept either form
+  consistently across `list`/`show`/`validate`.
+- ⬜ **P3 — repo-shape scaffold.** `ost init --bare` + `plugin new` leaves no
+  top-level `CMakeLists.txt`, so the repo isn't `cmake -S .`-able by non-`ost`
+  users. A project-with-bundles template could emit a dual-mode root
+  `CMakeLists.txt` + `CMakePresets.json` that `add_subdirectory()`s each bundle
+  and resolves USD via `find_package(pxr)`.
 
 ## Phase 5 — CI / Jenkins ⬜
 
