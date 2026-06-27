@@ -18,7 +18,7 @@ mod target;
 mod toolchain;
 
 pub use lock::{LockCompiler, TargetLock};
-pub use package::{count_files, pack_dir, FileEntry, PackResult};
+pub use package::{pack_dir, stage_files, FileEntry, PackResult};
 pub use presets::{
     ensure_includes, includes_of, is_managed_include, managed_include, remove_managed_includes,
     render_target_presets,
