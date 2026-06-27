@@ -57,6 +57,15 @@ struct PhaseState {
     started: Instant,
 }
 
+/// How a phase ended, for its terminal transition line.
+enum Outcome {
+    /// The phase finished cleanly (quiet-suppressible).
+    Completed,
+    /// The phase failed; `Some(code)` is a child process exit code, `None` an
+    /// in-process error (generate/verify). Failures always surface, even quiet.
+    Failed(Option<i32>),
+}
+
 /// Drives phase/heartbeat/log reporting for one command invocation.
 pub struct Reporter {
     style: Style,
@@ -101,7 +110,7 @@ impl Reporter {
 
     /// Begin a new phase, closing the previous one as completed.
     pub fn phase(&mut self, name: &str) {
-        self.close_current(true);
+        self.close_current(Outcome::Completed);
         self.index += 1;
         let state = PhaseState {
             name: name.to_string(),
@@ -123,7 +132,7 @@ impl Reporter {
 
     /// Close the final phase and print the total wall time.
     pub fn done(&mut self) {
-        self.close_current(true);
+        self.close_current(Outcome::Completed);
         if self.quiet {
             return;
         }
@@ -137,55 +146,77 @@ impl Reporter {
         }
     }
 
-    /// Emit a `completed` transition for the current phase, if any.
-    fn close_current(&mut self, _success: bool) {
+    /// Emit the terminal transition for the current phase, if any. This is the
+    /// single sink for *every* phase end so a `started` line always has a
+    /// matching `completed`/`failed` — whether the phase ended cleanly, a child
+    /// process failed (via [`run`](Self::run)), or an in-process phase errored
+    /// and the reporter is dropped while unwinding ([`Drop`]).
+    fn close_current(&mut self, outcome: Outcome) {
         let Some(state) = self.current.take() else {
             return;
         };
-        if self.quiet {
-            return;
-        }
         let dur = state.started.elapsed();
-        match self.style {
-            Style::Human => {
-                // A short phase needs no echo; only annotate the slow ones so the
-                // log stays terse.
-                if dur >= Duration::from_secs(1) {
-                    println!("      done in {}", hms(dur));
+        match outcome {
+            // Clean completion is chatter — suppressible under --quiet.
+            Outcome::Completed => {
+                if self.quiet {
+                    return;
+                }
+                match self.style {
+                    Style::Human => {
+                        // A short phase needs no echo; only annotate the slow
+                        // ones so the log stays terse.
+                        if dur >= Duration::from_secs(1) {
+                            println!("      done in {}", hms(dur));
+                        }
+                    }
+                    Style::Plain => println!(
+                        "timestamp={} phase={} status=completed duration_ms={}",
+                        now_unix(),
+                        state.slug,
+                        dur.as_millis()
+                    ),
                 }
             }
-            Style::Plain => println!(
-                "timestamp={} phase={} status=completed duration_ms={}",
-                now_unix(),
-                state.slug,
-                dur.as_millis()
-            ),
-        }
-    }
-
-    /// Report that the current phase failed, naming the phase, the exit code and
-    /// the log path. Honoured even under `--quiet` (failures always surface).
-    fn report_failure(&self, exit: Option<i32>) {
-        let (name, slug, dur) = match &self.current {
-            Some(s) => (s.name.as_str(), s.slug.as_str(), s.started.elapsed()),
-            None => ("(none)", "none", Duration::ZERO),
-        };
-        let code = exit.map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
-        match self.style {
-            Style::Human => {
-                eprintln!("[{}/{}] {name} FAILED (exit {code}, after {})", self.index, self.total, hms(dur));
-                if let Some(log) = &self.log {
-                    eprintln!("      log: {}", log.display());
-                }
-            }
-            Style::Plain => {
-                eprintln!(
-                    "timestamp={} phase={slug} status=failed exit_code={code} duration_ms={}",
-                    now_unix(),
-                    dur.as_millis()
-                );
-                if let Some(log) = &self.log {
-                    eprintln!("timestamp={} phase={slug} status=failed log={}", now_unix(), log.display());
+            // Failures always surface (even under --quiet), naming the phase,
+            // the exit code (if any) and the log path.
+            Outcome::Failed(exit) => {
+                let code = exit.map(|c| c.to_string());
+                match self.style {
+                    Style::Human => {
+                        let exit = code
+                            .map(|c| format!("exit {c}, "))
+                            .unwrap_or_default();
+                        eprintln!(
+                            "[{}/{}] {} FAILED ({exit}after {})",
+                            self.index,
+                            self.total,
+                            state.name,
+                            hms(dur)
+                        );
+                        if let Some(log) = &self.log {
+                            eprintln!("      log: {}", log.display());
+                        }
+                    }
+                    Style::Plain => {
+                        let exit = code
+                            .map(|c| format!(" exit_code={c}"))
+                            .unwrap_or_default();
+                        eprintln!(
+                            "timestamp={} phase={} status=failed{exit} duration_ms={}",
+                            now_unix(),
+                            state.slug,
+                            dur.as_millis()
+                        );
+                        if let Some(log) = &self.log {
+                            eprintln!(
+                                "timestamp={} phase={} status=failed log={}",
+                                now_unix(),
+                                state.slug,
+                                log.display()
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -268,7 +299,7 @@ impl Reporter {
         let _ = err.join();
 
         if !status.success() {
-            self.report_failure(status.code());
+            self.close_current(Outcome::Failed(status.code()));
             // Preserve the child's exit code for CI rather than collapsing to 1.
             std::process::exit(status.code().unwrap_or(1));
         }
@@ -287,6 +318,18 @@ impl Reporter {
             .open(path)
             .ok()
             .map(|f| Arc::new(Mutex::new(f)))
+    }
+}
+
+impl Drop for Reporter {
+    /// A phase still open at drop time means we are unwinding on an error that
+    /// did not pass through [`run`](Reporter::run) (which reports the failure and
+    /// exits the process itself) — e.g. a failed `generate`/`verify` phase. Emit
+    /// its terminal `failed` line so every `started` has a matching end, even in
+    /// plain/CI output. A clean run leaves no open phase (`done`/`phase` close
+    /// it), so this is a no-op there.
+    fn drop(&mut self) {
+        self.close_current(Outcome::Failed(None));
     }
 }
 
