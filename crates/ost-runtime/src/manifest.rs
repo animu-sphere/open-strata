@@ -26,6 +26,16 @@ pub enum Validation {
     Pending,
 }
 
+impl Validation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Validation::Passed => "passed",
+            Validation::Failed => "failed",
+            Validation::Pending => "pending",
+        }
+    }
+}
+
 /// Where a runtime's artifacts came from (§ Phase 4b backend sources).
 ///
 /// All sources resolve to the same shape (a real prefix + manifest), but they

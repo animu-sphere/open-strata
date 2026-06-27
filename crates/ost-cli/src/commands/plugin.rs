@@ -508,14 +508,10 @@ fn package(
     }
 
     let ctx = runtime_context(&r);
-    let mut packaged_manifest = bundle.manifest.clone();
-    packaged_manifest.runtime.cxx_abi = ctx.cxx_abi.clone();
-    packaged_manifest.runtime.python_abi = ctx.python_abi.clone();
-    let packaged_bundle = Bundle {
-        root: bundle.root.clone(),
-        manifest: packaged_manifest.clone(),
-    };
-    let report = diagnose(&packaged_bundle, &ctx, 1);
+    // Validate the plugin *as authored* against the resolved runtime, so a
+    // hand-authored ABI that conflicts with the target is reported rather than
+    // silently rewritten. The emitted artifact then freezes the resolved ABI.
+    let report = diagnose(&bundle, &ctx, 1);
     if !report.passed() {
         return Err(Error::validation(format!(
             "plugin '{}' did not pass static packaging validation",
@@ -523,6 +519,14 @@ fn package(
         ))
         .with_hint("run `ost plugin doctor` and fix the failing diagnostics before packaging"));
     }
+
+    let mut packaged_manifest = bundle.manifest.clone();
+    packaged_manifest.runtime.cxx_abi = ctx.cxx_abi.clone();
+    packaged_manifest.runtime.python_abi = ctx.python_abi.clone();
+    let packaged_bundle = Bundle {
+        root: bundle.root.clone(),
+        manifest: packaged_manifest.clone(),
+    };
 
     let session = session_env_with(&r.env, &packaged_bundle, &[], host.os);
     let stage = target_state_dir(&bundle.root, &id).join("package-stage");
@@ -538,12 +542,6 @@ fn package(
             Error::io(stage.to_string(), e)
         }
     })?;
-    if staged.is_empty() {
-        return Err(Error::validation(format!(
-            "plugin package stage for '{}' is empty",
-            bundle.manifest.plugin.name
-        )));
-    }
 
     let name = &packaged_manifest.plugin.name;
     let version = &packaged_manifest.plugin.version;
@@ -562,7 +560,7 @@ fn package(
         .unwrap_or_else(|| "unknown".into());
     let runtime_validation = runtime_manifest
         .as_ref()
-        .map(|m| format!("{:?}", m.validation).to_lowercase())
+        .map(|m| m.validation.as_str().to_string())
         .unwrap_or_else(|| "unknown".into());
 
     let created = SystemTime::now()
