@@ -124,6 +124,9 @@ fn capture_env(vcvars: &Path) -> io::Result<BTreeMap<String, String>> {
     }
 }
 
+// Only called from the `#[cfg(windows)]` arm of `capture_env`; it still compiles
+// everywhere (keeping this module cfg-light, per the header) but is dead off Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn parse_set_output(text: &str) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     for line in text.lines() {
