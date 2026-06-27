@@ -284,6 +284,45 @@ to land.
   (SPDX) and optional third-party notices, surfaced by `ost plugin inspect` and
   carried into `ost plugin package`.
 
+## Security baseline 🚧
+
+Shrinking the attack surface across build, runtime, plugins, CI, and the
+distribution path before OpenStrata is used in production. IDs track the
+security baseline document. P0 lands first; P1 next; P2 is continuous.
+
+- ✅ **SEC-001 (P0) — package staging rejects unsafe files.** `ost package`
+  classifies each entry by the entry itself (no symlink-following) and errors on
+  a symlink, FIFO, socket, or device anywhere in the stage tree (including the
+  root), so an artifact cannot absorb a link target's bytes or recurse outside
+  the tree.
+- ✅ **SEC-002 (P0) — plugin manifest paths stay in the bundle.** `Bundle::load`
+  validates `usd.plug_info` and every fixture up front and rejects `..`,
+  absolute, drive, and UNC paths (host-independent), so a malicious
+  `openstrata.plugin.yaml` cannot steer reads outside the bundle.
+- ✅ **SEC-003 (P1) — safe atomic writes.** `write_atomic` creates its temp file
+  with `O_EXCL` and an unpredictable name, refuses to write over a symlinked
+  destination, and fsyncs the parent directory (mode follows the umask, as a
+  plain write would, since the current outputs are shared project config).
+- ✅ **SEC-004 (P1) — CI supply-chain pinning.** Every third-party GitHub Action
+  is pinned to a full commit SHA (with a `# vN` comment), and Dependabot manages
+  SHA/dependency bumps as reviewable PRs. Release retains workflow-level
+  `contents: read` with job-scoped grants and build provenance attestation.
+- ⬜ **SEC-002 follow-up — symlink escape inside a bundle.** Reject a *real*
+  symlink within a bundle that resolves outside the root at read time
+  (canonicalize-and-contain), complementing the lexical manifest check.
+- ⬜ **SEC-005 (P1) — installer & release-asset verification.** Publish per-release
+  SHA-256 checksums, signature/Sigstore material, SBOM, and build provenance; the
+  installer pins a version, verifies the checksum, and aborts on mismatch. Tracks
+  with **Distribution → Install ergonomics / Provenance**.
+- ⬜ **SEC-006 (P2) — runtime trust policy.** Introduce runtime trust levels
+  (`local` / `verified` / `trusted`), record runtime source / version / platform
+  / binary & plugin hashes / trust level in the manifest and lock, warn on
+  world-writable runtime roots, and let `ost build` / `ost plugin test` require a
+  minimum trust level (release/production CI refuses `local`).
+- ⬜ **CI test gate.** Add a workflow running `cargo test` / `fmt --check` /
+  `clippy` on PRs — the security regression tests above currently have no CI job
+  to run them.
+
 ## Quality bar (applies to every phase)
 
 - CLI errors must be actionable.

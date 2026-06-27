@@ -27,3 +27,9 @@ include = ["NOTICE", "THIRD_PARTY_NOTICES.md"]
 pr-run-mode = "plan"
 # Attach GitHub build provenance attestations (SLSA) to release artifacts.
 github-attestations = true
+# The generated release.yml is hand-edited to pin every third-party action to a
+# full commit SHA (harness §SEC-004), which diverges from dist's generated
+# output. Tell dist not to fail its "CI is up to date" check on that divergence.
+# Trade-off: a dist version bump needs the workflow regenerated and re-pinned by
+# hand (see docs/roadmap.md → Security baseline).
+allow-dirty = ["ci"]
