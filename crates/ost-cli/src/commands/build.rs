@@ -64,7 +64,8 @@ pub struct BuildArgs {
     #[arg(long)]
     no_vcvars: bool,
 
-    /// Progress rendering: `auto` (human on a TTY, plain otherwise) or `plain`.
+    /// Progress rendering: `auto` (human on a TTY, plain otherwise), `plain`, or
+    /// `json` (one JSON event per line).
     #[arg(long, value_enum, default_value_t = ProgressMode::Auto)]
     progress: ProgressMode,
 
@@ -72,6 +73,10 @@ pub struct BuildArgs {
     /// exit code and the log path are still reported.
     #[arg(long)]
     quiet: bool,
+
+    /// Fire a desktop notification when the build finishes (no-op over SSH/CI).
+    #[arg(long)]
+    notify: bool,
 
     #[command(flatten)]
     compiler: CompilerOpts,
@@ -178,9 +183,10 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     }
 
     // The real build runs as timed phases through the shared reporter: generate,
-    // configure, build, verify. The reporter renders for a TTY or CI, tees child
-    // output to the per-target log, and on failure names the phase + exit code.
-    let mut rep = Reporter::new(args.progress, 4, args.quiet);
+    // configure, build, verify. The reporter renders for a TTY, CI or as a JSON
+    // event stream, tees child output to the per-target log, names the failing
+    // phase + exit code, and (with --notify) fires a desktop toast at the end.
+    let mut rep = Reporter::new(args.progress, 4, args.quiet).with_notify(args.notify, "ost build");
 
     // 5. Generate the target's `.strata/` files now that checks have passed.
     rep.phase("Generating toolchain and presets");
@@ -199,13 +205,11 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     if pre.will_bootstrap_msvc {
         match ost_build::msvc::bootstrap() {
             Ok(Some(env)) => {
-                if !args.quiet {
-                    println!(
-                        "      msvc env   {} ({} vars)",
-                        env.vcvars.display(),
-                        env.vars.len()
-                    );
-                }
+                rep.note(&format!(
+                    "msvc env   {} ({} vars)",
+                    env.vcvars.display(),
+                    env.vars.len()
+                ));
                 msvc_env = env.vars;
             }
             Ok(None) => eprintln!(
@@ -221,13 +225,11 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     //    Layer it over the MSVC delta so USD's bin/lib prepend in front of the
     //    compiler's PATH rather than clobbering it.
     let extra_env = layer_runtime_env(&resolved.env, &msvc_env);
-    if !args.quiet {
-        println!(
-            "      runtime env {} ({} vars)",
-            target.runtime_id,
-            resolved.env.vars.len()
-        );
-    }
+    rep.note(&format!(
+        "runtime env {} ({} vars)",
+        target.runtime_id,
+        resolved.env.vars.len()
+    ));
 
     // 8. Configure, then build — each a phase whose subprocess streams through
     //    the reporter (heartbeat while quiet, log capture, failure reporting).
@@ -242,9 +244,7 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     verify_build(&root, &id)?;
 
     rep.done();
-    if !args.quiet {
-        println!("Built target {id}");
-    }
+    rep.note(&format!("Built target {id}"));
     Ok(())
 }
 

@@ -6,6 +6,7 @@
 //! and renders results either for humans or as JSON for CI (§13.2).
 
 mod commands;
+mod notify;
 mod output;
 mod progress;
 mod project_template;

@@ -106,7 +106,9 @@ ost build --dry-run                    # print the commands, runtime env + files
 ost build --jobs 8 --ninja /opt/ninja/ninja
 ost build --no-vcvars                  # Windows: skip MSVC auto-bootstrap
 ost build --progress plain             # CI: phase=… status=… lines instead of a TTY view
+ost build --progress json              # one JSON event per line (a stable stream for tools)
 ost build --quiet                      # silence progress; output to .strata/targets/<id>/build.log
+ost build --notify                     # desktop toast on finish (no-op over SSH / in CI)
 ost package                            # install + dist/<name>/<ver>/<target>/*.tar.zst
 ost package --allow-empty              # permit a metadata-only artifact (empty install tree)
 ost validate                           # configured / built / runtime / artifact checks
@@ -114,6 +116,17 @@ ost validate                           # configured / built / runtime / artifact
 
 On Windows, `ost build` auto-loads the MSVC developer environment
 (`vcvars64.bat`) unless `--no-vcvars` is given.
+
+With `--progress json`, each line is one event; child build output is kept off
+stdout (in the log) so the stream stays pure:
+
+```json
+{"event":"phase_started","phase":"configuring-cmake","index":2,"total":4,"timestamp":1782541330}
+{"event":"heartbeat","phase":"building-targets","elapsed_ms":120000,"last_output_ms":90000,"timestamp":1782541450}
+{"event":"phase_completed","phase":"building-targets","duration_ms":240000,"timestamp":1782541570}
+{"event":"phase_failed","phase":"building-targets","exit_code":2,"duration_ms":202,"log":"…/build.log","timestamp":1782541371}
+{"event":"completed","duration_ms":2573,"timestamp":1782541332}
+```
 
 ## extension — controlled components
 
