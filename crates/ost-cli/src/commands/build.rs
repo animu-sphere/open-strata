@@ -256,7 +256,7 @@ fn verify_build(root: &Utf8Path, id: &str) -> Result<()> {
         .map(|mut d| d.next().is_some())
         .unwrap_or(false);
     if !non_empty {
-        return Err(Error::Operation(format!(
+        return Err(Error::validation(format!(
             "build completed but produced no outputs under build/{id}"
         )));
     }

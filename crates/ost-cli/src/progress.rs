@@ -245,9 +245,7 @@ impl Reporter {
                 let log = self.log.as_ref().map(|p| p.display().to_string());
                 match self.style {
                     Style::Human => {
-                        let exit = code
-                            .map(|c| format!("exit {c}, "))
-                            .unwrap_or_default();
+                        let exit = code.map(|c| format!("exit {c}, ")).unwrap_or_default();
                         eprintln!(
                             "[{}/{}] {} FAILED ({exit}after {})",
                             self.index,
@@ -260,9 +258,7 @@ impl Reporter {
                         }
                     }
                     Style::Plain => {
-                        let exit = code
-                            .map(|c| format!(" exit_code={c}"))
-                            .unwrap_or_default();
+                        let exit = code.map(|c| format!(" exit_code={c}")).unwrap_or_default();
                         eprintln!(
                             "timestamp={} phase={} status=failed{exit} duration_ms={}",
                             now_unix(),
@@ -358,8 +354,20 @@ impl Reporter {
         // only, keeping the event stream clean.
         let forward = !self.quiet && !matches!(self.style, Style::Json);
 
-        let out = spawn_reader(child.stdout.take(), Sink::Out, last_output.clone(), log.clone(), forward);
-        let err = spawn_reader(child.stderr.take(), Sink::Err, last_output.clone(), log.clone(), forward);
+        let out = spawn_reader(
+            child.stdout.take(),
+            Sink::Out,
+            last_output.clone(),
+            log.clone(),
+            forward,
+        );
+        let err = spawn_reader(
+            child.stderr.take(),
+            Sink::Err,
+            last_output.clone(),
+            log.clone(),
+            forward,
+        );
 
         // Poll for completion; while the child runs, emit a heartbeat whenever it
         // has produced no output for HEARTBEAT.

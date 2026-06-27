@@ -202,7 +202,7 @@ fn new(
 ) -> Result<()> {
     let kind = PluginKind::from_tag(kind).ok_or_else(|| {
         let kinds: Vec<&str> = PluginKind::ALL.iter().map(|k| k.as_str()).collect();
-        Error::Operation(format!(
+        Error::usage(format!(
             "unknown plugin kind '{kind}' (expected one of: {})",
             kinds.join(", ")
         ))
@@ -314,9 +314,8 @@ fn build(
 
     // A build needs a concrete runtime to compile against.
     let (platform, profile) = selection(target, profile).ok_or_else(|| {
-        Error::Operation(
-            "no platform/profile: run inside an OpenStrata project or pass --target/--profile"
-                .into(),
+        Error::usage(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
         )
     })?;
     let (tgt, r) = build_target(&platform, &profile)?;
@@ -375,12 +374,22 @@ fn build(
     }
 
     if !r.pulled {
-        return Err(Error::Operation(format!(
-            "runtime '{}' not pulled — run `ost runtime pull {platform} --profile {profile}` first",
-            tgt.runtime_id
-        )));
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' not pulled — run `ost runtime pull {platform} --profile {profile}` first",
+                tgt.runtime_id
+            ),
+        ));
     }
-    let cmake = cmake.ok_or_else(|| Error::Operation("`cmake` not found on PATH".into()))?;
+    let cmake = cmake.ok_or_else(|| {
+        Error::coded(
+            "REQUIRED_TOOL_MISSING",
+            ost_core::Category::Precondition,
+            "`cmake` not found on PATH",
+        )
+    })?;
 
     // If the compiler changed since the last build, the cached compiler/ABI in
     // build/<id> is stale — drop it so this configure is clean (mirrors the
@@ -532,8 +541,10 @@ fn view(
 
     let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"])
         .ok_or_else(|| {
-            Error::Operation(
-                "usdview not found in the runtime (build/adopt one with usdview enabled)".into(),
+            Error::coded(
+                "REQUIRED_TOOL_MISSING",
+                ost_core::Category::Precondition,
+                "usdview not found in the runtime (build/adopt one with usdview enabled)",
             )
         })?;
     let fixture_path = bundle.path(fixture); // absolute passes through; else under the bundle
@@ -726,17 +737,20 @@ fn require_real_runtime(
     profile: Option<String>,
 ) -> Result<crate::commands::Resolved> {
     let (platform, profile) = selection(target, profile).ok_or_else(|| {
-        Error::Operation(
-            "no platform/profile: run inside an OpenStrata project or pass --target/--profile"
-                .into(),
+        Error::usage(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
         )
     })?;
     let r = resolve(&platform, &profile)?;
     if !r.pulled {
-        return Err(Error::Operation(format!(
-            "runtime '{}' not pulled — adopt one with `ost runtime pull {platform} --profile {profile} --from-usd <path>`",
-            r.runtime.id()
-        )));
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' not pulled — adopt one with `ost runtime pull {platform} --profile {profile} --from-usd <path>`",
+                r.runtime.id()
+            ),
+        ));
     }
     // Read the manifest to confirm the source is real (not mock).
     let manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
@@ -744,8 +758,10 @@ fn require_real_runtime(
         .and_then(|s| RuntimeManifest::from_json(&s).ok());
     let real = manifest.map(|m| m.source.is_real()).unwrap_or(false);
     if !real {
-        return Err(Error::Operation(
-            "runtime is mock — a real OpenUSD runtime is required (adopt with `--from-usd`)".into(),
+        return Err(Error::coded(
+            "REAL_RUNTIME_REQUIRED",
+            ost_core::Category::Precondition,
+            "runtime is mock — a real OpenUSD runtime is required (adopt with `--from-usd`)",
         ));
     }
     Ok(r)

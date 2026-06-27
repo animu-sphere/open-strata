@@ -270,7 +270,10 @@ fn refresh_user_presets(root: &Utf8Path, id: &str) -> Result<()> {
     // Parse-or-error: a malformed CMakePresets.json is never treated as empty.
     let root_presets_path = root.join(ROOT_PRESETS);
     if let Some(map) = read_presets_object(&root_presets_path)? {
-        if includes_of(&Value::Object(map)).iter().any(|i| i == &include) {
+        if includes_of(&Value::Object(map))
+            .iter()
+            .any(|i| i == &include)
+        {
             return Ok(());
         }
     }

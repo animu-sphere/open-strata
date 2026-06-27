@@ -85,7 +85,7 @@ fn why(name: &str, profile_override: Option<String>, fmt: Format) -> Result<()> 
     let r = resolve_runtime(&platform, &profile)?;
     let catalog = load_all()?;
     if catalog.get(name).is_none() {
-        return Err(Error::Operation(format!(
+        return Err(Error::usage(format!(
             "unknown extension '{name}' (try `ost extension list`)"
         )));
     }
@@ -142,7 +142,7 @@ fn render_reason(name: &str, reason: &RequirementReason) -> String {
 fn add(name: &str, fmt: Format) -> Result<()> {
     let catalog = load_all()?;
     if catalog.get(name).is_none() {
-        return Err(Error::Operation(format!(
+        return Err(Error::usage(format!(
             "unknown extension '{name}' (try `ost extension list`)"
         )));
     }

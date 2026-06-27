@@ -59,7 +59,7 @@ pub fn resolve(opts: &CompilerOpts, manifest: Option<&BuildConfig>) -> Result<Co
                 .unwrap_or((None, None));
             explicit(cc, cxx, "[build].cc/[build].cxx")
         }
-        other => Err(Error::Operation(format!(
+        other => Err(Error::usage(format!(
             "unknown compiler policy '{other}' (expected: host, runtime, explicit)"
         ))),
     }
@@ -69,7 +69,7 @@ fn explicit(cc: Option<String>, cxx: Option<String>, source: &str) -> Result<Com
     let (cc, cxx) = match (cc, cxx) {
         (Some(cc), Some(cxx)) => (cc, cxx),
         _ => {
-            return Err(Error::Operation(format!(
+            return Err(Error::usage(format!(
                 "explicit compiler policy requires both a C and C++ compiler (set {source})"
             )))
         }
@@ -79,14 +79,12 @@ fn explicit(cc: Option<String>, cxx: Option<String>, source: &str) -> Result<Com
         // Absolute so the path resolves the same from whatever build directory
         // CMake is invoked in, not relative to the caller's cwd.
         if !p.is_absolute() {
-            return Err(Error::Operation(format!(
+            return Err(Error::usage(format!(
                 "{label} compiler must be an absolute path: {path}"
             )));
         }
         if !p.is_file() {
-            return Err(Error::Operation(format!(
-                "{label} compiler not found: {path}"
-            )));
+            return Err(Error::usage(format!("{label} compiler not found: {path}")));
         }
     }
     Ok(Compiler::Explicit { cc, cxx })
@@ -134,7 +132,10 @@ mod tests {
 
     #[test]
     fn defaults_to_host() {
-        assert_eq!(resolve(&opts(None, None, None), None).unwrap(), Compiler::Host);
+        assert_eq!(
+            resolve(&opts(None, None, None), None).unwrap(),
+            Compiler::Host
+        );
     }
 
     #[test]

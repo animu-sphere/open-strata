@@ -316,13 +316,13 @@ fn adopt_local(
 ) -> Result<RuntimeManifest> {
     let root = Utf8PathBuf::from(usd_root);
     if !root.as_std_path().is_dir() {
-        return Err(Error::Operation(format!(
+        return Err(Error::usage(format!(
             "--from-usd path '{root}' is not a directory"
         )));
     }
 
     if !looks_like_usd(&root) {
-        return Err(Error::Operation(format!(
+        return Err(Error::usage(format!(
             "'{root}' does not look like an OpenUSD install (no plugin/usd or lib/**/pxr)"
         )));
     }
@@ -493,13 +493,13 @@ fn build_from_source(
     created: u64,
 ) -> Result<RuntimeManifest> {
     if usd_src.is_empty() {
-        return Err(Error::Operation(
-            "no OpenUSD source: pass `--build <path>` or set OST_USD_SRC".into(),
+        return Err(Error::usage(
+            "no OpenUSD source: pass `--build <path>` or set OST_USD_SRC",
         ));
     }
     let src = Utf8PathBuf::from(usd_src);
     if !src.as_std_path().is_dir() {
-        return Err(Error::Operation(format!(
+        return Err(Error::usage(format!(
             "--build source '{src}' is not a directory"
         )));
     }
@@ -513,7 +513,7 @@ fn build_from_source(
     }
 
     if !looks_like_usd(&r.prefix) {
-        return Err(Error::Operation(format!(
+        return Err(Error::validation(format!(
             "build finished but no OpenUSD install found under '{}'",
             r.prefix
         )));
@@ -542,16 +542,27 @@ fn build_with_script(
 ) -> Result<()> {
     let script = src.join("build_scripts").join("build_usd.py");
     if !script.as_std_path().is_file() {
-        return Err(Error::Operation(format!(
+        return Err(Error::usage(format!(
             "no build_scripts/build_usd.py under '{src}' (point --build at an OpenUSD checkout, \
              or pass --deps for a direct CMake build)"
         )));
     }
     let python = tools::which("python")
         .or_else(|| tools::which("python3"))
-        .ok_or_else(|| Error::Operation("`python` not found — build_usd.py needs it".into()))?;
-    let python = Utf8PathBuf::from_path_buf(python)
-        .map_err(|_| Error::Operation("python path is not UTF-8".into()))?;
+        .ok_or_else(|| {
+            Error::coded(
+                "REQUIRED_TOOL_MISSING",
+                ost_core::Category::Precondition,
+                "`python` not found — build_usd.py needs it",
+            )
+        })?;
+    let python = Utf8PathBuf::from_path_buf(python).map_err(|_| {
+        Error::coded(
+            "INTERNAL_ERROR",
+            ost_core::Category::Internal,
+            "python path is not UTF-8",
+        )
+    })?;
 
     let args = build_usd_args(&script, &r.prefix, opts.jobs, &opts.extra);
     println!(
@@ -567,20 +578,41 @@ fn build_with_script(
 fn build_with_cmake(r: &crate::commands::Resolved, src: &Utf8Path, opts: &BuildOpts) -> Result<()> {
     for dep in &opts.deps {
         if !Utf8PathBuf::from(dep).as_std_path().is_dir() {
-            return Err(Error::Operation(format!(
+            return Err(Error::usage(format!(
                 "--deps prefix '{dep}' is not a directory"
             )));
         }
     }
-    let cmake = tools::which("cmake")
-        .ok_or_else(|| Error::Operation("`cmake` not found on PATH".into()))?;
-    let cmake = Utf8PathBuf::from_path_buf(cmake)
-        .map_err(|_| Error::Operation("cmake path is not UTF-8".into()))?;
+    let cmake = tools::which("cmake").ok_or_else(|| {
+        Error::coded(
+            "REQUIRED_TOOL_MISSING",
+            ost_core::Category::Precondition,
+            "`cmake` not found on PATH",
+        )
+    })?;
+    let cmake = Utf8PathBuf::from_path_buf(cmake).map_err(|_| {
+        Error::coded(
+            "INTERNAL_ERROR",
+            ost_core::Category::Internal,
+            "cmake path is not UTF-8",
+        )
+    })?;
     let python = tools::which("python")
         .or_else(|| tools::which("python3"))
-        .ok_or_else(|| Error::Operation("`python` not found — USD needs it for bindings".into()))?;
-    let python = Utf8PathBuf::from_path_buf(python)
-        .map_err(|_| Error::Operation("python path is not UTF-8".into()))?;
+        .ok_or_else(|| {
+            Error::coded(
+                "REQUIRED_TOOL_MISSING",
+                ost_core::Category::Precondition,
+                "`python` not found — USD needs it for bindings",
+            )
+        })?;
+    let python = Utf8PathBuf::from_path_buf(python).map_err(|_| {
+        Error::coded(
+            "INTERNAL_ERROR",
+            ost_core::Category::Internal,
+            "python path is not UTF-8",
+        )
+    })?;
     let ninja = tools::which("ninja").map(|p| p.display().to_string());
 
     // Keep the build tree out of the install prefix, under the store cache.
@@ -627,10 +659,11 @@ fn run_build_step(
         .status()
         .map_err(|e| Error::io(format!("run {what}"), e))?;
     if !status.success() {
-        return Err(Error::Operation(format!(
-            "{what} failed (exit {})",
-            status.code().unwrap_or(-1)
-        )));
+        return Err(Error::coded(
+            "EXTERNAL_TOOL_FAILED",
+            ost_core::Category::ExternalTool,
+            format!("{what} failed (exit {})", status.code().unwrap_or(-1)),
+        ));
     }
     Ok(())
 }
@@ -701,12 +734,16 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     let r = resolve(platform, profile)?;
     let manifest_path = r.prefix.join(MANIFEST_FILE);
     if !manifest_path.as_std_path().is_file() {
-        return Err(Error::Operation(format!(
-            "runtime '{}' is not pulled (run `ost runtime pull {} --profile {}`)",
-            r.runtime.id(),
-            platform,
-            profile
-        )));
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' is not pulled (run `ost runtime pull {} --profile {}`)",
+                r.runtime.id(),
+                platform,
+                profile
+            ),
+        ));
     }
     let src = std::fs::read_to_string(manifest_path.as_std_path())
         .map_err(|e| Error::io(manifest_path.to_string(), e))?;
@@ -759,12 +796,16 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     let r = resolve(platform, profile)?;
     let manifest_path = r.prefix.join(MANIFEST_FILE);
     if !manifest_path.as_std_path().is_file() {
-        return Err(Error::Operation(format!(
-            "runtime '{}' is not pulled (run `ost runtime pull {} --profile {}`)",
-            r.runtime.id(),
-            platform,
-            profile
-        )));
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' is not pulled (run `ost runtime pull {} --profile {}`)",
+                r.runtime.id(),
+                platform,
+                profile
+            ),
+        ));
     }
     let src = std::fs::read_to_string(manifest_path.as_std_path())
         .map_err(|e| Error::io(manifest_path.to_string(), e))?;

@@ -39,12 +39,16 @@ pub fn run(args: UvArgs, fmt: Format) -> Result<()> {
     let r = resolve_runtime(&platform, &profile)?;
 
     if !r.pulled {
-        return Err(Error::Operation(format!(
-            "runtime '{}' not pulled — run `ost runtime pull {} --profile {}` first",
-            r.runtime.id(),
-            platform,
-            profile
-        )));
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' not pulled — run `ost runtime pull {} --profile {}` first",
+                r.runtime.id(),
+                platform,
+                profile
+            ),
+        ));
     }
 
     // The interpreter uv must use, never one it picks itself.
@@ -74,7 +78,11 @@ pub fn run(args: UvArgs, fmt: Format) -> Result<()> {
     }
 
     let uv = locate_uv().ok_or_else(|| {
-        Error::Operation("`uv` not found — install uv, add it to PATH, or set OST_UV".to_string())
+        Error::coded(
+            "REQUIRED_TOOL_MISSING",
+            ost_core::Category::Precondition,
+            "`uv` not found — install uv, add it to PATH, or set OST_UV",
+        )
     })?;
 
     let mut cmd = Command::new(&uv);
