@@ -1,9 +1,17 @@
 # Command examples
 
 A practical, copy-pasteable tour of the `ost` CLI. Every command also accepts
-`--json` for machine-readable output and uses deterministic exit codes
-(`0` success / non-zero failure), so the same invocations drive both interactive
-use and CI.
+`--json` for machine-readable output and uses deterministic, category-based exit
+codes, so the same invocations drive both interactive use and CI. Under `--json`
+each command prints a single `{ok, schema, data, warnings}` envelope on stdout
+(failures carry `error.code` / `error.category` instead of `data`). The full
+contract — envelope, codes, exit codes, and compatibility policy — is in
+[json-schema.md](json-schema.md):
+
+```bash
+ost platform show cy2099 --json   # {"ok":false,"schema":1,"error":{"code":"PLATFORM_NOT_FOUND",…}}
+echo $?                           # 2  (exit: 2 usage·3 config·4 precondition·5 validation·6 external_tool·7 io·70 internal)
+```
 
 In the examples `ost` is the built binary. To run from a checkout instead:
 
