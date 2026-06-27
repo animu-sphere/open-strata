@@ -55,17 +55,18 @@ endif()
 # CMAKE_CURRENT_SOURCE_DIR (this bundle), not CMAKE_SOURCE_DIR — the latter points
 # at the repo root when this bundle is consumed via add_subdirectory(), which
 # would stage the lib away from the committed plugInfo.json LibraryPath.
+set(OPENSTRATA_PLUGIN_LIBRARY_PREFIX "lib")
 set_target_properties(${PLUGIN_NAME} PROPERTIES
-    PREFIX "lib"
+    PREFIX "${OPENSTRATA_PLUGIN_LIBRARY_PREFIX}"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib")
 
-# Generate plugInfo.json from the .in so its LibraryPath carries the platform's
-# shared-library suffix (.so/.dll/.dylib). `ost plugin new` writes a host-correct
-# plugInfo.json up front (so `doctor`/`test` work before the first build); this
-# regenerates it for the target actually being built. USD resolves LibraryPath
-# relative to plugInfo's Root and dlopens the absolutized path (no PATH fallback),
-# so the suffix and the ../../../lib/ location must both be exact.
+# Generate plugInfo.json from the .in so its LibraryPath carries this target's
+# shared-library prefix/suffix. `ost plugin new` writes a host-correct
+# plugInfo.json up front (so `doctor`/`test` can inspect it before the first
+# build); this regenerates it for the target actually being built. USD resolves
+# LibraryPath relative to plugInfo's Root and dlopens the absolutized path (no
+# PATH fallback), so the name and the ../../../lib/ location must both be exact.
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json.in"
     "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json"

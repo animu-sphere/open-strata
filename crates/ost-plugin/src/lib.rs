@@ -34,5 +34,5 @@ pub use model::{
 };
 pub use report::{environment_json, report_json, summary_text, write_report, REPORT_SCHEMA};
 pub use scaffold::scaffold;
-pub use session::{bundle_vars, session_env};
+pub use session::{bundle_vars, session_env, session_env_with};
 pub use version::{satisfies, RangeError};

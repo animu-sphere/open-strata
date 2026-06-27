@@ -9,8 +9,8 @@ runtime:
   # The OpenUSD version range this plugin tolerates. The runtime supplies the
   # certified point within it.
   openusd: ">=25.05,<26.0"
-  # C++ ABI the plugin is built against. Must match the runtime's.
-  cxx_abi: libstdcxx
+  # Source bundles do not hard-code C++ ABI; `ost plugin doctor` compares the
+  # resolved target/runtime ABI when a built or packaged manifest records one.
 provides:
   - usd-fileformat:{{extension}}
 requires:

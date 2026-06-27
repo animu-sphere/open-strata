@@ -195,19 +195,23 @@ pub fn scaffold(
                 .map_err(|e| Error::io(parent.to_string(), e))?;
         }
         let contents = vars.apply(file.contents);
-        std::fs::write(abs.as_std_path(), &contents)
-            .map_err(|e| Error::io(abs.to_string(), e))?;
+        std::fs::write(abs.as_std_path(), &contents).map_err(|e| Error::io(abs.to_string(), e))?;
         written.push(rel.clone());
 
         // A `*.in` is a CMake `configure_file` source. Emit a ready-to-use
-        // concrete file next to it (with the host's shared-library suffix) so
-        // `ost plugin doctor`/`test` work before the first build — the build's
-        // `configure_file` then regenerates it for the target being built.
+        // concrete file next to it (with the host's shared-library name) so
+        // `ost plugin doctor`/`test` can inspect it before the first build — the
+        // build's `configure_file` then regenerates it for the target being
+        // built.
         if let Some(concrete) = rel.as_str().strip_suffix(".in") {
             let concrete_rel = Utf8PathBuf::from(concrete);
             let concrete_abs = dest.join(&concrete_rel);
-            let resolved =
-                contents.replace("@CMAKE_SHARED_LIBRARY_SUFFIX@", std::env::consts::DLL_SUFFIX);
+            let resolved = contents
+                .replace("@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@", "lib")
+                .replace(
+                    "@CMAKE_SHARED_LIBRARY_SUFFIX@",
+                    std::env::consts::DLL_SUFFIX,
+                );
             std::fs::write(concrete_abs.as_std_path(), resolved)
                 .map_err(|e| Error::io(concrete_abs.to_string(), e))?;
             written.push(concrete_rel);
@@ -280,7 +284,10 @@ mod tests {
         // leftover `@CMAKE_*@` token) and points at the bundle's lib/ — the two
         // things USD needs to dlopen it (it has no PATH fallback for the lib).
         let plug_info = std::fs::read_to_string(bundle.plug_info().as_std_path()).unwrap();
-        assert!(!plug_info.contains('@'), "configure_file token left in plugInfo.json");
+        assert!(
+            !plug_info.contains('@'),
+            "configure_file token left in plugInfo.json"
+        );
         assert!(plug_info.contains(&format!(
             "../../../lib/libToyFileFormat{}",
             std::env::consts::DLL_SUFFIX
