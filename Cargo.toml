@@ -40,7 +40,7 @@ serde_json = "=1.0.128"
 serde_yaml = "=0.9.34"
 toml = "=0.8.19"
 toml_edit = "=0.22.20"
-indexmap = { version = "=2.2.6", features = ["serde"] }
+indexmap = { version = "=2.11.1", features = ["serde"] }
 camino = { version = "=1.1.7", features = ["serde1"] }
 directories = "=5.0.1"
 sha2 = "=0.10.8"
