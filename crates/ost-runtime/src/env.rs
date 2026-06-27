@@ -239,11 +239,21 @@ impl EnvSet {
     /// developer environment loaded for a Windows build — so that `Prepend`
     /// ops compose with, rather than clobber, the values that delta already
     /// set (notably `PATH`). Keys absent from `base` start empty.
+    ///
+    /// Base keys are matched case-insensitively: Windows spells the search path
+    /// `Path`, but our ops key it `PATH`, and a case-sensitive lookup would miss
+    /// the existing value and silently drop the compiler's `PATH` (and the
+    /// original one) on the floor. `std::env::var` already folds case, so
+    /// [`resolve`](Self::resolve) needs no equivalent.
     pub fn resolve_over(
         &self,
         base: &std::collections::HashMap<String, String>,
     ) -> Vec<(String, String)> {
-        self.resolve_with(|k| base.get(k).cloned())
+        let ci: std::collections::HashMap<String, String> = base
+            .iter()
+            .map(|(k, v)| (k.to_ascii_lowercase(), v.clone()))
+            .collect();
+        self.resolve_with(|k| ci.get(&k.to_ascii_lowercase()).cloned())
     }
 
     /// Shared resolver: `lookup` supplies the pre-existing value for a key that
@@ -386,10 +396,12 @@ mod tests {
         // delta must prepend USD's entries in front of the MSVC PATH, not drop
         // the MSVC entries — and keys absent from the base (PYTHONPATH) start
         // from the runtime value alone.
+        // The base spells it `Path` (as Windows does); the lookup must fold case
+        // so the runtime PATH composes with it rather than dropping it.
         use std::collections::HashMap;
         let set = EnvSet::for_runtime(&prefix(), Os::Windows, "3.13", false);
         let mut base = HashMap::new();
-        base.insert("PATH".to_string(), "C:/VC/bin;C:/orig".to_string());
+        base.insert("Path".to_string(), "C:/VC/bin;C:/orig".to_string());
         let resolved = set.resolve_over(&base);
         let path = resolved
             .iter()

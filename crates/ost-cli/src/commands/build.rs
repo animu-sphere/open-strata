@@ -17,7 +17,6 @@
 //!   6. CMake configure, then CMake build
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use camino::Utf8Path;
 use clap::Args;
@@ -32,6 +31,7 @@ use crate::commands::configure::{
     build_target, generate, resolve_compiler, resolve_selection, target_output_paths,
 };
 use crate::output::{self, Format};
+use crate::progress::{ProgressMode, Reporter};
 
 #[derive(Debug, Args)]
 pub struct BuildArgs {
@@ -63,6 +63,15 @@ pub struct BuildArgs {
     /// Do not auto-load the MSVC developer environment (Windows).
     #[arg(long)]
     no_vcvars: bool,
+
+    /// Progress rendering: `auto` (human on a TTY, plain otherwise) or `plain`.
+    #[arg(long, value_enum, default_value_t = ProgressMode::Auto)]
+    progress: ProgressMode,
+
+    /// Suppress progress output; child output goes to the log. Failures, the
+    /// exit code and the log path are still reported.
+    #[arg(long)]
+    quiet: bool,
 
     #[command(flatten)]
     compiler: CompilerOpts,
@@ -168,20 +177,35 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
         return Ok(());
     }
 
+    // The real build runs as timed phases through the shared reporter: generate,
+    // configure, build, verify. The reporter renders for a TTY or CI, tees child
+    // output to the per-target log, and on failure names the phase + exit code.
+    let mut rep = Reporter::new(args.progress, 4, args.quiet);
+
     // 5. Generate the target's `.strata/` files now that checks have passed.
+    rep.phase("Generating toolchain and presets");
     let g = generate(&root, &platform, &profile, &compiler)?;
     debug_assert_eq!(g.id, id);
+    // Subprocess output from here on is teed to a per-target build log.
+    let log = root
+        .join(".strata")
+        .join("targets")
+        .join(&id)
+        .join("build.log");
+    rep.set_log(&log);
 
     // 6. Inject the MSVC developer environment (cl.exe, Windows SDK) if needed.
     let mut msvc_env: Vec<(String, String)> = Vec::new();
     if pre.will_bootstrap_msvc {
         match ost_build::msvc::bootstrap() {
             Ok(Some(env)) => {
-                println!(
-                    "==> msvc env   {} ({} vars)",
-                    env.vcvars.display(),
-                    env.vars.len()
-                );
+                if !args.quiet {
+                    println!(
+                        "      msvc env   {} ({} vars)",
+                        env.vcvars.display(),
+                        env.vars.len()
+                    );
+                }
                 msvc_env = env.vars;
             }
             Ok(None) => eprintln!(
@@ -197,20 +221,45 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     //    Layer it over the MSVC delta so USD's bin/lib prepend in front of the
     //    compiler's PATH rather than clobbering it.
     let extra_env = layer_runtime_env(&resolved.env, &msvc_env);
-    println!(
-        "==> runtime env {} ({} vars)",
-        target.runtime_id,
-        resolved.env.vars.len()
-    );
+    if !args.quiet {
+        println!(
+            "      runtime env {} ({} vars)",
+            target.runtime_id,
+            resolved.env.vars.len()
+        );
+    }
 
-    println!(
-        "==> configure  {}",
-        render_cmd(&cmake_prog, &configure_args)
-    );
-    run_step(&cmake_prog, &configure_args, &root, &extra_env)?;
-    println!("==> build      {}", render_cmd(&cmake_prog, &build_args));
-    run_step(&cmake_prog, &build_args, &root, &extra_env)?;
-    println!("\nBuilt target {id}");
+    // 8. Configure, then build — each a phase whose subprocess streams through
+    //    the reporter (heartbeat while quiet, log capture, failure reporting).
+    rep.phase("Configuring CMake");
+    rep.run(&cmake_prog, &configure_args, &root, &extra_env)?;
+    rep.phase("Building targets");
+    rep.run(&cmake_prog, &build_args, &root, &extra_env)?;
+
+    // 9. Verify the build produced outputs — a successful build with an empty
+    //    tree means the preset built nothing useful.
+    rep.phase("Verifying outputs");
+    verify_build(&root, &id)?;
+
+    rep.done();
+    if !args.quiet {
+        println!("Built target {id}");
+    }
+    Ok(())
+}
+
+/// Confirm `build/<id>` exists and is non-empty after a successful build, so a
+/// no-op preset does not pass silently.
+fn verify_build(root: &Utf8Path, id: &str) -> Result<()> {
+    let build_dir = root.join("build").join(id);
+    let non_empty = std::fs::read_dir(build_dir.as_std_path())
+        .map(|mut d| d.next().is_some())
+        .unwrap_or(false);
+    if !non_empty {
+        return Err(Error::Operation(format!(
+            "build completed but produced no outputs under build/{id}"
+        )));
+    }
     Ok(())
 }
 
@@ -463,25 +512,6 @@ fn layer_runtime_env(runtime: &EnvSet, msvc: &[(String, String)]) -> Vec<(String
     let mut env = msvc.to_vec();
     env.extend(runtime.resolve_over(&base));
     env
-}
-
-fn run_step(
-    program: &Path,
-    args: &[String],
-    cwd: &Utf8Path,
-    env: &[(String, String)],
-) -> Result<()> {
-    let status = Command::new(program)
-        .args(args)
-        .current_dir(cwd.as_std_path())
-        .envs(env.iter().map(|(k, v)| (k.clone(), v.clone())))
-        .status()
-        .map_err(|e| Error::io(format!("run {}", program.display()), e))?;
-    if !status.success() {
-        // Propagate the underlying build failure code for CI.
-        std::process::exit(status.code().unwrap_or(1));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
