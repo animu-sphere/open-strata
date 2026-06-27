@@ -416,9 +416,13 @@ security baseline document. P0 lands first; P1 next; P2 is continuous.
   / binary & plugin hashes / trust level in the manifest and lock, warn on
   world-writable runtime roots, and let `ost build` / `ost plugin test` require a
   minimum trust level (release/production CI refuses `local`).
-- ⬜ **CI test gate.** Add a workflow running `cargo test` / `fmt --check` /
-  `clippy` on PRs — the security regression tests above currently have no CI job
-  to run them.
+- ✅ **CI test gate.** `.github/workflows/ci.yml` runs `fmt`
+  (`cargo fmt --all -- --check`), `clippy`
+  (`cargo clippy --workspace --all-targets --locked -- -D warnings`), and `test`
+  (`cargo test --workspace --locked`) on every push to `main` and every PR, so the
+  security regression tests above now run in CI. Linux-only / mock-runtime only
+  (no real DCC, no OS matrix). Marked as required status checks (with `licenses`)
+  on protected `main`. Actions are SHA-pinned (SEC-004).
 
 ## Quality bar (applies to every phase)
 
