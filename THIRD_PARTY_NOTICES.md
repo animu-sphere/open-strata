@@ -1529,14 +1529,14 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- ost-build 0.1.1
-- ost-cli 0.1.1 — https://github.com/animu-sphere/open-strata
-- ost-core 0.1.1
-- ost-extension 0.1.1
-- ost-manifest 0.1.1
-- ost-platform 0.1.1
-- ost-plugin 0.1.1
-- ost-runtime 0.1.1
+- ost-build 0.2.0
+- ost-cli 0.2.0 — https://github.com/animu-sphere/open-strata
+- ost-core 0.2.0
+- ost-extension 0.2.0
+- ost-manifest 0.2.0
+- ost-platform 0.2.0
+- ost-plugin 0.2.0
+- ost-runtime 0.2.0
 - anyhow 1.0.86 — https://github.com/dtolnay/anyhow
 - directories 5.0.1 — https://github.com/soc/directories-rs
 - dirs-sys 0.4.1 — https://github.com/dirs-dev/dirs-sys-rs
