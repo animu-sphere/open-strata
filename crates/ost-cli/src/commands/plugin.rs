@@ -202,7 +202,7 @@ fn new(
 ) -> Result<()> {
     let kind = PluginKind::from_tag(kind).ok_or_else(|| {
         let kinds: Vec<&str> = PluginKind::ALL.iter().map(|k| k.as_str()).collect();
-        Error::Operation(format!(
+        Error::usage(format!(
             "unknown plugin kind '{kind}' (expected one of: {})",
             kinds.join(", ")
         ))
@@ -212,7 +212,7 @@ fn new(
     let files = scaffold(kind, name, extension, &dest)?;
 
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "created": true,
             "kind": kind.as_str(),
             "name": name,
@@ -238,7 +238,7 @@ fn inspect(bundle_path: &str, fmt: Format) -> Result<()> {
     let report = diagnose(&bundle, &RuntimeContext::default(), 0);
 
     if fmt.is_json() {
-        output::json(&ost_plugin::report_json(&bundle, &report));
+        output::report(report.passed(), &ost_plugin::report_json(&bundle, &report));
     } else {
         print_report(&bundle, &report);
     }
@@ -288,7 +288,7 @@ fn doctor(
             );
             obj.insert("environment".into(), ost_plugin::environment_json(&session));
         }
-        output::json(&body);
+        output::report(report.passed(), &body);
     } else {
         print_report(&bundle, &report);
         println!("\nSession env preview (PXR_PLUGINPATH_NAME / lib / PYTHONPATH):");
@@ -314,9 +314,8 @@ fn build(
 
     // A build needs a concrete runtime to compile against.
     let (platform, profile) = selection(target, profile).ok_or_else(|| {
-        Error::Operation(
-            "no platform/profile: run inside an OpenStrata project or pass --target/--profile"
-                .into(),
+        Error::usage(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
         )
     })?;
     let (tgt, r) = build_target(&platform, &profile)?;
@@ -375,12 +374,22 @@ fn build(
     }
 
     if !r.pulled {
-        return Err(Error::Operation(format!(
-            "runtime '{}' not pulled — run `ost runtime pull {platform} --profile {profile}` first",
-            tgt.runtime_id
-        )));
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' not pulled — run `ost runtime pull {platform} --profile {profile}` first",
+                tgt.runtime_id
+            ),
+        ));
     }
-    let cmake = cmake.ok_or_else(|| Error::Operation("`cmake` not found on PATH".into()))?;
+    let cmake = cmake.ok_or_else(|| {
+        Error::coded(
+            "REQUIRED_TOOL_MISSING",
+            ost_core::Category::Precondition,
+            "`cmake` not found on PATH",
+        )
+    })?;
 
     // If the compiler changed since the last build, the cached compiler/ABI in
     // build/<id> is stale — drop it so this configure is clean (mirrors the
@@ -401,7 +410,7 @@ fn build(
     // plugInfo.json is shipped in the bundle (staged at scaffold time); confirm it.
     let plug_info = bundle.plug_info();
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "built": true,
             "plugin": bundle.manifest.plugin.name,
             "runtime": tgt.runtime_id,
@@ -511,7 +520,7 @@ fn test(
                 serde_json::Value::String(report_dir.to_string()),
             );
         }
-        output::json(&body);
+        output::report(report.passed(), &body);
     } else {
         print_report(&bundle, &report);
         println!("\nReport: {report_dir}");
@@ -532,8 +541,10 @@ fn view(
 
     let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"])
         .ok_or_else(|| {
-            Error::Operation(
-                "usdview not found in the runtime (build/adopt one with usdview enabled)".into(),
+            Error::coded(
+                "REQUIRED_TOOL_MISSING",
+                ost_core::Category::Precondition,
+                "usdview not found in the runtime (build/adopt one with usdview enabled)",
             )
         })?;
     let fixture_path = bundle.path(fixture); // absolute passes through; else under the bundle
@@ -593,7 +604,7 @@ fn test_view(
                 serde_json::Value::String(report_dir.to_string()),
             );
         }
-        output::json(&body);
+        output::report(report.passed(), &body);
     } else {
         print_report(&bundle, &report);
         println!("\nReport: {report_dir}");
@@ -726,17 +737,20 @@ fn require_real_runtime(
     profile: Option<String>,
 ) -> Result<crate::commands::Resolved> {
     let (platform, profile) = selection(target, profile).ok_or_else(|| {
-        Error::Operation(
-            "no platform/profile: run inside an OpenStrata project or pass --target/--profile"
-                .into(),
+        Error::usage(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
         )
     })?;
     let r = resolve(&platform, &profile)?;
     if !r.pulled {
-        return Err(Error::Operation(format!(
-            "runtime '{}' not pulled — adopt one with `ost runtime pull {platform} --profile {profile} --from-usd <path>`",
-            r.runtime.id()
-        )));
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' not pulled — adopt one with `ost runtime pull {platform} --profile {profile} --from-usd <path>`",
+                r.runtime.id()
+            ),
+        ));
     }
     // Read the manifest to confirm the source is real (not mock).
     let manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
@@ -744,8 +758,10 @@ fn require_real_runtime(
         .and_then(|s| RuntimeManifest::from_json(&s).ok());
     let real = manifest.map(|m| m.source.is_real()).unwrap_or(false);
     if !real {
-        return Err(Error::Operation(
-            "runtime is mock — a real OpenUSD runtime is required (adopt with `--from-usd`)".into(),
+        return Err(Error::coded(
+            "REAL_RUNTIME_REQUIRED",
+            ost_core::Category::Precondition,
+            "runtime is mock — a real OpenUSD runtime is required (adopt with `--from-usd`)",
         ));
     }
     Ok(r)
@@ -810,7 +826,9 @@ fn finish(report: &DoctorReport) -> Result<()> {
     if report.passed() {
         Ok(())
     } else {
-        std::process::exit(1);
+        // The caller already emitted the report; a failing plugin check is a
+        // validation mismatch (§14.4), so exit with that category code.
+        std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
 }
 

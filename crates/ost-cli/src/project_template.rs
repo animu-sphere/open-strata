@@ -30,7 +30,7 @@ impl Template {
             "cpp-library" => Ok(Template::CppLibrary),
             "usd-plugin" => Ok(Template::UsdPlugin),
             "bare" => Ok(Template::Bare),
-            other => Err(Error::Operation(format!(
+            other => Err(Error::usage(format!(
                 "unknown template '{other}' (expected: cpp-library, usd-plugin, bare)"
             ))),
         }
@@ -164,7 +164,7 @@ pub fn validate_name(name: &str) -> Result<()> {
     if ok {
         Ok(())
     } else {
-        Err(Error::Operation(format!(
+        Err(Error::usage(format!(
             "invalid project name '{name}': use letters, digits, '-' or '_', starting with a letter"
         )))
     }
@@ -234,7 +234,10 @@ mod tests {
 
     #[test]
     fn parses_known_templates() {
-        assert_eq!(Template::parse("cpp-library").unwrap(), Template::CppLibrary);
+        assert_eq!(
+            Template::parse("cpp-library").unwrap(),
+            Template::CppLibrary
+        );
         assert_eq!(Template::parse("usd-plugin").unwrap(), Template::UsdPlugin);
         assert_eq!(Template::parse("bare").unwrap(), Template::Bare);
         assert!(Template::parse("nope").is_err());

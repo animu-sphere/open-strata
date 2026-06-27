@@ -5,6 +5,7 @@
 | [overview.md](overview.md) | What OpenStrata is, who it is for, and the core principles (方針). |
 | [architecture.md](architecture.md) | Workspace layout, crate boundaries, and the domain model. |
 | [examples.md](examples.md) | Copy-pasteable examples for every `ost` command. |
+| [json-schema.md](json-schema.md) | The `--json` output contract: envelope, error codes, exit codes, and compatibility policy. |
 | [roadmap.md](roadmap.md) | Phased delivery plan and current status. |
 | [phase-4-plugin-harness.md](phase-4-plugin-harness.md) | Phase 4 direction: the OpenUSD plugin verification harness, mapped onto the codebase. |
 | [kubernetes.md](kubernetes.md) | Phase 9 direction: Kubernetes as a pluggable execution backend (`ost submit` / `ost jobs`). |

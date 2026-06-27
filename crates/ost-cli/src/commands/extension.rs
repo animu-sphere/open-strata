@@ -59,7 +59,7 @@ fn list(fmt: Format) -> Result<()> {
                 })
             })
             .collect();
-        output::json(&serde_json::json!({ "extensions": items }));
+        output::success(&serde_json::json!({ "extensions": items }));
         return Ok(());
     }
 
@@ -85,7 +85,7 @@ fn why(name: &str, profile_override: Option<String>, fmt: Format) -> Result<()> 
     let r = resolve_runtime(&platform, &profile)?;
     let catalog = load_all()?;
     if catalog.get(name).is_none() {
-        return Err(Error::Operation(format!(
+        return Err(Error::usage(format!(
             "unknown extension '{name}' (try `ost extension list`)"
         )));
     }
@@ -95,7 +95,7 @@ fn why(name: &str, profile_override: Option<String>, fmt: Format) -> Result<()> 
 
     if fmt.is_json() {
         let rendered: Vec<String> = reasons.iter().map(|r| render_reason(name, r)).collect();
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "extension": name,
             "platform": platform,
             "profile": profile,
@@ -142,7 +142,7 @@ fn render_reason(name: &str, reason: &RequirementReason) -> String {
 fn add(name: &str, fmt: Format) -> Result<()> {
     let catalog = load_all()?;
     if catalog.get(name).is_none() {
-        return Err(Error::Operation(format!(
+        return Err(Error::usage(format!(
             "unknown extension '{name}' (try `ost extension list`)"
         )));
     }
@@ -158,7 +158,7 @@ fn add(name: &str, fmt: Format) -> Result<()> {
     match ost_manifest::add_extension(&src, name)? {
         None => {
             if fmt.is_json() {
-                output::json(
+                output::success(
                     &serde_json::json!({ "added": false, "extension": name, "reason": "already present" }),
                 );
             } else {
@@ -169,7 +169,7 @@ fn add(name: &str, fmt: Format) -> Result<()> {
             std::fs::write(&manifest_path, updated)
                 .map_err(|e| Error::io(manifest_path.display().to_string(), e))?;
             if fmt.is_json() {
-                output::json(&serde_json::json!({ "added": true, "extension": name }));
+                output::success(&serde_json::json!({ "added": true, "extension": name }));
             } else {
                 println!("Added extension '{name}' to {}", manifest_path.display());
             }

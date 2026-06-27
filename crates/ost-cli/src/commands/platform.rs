@@ -50,7 +50,7 @@ fn list(catalog: &Catalog, fmt: Format) -> Result<()> {
                 })
             })
             .collect();
-        output::json(&serde_json::json!({ "platforms": items }));
+        output::success(&serde_json::json!({ "platforms": items }));
         return Ok(());
     }
 
@@ -69,7 +69,7 @@ fn list(catalog: &Catalog, fmt: Format) -> Result<()> {
 
 fn show(p: &Platform, fmt: Format) -> Result<()> {
     if fmt.is_json() {
-        output::json(&serde_json::to_value(p).expect("platform serializes"));
+        output::success(&serde_json::to_value(p).expect("platform serializes"));
         return Ok(());
     }
 
@@ -105,7 +105,7 @@ fn show_diff(d: &ost_platform::PlatformDiff, fmt: Format) -> Result<()> {
                 }),
             })
             .collect();
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "from": d.from_id,
             "to": d.to_id,
             "changes": changes,

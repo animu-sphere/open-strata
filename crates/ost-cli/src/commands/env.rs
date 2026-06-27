@@ -45,7 +45,7 @@ pub fn run(args: EnvArgs, fmt: Format) -> Result<()> {
             .into_iter()
             .map(|(k, v)| serde_json::json!({ "name": k, "value": v }))
             .collect();
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "runtime": r.runtime.id(),
             "platform": r.runtime.platform,
             "profile": r.runtime.profile,

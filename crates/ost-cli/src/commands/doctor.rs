@@ -6,8 +6,9 @@
 //! identity, pulled state, digest, validation, environment, and layout. USD-
 //! specific diagnostics (`ost doctor usd`) arrive with the plugin phase.
 //!
-//! Exit code is deterministic for CI: `0` when healthy, `1` when issues are
-//! found (a required tool is missing, or a requested runtime is not pulled).
+//! Exit code is deterministic for CI: `0` when healthy, the precondition code
+//! (§14.4) when issues are found (a required tool is missing, or a requested
+//! runtime is not pulled).
 
 use clap::Args;
 
@@ -105,11 +106,13 @@ pub fn run(args: DoctorArgs, fmt: Format) -> Result<()> {
         );
     }
 
-    // Deterministic exit for CI.
+    // Deterministic exit for CI. Issues are missing tools or an unpulled
+    // runtime — preconditions (§14.4); the report above is this command's own
+    // output, so exit with that category code directly.
     if issues.is_empty() {
         Ok(())
     } else {
-        std::process::exit(1);
+        std::process::exit(ost_core::Category::Precondition.exit_code() as i32);
     }
 }
 
@@ -273,20 +276,22 @@ fn emit_json(
         })
     });
 
-    output::json(&serde_json::json!({
-        "ok": issues.is_empty(),
-        "openstrata": {
-            "version": env!("CARGO_PKG_VERSION"),
-            "store": store.root.to_string(),
-        },
-        "host": {
-            "os": host.os.as_str(),
-            "arch": host.arch.as_str(),
-            "abi": abi.describe(),
-            "primary": host.is_primary(),
-        },
-        "tools": tool_items,
-        "runtime": runtime_json,
-        "issues": issues,
-    }));
+    output::report(
+        issues.is_empty(),
+        &serde_json::json!({
+            "openstrata": {
+                "version": env!("CARGO_PKG_VERSION"),
+                "store": store.root.to_string(),
+            },
+            "host": {
+                "os": host.os.as_str(),
+                "arch": host.arch.as_str(),
+                "abi": abi.describe(),
+                "primary": host.is_primary(),
+            },
+            "tools": tool_items,
+            "runtime": runtime_json,
+            "issues": issues,
+        }),
+    );
 }

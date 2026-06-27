@@ -15,6 +15,6 @@ pub mod paths;
 pub mod tools;
 pub mod variant;
 
-pub use error::{Error, Result};
+pub use error::{Category, Error, Result};
 pub use host::Host;
 pub use variant::Variant;

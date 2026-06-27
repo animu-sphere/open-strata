@@ -85,7 +85,7 @@ pub fn run(args: InitArgs, fmt: Format) -> Result<()> {
     }
     if !args.force {
         if let Some(first) = project_template::conflicts(template, &name, &root).first() {
-            return Err(Error::Operation(format!(
+            return Err(Error::usage(format!(
                 "refusing to overwrite existing '{first}'; \
                  pass --force, or use --bare to skip template files"
             )));
@@ -136,7 +136,7 @@ fn report(
     fmt: Format,
 ) {
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "initialized": true,
             "manifest": manifest_path.display().to_string(),
             "name": name,

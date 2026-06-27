@@ -168,8 +168,10 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     let failed = checks.iter().any(|c| c.status == Status::Fail);
     emit(&id, &checks, fmt);
 
+    // A failed check is a validation mismatch (§14.4); emit() already produced
+    // this command's report, so exit with that category code directly.
     if failed {
-        std::process::exit(1);
+        std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
     Ok(())
 }
@@ -227,11 +229,13 @@ fn emit(id: &str, checks: &[Check], fmt: Format) {
             })
             .collect();
         let ok = !checks.iter().any(|c| c.status == Status::Fail);
-        output::json(&serde_json::json!({
-            "target": id,
-            "ok": ok,
-            "checks": items,
-        }));
+        output::report(
+            ok,
+            &serde_json::json!({
+                "target": id,
+                "checks": items,
+            }),
+        );
         return;
     }
 

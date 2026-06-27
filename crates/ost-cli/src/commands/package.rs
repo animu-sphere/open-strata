@@ -50,8 +50,13 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         )));
     }
 
-    let cmake = tools::which("cmake")
-        .ok_or_else(|| Error::Operation("`cmake` not found on PATH".to_string()))?;
+    let cmake = tools::which("cmake").ok_or_else(|| {
+        Error::coded(
+            "REQUIRED_TOOL_MISSING",
+            ost_core::Category::Precondition,
+            "`cmake` not found on PATH",
+        )
+    })?;
 
     // Install into a clean stage tree.
     let stage = root.join(STATE_DIR).join("targets").join(&id).join("stage");
@@ -83,11 +88,13 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     // `--allow-empty` opts in to a metadata-only artifact.
     let staged = stage_files(&stage).map_err(|e| Error::io(stage.to_string(), e))?;
     if staged.is_empty() && !args.allow_empty {
-        return Err(Error::Operation(format!(
-            "the install tree for '{id}' is empty — nothing to package.\n\
-             hint: add `install(TARGETS ...)` (and resource install rules) to CMakeLists.txt, \
-             or pass --allow-empty for a metadata-only artifact"
-        )));
+        return Err(Error::validation(format!(
+            "the install tree for '{id}' is empty — nothing to package"
+        ))
+        .with_hint(
+            "add `install(TARGETS ...)` (and resource install rules) to CMakeLists.txt, \
+             or pass --allow-empty for a metadata-only artifact",
+        ));
     }
 
     // Pack the stage tree.
@@ -178,7 +185,7 @@ fn report(
     fmt: Format,
 ) {
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "packaged": true,
             "target": id,
             "archive": archive.to_string(),

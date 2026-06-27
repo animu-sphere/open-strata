@@ -163,14 +163,14 @@ pub fn read_presets_object(path: &Utf8Path) -> Result<Option<Map<String, Value>>
         Err(e) => return Err(Error::io(path.to_string(), e)),
     };
     let value: Value = serde_json::from_str(&text).map_err(|e| {
-        Error::Operation(format!(
+        Error::config(format!(
             "{path} is not valid JSON, refusing to overwrite it \
              (note: JSON with comments is not supported): {e}"
         ))
     })?;
     match value {
         Value::Object(map) => Ok(Some(map)),
-        _ => Err(Error::Operation(format!(
+        _ => Err(Error::config(format!(
             "{path} must contain a JSON object at the top level"
         ))),
     }
@@ -242,7 +242,7 @@ fn report_changes(
     planned: bool,
 ) {
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "action": action,
             "file": path.to_string(),
             "planned": planned,

@@ -270,7 +270,10 @@ fn refresh_user_presets(root: &Utf8Path, id: &str) -> Result<()> {
     // Parse-or-error: a malformed CMakePresets.json is never treated as empty.
     let root_presets_path = root.join(ROOT_PRESETS);
     if let Some(map) = read_presets_object(&root_presets_path)? {
-        if includes_of(&Value::Object(map)).iter().any(|i| i == &include) {
+        if includes_of(&Value::Object(map))
+            .iter()
+            .any(|i| i == &include)
+        {
             return Ok(());
         }
     }
@@ -315,7 +318,7 @@ fn pretty(value: &serde_json::Value) -> Result<String> {
 fn report(g: &Generated, fmt: Format) {
     let id = &g.id;
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "configured": true,
             "target": id,
             "runtime": g.target.runtime_id,
