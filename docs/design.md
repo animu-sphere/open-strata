@@ -1127,6 +1127,9 @@ deterministic exit codes
 machine-readable output
 ```
 
+> 具体的な出力形は §14.3、安定 error code と category 別 exit code の対応は §14.4 を参照。
+> `--json` は `--report json` のグローバル別名として扱う。
+
 ## 13.3 Jenkins matrix axes
 
 ```text
@@ -1299,6 +1302,94 @@ ost doctor gpu
 ost ci init jenkins
 ost ci generate jenkins
 ```
+
+## 14.3 Output contract
+
+機械可読出力は表示形式ではなく **安定した契約** として扱う（§13.2 / §18.3）。
+利用者は人間・CI に加えてコーディングエージェントも想定するが、いずれも同じ契約で足りる。
+
+原則:
+
+- 既定は human 向け。`--json`（= `--report json` のグローバル別名）で機械可読出力。
+- `--json` 時、結果は stdout に **単一の JSON ドキュメントのみ**。進捗・警告・デバッグは stderr。
+  色・スピナー・バナーを stdout に混ぜない（パイプを壊さない）。
+- 成功・失敗・no-op いずれも安定した最上位の形を返す。将来の互換のため版を持つ。
+- 出力構築は `ost-cli` の output レイヤに集約し、各コマンドが ad-hoc に組み立てない。
+- JSON 内のパスは原則絶対パスへ解決する。秘密情報（token 等）は JSON・ログに出さない。
+
+最小エンベロープ:
+
+```text
+ok         bool         成功 true / 失敗 false
+schema     integer      出力契約の版（初期値 1）
+data       object       成功時に必須
+error      object       失敗時に必須（§14.4）
+warnings   array        無ければ空配列
+```
+
+> `status` のような新しい集約コマンドは設けない。プロジェクトと実行可能性の診断は
+> `ost doctor` に集約する（§14.5）。task / logs / config レジストリ / build の plan-run
+> 分割は本フェーズの対象外とする。
+
+## 14.4 Error codes and exit codes
+
+§13.2 の "deterministic exit codes / machine-readable output" を具体化する。
+エラーは文言ではなく **安定した `code` と `category`** で判定できること。
+`ost-core::Error` が code と category を導出できる形を持ち、`ost-cli` 境界で正規化する。
+子プロセスの生の exit code は error 内（`external_exit_code` 等）に保持する。
+
+category:
+
+```text
+usage          引数・使用方法の誤り
+configuration  manifest / lock / 設定の不正
+precondition   runtime・ツール・ディレクトリ等の前提不足
+validation     検証不一致
+external_tool  CMake / Ninja / compiler / OpenUSD の失敗
+io             ファイルシステム・権限
+internal       想定外の内部エラー
+```
+
+exit code（category から正規化）:
+
+```text
+0   success / no-op
+2   usage
+3   configuration
+4   precondition
+5   validation
+6   external_tool
+7   io
+70  internal
+```
+
+代表的な code（初期セット。追加は後方互換に行う）:
+
+```text
+INVALID_ARGUMENT  MANIFEST_NOT_FOUND  MANIFEST_INVALID
+LOCK_NOT_FOUND    LOCK_MISMATCH
+RUNTIME_NOT_FOUND RUNTIME_INVALID     REAL_RUNTIME_REQUIRED
+REQUIRED_TOOL_MISSING
+BUILD_CONFIGURATION_FAILED  BUILD_FAILED  PACKAGE_FAILED
+VALIDATION_FAILED  EXTERNAL_TOOL_FAILED  PERMISSION_DENIED
+INTERNAL_ERROR
+```
+
+## 14.5 doctor as the diagnosis surface
+
+`ost doctor` を「環境・前提・runtime 可否」を一括で返す唯一の診断面とする。
+別途 `ost status` は設けない（§14.3）。
+
+要件:
+
+- host / tools / runtime / lock を機械可読（`--json` / `--report junit`）で返す。
+- 最初の問題で早期 return せず、複数の問題をまとめて報告する。
+- runtime は kind（`mock` / `adopted` / `built` / `downloaded`）と実行可否
+  （static validation のみか、実 OpenUSD を実行できるか）を明示する。
+  mock runtime で実行型テストを要求したら `REAL_RUNTIME_REQUIRED`。
+- 各 issue に次アクション（実行すべきコマンド）を付す。
+- 情報的な warning のみなら exit 0。required な前提（必須ツール欠落・runtime 未取得など）が
+  満たされない場合は §14.4 の category に応じた失敗コードを返す。
 
 ---
 
