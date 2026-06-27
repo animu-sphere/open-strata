@@ -104,6 +104,11 @@ pub struct Tests {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub plugin: PluginIdentity,
+    /// SPDX license expression for the plugin's own code, e.g. `Apache-2.0`.
+    /// Surfaced by `ost plugin inspect` and recorded in `ost plugin package`'s
+    /// artifact manifest, so a packaged bundle never ships without its license.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
     pub runtime: RuntimeReq,
     /// Capabilities this plugin provides, e.g. `usd-fileformat:lumagraph`.
     #[serde(default)]
@@ -111,6 +116,11 @@ pub struct PluginManifest {
     #[serde(default)]
     pub requires: Requires,
     pub usd: UsdSection,
+    /// Bundle-relative paths to third-party notice/license files (e.g. for
+    /// vendored dependencies). Validated as bundle-relative at load and copied
+    /// into the package by `ost plugin package`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
     #[serde(default)]
     pub tests: Tests,
 }
@@ -157,6 +167,7 @@ plugin:
   name: usdluma
   version: 0.1.0
   kind: usd-fileformat
+license: Apache-2.0
 runtime:
   openusd: ">=24.11,<25.0"
   cxx_abi: libcxx
@@ -168,6 +179,7 @@ requires:
   runtime_libs: [third_party/lib]
 usd:
   plug_info: plugin/resources/usdluma/plugInfo.json
+notices: [third_party/NOTICES.md]
 tests:
   smoke: [tests/fixtures/basic.lumagraph]
   roundtrip: [tests/fixtures/basic.lumagraph]
@@ -188,6 +200,18 @@ tests:
             Some(">=1.39,<1.40")
         );
         assert_eq!(m.requires.runtime_libs, vec!["third_party/lib"]);
+        assert_eq!(m.license.as_deref(), Some("Apache-2.0"));
+        assert_eq!(m.notices, vec!["third_party/NOTICES.md"]);
+    }
+
+    #[test]
+    fn license_and_notices_are_optional() {
+        // A manifest without license/notices still parses; the fields default.
+        let minimal = "plugin:\n  name: x\n  version: 0.1.0\n  kind: usd-fileformat\n\
+                       runtime:\n  openusd: \">=24.11,<25.0\"\nusd:\n  plug_info: p/plugInfo.json\n";
+        let m = PluginManifest::parse(minimal).expect("manifest parses");
+        assert_eq!(m.license, None);
+        assert!(m.notices.is_empty());
     }
 
     #[test]

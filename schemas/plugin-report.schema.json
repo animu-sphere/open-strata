@@ -14,6 +14,10 @@
       "type": "string",
       "enum": ["usd-fileformat", "usd-asset-resolver", "usd-schema"]
     },
+    "license": {
+      "type": ["string", "null"],
+      "description": "SPDX license expression for the plugin's own code, from the bundle manifest. Null when the manifest declares none."
+    },
     "passed": { "type": "boolean" },
     "report_dir": {
       "type": "string",

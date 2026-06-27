@@ -43,6 +43,7 @@ pub fn report_json(bundle: &Bundle, report: &DoctorReport) -> serde_json::Value 
         "plugin": bundle.manifest.plugin.name,
         "version": bundle.manifest.plugin.version,
         "kind": bundle.manifest.kind().as_str(),
+        "license": bundle.manifest.license,
         "passed": report.passed(),
         "summary": {
             "pass": report.count(Status::Pass),
@@ -76,6 +77,9 @@ pub fn summary_text(bundle: &Bundle, report: &DoctorReport) -> String {
         m.plugin.version,
         m.kind().as_str()
     ));
+    if let Some(license) = &m.license {
+        out.push_str(&format!("License: {license}\n"));
+    }
     out.push_str(&format!("Root:   {}\n\n", bundle.root));
     for d in &report.diagnostics {
         let mark = match d.status {

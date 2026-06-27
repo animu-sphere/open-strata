@@ -579,6 +579,7 @@ fn package(
             "name": name,
             "version": version,
             "kind": packaged_manifest.kind().as_str(),
+            "license": packaged_manifest.license,
         },
         "target": id,
         "archive": archive_name,
@@ -933,6 +934,10 @@ fn stage_plugin_bundle(bundle: &Bundle, stage: &Utf8Path) -> Result<()> {
     for fixture in bundle.manifest.all_fixtures() {
         copy_file_required(&bundle.path(fixture), Utf8Path::new(fixture), stage)?;
     }
+    // Carry third-party notices into the package so it ships with attribution.
+    for notice in bundle.notices() {
+        copy_file_required(&bundle.path(notice), Utf8Path::new(notice), stage)?;
+    }
     Ok(())
 }
 
@@ -1208,6 +1213,9 @@ fn print_report(bundle: &Bundle, report: &DoctorReport) {
         m.kind().as_str(),
         bundle.root
     );
+    if let Some(license) = &m.license {
+        println!("  license: {license}");
+    }
     for d in &report.diagnostics {
         let mark = match d.status {
             Status::Pass => "PASS",

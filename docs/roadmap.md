@@ -322,64 +322,75 @@ abstraction, install, license, or GUI-required path (§2.2).
 - ⬜ Diagnose/refuse app-local `uv` deps that shadow ABI-sensitive runtime
   packages (USD/Qt/OpenEXR bindings), recommending the matching extension.
 
-## Distribution — `ost` binary releases ⬜
+## Distribution — `ost` binary releases 🚧
 
 The `ost` CLI is a single self-contained binary (no Python/USD dependency), so it
 ships independently of the heavy runtime artifacts. Publish tagged builds to
-GitHub Releases.
+GitHub Releases. Implemented with **cargo-dist** (`dist-workspace.toml`,
+`release.yml`); the generated workflow is hand-pinned to commit SHAs (SEC-004),
+so a dist version bump needs it regenerated and re-pinned (`allow-dirty = ["ci"]`).
 
-- ⬜ **Tag convention.** Releases are cut from an annotated tag `v<semver>` (e.g.
-  `v0.1.0`) on `main`. The tag's version must match the workspace
-  `Cargo.toml` `version`; a CI check fails the release on mismatch. Pre-releases
-  use `-rc.N` / `-beta.N` suffixes and are marked "pre-release".
-- ⬜ **Release workflow** (GitHub Actions, triggered on `v*` tags). A build
-  matrix produces a binary per target, packaged with a checksum:
-  - `linux-x86_64` (first-class), `macos-arm64`, `macos-x86_64`,
-    `windows-x86_64` (modeled from the start; built on a best-effort basis).
-  - Artifacts: `ost-<version>-<target>.tar.gz` (zip on Windows) + a combined
-    `SHA256SUMS`, attached to the GitHub Release. Built on the pinned toolchain
-    (see [architecture.md](architecture.md#toolchain-pinning)).
-  - Release notes drawn from the changelog / merged PRs for the tag range.
-- ⬜ **Install ergonomics.** A `cargo binstall` manifest and a `curl | sh`
-  installer script that fetches the right asset for the host and verifies the
-  checksum; document `cargo install --path crates/ost-cli` as the from-source
-  fallback.
-- ⬜ **Provenance (later).** Sign artifacts and attach SLSA/attestation metadata,
-  reusing the digest/manifest discipline OpenStrata already applies to runtime
-  and plugin artifacts.
+- ✅ **Tag convention.** Releases are cut from a tag `v<semver>` on `main`;
+  cargo-dist parses the version from the tag and errors unless it matches the
+  workspace `Cargo.toml` `version`. A `-rc.N` / prerelease suffix is marked
+  "pre-release" automatically.
+- ✅ **Release workflow** (GitHub Actions, triggered on `v*`/semver tags via
+  cargo-dist). Builds a binary per target, each packaged with checksums:
+  - `x86_64-unknown-linux-musl` (first-class, fully static for old-glibc
+    portability), `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+    `x86_64-pc-windows-msvc`.
+  - Per-archive `SHA256SUMS`, a `dist-manifest.json`, and `NOTICE` +
+    `THIRD_PARTY_NOTICES.md` bundled into every archive; attached to the GitHub
+    Release with generated notes. Built on the pinned toolchain.
+- ✅ **Install ergonomics.** cargo-dist generates `shell` + `powershell`
+  installers (fetch the right asset for the host, verify the checksum) hosted on
+  the Release; `cargo binstall` works against the `dist-manifest.json`. Document
+  `cargo install --path crates/ost-cli` as the from-source fallback.
+- 🚧 **Provenance.** GitHub build provenance attestations (SLSA) are attached to
+  release artifacts (`github-attestations = true`). Still ⬜: explicit
+  signature/Sigstore key material and `ost`-side verification of it (tracks with
+  Security baseline SEC-005).
 
 This covers the **`ost` tool** itself; runtime/extension/plugin *content*
 artifacts are distributed via the content-addressed store and the artifact
 registry (Phase 6).
 
-## Licensing & third-party attribution ⬜
+## Licensing & third-party attribution 🚧
 
 OpenStrata must ship with a clear license of its own and **complete** attribution
-for everything it bundles, links, or distributes. Today only the `Cargo.toml`
-`license = "Apache-2.0"` field exists; the files and discipline below are still
-to land.
+for everything it bundles, links, or distributes. The project license, SPDX
+headers, Rust-dependency attribution (CI-gated), and the plugin bundle license
+field have landed; runtime/extension content attribution and per-artifact SBOM
+remain (the latter with the Phase 6 content store).
 
 - ✅ **OpenStrata's own license.** Top-level `LICENSE` (Apache-2.0, matching the
   manifests) and `NOTICE`; SPDX headers
   (`// SPDX-License-Identifier: Apache-2.0`) on all source files; `README` License
   section.
-- ⬜ **Rust dependency attribution.** Generate and commit `THIRD_PARTY_NOTICES.md`
-  for the crate tree with `cargo-about`, and gate licenses in CI with
-  `cargo-deny` (allowlist of acceptable SPDX licenses; deny copyleft/unknown).
+- ✅ **Rust dependency attribution.** `THIRD_PARTY_NOTICES.md` is generated for
+  the crate tree with `cargo-about` (`about.toml`/`about.hbs`, host targets only)
+  and committed; `licenses.yml` gates every PR with `cargo-deny` (SPDX allowlist
+  in `deny.toml`, deny copyleft/unknown) and fails if `THIRD_PARTY_NOTICES.md` is
+  stale (CRLF-normalized diff).
 - ⬜ **Runtime/extension content attribution.** Anything OpenStrata builds or
   distributes (OpenUSD, MaterialX, TBB, OpenSubdiv, OpenEXR, OCIO, …, and their
   transitive deps) carries its upstream license. Each runtime/extension manifest
   records license metadata; built/adopted runtimes collect the upstream
   `LICENSE`/`NOTICE` files, and a runtime's licenses are inspectable
   (e.g. `ost runtime licenses <cy> --profile <p>`).
-- ⬜ **Per-artifact notices + SBOM.** Every published artifact (runtime, plugin
-  bundle, `ost` binary) includes its `LICENSE`/`NOTICE`/`THIRD_PARTY_NOTICES`
-  and a generated SBOM (SPDX or CycloneDX); the package manifest/provenance lists
-  component licenses by digest. **No artifact ships without complete third-party
+- 🚧 **Per-artifact notices + SBOM.** Notices: the `ost` binary archives bundle
+  `LICENSE`/`NOTICE`/`THIRD_PARTY_NOTICES` (cargo-dist `include`), and plugin
+  packages copy their `notices` files and record the bundle `license`. Still ⬜:
+  a generated SBOM (SPDX or CycloneDX) per artifact and a package
+  manifest/provenance that lists component licenses by digest (lands with the
+  Phase 6 content store). **No artifact ships without complete third-party
   attribution** — this is a release gate.
-- ⬜ **Plugin bundle license field.** `openstrata.plugin.yaml` gains a `license`
-  (SPDX) and optional third-party notices, surfaced by `ost plugin inspect` and
-  carried into `ost plugin package`.
+- ✅ **Plugin bundle license field.** `openstrata.plugin.yaml` carries a `license`
+  (SPDX) and optional bundle-relative `notices`. `ost plugin inspect` surfaces the
+  license (human + `--json`/report.json), `ost plugin package` records it in the
+  artifact `manifest.json` and copies the `notices` files into the package. The
+  scaffold seeds `license: Apache-2.0`; `notices` paths are validated as
+  bundle-relative (SEC-002).
 
 ## Security baseline 🚧
 
