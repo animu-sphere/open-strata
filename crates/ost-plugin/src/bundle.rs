@@ -32,6 +32,15 @@ impl Bundle {
             .map_err(|e| Error::io(manifest_path.to_string(), e))?;
         let manifest = PluginManifest::parse(&src)
             .map_err(|e| Error::parse(PLUGIN_MANIFEST, anyhow::Error::new(e)))?;
+
+        // Every filesystem path a manifest can name must stay inside the bundle.
+        // Validate them once, here, so all downstream resolution (`plug_info`,
+        // fixtures, the verification levels) is operating on trusted input.
+        check_safe_relative("usd.plug_info", &manifest.usd.plug_info)?;
+        for fixture in manifest.all_fixtures() {
+            check_safe_relative("test fixture", fixture)?;
+        }
+
         Ok(Bundle {
             root: root.to_path_buf(),
             manifest,
@@ -39,6 +48,10 @@ impl Bundle {
     }
 
     /// Resolve a bundle-relative path against the root.
+    ///
+    /// Inputs are trusted: literal subdirectories (`lib`, `python`) and the
+    /// manifest fields validated by [`check_safe_relative`] at load time. Callers
+    /// must not pass unvalidated external strings here.
     pub fn path(&self, rel: &str) -> Utf8PathBuf {
         self.root.join(rel)
     }
@@ -63,5 +76,118 @@ impl Bundle {
     /// The bundle's `python/` directory (Python modules, if any).
     pub fn python_dir(&self) -> Utf8PathBuf {
         self.path("python")
+    }
+}
+
+/// Reject a manifest-declared path that is not a safe, bundle-relative path.
+///
+/// A bundle records the locations of its `plugInfo.json` and test fixtures
+/// relative to its own root. Anything else — an absolute path, a `..` segment,
+/// a Windows drive (`C:\…`) or UNC (`\\…`) prefix — could steer `ost plugin`
+/// into reading or probing files a malicious `openstrata.plugin.yaml` was never
+/// meant to reach (harness §SEC-002).
+///
+/// The check is host-independent: it splits on both `/` and `\` and inspects
+/// the raw string for drive/UNC prefixes, so a `..\` written for Windows is
+/// still caught when the bundle is validated on Linux CI (and vice versa) —
+/// `Path::components()` alone would miss it, since the host's separator rules
+/// differ.
+fn check_safe_relative(field: &str, rel: &str) -> Result<()> {
+    let reject = |why: &str| {
+        Err(Error::config(format!(
+            "{field}: '{rel}' is not a safe bundle-relative path — {why}"
+        )))
+    };
+
+    if rel.is_empty() {
+        return reject("it is empty");
+    }
+    // Windows drive prefix (`C:` / `C:\…`), independent of the host OS.
+    let b = rel.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        return reject("it looks like a drive path");
+    }
+    // Unix-absolute (`/…`) or UNC / backslash-absolute (`\\…`, `\…`).
+    if rel.starts_with('/') || rel.starts_with('\\') {
+        return reject("it is absolute");
+    }
+    // Inspect each segment under either separator so a `..` is caught regardless
+    // of which slash was used to write it.
+    for seg in rel.split(['/', '\\']) {
+        if seg == ".." {
+            return reject("it escapes the bundle with '..'");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_normal_bundle_relative_paths() {
+        for ok in [
+            "plugInfo.json",
+            "plugin/resources/usdluma/plugInfo.json",
+            "tests/fixtures/basic.lumagraph",
+            "./resources/plugInfo.json",
+            "a.b/c-d_e/f",
+        ] {
+            assert!(check_safe_relative("f", ok).is_ok(), "should accept {ok:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_escaping_and_absolute_paths() {
+        for bad in [
+            "",
+            "..",
+            "../outside/plugInfo.json",
+            "plugin/../../etc/passwd",
+            "..\\windows\\escape",
+            "/etc/passwd",
+            "\\\\server\\share\\x",
+            "\\windows\\x",
+            "C:\\Windows\\System32",
+            "d:relative",
+        ] {
+            assert!(
+                check_safe_relative("f", bad).is_err(),
+                "should reject {bad:?}"
+            );
+        }
+    }
+
+    fn write_bundle(plug_info: &str) -> Utf8PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut root = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
+        root.push(format!("ost-bundle-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        let manifest = format!(
+            "plugin:\n  name: x\n  version: 0.1.0\n  kind: usd-fileformat\n\
+             runtime:\n  openusd: \">=24.11,<25.0\"\nusd:\n  plug_info: {plug_info}\n"
+        );
+        std::fs::write(root.join(PLUGIN_MANIFEST).as_std_path(), manifest).unwrap();
+        root
+    }
+
+    #[test]
+    fn load_rejects_a_manifest_that_escapes_the_bundle() {
+        let root = write_bundle("../../../etc/passwd");
+        let err = Bundle::load(&root).expect_err("escaping plug_info must be rejected");
+        assert_eq!(err.code(), "INVALID_CONFIG");
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn load_accepts_a_well_formed_bundle() {
+        let root = write_bundle("resources/plugInfo.json");
+        let bundle = Bundle::load(&root).expect("a safe manifest loads");
+        assert_eq!(bundle.plug_info(), root.join("resources/plugInfo.json"));
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 }

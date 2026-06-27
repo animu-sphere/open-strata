@@ -97,9 +97,21 @@ pub fn pack_dir(
 /// writing an archive (so an empty `ost package` has no side effects unless
 /// explicitly allowed) and then hand the same list to [`pack_dir`]. Returns an
 /// empty list if `stage` does not exist.
+///
+/// Only regular files and directories are accepted. A symlink, FIFO, socket, or
+/// device node anywhere in the tree (including the stage root itself) is a hard
+/// error: following a symlink would copy the *link target's* bytes into the
+/// artifact — SSH keys, CI credentials, environment files reached via a planted
+/// link — or recurse outside the tree entirely (harness §SEC-001). Type is
+/// judged by the entry itself, never by what a link points at.
 pub fn stage_files(stage: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
-    if !stage.as_std_path().exists() {
-        return Ok(Vec::new());
+    match std::fs::symlink_metadata(stage.as_std_path()) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(unsupported_entry("symlink", stage));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
     }
     let mut paths = Vec::new();
     collect_files(stage, &mut paths)?;
@@ -107,19 +119,40 @@ pub fn stage_files(stage: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
     Ok(paths)
 }
 
-/// Recursively collect regular files under `dir`.
+/// Recursively collect regular files under `dir`, rejecting any non-regular,
+/// non-directory entry.
 fn collect_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
     for entry in std::fs::read_dir(dir.as_std_path())? {
         let entry = entry?;
         let path = Utf8PathBuf::from_path_buf(entry.path())
             .map_err(|_| io::Error::other("non-UTF-8 path in stage tree"))?;
-        if path.as_std_path().is_dir() {
+        // `DirEntry::file_type` does not follow symlinks (unlike `is_dir`/
+        // `metadata`), so a link is classified as a link, not as its target.
+        let ty = entry.file_type()?;
+        if ty.is_symlink() {
+            return Err(unsupported_entry("symlink", &path));
+        } else if ty.is_dir() {
             collect_files(&path, out)?;
-        } else {
+        } else if ty.is_file() {
             out.push(path);
+        } else {
+            // FIFO, socket, block/character device — nothing that belongs in a
+            // portable, content-addressed artifact.
+            return Err(unsupported_entry(
+                "special file (FIFO/socket/device)",
+                &path,
+            ));
         }
     }
     Ok(())
+}
+
+/// A uniform "this does not belong in a package" error.
+fn unsupported_entry(kind: &str, path: &Utf8Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{kind} is not allowed in the package staging area: {path}"),
+    )
 }
 
 #[cfg(test)]
@@ -152,6 +185,55 @@ mod tests {
         let files = stage_files(&root).unwrap();
         assert_eq!(files.len(), 2);
         assert!(files.windows(2).all(|w| w[0] <= w[1]), "paths are sorted");
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_files_rejects_symlinks(/* §SEC-001 */) {
+        let root = tmp("symlink");
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        std::fs::write(root.join("real.txt").as_std_path(), b"ok").unwrap();
+        // A link pointing at a sensitive file outside the tree.
+        std::os::unix::fs::symlink("/etc/hostname", root.join("leak").as_std_path()).unwrap();
+
+        let err = stage_files(&root).expect_err("a symlink in the stage must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("symlink"), "got: {err}");
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_files_rejects_a_symlinked_root() {
+        let base = tmp("symlink-root");
+        std::fs::create_dir_all(base.as_std_path()).unwrap();
+        let real = base.join("real-stage");
+        std::fs::create_dir_all(real.as_std_path()).unwrap();
+        let link = base.join("stage");
+        std::os::unix::fs::symlink(real.as_std_path(), link.as_std_path()).unwrap();
+
+        let err = stage_files(&link).expect_err("a symlinked stage root must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        std::fs::remove_dir_all(base.as_std_path()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_files_rejects_special_files() {
+        // A unix-domain socket is a special file (not regular, not a dir, not a
+        // symlink), creatable from std alone — no extra dependency for the test.
+        let root = tmp("socket");
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        let sock = root.join("s.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(sock.as_std_path()).unwrap();
+
+        let err = stage_files(&root).expect_err("a socket in the stage must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("special file"), "got: {err}");
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
