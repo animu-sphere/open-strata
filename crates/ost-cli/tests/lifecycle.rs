@@ -447,6 +447,10 @@ fn generated_plugin_scaffolds_and_inspects() {
         text.contains("plugin.shared_library"),
         "inspect should report the (not-yet-built) shared library:\n{text}"
     );
+    assert!(
+        text.contains("license: Apache-2.0"),
+        "inspect should surface the scaffolded plugin's license:\n{text}"
+    );
 
     let package = sb.ost(&["plugin", "package", "toy"]);
     assert_eq!(
@@ -483,6 +487,10 @@ fn generated_plugin_scaffolds_and_inspects() {
     let manifest_text = std::fs::read_to_string(manifest).unwrap();
     assert!(manifest_text.contains("\"kind\": \"openstrata.plugin-bundle\""));
     assert!(manifest_text.contains("\"cxx_abi\""));
+    assert!(
+        manifest_text.contains("\"license\": \"Apache-2.0\""),
+        "package manifest should record the plugin license:\n{manifest_text}"
+    );
     assert!(find_first(&dist, "SHA256SUMS").is_some());
 }
 

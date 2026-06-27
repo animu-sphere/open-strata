@@ -53,6 +53,10 @@ impl Bundle {
         for dir in &manifest.requires.runtime_libs {
             check_safe_relative("requires.runtime_libs", dir)?;
         }
+        // Notices are copied verbatim into a package, so they must stay in-bundle.
+        for notice in &manifest.notices {
+            check_safe_relative("notices", notice)?;
+        }
 
         Ok(Bundle { root, manifest })
     }
@@ -100,6 +104,11 @@ impl Bundle {
     /// The bundle's `python/` directory (Python modules, if any).
     pub fn python_dir(&self) -> Utf8PathBuf {
         self.path("python")
+    }
+
+    /// Bundle-relative third-party notice files declared by the manifest.
+    pub fn notices(&self) -> &[String] {
+        &self.manifest.notices
     }
 }
 
@@ -261,6 +270,21 @@ mod tests {
         )
         .unwrap();
         let err = Bundle::load(&root).expect_err("escaping runtime_libs must be rejected");
+        assert_eq!(err.code(), "INVALID_CONFIG");
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn load_rejects_notices_that_escape_the_bundle() {
+        let root = write_bundle("resources/plugInfo.json");
+        let manifest_path = root.join(PLUGIN_MANIFEST);
+        let manifest = std::fs::read_to_string(manifest_path.as_std_path()).unwrap();
+        std::fs::write(
+            manifest_path.as_std_path(),
+            format!("{manifest}notices: [../../etc/passwd]\n"),
+        )
+        .unwrap();
+        let err = Bundle::load(&root).expect_err("escaping notices must be rejected");
         assert_eq!(err.code(), "INVALID_CONFIG");
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
