@@ -49,9 +49,13 @@ impl Bundle {
 
     /// Resolve a bundle-relative path against the root.
     ///
-    /// Inputs are trusted: literal subdirectories (`lib`, `python`) and the
-    /// manifest fields validated by [`check_safe_relative`] at load time. Callers
-    /// must not pass unvalidated external strings here.
+    /// This is a bare `join`; it does **not** confine the result to the bundle.
+    /// Manifest-derived inputs (`plug_info`, fixtures) are kept safe by the
+    /// [`check_safe_relative`] check `load` runs up front, and the `lib`/`python`
+    /// callers pass literals. The exception is an operator-supplied fixture on
+    /// the `ost plugin view` / `test-view` command line, which is trusted user
+    /// input and may be absolute. Do not route any *untrusted* (e.g. new
+    /// manifest-declared) path through here without validating it first.
     pub fn path(&self, rel: &str) -> Utf8PathBuf {
         self.root.join(rel)
     }
