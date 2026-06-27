@@ -306,8 +306,10 @@ fn distinct_profiles_get_separate_target_trees() {
     }
 }
 
-/// Whether a full build can run here: cmake + ninja, and a compiler we can name
-/// (on Windows the build bootstraps MSVC itself, so we trust that).
+/// Whether a full build can run here: cmake + ninja, and a usable compiler. On
+/// Windows the compiler is MSVC, which `ost build` bootstraps via vcvars — so
+/// defer to the *same* detection (`ost_build::msvc::bootstrap`) instead of
+/// assuming Visual Studio is installed. A missing toolchain skips, never fails.
 fn toolchain_ready() -> bool {
     fn on_path(exe: &str) -> bool {
         let probe = if cfg!(windows) { "where" } else { "which" };
@@ -321,7 +323,10 @@ fn toolchain_ready() -> bool {
         return false;
     }
     if cfg!(windows) {
-        return true; // ost build auto-loads vcvars.
+        // Same MSVC bootstrap the build uses; `Ok(None)` means no VS → skip.
+        return ost_build::msvc::bootstrap()
+            .map(|env| env.is_some())
+            .unwrap_or(false);
     }
     ["cc", "clang", "gcc"].iter().any(|c| on_path(c))
 }
@@ -446,7 +451,6 @@ fn generated_plugin_scaffolds_and_inspects() {
 
 /// Find the first file under `dir` whose name ends with `suffix`.
 fn find_first(dir: &Path, suffix: &str) -> Option<PathBuf> {
-    let mut found = None;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else {
@@ -461,9 +465,9 @@ fn find_first(dir: &Path, suffix: &str) -> Option<PathBuf> {
                 .map(|n| n.to_string_lossy().ends_with(suffix))
                 .unwrap_or(false)
             {
-                found = Some(p);
+                return Some(p);
             }
         }
     }
-    found
+    None
 }
