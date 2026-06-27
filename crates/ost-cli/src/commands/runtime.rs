@@ -331,10 +331,16 @@ fn adopt_local(
     // catalog's placeholder. Otherwise a 26.08 install is recorded as the
     // catalog default (25.05) and silently "satisfies" version ranges it should
     // fail — the gate ends up enforcing nothing.
+    //
+    // Only correct (and note) it when the install is a genuinely *different*
+    // release. The catalog default carries a certification-revision component
+    // (`25.05.01`) that `pxr.h` doesn't expose, so adopting a real 25.05 install
+    // would otherwise overwrite the richer `25.05.01` with the bare `25.05` and
+    // print a "discrepancy" note for what is the same release.
     match detect_openusd_version(&root) {
         Some(real) => {
             if let Some(ext) = extensions.iter_mut().find(|e| e.id == "openusd") {
-                if ext.version != real {
+                if !same_openusd_release(&real, &ext.version) {
                     eprintln!(
                         "note: adopted OpenUSD reports version {real} (catalog default was {})",
                         ext.version
@@ -390,6 +396,23 @@ fn detect_openusd_version(root: &Utf8Path) -> Option<String> {
     let minor = field("PXR_MINOR_VERSION")?;
     let patch = field("PXR_PATCH_VERSION")?;
     Some(format!("{minor}.{patch:02}"))
+}
+
+/// Do the `detected` `<minor>.<patch>` (from `pxr.h`) and the `catalog`'s
+/// recorded version name the same OpenUSD release?
+///
+/// The catalog may carry an extra certification-revision component the header
+/// doesn't expose (`25.05.01` for upstream `25.05`), so compare numerically over
+/// only the leading components `pxr.h` provides. Returns `false` on either side
+/// being unparseable, so a malformed catalog entry still gets corrected.
+fn same_openusd_release(detected: &str, catalog: &str) -> bool {
+    let nums = |s: &str| -> Option<Vec<u64>> {
+        s.split('.').map(|p| p.trim().parse::<u64>().ok()).collect()
+    };
+    match (nums(detected), nums(catalog)) {
+        (Some(d), Some(c)) => c.len() >= d.len() && d.iter().zip(&c).all(|(a, b)| a == b),
+        _ => false,
+    }
 }
 
 /// The USD-install subdirectories present under `root`. The `pxr` Python package
@@ -1110,6 +1133,21 @@ mod tests {
         // Missing header → no guess.
         std::fs::remove_dir_all(root.as_std_path()).ok();
         assert_eq!(detect_openusd_version(&root), None);
+    }
+
+    #[test]
+    fn same_release_ignores_catalog_certification_suffix() {
+        // The detected `<minor>.<patch>` matches the catalog default's leading
+        // components → same release; the `.01` certification revision is kept and
+        // no "discrepancy" note fires.
+        assert!(same_openusd_release("25.05", "25.05.01"));
+        // A genuinely different install is corrected (and noted).
+        assert!(!same_openusd_release("26.08", "25.05.01"));
+        assert!(!same_openusd_release("25.06", "25.05.01"));
+        // Equal-length exact match still holds; unparseable input is treated as a
+        // mismatch so a malformed catalog entry gets overwritten.
+        assert!(same_openusd_release("25.05", "25.05"));
+        assert!(!same_openusd_release("25.05", "twentyfive"));
     }
 
     #[test]
