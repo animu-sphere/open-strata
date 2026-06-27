@@ -17,8 +17,9 @@ Phases 0–3 are implemented, and Phase 4 (the OpenUSD plugin verification harne
 is largely in: a real OpenUSD runtime can be **adopted** (`--from-usd`) or
 **built from source** (`--build`, via build_usd.py or CMake-direct), and the
 plugin pyramid runs Levels 0–5 (`ost plugin new|inspect|build|doctor|run|test`).
-CI generation, sessions, GPU/AI, the fetched artifact registry, and tagged binary
-releases are still ahead. Linux x86_64 is the first-class target; other OS targets
+Tagged binary releases (`v*`) are live via cargo-dist; CI generation, sessions,
+GPU/AI, and the fetched artifact registry are still ahead. Linux x86_64 is the
+first-class target; other OS targets
 are modeled and partially working — these examples were exercised on Windows. See
 the [roadmap](docs/roadmap.md).
 
@@ -27,6 +28,8 @@ the [roadmap](docs/roadmap.md).
 `ost` is a single self-contained binary. Tagged releases (`v*`) publish
 prebuilt binaries, checksums, and installers for Linux (static musl), macOS
 (arm64 + x86_64), and Windows via [cargo-dist](https://opensource.axo.dev/cargo-dist/).
+Each release also carries SLSA build-provenance attestations, verifiable with
+`gh attestation verify <asset> --repo animu-sphere/open-strata`.
 
 ```bash
 # Linux / macOS — fetch the installer for your host (from v0.1.0 onward)
@@ -64,6 +67,7 @@ ost env <cy> --profile <p> [--shell bash|pwsh]      print the activating environ
 ost devshell <cy> --profile <p>                     enter an interactive runtime shell
 ost doctor [<cy> --profile <p>]                     host + tools + runtime diagnostics
 ost configure [--target <cy>] [--profile <p>]       generate toolchain + CMake presets
+ost presets    install | diff | uninstall           wire per-target presets into CMakePresets.json
 ost build [--check] [--dry-run] [--jobs N]          preflight, then cmake build (Ninja)
 ost package                                         install + tar.zst artifact + manifest
 ost validate                                        validate a built/packaged target
@@ -136,7 +140,7 @@ crates/
 platforms/        built-in VFX Reference Platform calendar-year manifests
 profiles/         capability bundles (core / dev / usd / lookdev)
 extensions/       controlled extension manifests (openusd / materialx)
-templates/        plugin scaffolding templates (usd-fileformat-cpp)
+templates/        project scaffolds (cpp-library, usd-plugin) + plugin scaffold (usd-fileformat-cpp)
 schemas/          JSON schemas for platform / project / lock / plugin-report documents
 ```
 
@@ -150,6 +154,25 @@ definitions and override them by id.
 Tool overrides for non-PATH installs: `OST_NINJA` (ninja), `OST_UV` (uv). Runtime
 source fallbacks for `ost runtime pull`: `OST_USD_ROOT` (adopt), `OST_USD_SRC`
 (build), `OST_USD_DEPS` (CMake deps).
+
+## Security
+
+OpenStrata is being hardened across build, runtime, plugins, CI, and the
+distribution path. Landed so far:
+
+- **Packaging** rejects symlinks and special files (FIFO/socket/device) anywhere
+  in the staging tree, so an artifact cannot absorb a link target's bytes or
+  recurse outside the tree.
+- **Plugin manifests** may only reference paths inside their bundle; `..`,
+  absolute, drive, and UNC paths are refused when the bundle loads.
+- **Atomic writes** create their temp file with `O_EXCL` under an unpredictable
+  name and refuse to write through a symlinked destination.
+- **CI** pins every third-party GitHub Action to a full commit SHA, and release
+  artifacts carry SLSA build-provenance attestations.
+
+Remaining work — installer/asset signature verification and a runtime trust
+policy — is tracked in the
+[roadmap](docs/roadmap.md#security-baseline).
 
 ## License
 
