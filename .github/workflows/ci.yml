@@ -1,0 +1,40 @@
+# PR test gate. Runs the workspace test suite on every push to main and every
+# pull request so regressions — notably the SEC-001..004 security tests, which
+# until now had no job to run them — are caught before merge. Linux-only and
+# mock-runtime only for now (no real DCC / no OS matrix); fmt and clippy gates
+# land in follow-up PRs once main is reformatted and the one clippy warning is
+# fixed. The toolchain is pinned in rust-toolchain.toml and auto-installed by
+# rustup when cargo is first invoked.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace --locked
