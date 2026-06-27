@@ -301,7 +301,8 @@ security baseline document. P0 lands first; P1 next; P2 is continuous.
   `openstrata.plugin.yaml` cannot steer reads outside the bundle.
 - ✅ **SEC-003 (P1) — safe atomic writes.** `write_atomic` creates its temp file
   with `O_EXCL` and an unpredictable name, refuses to write over a symlinked
-  destination, sets owner-only mode, and fsyncs the parent directory.
+  destination, and fsyncs the parent directory (mode follows the umask, as a
+  plain write would, since the current outputs are shared project config).
 - ✅ **SEC-004 (P1) — CI supply-chain pinning.** Every third-party GitHub Action
   is pinned to a full commit SHA (with a `# vN` comment), and Dependabot manages
   SHA/dependency bumps as reviewable PRs. Release retains workflow-level

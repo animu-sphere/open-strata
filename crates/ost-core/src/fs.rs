@@ -84,13 +84,11 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 fn create_temp(dir: &Path, name: &str) -> Result<(std::fs::File, PathBuf)> {
     let mut opts = OpenOptions::new();
     opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // Owner-only while we hold a half-written copy; the rename keeps these
-        // bits, so callers writing sensitive files inherit a tight default.
-        opts.mode(0o600);
-    }
+    // Mode is left to the process umask (as a plain `File::create` would): the
+    // current callers write shared project config (`CMakePresets.json`,
+    // `CMakeUserPresets.json`) that CMake, IDEs, and other accounts must read, so
+    // forcing owner-only here would break a second UID reading the checkout. A
+    // future helper can opt sensitive outputs into a tighter mode if one appears.
 
     let mut last_err = None;
     for _ in 0..MAX_TEMP_ATTEMPTS {
@@ -187,14 +185,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn write_atomic_sets_owner_only_permissions() {
+    fn write_atomic_honors_umask_like_a_plain_write() {
         use std::os::unix::fs::PermissionsExt;
         let dir = scratch("perms");
         std::fs::create_dir_all(&dir).unwrap();
+
+        // A reference file written the ordinary way picks up the same umask the
+        // atomic write would; the atomic write must not apply a tighter mode of
+        // its own (which would lock out other accounts reading the checkout).
+        let reference = dir.join("reference.json");
+        std::fs::write(&reference, b"x").unwrap();
+        let want = std::fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
+
         let path = dir.join("file.json");
         write_atomic(&path, b"x").unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "expected owner-only, got {mode:o}");
+        let got = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+
+        assert_eq!(got, want, "atomic write mode {got:o} != plain write {want:o}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
