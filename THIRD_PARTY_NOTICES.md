@@ -9,8 +9,8 @@ not edit by hand.
 
 ## Overview
 
-- Apache License 2.0 (77)
-- MIT License (7)
+- Apache License 2.0 (78)
+- MIT License (6)
 - Mozilla Public License 2.0 (1)
 - Unicode License Agreement - Data Files and Software (2016) (1)
 
@@ -883,9 +883,9 @@ Used by:
 - errno 0.3.14 — https://github.com/lambda-fairy/rust-errno
 - filetime 0.2.23 — https://github.com/alexcrichton/filetime
 - find-msvc-tools 0.1.9 — https://github.com/rust-lang/cc-rs
-- hashbrown 0.14.5 — https://github.com/rust-lang/hashbrown
+- hashbrown 0.15.5 — https://github.com/rust-lang/hashbrown
 - heck 0.4.1 — https://github.com/withoutboats/heck
-- indexmap 2.2.6 — https://github.com/indexmap-rs/indexmap
+- indexmap 2.11.1 — https://github.com/indexmap-rs/indexmap
 - jobserver 0.1.34 — https://github.com/rust-lang/jobserver-rs
 - linux-raw-sys 0.12.1 — https://github.com/sunfishcode/linux-raw-sys
 - linux-raw-sys 0.4.15 — https://github.com/sunfishcode/linux-raw-sys
@@ -894,7 +894,6 @@ Used by:
 - rustix 0.38.44 — https://github.com/bytecodealliance/rustix
 - rustix 1.1.4 — https://github.com/bytecodealliance/rustix
 - tar 0.4.46 — https://github.com/composefs/tar-rs
-- version_check 0.9.5 — https://github.com/SergioBenitez/version_check
 - xattr 1.6.1 — https://github.com/Stebalien/xattr
 
 ```
@@ -1105,11 +1104,13 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- block-buffer 0.10.4 — https://github.com/RustCrypto/utils
-- cpufeatures 0.2.17 — https://github.com/RustCrypto/utils
-- crypto-common 0.1.7 — https://github.com/RustCrypto/traits
-- digest 0.10.7 — https://github.com/RustCrypto/traits
-- sha2 0.10.8 — https://github.com/RustCrypto/hashes
+- block-buffer 0.12.1 — https://github.com/RustCrypto/utils
+- const-oid 0.10.2 — https://github.com/RustCrypto/formats
+- cpufeatures 0.3.0 — https://github.com/RustCrypto/utils
+- crypto-common 0.2.2 — https://github.com/RustCrypto/traits
+- digest 0.11.3 — https://github.com/RustCrypto/traits
+- hybrid-array 0.4.12 — https://github.com/RustCrypto/hybrid-array
+- sha2 0.11.0 — https://github.com/RustCrypto/hashes
 
 ```
                               Apache License
@@ -1538,8 +1539,8 @@ Used by:
 - ost-plugin 0.2.0
 - ost-runtime 0.2.0
 - anyhow 1.0.86 — https://github.com/dtolnay/anyhow
-- directories 5.0.1 — https://github.com/soc/directories-rs
-- dirs-sys 0.4.1 — https://github.com/dirs-dev/dirs-sys-rs
+- directories 6.0.0 — https://github.com/soc/directories-rs
+- dirs-sys 0.5.0 — https://github.com/dirs-dev/dirs-sys-rs
 - itoa 1.0.18 — https://github.com/dtolnay/itoa
 - libc 0.2.186 — https://github.com/rust-lang/libc
 - proc-macro2 1.0.106 — https://github.com/dtolnay/proc-macro2
@@ -1550,9 +1551,9 @@ Used by:
 - serde_json 1.0.128 — https://github.com/serde-rs/json
 - serde_yaml 0.9.34+deprecated — https://github.com/dtolnay/serde-yaml
 - shlex 2.0.1 — https://github.com/comex/rust-shlex
-- syn 2.0.60 — https://github.com/dtolnay/syn
-- thiserror-impl 1.0.61 — https://github.com/dtolnay/thiserror
-- thiserror 1.0.61 — https://github.com/dtolnay/thiserror
+- syn 2.0.118 — https://github.com/dtolnay/syn
+- thiserror-impl 2.0.18 — https://github.com/dtolnay/thiserror
+- thiserror 2.0.18 — https://github.com/dtolnay/thiserror
 - unicode-ident 1.0.12 — https://github.com/dtolnay/unicode-ident
 - utf8parse 0.2.2 — https://github.com/alacritty/vte
 - zstd-safe 7.2.4 — https://github.com/gyscos/zstd-rs
@@ -1760,7 +1761,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- zstd 0.13.2 — https://github.com/gyscos/zstd-rs
+- zstd 0.13.3 — https://github.com/gyscos/zstd-rs
 
 ```
 The MIT License (MIT)
@@ -1772,35 +1773,6 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-```
-
-## MIT License
-
-Used by:
-- generic-array 0.14.7 — https://github.com/fizyk20/generic-array.git
-
-```
-The MIT License (MIT)
-
-Copyright (c) 2015 Bartłomiej Kamiński
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the &quot;Software&quot;), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 ```
 
 ## Mozilla Public License 2.0
