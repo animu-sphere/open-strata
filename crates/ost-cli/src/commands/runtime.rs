@@ -311,7 +311,7 @@ fn materialize_mock(
 fn adopt_local(
     r: &crate::commands::Resolved,
     usd_root: &str,
-    extensions: Vec<ExtensionRecord>,
+    mut extensions: Vec<ExtensionRecord>,
     created: u64,
 ) -> Result<RuntimeManifest> {
     let root = Utf8PathBuf::from(usd_root);
@@ -325,6 +325,34 @@ fn adopt_local(
         return Err(Error::usage(format!(
             "'{root}' does not look like an OpenUSD install (no plugin/usd or lib/**/pxr)"
         )));
+    }
+
+    // Record the *real* OpenUSD version read from the adopted install, not the
+    // catalog's placeholder. Otherwise a 26.08 install is recorded as the
+    // catalog default (25.05) and silently "satisfies" version ranges it should
+    // fail — the gate ends up enforcing nothing.
+    //
+    // Only correct (and note) it when the install is a genuinely *different*
+    // release. The catalog default carries a certification-revision component
+    // (`25.05.01`) that `pxr.h` doesn't expose, so adopting a real 25.05 install
+    // would otherwise overwrite the richer `25.05.01` with the bare `25.05` and
+    // print a "discrepancy" note for what is the same release.
+    match detect_openusd_version(&root) {
+        Some(real) => {
+            if let Some(ext) = extensions.iter_mut().find(|e| e.id == "openusd") {
+                if !same_openusd_release(&real, &ext.version) {
+                    eprintln!(
+                        "note: adopted OpenUSD reports version {real} (catalog default was {})",
+                        ext.version
+                    );
+                    ext.version = real;
+                }
+            }
+        }
+        None => eprintln!(
+            "warning: could not read the OpenUSD version from '{root}/include/pxr/pxr.h'; \
+             recording the catalog default (the version gate may not reflect the real install)"
+        ),
     }
 
     // The store dir holds only the manifest (a pointer to the external root).
@@ -342,6 +370,49 @@ fn adopt_local(
     );
     manifest.external_prefix = Some(root.to_string().replace('\\', "/"));
     Ok(manifest)
+}
+
+/// Read the real OpenUSD version from an adopted install's `include/pxr/pxr.h`.
+///
+/// Returns the `<minor>.<patch>` form the catalog and version ranges use (e.g.
+/// `26.08`): OpenUSD's `PXR_MAJOR_VERSION` is structurally 0, and a release like
+/// `v26.08` is `PXR_MINOR_VERSION 26` + `PXR_PATCH_VERSION 8`. `None` if the
+/// header is absent or unparseable (a header-less, binary-only install).
+fn detect_openusd_version(root: &Utf8Path) -> Option<String> {
+    let header = root.join("include/pxr/pxr.h");
+    let src = std::fs::read_to_string(header.as_std_path()).ok()?;
+    let field = |name: &str| -> Option<u32> {
+        src.lines().find_map(|line| {
+            let rest = line.trim().strip_prefix("#define")?.trim_start();
+            let rest = rest.strip_prefix(name)?;
+            // Require a token boundary so `PXR_VERSION` can't match a request for
+            // `PXR_MINOR_VERSION` (or vice versa).
+            if !rest.starts_with(char::is_whitespace) {
+                return None;
+            }
+            rest.split_whitespace().next()?.parse::<u32>().ok()
+        })
+    };
+    let minor = field("PXR_MINOR_VERSION")?;
+    let patch = field("PXR_PATCH_VERSION")?;
+    Some(format!("{minor}.{patch:02}"))
+}
+
+/// Do the `detected` `<minor>.<patch>` (from `pxr.h`) and the `catalog`'s
+/// recorded version name the same OpenUSD release?
+///
+/// The catalog may carry an extra certification-revision component the header
+/// doesn't expose (`25.05.01` for upstream `25.05`), so compare numerically over
+/// only the leading components `pxr.h` provides. Returns `false` on either side
+/// being unparseable, so a malformed catalog entry still gets corrected.
+fn same_openusd_release(detected: &str, catalog: &str) -> bool {
+    let nums = |s: &str| -> Option<Vec<u64>> {
+        s.split('.').map(|p| p.trim().parse::<u64>().ok()).collect()
+    };
+    match (nums(detected), nums(catalog)) {
+        (Some(d), Some(c)) => c.len() >= d.len() && d.iter().zip(&c).all(|(a, b)| a == b),
+        _ => false,
+    }
 }
 
 /// The USD-install subdirectories present under `root`. The `pxr` Python package
@@ -730,8 +801,37 @@ fn list(fmt: Format) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the `(platform, profile)` pair a `show`/`validate` invocation refers
+/// to, accepting either form the rest of the CLI prints:
+/// - `<platform> [--profile <profile>]` (the documented form), or
+/// - the full runtime id `ost runtime list` prints, e.g.
+///   `openstrata-cy2026-windows-x86_64-py313-usd`.
+///
+/// When the positional arg is a full id its embedded platform/profile win (the
+/// id is self-contained, so a stray `--profile` flag is ignored).
+fn platform_profile(positional: &str, profile_flag: &str) -> (String, String) {
+    split_runtime_id(positional)
+        .unwrap_or_else(|| (positional.to_string(), profile_flag.to_string()))
+}
+
+/// Split a full runtime id into `(platform, profile)`. The id is
+/// `openstrata-<platform>-<os>-<arch>-py<ver>-<profile>`; the variant slug is
+/// always exactly three `-`-separated tokens (`<os>-<arch>-py<ver>`), so the
+/// platform is the first token and the profile is everything after the variant
+/// (which keeps a hyphenated profile like `lookdev-ai` intact). `None` for
+/// anything that is not a runtime id.
+fn split_runtime_id(id: &str) -> Option<(String, String)> {
+    let rest = id.strip_prefix("openstrata-")?;
+    let parts: Vec<&str> = rest.split('-').collect();
+    if parts.len() < 5 {
+        return None;
+    }
+    Some((parts[0].to_string(), parts[4..].join("-")))
+}
+
 fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
-    let r = resolve(platform, profile)?;
+    let (platform, profile) = platform_profile(platform, profile);
+    let r = resolve(&platform, &profile)?;
     let manifest_path = r.prefix.join(MANIFEST_FILE);
     if !manifest_path.as_std_path().is_file() {
         return Err(Error::coded(
@@ -793,7 +893,8 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
 }
 
 fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
-    let r = resolve(platform, profile)?;
+    let (platform, profile) = platform_profile(platform, profile);
+    let r = resolve(&platform, &profile)?;
     let manifest_path = r.prefix.join(MANIFEST_FILE);
     if !manifest_path.as_std_path().is_file() {
         return Err(Error::coded(
@@ -995,6 +1096,75 @@ fn short_digest(digest: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_runtime_id_splits_into_platform_and_profile() {
+        assert_eq!(
+            split_runtime_id("openstrata-cy2026-windows-x86_64-py313-usd"),
+            Some(("cy2026".to_string(), "usd".to_string()))
+        );
+        // A hyphenated profile survives (everything after the 3-token variant).
+        assert_eq!(
+            split_runtime_id("openstrata-cy2026-linux-x86_64-py311-lookdev-ai"),
+            Some(("cy2026".to_string(), "lookdev-ai".to_string()))
+        );
+    }
+
+    #[test]
+    fn detects_real_openusd_version_from_header() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut root = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
+        root.push(format!("ost-pxrh-{}-{nanos}", std::process::id()));
+        let pxr_dir = root.join("include/pxr");
+        std::fs::create_dir_all(pxr_dir.as_std_path()).unwrap();
+        std::fs::write(
+            pxr_dir.join("pxr.h").as_std_path(),
+            "#define PXR_MAJOR_VERSION 0\n\
+             #define PXR_MINOR_VERSION 26\n\
+             #define PXR_PATCH_VERSION 8\n\
+             #define PXR_VERSION 2608\n",
+        )
+        .unwrap();
+
+        assert_eq!(detect_openusd_version(&root), Some("26.08".to_string()));
+        // Missing header → no guess.
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+        assert_eq!(detect_openusd_version(&root), None);
+    }
+
+    #[test]
+    fn same_release_ignores_catalog_certification_suffix() {
+        // The detected `<minor>.<patch>` matches the catalog default's leading
+        // components → same release; the `.01` certification revision is kept and
+        // no "discrepancy" note fires.
+        assert!(same_openusd_release("25.05", "25.05.01"));
+        // A genuinely different install is corrected (and noted).
+        assert!(!same_openusd_release("26.08", "25.05.01"));
+        assert!(!same_openusd_release("25.06", "25.05.01"));
+        // Equal-length exact match still holds; unparseable input is treated as a
+        // mismatch so a malformed catalog entry gets overwritten.
+        assert!(same_openusd_release("25.05", "25.05"));
+        assert!(!same_openusd_release("25.05", "twentyfive"));
+    }
+
+    #[test]
+    fn non_ids_are_not_split() {
+        assert_eq!(split_runtime_id("cy2026"), None);
+        assert_eq!(split_runtime_id("openstrata-cy2026"), None);
+        // The bare-platform form falls through to the --profile flag.
+        assert_eq!(
+            platform_profile("cy2026", "usd"),
+            ("cy2026".to_string(), "usd".to_string())
+        );
+        // A full id ignores the (contradictory) flag.
+        assert_eq!(
+            platform_profile("openstrata-cy2026-windows-x86_64-py313-usd", "core"),
+            ("cy2026".to_string(), "usd".to_string())
+        );
+    }
 
     #[test]
     fn build_usd_args_put_install_dir_last_and_forward_extras() {

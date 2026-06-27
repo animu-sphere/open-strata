@@ -200,22 +200,22 @@ build`/`test` on Windows out of the box. Ranked, with the implicated code:
   ([commands/plugin.rs](../crates/ost-cli/src/commands/plugin.rs)) now loads the
   MSVC developer environment via `ost_build::msvc::bootstrap()` (Windows, `cl` not
   on PATH), as `ost build`/`runtime pull --build` already do.
-- ⬜ **P2 — default `CMAKE_BUILD_TYPE=Release` for plugin builds.** Ninja
-  single-config + unset type resolves USD's imported targets to Debug → links
-  `tbb12_debug.lib` (absent in a Release-only install) → `LNK1104`. Have the
-  generated toolchain ([toolchain.rs](../crates/ost-build/src/toolchain.rs)) or
-  the configure args default it; the runtime is known Release-only.
-- ⬜ **P2 — adopted-runtime version is the static placeholder.** `--from-usd`
-  records the openusd extension's `25.05.01`
-  ([extensions/openusd.yaml](../extensions/openusd.yaml)) regardless of the real
-  install (a 26.08 install reports 25.05.01, and a py310 install gets a `py313`
-  id) → the version gate enforces nothing. In `adopt_local`
-  ([commands/runtime.rs](../crates/ost-cli/src/commands/runtime.rs)) parse
-  `include/pxr/pxr.h` (`PXR_VERSION`) and the actual Python ABI from the install.
-- ⬜ **P2 — `runtime show`/`validate` reject the id `runtime list` prints.** They
-  accept only `<platform> --profile <profile>`; the full
-  `openstrata-cy2026-…-usd` id → `PLATFORM_NOT_FOUND`. Accept either form
-  consistently across `list`/`show`/`validate`.
+- ✅ **P2 — default `CMAKE_BUILD_TYPE=Release` for plugin builds.** `ost plugin
+  build`'s configure args now pass `-DCMAKE_BUILD_TYPE=Release`, so Ninja's
+  single-config build no longer resolves USD's imported targets to Debug and
+  links the missing `tbb12_debug.lib`. The runtimes OpenStrata ships/adopts are
+  Release.
+- ✅ **P2 — adopted-runtime version was the static placeholder.** `adopt_local`
+  ([commands/runtime.rs](../crates/ost-cli/src/commands/runtime.rs)) now reads the
+  real `PXR_MINOR/PATCH_VERSION` from the install's `include/pxr/pxr.h` and
+  records it (e.g. `26.08`) instead of the catalog's `25.05.01`, so the Level-1
+  version gate enforces the actual range. (Python-ABI detection — the `py313` id
+  on a py310 install — is still a follow-up; the id parser would need the real
+  interpreter version.)
+- ✅ **P2 — `runtime show`/`validate` rejected the id `runtime list` prints.**
+  Both now accept either `<platform> --profile <profile>` or the full
+  `openstrata-cy2026-…-usd` id (the embedded platform/profile win); the variant
+  slug is a fixed 3 tokens, so a hyphenated profile stays intact.
 - ⬜ **P3 — repo-shape scaffold.** `ost init --bare` + `plugin new` leaves no
   top-level `CMakeLists.txt`, so the repo isn't `cmake -S .`-able by non-`ost`
   users. A project-with-bundles template could emit a dual-mode root
