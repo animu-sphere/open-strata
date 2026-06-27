@@ -194,6 +194,27 @@ opt-in. Start narrow — generate → submit → monitor → collect a `batch/v1
 - ⬜ Digest-pinned runtime/extension/source per Job (`latest` rejected);
   safe-by-default manifests; `ost doctor kubernetes`
 
+## Phase 10 — DCC host support ⬜
+
+Direction: [dcc-hosts.md](dcc-hosts.md). Runtime-native apps stay first-class;
+existing DCCs (Maya/Houdini/Nuke) are supported as **third-party external hosts**
+behind a host adapter boundary — discovered, fingerprinted, driven headlessly,
+packaged for, and checked for cross-DCC USD compatibility. No DCC API
+abstraction, install, license, or GUI-required path (§2.2).
+
+- ⬜ `ost-host` crate: host record model, selectors, inventory, discovery
+  providers (explicit/configured/known/env/PATH/registry/custom rules),
+  `HostValidator` / `HostAdapter` traits; reuses the `--json` envelope + exit
+  codes and the runtime `EnvSet`
+- ⬜ Discovery + validation (candidate→validated→rejected, read-only/bounded/no
+  GUI) and standard/deep fingerprints; Maya first, then Houdini + Nuke
+- ⬜ `ost host discover|list|inspect|probe|run|test`; headless run with a composed
+  env; host-standard packaging (Maya `.mod`, Houdini package JSON)
+- ⬜ Matrix cells / support lines / tiers and cross-DCC USD compatibility edges
+  (reusing the plugin-harness levels); `ost matrix …` / `ost compat …`
+- ⬜ Fleet inventory export/import, `ost compat diff` / `ost reproduce`, optional
+  Blender adapter
+
 ## Python / uv (§9)
 
 - ✅ `ost uv <args>`: runs `uv` pinned to the project's runtime Python — applies
