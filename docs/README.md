@@ -8,6 +8,7 @@
 | [json-schema.md](json-schema.md) | The `--json` output contract: envelope, error codes, exit codes, and compatibility policy. |
 | [roadmap.md](roadmap.md) | Phased delivery plan and current status. |
 | [phase-4-plugin-harness.md](phase-4-plugin-harness.md) | Phase 4 direction: the OpenUSD plugin verification harness, mapped onto the codebase. |
+| [dcc-hosts.md](dcc-hosts.md) | Direction: third-party DCC host support (Maya/Houdini/Nuke) — discovery, headless run/package, and cross-DCC USD compatibility. |
 | [kubernetes.md](kubernetes.md) | Phase 9 direction: Kubernetes as a pluggable execution backend (`ost submit` / `ost jobs`). |
 | [design.md](design.md) | The full canonical design specification (source of truth). |
 

@@ -91,7 +91,11 @@ OpenStrata:
 
 ## 2.2 初期スコープから外す
 
-- Maya / Houdini / Nuke / Katana など既存 DCC の直接統合
+- Maya / Houdini / Nuke / Katana など既存 DCC の **API 直接統合**（独自 node/GUI
+  API での抽象化）。ただし既存 DCC を *third-party external host* として
+  discover / headless 実行 / package / cross-DCC USD 互換検証する支援は将来
+  フェーズで扱う（runtime ネイティブ app が第一級、DCC は副次）。→
+  [dcc-hosts.md](dcc-hosts.md)
 - 商用 DCC plugin 配布
 - GPU driver のインストール・アップデート
 - Kubernetes / render farm の完全管理
