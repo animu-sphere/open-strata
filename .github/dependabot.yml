@@ -1,0 +1,21 @@
+# Keep SHA-pinned GitHub Actions current (harness §SEC-004). Third-party actions
+# are pinned to a full commit SHA with a `# vN` comment; Dependabot bumps both
+# the SHA and the comment, and the update lands as a reviewable PR rather than a
+# silently moving tag.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+
+  # Cargo dependencies are exact-pinned for reproducible builds; surface upstream
+  # releases (security and otherwise) as PRs without auto-applying them.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
