@@ -7,6 +7,7 @@
 
 mod commands;
 mod output;
+mod progress;
 mod project_template;
 
 use clap::{Parser, Subcommand};

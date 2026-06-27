@@ -105,6 +105,8 @@ ost build --check                      # preflight only, no side effects
 ost build --dry-run                    # print the commands, runtime env + files only
 ost build --jobs 8 --ninja /opt/ninja/ninja
 ost build --no-vcvars                  # Windows: skip MSVC auto-bootstrap
+ost build --progress plain             # CI: phase=… status=… lines instead of a TTY view
+ost build --quiet                      # silence progress; output to .strata/targets/<id>/build.log
 ost package                            # install + dist/<name>/<ver>/<target>/*.tar.zst
 ost package --allow-empty              # permit a metadata-only artifact (empty install tree)
 ost validate                           # configured / built / runtime / artifact checks
