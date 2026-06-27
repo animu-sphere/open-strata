@@ -86,7 +86,16 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     // pack below. Reject an empty install tree before writing anything — packing
     // it would produce a useless artifact that silently "succeeds".
     // `--allow-empty` opts in to a metadata-only artifact.
-    let staged = stage_files(&stage).map_err(|e| Error::io(stage.to_string(), e))?;
+    // A rejected unsafe entry (symlink/special file, §SEC-001) is `InvalidData`,
+    // not a disk failure — surface it as a validation error so callers branching
+    // on category don't mistake a planted-link attack for transient I/O.
+    let staged = stage_files(&stage).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            Error::validation(e.to_string())
+        } else {
+            Error::io(stage.to_string(), e)
+        }
+    })?;
     if staged.is_empty() && !args.allow_empty {
         return Err(Error::validation(format!(
             "the install tree for '{id}' is empty — nothing to package"
