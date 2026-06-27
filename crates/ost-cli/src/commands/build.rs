@@ -131,9 +131,13 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
         let runtime_env = resolved.env.pairs();
 
         if fmt.is_json() {
-            let env_obj: serde_json::Map<String, serde_json::Value> = runtime_env
+            // Emit ordered [key, value] pairs, not an object: a single `EnvSet`
+            // can carry the same key more than once (on Windows both `bin` and
+            // `lib` prepend `PATH`), and an object would collapse those to the
+            // last entry, silently dropping prepends.
+            let env_pairs: Vec<serde_json::Value> = runtime_env
                 .iter()
-                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .map(|(k, v)| serde_json::json!([k, v]))
                 .collect();
             output::json(&serde_json::json!({
                 "dry_run": true,
@@ -142,7 +146,7 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
                 "bootstrap_msvc": pre.will_bootstrap_msvc,
                 "commands": [configure_cmd, build_cmd],
                 "would_generate": files,
-                "runtime_env": env_obj,
+                "runtime_env": env_pairs,
             }));
             return Ok(());
         }
@@ -196,7 +200,7 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     println!(
         "==> runtime env {} ({} vars)",
         target.runtime_id,
-        resolved.env.pairs().len()
+        resolved.env.vars.len()
     );
 
     println!(
