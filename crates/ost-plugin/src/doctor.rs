@@ -262,6 +262,9 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
         ));
     }
 
+    // bundle.runtime_libs — every loader-path directory declared by the bundle exists.
+    diags.push(check_runtime_lib_dirs(bundle));
+
     // session.plugin_path — the discovery root the session would set is present.
     let pxr_root = bundle.plug_info_root();
     diags.push(Diagnostic::pass(
@@ -579,6 +582,52 @@ fn check_plug_info_library_paths(
     )
 }
 
+fn check_runtime_lib_dirs(bundle: &Bundle) -> Diagnostic {
+    const ID: &str = "bundle.runtime_libs";
+
+    let dirs = &bundle.manifest.requires.runtime_libs;
+    if dirs.is_empty() {
+        return Diagnostic::skip(ID, 0, "no runtime library dirs declared");
+    }
+
+    let mut missing = Vec::new();
+    let mut not_dirs = Vec::new();
+    for dir in dirs {
+        let path = bundle.path(dir);
+        let std_path = path.as_std_path();
+        if !std_path.exists() {
+            missing.push(dir.as_str());
+        } else if !std_path.is_dir() {
+            not_dirs.push(dir.as_str());
+        }
+    }
+
+    if missing.is_empty() && not_dirs.is_empty() {
+        return Diagnostic::pass(
+            ID,
+            0,
+            format!("{} runtime library dir(s) present", dirs.len()),
+        );
+    }
+
+    let mut parts = Vec::new();
+    if !missing.is_empty() {
+        parts.push(format!("missing: {}", missing.join(", ")));
+    }
+    if !not_dirs.is_empty() {
+        parts.push(format!("not directories: {}", not_dirs.join(", ")));
+    }
+    Diagnostic::fail(
+        ID,
+        0,
+        parts.join("; "),
+        vec![
+            "create the declared runtime library directories, or update `requires.runtime_libs`"
+                .into(),
+        ],
+    )
+}
+
 /// Find a built shared library in the bundle's `lib/` directory, if any.
 fn find_shared_library(bundle: &Bundle) -> Option<String> {
     find_shared_libraries(bundle).into_iter().next()
@@ -655,6 +704,14 @@ mod tests {
             .iter()
             .find(|d| d.id == "bundle.plug_info.library_path")
             .expect("library path diagnostic exists")
+    }
+
+    fn runtime_libs_diag(report: &DoctorReport) -> &Diagnostic {
+        report
+            .diagnostics
+            .iter()
+            .find(|d| d.id == "bundle.runtime_libs")
+            .expect("runtime libs diagnostic exists")
     }
 
     fn bundle_with_plug_info(library_path: &str, built_lib: Option<&str>) -> (TempDir, Bundle) {
@@ -767,6 +824,54 @@ usd: { plug_info: plugin/resources/toy/plugInfo.json }
         let diag = library_path_diag(&report);
         assert_eq!(diag.status, Status::Fail);
         assert!(diag.observed.contains("does not match a built library"));
+    }
+
+    #[test]
+    fn runtime_libs_pass_when_declared_dirs_exist() {
+        let (dir, mut bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.so",
+            Some("libToyFileFormat.so"),
+        );
+        std::fs::create_dir_all(dir.path.join("third_party/zlib/bin").as_std_path()).unwrap();
+        bundle.manifest.requires.runtime_libs = vec!["third_party/zlib/bin".into()];
+
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+
+        assert_eq!(runtime_libs_diag(&report).status, Status::Pass);
+    }
+
+    #[test]
+    fn runtime_libs_fail_when_declared_dir_is_missing() {
+        let (_dir, mut bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.so",
+            Some("libToyFileFormat.so"),
+        );
+        bundle.manifest.requires.runtime_libs = vec!["third_party/zlib/bin".into()];
+
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+        let diag = runtime_libs_diag(&report);
+
+        assert_eq!(diag.status, Status::Fail);
+        assert!(diag.observed.contains("missing: third_party/zlib/bin"));
+    }
+
+    #[test]
+    fn runtime_libs_fail_when_declared_path_is_a_file() {
+        let (dir, mut bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.so",
+            Some("libToyFileFormat.so"),
+        );
+        std::fs::create_dir_all(dir.path.join("third_party/zlib").as_std_path()).unwrap();
+        std::fs::write(dir.path.join("third_party/zlib/bin").as_std_path(), "").unwrap();
+        bundle.manifest.requires.runtime_libs = vec!["third_party/zlib/bin".into()];
+
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+        let diag = runtime_libs_diag(&report);
+
+        assert_eq!(diag.status, Status::Fail);
+        assert!(diag
+            .observed
+            .contains("not directories: third_party/zlib/bin"));
     }
 
     struct TempDir {
