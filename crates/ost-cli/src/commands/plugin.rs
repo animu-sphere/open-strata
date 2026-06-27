@@ -354,6 +354,11 @@ fn build(
         "-G".to_string(),
         "Ninja".to_string(),
         format!("-DCMAKE_TOOLCHAIN_FILE={toolchain_arg}"),
+        // Ninja is single-config, so an unset CMAKE_BUILD_TYPE makes USD's
+        // imported targets resolve to Debug — which links e.g. `tbb12_debug.lib`,
+        // absent from a Release-only runtime (→ LNK1104). The runtimes OpenStrata
+        // ships/adopts are Release, so default the build type to match.
+        "-DCMAKE_BUILD_TYPE=Release".to_string(),
     ];
     if let Some(n) = &ninja {
         configure_args.push(format!(
