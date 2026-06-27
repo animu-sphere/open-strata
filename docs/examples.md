@@ -102,7 +102,7 @@ ost configure --compiler runtime       # use the runtime's bundled gcc/clang
 ost configure --cc /usr/bin/clang --cxx /usr/bin/clang++   # explicit compiler
 ost build                              # cmake --preset + cmake --build (Ninja)
 ost build --check                      # preflight only, no side effects
-ost build --dry-run                    # print the commands + files only
+ost build --dry-run                    # print the commands, runtime env + files only
 ost build --jobs 8 --ninja /opt/ninja/ninja
 ost build --no-vcvars                  # Windows: skip MSVC auto-bootstrap
 ost package                            # install + dist/<name>/<ver>/<target>/*.tar.zst
