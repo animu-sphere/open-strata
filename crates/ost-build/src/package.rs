@@ -37,15 +37,17 @@ pub struct PackResult {
 /// Zstd compression level for artifacts (high ratio; artifacts are written once).
 const ZSTD_LEVEL: i32 = 19;
 
-/// Pack every file under `stage` into a `tar.zst` at `archive`.
+/// Pack the given `files` (absolute paths under `stage`) into a `tar.zst` at
+/// `archive`.
 ///
-/// Files are added in sorted order for a deterministic archive layout, each
-/// hashed as it is written. Returns per-file entries and the archive digest.
-pub fn pack_dir(stage: &Utf8Path, archive: &Utf8Path) -> io::Result<PackResult> {
-    let mut paths = Vec::new();
-    collect_files(stage, &mut paths)?;
-    paths.sort();
-
+/// `files` is packed in the given order, each hashed as it is written; pass a
+/// sorted list (e.g. from [`stage_files`]) for a deterministic archive layout.
+/// Returns per-file entries and the archive digest.
+pub fn pack_dir(
+    stage: &Utf8Path,
+    archive: &Utf8Path,
+    files: &[Utf8PathBuf],
+) -> io::Result<PackResult> {
     if let Some(parent) = archive.parent() {
         std::fs::create_dir_all(parent.as_std_path())?;
     }
@@ -54,9 +56,9 @@ pub fn pack_dir(stage: &Utf8Path, archive: &Utf8Path) -> io::Result<PackResult> 
     let encoder = zstd::stream::write::Encoder::new(out, ZSTD_LEVEL)?.auto_finish();
     let mut builder = tar::Builder::new(encoder);
 
-    let mut files = Vec::new();
+    let mut entries = Vec::new();
     let mut total_size = 0u64;
-    for abs in &paths {
+    for abs in files {
         let rel = abs
             .strip_prefix(stage)
             .map(|p| p.as_str().replace('\\', "/"))
@@ -70,7 +72,7 @@ pub fn pack_dir(stage: &Utf8Path, archive: &Utf8Path) -> io::Result<PackResult> 
         builder.append_data(&mut header, &rel, data.as_slice())?;
 
         total_size += data.len() as u64;
-        files.push(FileEntry {
+        entries.push(FileEntry {
             path: rel,
             sha256: digest::sha256_hex(&data),
             size: data.len() as u64,
@@ -82,11 +84,27 @@ pub fn pack_dir(stage: &Utf8Path, archive: &Utf8Path) -> io::Result<PackResult> 
 
     let archive_bytes = std::fs::read(archive.as_std_path())?;
     Ok(PackResult {
-        files,
+        files: entries,
         archive_digest: digest::sha256_hex(&archive_bytes),
         total_size,
         archive_size: archive_bytes.len() as u64,
     })
+}
+
+/// List the regular files under `stage` (recursive, sorted).
+///
+/// Walked once and reused: the caller can reject an empty install tree *before*
+/// writing an archive (so an empty `ost package` has no side effects unless
+/// explicitly allowed) and then hand the same list to [`pack_dir`]. Returns an
+/// empty list if `stage` does not exist.
+pub fn stage_files(stage: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
+    if !stage.as_std_path().exists() {
+        return Ok(Vec::new());
+    }
+    let mut paths = Vec::new();
+    collect_files(stage, &mut paths)?;
+    paths.sort();
+    Ok(paths)
 }
 
 /// Recursively collect regular files under `dir`.
@@ -102,4 +120,39 @@ fn collect_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> Utf8PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut d = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
+        d.push(format!("ost-pack-{tag}-{}-{nanos}", std::process::id()));
+        d
+    }
+
+    #[test]
+    fn stage_files_handles_missing_empty_and_nested() {
+        let root = tmp("count");
+        // Missing → empty.
+        assert!(stage_files(&root).unwrap().is_empty());
+
+        // Exists but empty (only subdirs) → empty.
+        std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        assert!(stage_files(&root).unwrap().is_empty());
+
+        // Nested regular files are collected, sorted.
+        std::fs::write(root.join("lib/libfoo.so").as_std_path(), b"x").unwrap();
+        std::fs::write(root.join("plugInfo.json").as_std_path(), b"{}").unwrap();
+        let files = stage_files(&root).unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.windows(2).all(|w| w[0] <= w[1]), "paths are sorted");
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
 }
