@@ -229,7 +229,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
         .map_err(|e| Error::io(manifest_path.to_string(), e))?;
 
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "pulled": true,
             "runtime": manifest.id,
             "prefix": r.prefix.to_string(),
@@ -705,7 +705,7 @@ fn list(fmt: Format) -> Result<()> {
                 })
             })
             .collect();
-        output::json(&serde_json::json!({ "runtimes": items }));
+        output::success(&serde_json::json!({ "runtimes": items }));
         return Ok(());
     }
 
@@ -751,7 +751,7 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
 
     if fmt.is_json() {
-        output::json(&serde_json::to_value(&manifest).expect("manifest serializes"));
+        output::success(&serde_json::to_value(&manifest).expect("manifest serializes"));
         return Ok(());
     }
 
@@ -841,11 +841,14 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
                 })
             })
             .collect();
-        output::json(&serde_json::json!({
-            "runtime": manifest.id,
-            "validation": if passed { "passed" } else { "failed" },
-            "checks": checks,
-        }));
+        output::report(
+            passed,
+            &serde_json::json!({
+                "runtime": manifest.id,
+                "validation": if passed { "passed" } else { "failed" },
+                "checks": checks,
+            }),
+        );
     } else {
         println!("Validating {}", manifest.id);
         for c in &report.checks {
@@ -911,7 +914,7 @@ fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
                 })
             })
             .collect();
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "runtime": r.runtime.id(),
             "platform": platform,
             "profile": profile,

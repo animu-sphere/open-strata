@@ -242,7 +242,7 @@ fn report_changes(
     planned: bool,
 ) {
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "action": action,
             "file": path.to_string(),
             "planned": planned,

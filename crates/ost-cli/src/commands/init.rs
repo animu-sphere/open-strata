@@ -136,7 +136,7 @@ fn report(
     fmt: Format,
 ) {
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "initialized": true,
             "manifest": manifest_path.display().to_string(),
             "name": name,

@@ -99,12 +99,14 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     // 3. `--check`: report and stop. Non-zero exit if any required check failed.
     if args.check {
         report_checks(&id, &pre, fmt);
-        return match pre.first_failure() {
-            Some(_) => Err(Error::Operation(format!(
-                "preflight checks failed for target {id}"
-            ))),
-            None => Ok(()),
-        };
+        // report_checks emitted this command's report (its `ok` carries the
+        // outcome); a failing required check is a missing precondition, so exit
+        // with that category code directly rather than returning an Err that
+        // would render a second document on stdout (§14.3/§14.4).
+        if pre.first_failure().is_some() {
+            std::process::exit(ost_core::Category::Precondition.exit_code() as i32);
+        }
+        return Ok(());
     }
 
     // For a real or planned build, a failing required check is fatal — and we
@@ -153,7 +155,7 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
                 .iter()
                 .map(|(k, v)| serde_json::json!([k, v]))
                 .collect();
-            output::json(&serde_json::json!({
+            output::success(&serde_json::json!({
                 "dry_run": true,
                 "target": id,
                 "root": root.to_string(),
@@ -443,11 +445,13 @@ fn report_checks(id: &str, pre: &Preflight, fmt: Format) {
                 }
             })
             .collect();
-        output::json(&serde_json::json!({
-            "target": id,
-            "ok": pre.first_failure().is_none(),
-            "checks": checks,
-        }));
+        output::report(
+            pre.first_failure().is_none(),
+            &serde_json::json!({
+                "target": id,
+                "checks": checks,
+            }),
+        );
         return;
     }
 

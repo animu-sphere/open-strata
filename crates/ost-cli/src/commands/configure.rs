@@ -318,7 +318,7 @@ fn pretty(value: &serde_json::Value) -> Result<String> {
 fn report(g: &Generated, fmt: Format) {
     let id = &g.id;
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "configured": true,
             "target": id,
             "runtime": g.target.runtime_id,

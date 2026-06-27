@@ -185,7 +185,7 @@ fn report(
     fmt: Format,
 ) {
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "packaged": true,
             "target": id,
             "archive": archive.to_string(),

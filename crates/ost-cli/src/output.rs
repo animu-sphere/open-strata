@@ -66,10 +66,31 @@ pub fn error(err: &ost_core::Error, fmt: Format) {
     }
 }
 
-/// Print a value as pretty JSON to stdout.
+/// Print a value as pretty JSON to stdout. The low-level printer the envelope
+/// helpers build on; prefer [`success`]/[`report`] so output carries the
+/// `{ok,schema,data,warnings}` contract (design §14.3).
 pub fn json(value: &serde_json::Value) {
     match serde_json::to_string_pretty(value) {
         Ok(s) => println!("{s}"),
         Err(e) => eprintln!("error: failed to serialize JSON: {e}"),
     }
+}
+
+/// Emit a success envelope on stdout: `{ok:true, schema, data, warnings}`
+/// (design §14.3). For a command whose result is itself a pass/fail report,
+/// use [`report`] so `ok` carries the outcome.
+pub fn success(data: &serde_json::Value) {
+    report(true, data);
+}
+
+/// Emit an envelope whose `ok` carries an explicit outcome (design §14.3),
+/// for report-style commands (`validate`, `lock --check`, `doctor`). The
+/// command still owns its process exit code (§14.4).
+pub fn report(ok: bool, data: &serde_json::Value) {
+    json(&serde_json::json!({
+        "ok": ok,
+        "schema": SCHEMA_VERSION,
+        "data": data,
+        "warnings": [],
+    }));
 }

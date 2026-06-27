@@ -212,7 +212,7 @@ fn new(
     let files = scaffold(kind, name, extension, &dest)?;
 
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "created": true,
             "kind": kind.as_str(),
             "name": name,
@@ -238,7 +238,7 @@ fn inspect(bundle_path: &str, fmt: Format) -> Result<()> {
     let report = diagnose(&bundle, &RuntimeContext::default(), 0);
 
     if fmt.is_json() {
-        output::json(&ost_plugin::report_json(&bundle, &report));
+        output::report(report.passed(), &ost_plugin::report_json(&bundle, &report));
     } else {
         print_report(&bundle, &report);
     }
@@ -288,7 +288,7 @@ fn doctor(
             );
             obj.insert("environment".into(), ost_plugin::environment_json(&session));
         }
-        output::json(&body);
+        output::report(report.passed(), &body);
     } else {
         print_report(&bundle, &report);
         println!("\nSession env preview (PXR_PLUGINPATH_NAME / lib / PYTHONPATH):");
@@ -410,7 +410,7 @@ fn build(
     // plugInfo.json is shipped in the bundle (staged at scaffold time); confirm it.
     let plug_info = bundle.plug_info();
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "built": true,
             "plugin": bundle.manifest.plugin.name,
             "runtime": tgt.runtime_id,
@@ -520,7 +520,7 @@ fn test(
                 serde_json::Value::String(report_dir.to_string()),
             );
         }
-        output::json(&body);
+        output::report(report.passed(), &body);
     } else {
         print_report(&bundle, &report);
         println!("\nReport: {report_dir}");
@@ -604,7 +604,7 @@ fn test_view(
                 serde_json::Value::String(report_dir.to_string()),
             );
         }
-        output::json(&body);
+        output::report(report.passed(), &body);
     } else {
         print_report(&bundle, &report);
         println!("\nReport: {report_dir}");
@@ -826,7 +826,9 @@ fn finish(report: &DoctorReport) -> Result<()> {
     if report.passed() {
         Ok(())
     } else {
-        std::process::exit(1);
+        // The caller already emitted the report; a failing plugin check is a
+        // validation mismatch (§14.4), so exit with that category code.
+        std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
 }
 

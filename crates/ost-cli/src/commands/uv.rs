@@ -63,7 +63,7 @@ pub fn run(args: UvArgs, fmt: Format) -> Result<()> {
                 .into_iter()
                 .map(|(k, v)| serde_json::json!({ "name": k, "value": v }))
                 .collect();
-            output::json(&serde_json::json!({
+            output::success(&serde_json::json!({
                 "runtime": r.runtime.id(),
                 "uv_python": uv_python.to_string(),
                 "env": env,

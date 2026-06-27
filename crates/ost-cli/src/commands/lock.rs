@@ -45,14 +45,19 @@ pub fn run(args: LockArgs, fmt: Format) -> Result<()> {
         let up_to_date = on_disk.as_deref() == Some(expected.as_str());
 
         if fmt.is_json() {
-            output::json(&serde_json::json!({ "lock": LOCK_FILE, "up_to_date": up_to_date }));
+            output::report(
+                up_to_date,
+                &serde_json::json!({ "lock": LOCK_FILE, "up_to_date": up_to_date }),
+            );
         } else if up_to_date {
             println!("{LOCK_FILE} is up to date.");
         } else {
             println!("{LOCK_FILE} is out of date or missing — run `ost lock`.");
         }
+        // A stale lock is a validation mismatch (§14.4); the report above is this
+        // command's own output, so exit with the category code directly.
         if !up_to_date {
-            std::process::exit(1);
+            std::process::exit(ost_core::Category::Validation.exit_code() as i32);
         }
         return Ok(());
     }
@@ -60,7 +65,7 @@ pub fn run(args: LockArgs, fmt: Format) -> Result<()> {
     write_lock(&root, &lock)?;
 
     if fmt.is_json() {
-        output::json(&serde_json::json!({
+        output::success(&serde_json::json!({
             "lock": LOCK_FILE,
             "runtime": lock.runtime.id,
             "digest": lock.runtime.digest,
