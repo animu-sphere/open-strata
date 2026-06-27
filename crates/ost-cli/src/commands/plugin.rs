@@ -940,7 +940,7 @@ fn plug_info_root_rel(bundle: &Bundle) -> Utf8PathBuf {
     Utf8Path::new(&bundle.manifest.usd.plug_info)
         .parent()
         .map(Utf8Path::to_path_buf)
-        .unwrap_or_else(Utf8PathBuf::new)
+        .unwrap_or_default()
 }
 
 fn copy_tree_if_exists(src: &Utf8Path, rel: &Utf8Path, stage: &Utf8Path) -> Result<()> {
