@@ -160,6 +160,7 @@ ost plugin build toy --dry-run         # show the cmake commands only
 
 # static diagnostics (L0–L1) + session-env preview; writes .strata/reports/...
 ost plugin doctor toy --target cy2026 --profile usd
+ost plugin doctor toy --with ./plugins/other --target cy2026 --profile usd
 
 # full pyramid L0..L5 against a real runtime; writes a report
 ost plugin test toy --target cy2026 --profile usd
@@ -168,16 +169,23 @@ ost plugin test toy --json
 
 # launch any command inside the composed runtime session (real runtime)
 ost plugin run toy --target cy2026 --profile usd -- usdcat tests/fixtures/basic.toy
+ost plugin run toy --with ./plugins/other --target cy2026 --profile usd -- usdcat tests/fixtures/basic.toy
 
 # Level 6: open a fixture in usdview, or verify it launches (needs usdview + display)
 ost plugin view      toy tests/fixtures/basic.toy --target cy2026 --profile usd
 ost plugin test-view toy tests/fixtures/basic.toy --target cy2026 --profile usd
 ost plugin test toy --up-to 6 --target cy2026 --profile usd   # full pyramid incl. L6
+
+# package a built plugin as a target-specific binary bundle artifact
+ost plugin package toy --target cy2026 --profile usd
 ```
 
 Reports land under `<bundle>/.strata/reports/<plugin>/<UTC>/`
 (`report.json`, `summary.txt`, `environment.json`); see the
 [plugin-report schema](../schemas/plugin-report.schema.json).
+Plugin package artifacts land under
+`<bundle>/dist/plugins/<name>/<version>/<target>/` with a `tar.zst`,
+`manifest.json`, and `SHA256SUMS`.
 
 ## lock — reproducibility
 
@@ -221,6 +229,7 @@ ost runtime validate cy2026 --profile usd
 ost plugin new usd-fileformat toy --extension toy
 ost plugin build  toy --target cy2026 --profile usd
 ost plugin test   toy --target cy2026 --profile usd      # L0..L5 + report
+ost plugin package toy --target cy2026 --profile usd
 ```
 
 ## Tool overrides

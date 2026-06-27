@@ -166,10 +166,13 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
     packaged bundles must carry the concrete `plugInfo.json` for exactly one
     target (`.so` / `.dylib` / `.dll`) and one library layout. See the Phase-4
     fix backlog below.
-- ⬜ `ost plugin package | publish` and the runtime×plugin CI matrix:
-  package freezes the target-resolved `plugInfo.json`, resolved C++/Python ABI,
-  runtime digest, and validation report into one binary bundle artifact
-  (`artifact` source lands with Phase 6)
+- ✅ `ost plugin package`: freezes the target-resolved `plugInfo.json`, resolved
+  C++/Python ABI, runtime digest/source/validation, static validation report,
+  and session environment into a target-specific binary bundle artifact
+  (`tar.zst` + `manifest.json` + `SHA256SUMS` under
+  `<bundle>/dist/plugins/<name>/<version>/<target>/`)
+- ⬜ `ost plugin publish` and the runtime×plugin CI matrix (`artifact` source
+  lands with Phase 6)
 
 ### Phase 4 — fix backlog (from usdVrm dogfooding, reports #1/#2)
 
@@ -237,8 +240,8 @@ target being tested, not silently accept host-default metadata.
   bundle. `ost plugin doctor` derives the runtime ABI from the resolved target
   (`linux → libstdcxx`, `macos → libcxx`, `windows-msvc143 → msvc143`) and still
   compares it when a hand-authored or future packaged manifest records a scalar
-  `runtime.cxx_abi`. The binary package step will record the one resolved ABI
-  for the artifact it publishes.
+  `runtime.cxx_abi`. The binary package step records the one resolved ABI for
+  the artifact it emits.
 - ⬜ **P3 — repo-shape scaffold.** `ost init --bare` + `plugin new` leaves no
   top-level `CMakeLists.txt`, so the repo isn't `cmake -S .`-able by non-`ost`
   users. A project-with-bundles template could emit a dual-mode root
