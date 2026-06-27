@@ -303,10 +303,15 @@ impl Check {
         }
     }
     /// Render a failed check as an actionable error (used on the build path).
+    /// A failed required check is a missing prerequisite (runtime, tool); carry
+    /// the hint in the structured slot so `--json` surfaces it as `error.hint`
+    /// rather than inlining it into the message (§14.3/§14.4).
     fn to_error(&self) -> Error {
         match &self.status {
-            Status::Failed { detail, hint } => Error::Operation(format!("{detail}\nhint: {hint}")),
-            _ => Error::Operation(format!("check '{}' failed", self.name)),
+            Status::Failed { detail, hint } => {
+                Error::precondition(detail.clone()).with_hint(hint.clone())
+            }
+            _ => Error::precondition(format!("check '{}' failed", self.name)),
         }
     }
 }
@@ -555,9 +560,12 @@ mod tests {
             "no CMakeLists.txt found in project root",
             "run `ost init --template cpp-library`",
         );
-        let msg = c.to_error().to_string();
-        assert!(msg.contains("no CMakeLists.txt found"));
-        assert!(msg.contains("hint: run `ost init --template cpp-library`"));
+        let err = c.to_error();
+        // The detail is the message; the hint rides the structured slot so
+        // `--json` surfaces it as `error.hint` (§14.3/§14.4).
+        assert!(err.to_string().contains("no CMakeLists.txt found"));
+        assert_eq!(err.category(), ost_core::Category::Precondition);
+        assert_eq!(err.hint(), Some("run `ost init --template cpp-library`"));
     }
 
     #[test]

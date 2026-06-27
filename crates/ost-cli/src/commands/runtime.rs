@@ -162,7 +162,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
     let r = resolve(platform, profile)?;
 
     if r.pulled && !force {
-        return Err(Error::Operation(format!(
+        return Err(Error::usage(format!(
             "runtime '{}' already pulled (use --force to re-pull)",
             r.runtime.id()
         )));

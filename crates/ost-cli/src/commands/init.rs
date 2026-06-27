@@ -85,7 +85,7 @@ pub fn run(args: InitArgs, fmt: Format) -> Result<()> {
     }
     if !args.force {
         if let Some(first) = project_template::conflicts(template, &name, &root).first() {
-            return Err(Error::Operation(format!(
+            return Err(Error::usage(format!(
                 "refusing to overwrite existing '{first}'; \
                  pass --force, or use --bare to skip template files"
             )));
