@@ -73,9 +73,11 @@ ost lock [--check]                                  generate/verify strata.lock
 ost uv <args...>                                    run uv pinned to the runtime Python
 ```
 
-Every command accepts `--json` for machine-readable output and uses deterministic
-exit codes for CI. See [docs/examples.md](docs/examples.md) for a copy-pasteable
-tour of every command.
+Every command accepts `--json` for machine-readable output: a single, versioned
+`{ok, schema, data, warnings}` envelope on stdout, with structured errors
+(`error.code` / `error.category`) and category-based exit codes for CI. See
+[docs/json-schema.md](docs/json-schema.md) for the contract and
+[docs/examples.md](docs/examples.md) for a copy-pasteable tour of every command.
 
 `ost runtime pull` materializes a runtime from a backend *source*: a placeholder
 `mock` layout, an adopted existing install (`--from-usd`), or a from-source

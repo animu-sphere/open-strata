@@ -16,7 +16,9 @@ and lock schemas.
 - ✅ `ost platform list | show | diff`
 - ✅ `ost init` (writes `openstrata.toml` + `.strata/`)
 - ✅ JSON schemas for platform / project / lock
-- ✅ `--json` output and deterministic exit codes
+- ✅ `--json` output and deterministic exit codes — a versioned
+  `{ok, schema, data, warnings}` envelope with stable `error.code`/`category` and
+  category-based exit codes ([json-schema.md](json-schema.md))
 
 ## Phase 1 — Runtime and devshell ✅
 
@@ -30,7 +32,12 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
 - ✅ `ost runtime pull | list | show` against a local/mock backend
 - ✅ Digest-bearing runtime manifest (`runtime.json`, deterministic digest)
 - ✅ `ost doctor` (host descriptor, host tool detection, runtime report;
-  deterministic exit: 0 healthy / 1 issues)
+  deterministic exit: 0 healthy / precondition code (4) on issues)
+- ⬜ `ost doctor` structuring (§14.5): issues as
+  `{id, severity, summary, next_action}`, runtime `kind`
+  (mock/adopted/built/downloaded) + execution capabilities, and `warnings`
+  (e.g. `MOCK_RUNTIME_ACTIVE`); absorbs the agent "status" need into `doctor`
+  rather than a new command. Touches the runtime manifest schema
 - ✅ `ost runtime validate` (schema, digest integrity, layout; records outcome
   in the manifest; deterministic exit)
 - ✅ `ost runtime explain` (delivered in Phase 3)
