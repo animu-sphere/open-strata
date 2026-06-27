@@ -28,6 +28,16 @@ impl Bundle {
                 "no {PLUGIN_MANIFEST} in '{root}' (is this a plugin bundle? try `ost plugin new`)"
             )));
         }
+
+        // Canonicalize the root *once*, here, so every path derived from it is
+        // absolute: the CMake `-S`/`-B`/`CMAKE_TOOLCHAIN_FILE` args (CMake
+        // resolves a relative toolchain against the build dir, not the cwd) and
+        // the session env (USD anchors a relative `PXR_PLUGINPATH_NAME` at its
+        // own lib dir, not the cwd). A relative `<bundle>` CLI arg otherwise
+        // makes both fail silently. One canonicalize at the boundary removes the
+        // whole class of bug — and is the prerequisite for `--with <bundle>`.
+        let root = canonicalize_root(root)?;
+
         let src = std::fs::read_to_string(manifest_path.as_std_path())
             .map_err(|e| Error::io(manifest_path.to_string(), e))?;
         let manifest = PluginManifest::parse(&src)
@@ -41,10 +51,7 @@ impl Bundle {
             check_safe_relative("test fixture", fixture)?;
         }
 
-        Ok(Bundle {
-            root: root.to_path_buf(),
-            manifest,
-        })
+        Ok(Bundle { root, manifest })
     }
 
     /// Resolve a bundle-relative path against the root.
@@ -125,6 +132,38 @@ fn check_safe_relative(field: &str, rel: &str) -> Result<()> {
     Ok(())
 }
 
+/// Canonicalize the bundle root to an absolute path, stripping Windows'
+/// `\\?\` *verbatim* prefix that `std::fs::canonicalize` adds.
+///
+/// CMake and USD both mishandle the verbatim form (CMake treats `\\?\C:\…` as a
+/// UNC path; USD's plugin loader fails to match it), so we hand them the plain
+/// drive path. On non-Windows hosts `canonicalize` already returns a clean
+/// absolute path, so [`strip_verbatim`] is a no-op there.
+fn canonicalize_root(root: &Utf8Path) -> Result<Utf8PathBuf> {
+    let canon = std::fs::canonicalize(root.as_std_path())
+        .map_err(|e| Error::io(root.to_string(), e))?;
+    let utf8 = Utf8PathBuf::from_path_buf(canon).map_err(|p| {
+        Error::config(format!(
+            "bundle path is not valid UTF-8: {}",
+            p.display()
+        ))
+    })?;
+    Ok(strip_verbatim(utf8))
+}
+
+/// Remove a Windows `\\?\` verbatim prefix: `\\?\C:\x` -> `C:\x`,
+/// `\\?\UNC\srv\share` -> `\\srv\share`. Any other path is returned unchanged.
+fn strip_verbatim(p: Utf8PathBuf) -> Utf8PathBuf {
+    let s = p.as_str();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return Utf8PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return Utf8PathBuf::from(rest);
+    }
+    p
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,7 +230,28 @@ mod tests {
     fn load_accepts_a_well_formed_bundle() {
         let root = write_bundle("resources/plugInfo.json");
         let bundle = Bundle::load(&root).expect("a safe manifest loads");
-        assert_eq!(bundle.plug_info(), root.join("resources/plugInfo.json"));
+        // Compare against the *loaded* (canonicalized) root: `load` absolutizes
+        // the root, which may differ from `root` here (symlinked temp dirs, the
+        // `\\?\` strip on Windows).
+        assert_eq!(bundle.plug_info(), bundle.root.join("resources/plugInfo.json"));
+        assert!(bundle.root.is_absolute(), "load must absolutize the root");
         std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn strip_verbatim_removes_windows_prefixes() {
+        assert_eq!(
+            strip_verbatim(Utf8PathBuf::from(r"\\?\C:\dev\bundle")),
+            Utf8PathBuf::from(r"C:\dev\bundle")
+        );
+        assert_eq!(
+            strip_verbatim(Utf8PathBuf::from(r"\\?\UNC\srv\share\bundle")),
+            Utf8PathBuf::from(r"\\srv\share\bundle")
+        );
+        // A plain absolute path is untouched.
+        assert_eq!(
+            strip_verbatim(Utf8PathBuf::from("/home/u/bundle")),
+            Utf8PathBuf::from("/home/u/bundle")
+        );
     }
 }
