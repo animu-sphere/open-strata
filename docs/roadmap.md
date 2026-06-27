@@ -176,31 +176,30 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
 A freshly scaffolded `usd-fileformat` bundle did not survive `ost plugin
 build`/`test` on Windows out of the box. Ranked, with the implicated code:
 
-- ⬜ **P1 — absolutize `<bundle>` once** in `Bundle::load`
-  ([bundle.rs](../crates/ost-plugin/src/bundle.rs)) so all derived paths are
-  absolute. One `canonicalize` removes *both* the relative-`CMAKE_TOOLCHAIN_FILE`
-  build break and the relative-`PXR_PLUGINPATH_NAME` discovery break (single root
-  cause). De-UNC the result on Windows (`\\?\` confuses CMake/USD). Highest
-  leverage; prerequisite for `--with` (above).
-- ⬜ **P1 — scaffold `plugInfo.json` can't load its own lib.** Template emits
-  `LibraryPath: "lib{{Name}}FileFormat.so"`
-  ([templates/usd-fileformat-cpp/…/plugInfo.json](../templates/usd-fileformat-cpp/plugin/resources/{{name}}/plugInfo.json)):
-  wrong suffix off-Windows, and points beside `plugInfo.json` while the built lib
-  lands in `lib/` (USD dlopens the absolutized `LibraryPath`, no PATH fallback).
-  Fix via `plugInfo.json.in` + `configure_file`
-  (`${CMAKE_SHARED_LIBRARY_PREFIX/SUFFIX}` + relative path to the lib dir); decide
-  the doctor-L0 `bundle.plug_info` interaction (accept `.in`, or have `build`
-  regenerate the committed file).
-- ⬜ **P1 — scaffold `CMakeLists.txt` stages to `${CMAKE_SOURCE_DIR}/lib`**
+- ✅ **P1 — absolutize `<bundle>` once** in `Bundle::load`
+  ([bundle.rs](../crates/ost-plugin/src/bundle.rs)): a single `canonicalize`
+  removes *both* the relative-`CMAKE_TOOLCHAIN_FILE` build break and the
+  relative-`PXR_PLUGINPATH_NAME` discovery break (single root cause), de-UNCing
+  the `\\?\` prefix on Windows (CMake/USD mishandle it). Prerequisite for `--with`
+  (above).
+- ✅ **P1 — scaffold `plugInfo.json` can't load its own lib.** Was
+  `LibraryPath: "lib{{Name}}FileFormat.so"` (wrong suffix off-Windows; beside
+  `plugInfo.json` while the lib lands in `lib/`, and USD dlopens the absolutized
+  path with no PATH fallback). Now a committed
+  [`plugInfo.json.in`](../templates/usd-fileformat-cpp/plugin/resources/{{name}}/plugInfo.json.in)
+  (`../../../lib/lib…@CMAKE_SHARED_LIBRARY_SUFFIX@`) that the CMake
+  `configure_file` resolves per target; `ost plugin new` also writes a
+  host-correct concrete `plugInfo.json` so `doctor`/`test` work before the first
+  build (doctor L0 only checks existence + JSON parse, so no collision).
+- ✅ **P1 — scaffold `CMakeLists.txt` stages to `${CMAKE_SOURCE_DIR}/lib`**
   ([templates/usd-fileformat-cpp/CMakeLists.txt](../templates/usd-fileformat-cpp/CMakeLists.txt)):
-  breaks the moment the bundle is `add_subdirectory()`'d (lib lands at the repo
-  root). Use `CMAKE_CURRENT_SOURCE_DIR`, and guard `find_package(pxr)` with
-  `if(NOT pxr_FOUND)` so a project root can resolve it once.
-- ⬜ **P1 — `ost plugin build` doesn't bootstrap the MSVC env.** `run_step`
-  ([commands/plugin.rs](../crates/ost-cli/src/commands/plugin.rs)) spawns CMake
-  without `cl`/`link` on PATH (host policy + Ninja) → "No CMAKE_CXX_COMPILER".
-  Reuse `ost_build::msvc::bootstrap()` exactly as `ost build`/`runtime pull
-  --build` already do.
+  now uses `CMAKE_CURRENT_SOURCE_DIR` (so an `add_subdirectory()` consumer stages
+  the lib in the bundle, not the repo root) and guards `find_package(pxr)` with
+  `if(NOT pxr_FOUND)` so a dual-mode project root can resolve it once.
+- ✅ **P1 — `ost plugin build` doesn't bootstrap the MSVC env.** `run_step`
+  ([commands/plugin.rs](../crates/ost-cli/src/commands/plugin.rs)) now loads the
+  MSVC developer environment via `ost_build::msvc::bootstrap()` (Windows, `cl` not
+  on PATH), as `ost build`/`runtime pull --build` already do.
 - ⬜ **P2 — default `CMAKE_BUILD_TYPE=Release` for plugin builds.** Ninja
   single-config + unset type resolves USD's imported targets to Debug → links
   `tbb12_debug.lib` (absent in a Release-only install) → `LNK1104`. Have the

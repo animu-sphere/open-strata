@@ -46,9 +46,9 @@ const USD_FILEFORMAT_CPP: &[TemplateFile] = &[
         include_str!("../../../templates/usd-fileformat-cpp/src/{{Name}}FileFormat.cpp"),
     ),
     tf(
-        "plugin/resources/{{name}}/plugInfo.json",
+        "plugin/resources/{{name}}/plugInfo.json.in",
         include_str!(
-            "../../../templates/usd-fileformat-cpp/plugin/resources/{{name}}/plugInfo.json"
+            "../../../templates/usd-fileformat-cpp/plugin/resources/{{name}}/plugInfo.json.in"
         ),
     ),
     tf(
@@ -194,9 +194,24 @@ pub fn scaffold(
             std::fs::create_dir_all(parent.as_std_path())
                 .map_err(|e| Error::io(parent.to_string(), e))?;
         }
-        std::fs::write(abs.as_std_path(), vars.apply(file.contents))
+        let contents = vars.apply(file.contents);
+        std::fs::write(abs.as_std_path(), &contents)
             .map_err(|e| Error::io(abs.to_string(), e))?;
-        written.push(rel);
+        written.push(rel.clone());
+
+        // A `*.in` is a CMake `configure_file` source. Emit a ready-to-use
+        // concrete file next to it (with the host's shared-library suffix) so
+        // `ost plugin doctor`/`test` work before the first build — the build's
+        // `configure_file` then regenerates it for the target being built.
+        if let Some(concrete) = rel.as_str().strip_suffix(".in") {
+            let concrete_rel = Utf8PathBuf::from(concrete);
+            let concrete_abs = dest.join(&concrete_rel);
+            let resolved =
+                contents.replace("@CMAKE_SHARED_LIBRARY_SUFFIX@", std::env::consts::DLL_SUFFIX);
+            std::fs::write(concrete_abs.as_std_path(), resolved)
+                .map_err(|e| Error::io(concrete_abs.to_string(), e))?;
+            written.push(concrete_rel);
+        }
     }
 
     Ok(written)
@@ -244,6 +259,11 @@ mod tests {
         // The manifest and a token-substituted source file landed.
         assert!(files.iter().any(|f| f.as_str() == "openstrata.plugin.yaml"));
         assert!(files.iter().any(|f| f.as_str() == "src/ToyFileFormat.cpp"));
+        // Both the configure_file source (.in) and the ready-to-use concrete
+        // plugInfo.json are written.
+        assert!(files
+            .iter()
+            .any(|f| f.as_str() == "plugin/resources/toy/plugInfo.json.in"));
         assert!(files
             .iter()
             .any(|f| f.as_str() == "plugin/resources/toy/plugInfo.json"));
@@ -255,6 +275,16 @@ mod tests {
         let bundle = crate::Bundle::load(&dir).expect("loads");
         assert_eq!(bundle.manifest.name(), "toy");
         assert!(bundle.plug_info().as_std_path().is_file());
+
+        // The concrete plugInfo.json has the host's lib suffix resolved (no
+        // leftover `@CMAKE_*@` token) and points at the bundle's lib/ — the two
+        // things USD needs to dlopen it (it has no PATH fallback for the lib).
+        let plug_info = std::fs::read_to_string(bundle.plug_info().as_std_path()).unwrap();
+        assert!(!plug_info.contains('@'), "configure_file token left in plugInfo.json");
+        assert!(plug_info.contains(&format!(
+            "../../../lib/libToyFileFormat{}",
+            std::env::consts::DLL_SUFFIX
+        )));
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
