@@ -408,10 +408,18 @@ mod tests {
             .find(|(k, _)| k == "PATH")
             .map(|(_, v)| v.as_str())
             .expect("PATH resolved");
-        assert!(path.ends_with("C:/VC/bin;C:/orig"), "MSVC PATH preserved: {path}");
-        assert!(path.contains("/store/runtimes/rt/bin"), "USD bin prepended: {path}");
+        assert!(
+            path.ends_with("C:/VC/bin;C:/orig"),
+            "MSVC PATH preserved: {path}"
+        );
+        assert!(
+            path.contains("/store/runtimes/rt/bin"),
+            "USD bin prepended: {path}"
+        );
         // A key only the runtime touches resolves to the runtime value alone.
-        assert!(resolved.iter().any(|(k, v)| k == "PYTHONPATH" && !v.is_empty()));
+        assert!(resolved
+            .iter()
+            .any(|(k, v)| k == "PYTHONPATH" && !v.is_empty()));
     }
 
     #[test]

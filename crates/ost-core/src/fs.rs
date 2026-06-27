@@ -201,7 +201,10 @@ mod tests {
         write_atomic(&path, b"x").unwrap();
         let got = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
 
-        assert_eq!(got, want, "atomic write mode {got:o} != plain write {want:o}");
+        assert_eq!(
+            got, want,
+            "atomic write mode {got:o} != plain write {want:o}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

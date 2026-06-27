@@ -265,7 +265,11 @@ mod tests {
         assert_eq!(e.category(), Category::ExternalTool);
         assert_eq!(e.hint(), Some("see build.log for details"));
 
-        let e = Error::coded("REAL_RUNTIME_REQUIRED", Category::Precondition, "need real usd");
+        let e = Error::coded(
+            "REAL_RUNTIME_REQUIRED",
+            Category::Precondition,
+            "need real usd",
+        );
         assert_eq!(e.code(), "REAL_RUNTIME_REQUIRED");
         assert_eq!(e.exit_code(), 4);
     }
