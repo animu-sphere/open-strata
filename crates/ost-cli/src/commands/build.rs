@@ -25,6 +25,7 @@ use clap::Args;
 use ost_build::Target;
 use ost_core::host::Os;
 use ost_core::{tools, Error, Result};
+use ost_runtime::EnvSet;
 
 use crate::commands::compiler::CompilerOpts;
 use crate::commands::configure::{
@@ -125,7 +126,15 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
         let build_cmd = render_cmd(&cmake_prog, &build_args);
         let files = target_output_paths(&id);
 
+        // Surface the runtime env additions (the OpenStrata-managed prepends,
+        // not the inherited environment) so they can be inspected without a run.
+        let runtime_env = resolved.env.pairs();
+
         if fmt.is_json() {
+            let env_obj: serde_json::Map<String, serde_json::Value> = runtime_env
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .collect();
             output::json(&serde_json::json!({
                 "dry_run": true,
                 "target": id,
@@ -133,6 +142,7 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
                 "bootstrap_msvc": pre.will_bootstrap_msvc,
                 "commands": [configure_cmd, build_cmd],
                 "would_generate": files,
+                "runtime_env": env_obj,
             }));
             return Ok(());
         }
@@ -143,6 +153,10 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
         }
         println!("{configure_cmd}");
         println!("{build_cmd}");
+        println!("# would apply runtime env (prepended):");
+        for (k, v) in &runtime_env {
+            println!("#   {k}={v}");
+        }
         println!("# would generate:");
         for f in &files {
             println!("#   {f}");
@@ -155,7 +169,7 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     debug_assert_eq!(g.id, id);
 
     // 6. Inject the MSVC developer environment (cl.exe, Windows SDK) if needed.
-    let mut extra_env: Vec<(String, String)> = Vec::new();
+    let mut msvc_env: Vec<(String, String)> = Vec::new();
     if pre.will_bootstrap_msvc {
         match ost_build::msvc::bootstrap() {
             Ok(Some(env)) => {
@@ -164,7 +178,7 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
                     env.vcvars.display(),
                     env.vars.len()
                 );
-                extra_env = env.vars;
+                msvc_env = env.vars;
             }
             Ok(None) => eprintln!(
                 "warning: MSVC not found; relying on the current environment (cl must be on PATH)"
@@ -172,6 +186,18 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
             Err(e) => eprintln!("warning: failed to load the MSVC environment: {e}"),
         }
     }
+
+    // 7. Apply the *runtime* environment to CMake and Ninja too, not just to
+    //    `ost run`/`test`. Without it configure/build see a different PATH,
+    //    PYTHONPATH, loader path and CMAKE_PREFIX_PATH than execution does.
+    //    Layer it over the MSVC delta so USD's bin/lib prepend in front of the
+    //    compiler's PATH rather than clobbering it.
+    let extra_env = layer_runtime_env(&resolved.env, &msvc_env);
+    println!(
+        "==> runtime env {} ({} vars)",
+        target.runtime_id,
+        resolved.env.pairs().len()
+    );
 
     println!(
         "==> configure  {}",
@@ -418,6 +444,21 @@ fn quote(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Compose the environment for CMake/Ninja: the MSVC delta (its `INCLUDE`/`LIB`
+/// and a `PATH` that already folds in the original `PATH`) followed by the
+/// runtime env resolved *over* that delta, so the runtime's PATH/loader prepends
+/// sit in front of the compiler's. Later entries win in `Command::envs`, so the
+/// runtime values override the shared keys while MSVC-only keys survive.
+fn layer_runtime_env(runtime: &EnvSet, msvc: &[(String, String)]) -> Vec<(String, String)> {
+    let mut base: std::collections::HashMap<String, String> = std::env::vars().collect();
+    for (k, v) in msvc {
+        base.insert(k.clone(), v.clone());
+    }
+    let mut env = msvc.to_vec();
+    env.extend(runtime.resolve_over(&base));
+    env
 }
 
 fn run_step(

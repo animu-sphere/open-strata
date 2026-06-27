@@ -230,6 +230,25 @@ impl EnvSet {
     /// final `(key, value)` pairs. `Prepend` ops read the existing value (and
     /// any earlier op on the same key) so repeated keys compose correctly.
     pub fn resolve(&self) -> Vec<(String, String)> {
+        self.resolve_with(|k| std::env::var(k).ok())
+    }
+
+    /// Resolve against an explicit base environment instead of the process.
+    ///
+    /// Used to layer the runtime env over another delta — e.g. the MSVC
+    /// developer environment loaded for a Windows build — so that `Prepend`
+    /// ops compose with, rather than clobber, the values that delta already
+    /// set (notably `PATH`). Keys absent from `base` start empty.
+    pub fn resolve_over(
+        &self,
+        base: &std::collections::HashMap<String, String>,
+    ) -> Vec<(String, String)> {
+        self.resolve_with(|k| base.get(k).cloned())
+    }
+
+    /// Shared resolver: `lookup` supplies the pre-existing value for a key that
+    /// has no earlier op in this set (the process env, or an explicit base).
+    fn resolve_with(&self, lookup: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
         use std::collections::HashMap;
         let mut overlay: HashMap<String, String> = HashMap::new();
         // Preserve order of first appearance for a stable result.
@@ -243,10 +262,7 @@ impl EnvSet {
                     overlay.insert(v.key.clone(), val.clone());
                 }
                 EnvOp::Prepend(val) => {
-                    let existing = overlay
-                        .get(&v.key)
-                        .cloned()
-                        .or_else(|| std::env::var(&v.key).ok());
+                    let existing = overlay.get(&v.key).cloned().or_else(|| lookup(&v.key));
                     let next = match existing {
                         Some(e) if !e.is_empty() => format!("{val}{}{e}", self.sep),
                         _ => val.clone(),
@@ -362,6 +378,28 @@ mod tests {
             })
             .count();
         assert_eq!(path_adds, 2);
+    }
+
+    #[test]
+    fn resolve_over_composes_with_a_base_env() {
+        // On Windows the runtime's bin/lib land on PATH. Resolving over an MSVC
+        // delta must prepend USD's entries in front of the MSVC PATH, not drop
+        // the MSVC entries — and keys absent from the base (PYTHONPATH) start
+        // from the runtime value alone.
+        use std::collections::HashMap;
+        let set = EnvSet::for_runtime(&prefix(), Os::Windows, "3.13", false);
+        let mut base = HashMap::new();
+        base.insert("PATH".to_string(), "C:/VC/bin;C:/orig".to_string());
+        let resolved = set.resolve_over(&base);
+        let path = resolved
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.as_str())
+            .expect("PATH resolved");
+        assert!(path.ends_with("C:/VC/bin;C:/orig"), "MSVC PATH preserved: {path}");
+        assert!(path.contains("/store/runtimes/rt/bin"), "USD bin prepended: {path}");
+        // A key only the runtime touches resolves to the runtime value alone.
+        assert!(resolved.iter().any(|(k, v)| k == "PYTHONPATH" && !v.is_empty()));
     }
 
     #[test]

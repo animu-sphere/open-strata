@@ -61,10 +61,16 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     }
     std::fs::create_dir_all(stage.as_std_path()).map_err(|e| Error::io(stage.to_string(), e))?;
 
-    let status = Command::new(&cmake)
+    // Apply the runtime environment to `cmake --install` for the same reason
+    // `ost build` and `ost run` do: install rules may invoke USD/Python tooling
+    // that needs PATH, PYTHONPATH and the loader path set consistently.
+    let mut install = Command::new(&cmake);
+    install
         .args(["--install", &format!("build/{id}"), "--prefix"])
         .arg(stage.as_std_path())
-        .current_dir(root.as_std_path())
+        .current_dir(root.as_std_path());
+    r.env.apply(&mut install);
+    let status = install
         .status()
         .map_err(|e| Error::io(format!("run {}", cmake.display()), e))?;
     if !status.success() {
