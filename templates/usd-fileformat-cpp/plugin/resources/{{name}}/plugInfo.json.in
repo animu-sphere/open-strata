@@ -4,7 +4,7 @@
             "Type": "library",
             "Name": "{{Name}}FileFormat",
             "Root": ".",
-            "LibraryPath": "../../../lib/lib{{Name}}FileFormat@CMAKE_SHARED_LIBRARY_SUFFIX@",
+            "LibraryPath": "../../../lib/@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@{{Name}}FileFormat@CMAKE_SHARED_LIBRARY_SUFFIX@",
             "ResourcePath": ".",
             "Info": {
                 "Types": {

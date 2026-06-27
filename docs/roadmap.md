@@ -144,37 +144,44 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
   the non-interactive `usdview --quitAfterStartup` launch probe (`usdview.launch`
   diagnostic), SKIPping cleanly when usdview or a display is unavailable.
   Verified against a real usdview-enabled OpenUSD 25.05 build.
-- ⬜ Multi-plugin sessions (`ost plugin run/view --with <bundle>…`) and
-  bundle-declared `requires.runtime_libs` (extra non-USD runtime lib dirs, e.g. a
-  plugin's zlib) — replaces hand-rolled usdview launch batch files for the
-  multi-plugin + 3rd-party-dep case. Dogfooding (usdVrm, reports #1/#2) surfaced
-  these prerequisites and shapes:
-  - **Prerequisite: absolutize the bundle path at every `ost plugin` boundary**
-    (canonicalize once in `Bundle::load`). A relative `<bundle>` arg today yields
-    a relative `CMAKE_TOOLCHAIN_FILE` (CMake resolves it against the build dir →
-    "toolchain not found") *and* a relative `PXR_PLUGINPATH_NAME` (USD anchors it
-    at its own lib dir → silent discovery failure). Every `--with <bundle>` arg
-    needs the same treatment — its plugInfo root, `lib/`, and any
-    `requires.runtime_libs` dir — or the silent-discovery failure recurs once per
-    added bundle.
-  - **`requires.runtime_libs` → prepend to the session's dynamic-loader path**
-    (`PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`), absolutized. Treat
-    empty/absent as the common case: a plugin that statically links its 3rd-party
-    deps (usdVrm vendors cgltf into one TU, exports no symbols) drags zero extra
-    lib dirs — the opposite of a plugin shipping a sibling `zlib.dll`. The `--with`
-    test matrix should pair a no-runtime-libs plugin with one that declares them.
-  - **`plugInfo.json` `LibraryPath` wants per-platform generation** (suffix +
+- ✅ Multi-plugin sessions (`ost plugin doctor/run/test/view/test-view --with
+  <bundle>…`) and bundle-declared `requires.runtime_libs` (extra non-USD runtime
+  lib dirs, e.g. a plugin's zlib) — replaces hand-rolled usdview launch batch
+  files for the multi-plugin + 3rd-party-dep case. Dogfooding (usdVrm, reports
+  #1/#2) surfaced these prerequisites and shapes:
+  - **Every bundle path is absolutized at the `ost plugin` boundary** via
+    `Bundle::load`, including every `--with <bundle>` arg. Its plugInfo root,
+    `lib/`, `python/`, and any `requires.runtime_libs` dir are then composed as
+    absolute session env entries, avoiding relative `CMAKE_TOOLCHAIN_FILE` and
+    relative `PXR_PLUGINPATH_NAME` failures.
+  - **`requires.runtime_libs` prepends to the session's dynamic-loader path**
+    (`PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`), absolutized and validated
+    as bundle-relative. Empty/absent stays the common case: a plugin that
+    statically links its 3rd-party deps (usdVrm vendors cgltf into one TU,
+    exports no symbols) drags zero extra lib dirs — the opposite of a plugin
+    shipping a sibling `zlib.dll`.
+  - **`plugInfo.json` `LibraryPath` is generated/validated per target** (suffix +
     lib-dir), since multi-plugin × multi-OS sessions multiply the scaffold's
-    cross-platform soft spot — either the scaffold generates it via
-    `configure_file`, or `ost` stages the lib next to `plugInfo.json` at
-    session-setup time. See the Phase-4 fix backlog below.
-- ⬜ `ost plugin package | publish` and the runtime×plugin CI matrix
+    cross-platform soft spot. Source bundles may carry templates, but built or
+    packaged bundles must carry the concrete `plugInfo.json` for exactly one
+    target (`.so` / `.dylib` / `.dll`) and one library layout. See the Phase-4
+    fix backlog below.
+- ⬜ `ost plugin package | publish` and the runtime×plugin CI matrix:
+  package freezes the target-resolved `plugInfo.json`, resolved C++/Python ABI,
+  runtime digest, and validation report into one binary bundle artifact
   (`artifact` source lands with Phase 6)
 
 ### Phase 4 — fix backlog (from usdVrm dogfooding, reports #1/#2)
 
 A freshly scaffolded `usd-fileformat` bundle did not survive `ost plugin
 build`/`test` on Windows out of the box. Ranked, with the implicated code:
+
+Policy from the new cross-platform review: a **source** plugin bundle is not a
+universal binary bundle. Source may declare compatibility ranges and generation
+templates; `ost plugin build/package` emits a **target-specific** binary bundle
+whose `plugInfo.json`, ABI metadata, and provenance are resolved from the CMake
+target + runtime variant. `doctor` should validate the resolved files for the
+target being tested, not silently accept host-default metadata.
 
 - ✅ **P1 — absolutize `<bundle>` once** in `Bundle::load`
   ([bundle.rs](../crates/ost-plugin/src/bundle.rs)): a single `canonicalize`
@@ -216,6 +223,22 @@ build`/`test` on Windows out of the box. Ranked, with the implicated code:
   Both now accept either `<platform> --profile <profile>` or the full
   `openstrata-cy2026-…-usd` id (the embedded platform/profile win); the variant
   slug is a fixed 3 tokens, so a hyphenated profile stays intact.
+- ✅ **P1 — harden target-generated `plugInfo.json` beyond the scaffold.**
+  A real usdVrm-style bundle with
+  `LibraryPath: "../../../lib/libUsdVrmFileFormat.dll"` is Windows-only even if
+  README/CMake claim cross-platform support. Source commits `plugInfo.json.in`;
+  CMake configures the concrete `plugInfo.json` with the target library prefix
+  and `CMAKE_SHARED_LIBRARY_SUFFIX`; `ost plugin new` emits a host-concrete
+  `plugInfo.json`; `doctor` now has `bundle.plug_info.library_path` to flag
+  unresolved templates, non-`lib/` layout, mismatched built lib names, and suffix
+  mismatches such as `.dll` on Linux/macOS or `.so` on Windows.
+- ✅ **P1 — make source plugin C++ ABI metadata target-aware.**
+  The scaffold no longer writes `runtime.cxx_abi: libstdcxx` into a source
+  bundle. `ost plugin doctor` derives the runtime ABI from the resolved target
+  (`linux → libstdcxx`, `macos → libcxx`, `windows-msvc143 → msvc143`) and still
+  compares it when a hand-authored or future packaged manifest records a scalar
+  `runtime.cxx_abi`. The binary package step will record the one resolved ABI
+  for the artifact it publishes.
 - ⬜ **P3 — repo-shape scaffold.** `ost init --bare` + `plugin new` leaves no
   top-level `CMakeLists.txt`, so the repo isn't `cmake -S .`-able by non-`ost`
   users. A project-with-bundles template could emit a dual-mode root

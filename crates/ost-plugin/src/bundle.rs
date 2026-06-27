@@ -50,6 +50,9 @@ impl Bundle {
         for fixture in manifest.all_fixtures() {
             check_safe_relative("test fixture", fixture)?;
         }
+        for dir in &manifest.requires.runtime_libs {
+            check_safe_relative("requires.runtime_libs", dir)?;
+        }
 
         Ok(Bundle { root, manifest })
     }
@@ -82,6 +85,16 @@ impl Bundle {
     /// The bundle's `lib/` directory (built shared libraries land here).
     pub fn lib_dir(&self) -> Utf8PathBuf {
         self.path("lib")
+    }
+
+    /// Bundle-relative runtime library directories declared by the manifest.
+    pub fn runtime_lib_dirs(&self) -> Vec<Utf8PathBuf> {
+        self.manifest
+            .requires
+            .runtime_libs
+            .iter()
+            .map(|dir| self.path(dir))
+            .collect()
     }
 
     /// The bundle's `python/` directory (Python modules, if any).
@@ -140,14 +153,10 @@ fn check_safe_relative(field: &str, rel: &str) -> Result<()> {
 /// drive path. On non-Windows hosts `canonicalize` already returns a clean
 /// absolute path, so [`strip_verbatim`] is a no-op there.
 fn canonicalize_root(root: &Utf8Path) -> Result<Utf8PathBuf> {
-    let canon = std::fs::canonicalize(root.as_std_path())
-        .map_err(|e| Error::io(root.to_string(), e))?;
-    let utf8 = Utf8PathBuf::from_path_buf(canon).map_err(|p| {
-        Error::config(format!(
-            "bundle path is not valid UTF-8: {}",
-            p.display()
-        ))
-    })?;
+    let canon =
+        std::fs::canonicalize(root.as_std_path()).map_err(|e| Error::io(root.to_string(), e))?;
+    let utf8 = Utf8PathBuf::from_path_buf(canon)
+        .map_err(|p| Error::config(format!("bundle path is not valid UTF-8: {}", p.display())))?;
     Ok(strip_verbatim(utf8))
 }
 
@@ -233,8 +242,26 @@ mod tests {
         // Compare against the *loaded* (canonicalized) root: `load` absolutizes
         // the root, which may differ from `root` here (symlinked temp dirs, the
         // `\\?\` strip on Windows).
-        assert_eq!(bundle.plug_info(), bundle.root.join("resources/plugInfo.json"));
+        assert_eq!(
+            bundle.plug_info(),
+            bundle.root.join("resources/plugInfo.json")
+        );
         assert!(bundle.root.is_absolute(), "load must absolutize the root");
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn load_rejects_runtime_libs_that_escape_the_bundle() {
+        let root = write_bundle("resources/plugInfo.json");
+        let manifest_path = root.join(PLUGIN_MANIFEST);
+        let manifest = std::fs::read_to_string(manifest_path.as_std_path()).unwrap();
+        std::fs::write(
+            manifest_path.as_std_path(),
+            format!("{manifest}requires:\n  runtime_libs: [../outside]\n"),
+        )
+        .unwrap();
+        let err = Bundle::load(&root).expect_err("escaping runtime_libs must be rejected");
+        assert_eq!(err.code(), "INVALID_CONFIG");
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

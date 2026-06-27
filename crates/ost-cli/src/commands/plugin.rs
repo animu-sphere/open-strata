@@ -26,10 +26,11 @@ use clap::Subcommand;
 
 use ost_core::host::Os;
 use ost_core::paths::{find_project_root, STATE_DIR};
+use ost_core::variant::{Abi, Variant};
 use ost_core::{tools, Error, Host, Result};
 use ost_plugin::{
-    diagnose, run_levels, scaffold, session_env, usdview_check, Bundle, DoctorReport, PluginKind,
-    Probe, RuntimeContext, Session, Status, ToolOutput,
+    diagnose, run_levels, scaffold, session_env_with, usdview_check, Bundle, DoctorReport,
+    PluginKind, Probe, RuntimeContext, Session, Status, ToolOutput,
 };
 use ost_runtime::{EnvSet, RuntimeManifest, MANIFEST_FILE};
 
@@ -81,6 +82,9 @@ pub enum PluginCmd {
     Doctor {
         /// Path to the bundle directory.
         bundle: String,
+        /// Additional plugin bundle(s) to include in the session env.
+        #[arg(long = "with")]
+        with: Vec<String>,
         /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
         #[arg(long)]
         target: Option<String>,
@@ -92,6 +96,9 @@ pub enum PluginCmd {
     Run {
         /// Path to the bundle directory.
         bundle: String,
+        /// Additional plugin bundle(s) to include in the session env.
+        #[arg(long = "with")]
+        with: Vec<String>,
         /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
         #[arg(long)]
         target: Option<String>,
@@ -106,6 +113,9 @@ pub enum PluginCmd {
     Test {
         /// Path to the bundle directory.
         bundle: String,
+        /// Additional plugin bundle(s) to include in the session env.
+        #[arg(long = "with")]
+        with: Vec<String>,
         /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
         #[arg(long)]
         target: Option<String>,
@@ -120,6 +130,9 @@ pub enum PluginCmd {
     View {
         /// Path to the bundle directory.
         bundle: String,
+        /// Additional plugin bundle(s) to include in the session env.
+        #[arg(long = "with")]
+        with: Vec<String>,
         /// Fixture to open (relative to the bundle, or an absolute path).
         fixture: String,
         /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
@@ -133,6 +146,9 @@ pub enum PluginCmd {
     TestView {
         /// Path to the bundle directory.
         bundle: String,
+        /// Additional plugin bundle(s) to include in the session env.
+        #[arg(long = "with")]
+        with: Vec<String>,
         /// Fixture to open (relative to the bundle, or an absolute path).
         fixture: String,
         /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
@@ -163,33 +179,38 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
         } => build(&bundle, target, profile, dry_run, ninja, compiler, fmt),
         PluginCmd::Doctor {
             bundle,
+            with,
             target,
             profile,
-        } => doctor(&bundle, target, profile, fmt),
+        } => doctor(&bundle, &with, target, profile, fmt),
         PluginCmd::Run {
             bundle,
+            with,
             target,
             profile,
             command,
-        } => run_session(&bundle, target, profile, command, fmt),
+        } => run_session(&bundle, &with, target, profile, command, fmt),
         PluginCmd::Test {
             bundle,
+            with,
             target,
             profile,
             up_to,
-        } => test(&bundle, target, profile, up_to, fmt),
+        } => test(&bundle, &with, target, profile, up_to, fmt),
         PluginCmd::View {
             bundle,
+            with,
             fixture,
             target,
             profile,
-        } => view(&bundle, &fixture, target, profile),
+        } => view(&bundle, &with, &fixture, target, profile),
         PluginCmd::TestView {
             bundle,
+            with,
             fixture,
             target,
             profile,
-        } => test_view(&bundle, &fixture, target, profile, fmt),
+        } => test_view(&bundle, &with, &fixture, target, profile, fmt),
     }
 }
 
@@ -247,11 +268,13 @@ fn inspect(bundle_path: &str, fmt: Format) -> Result<()> {
 
 fn doctor(
     bundle_path: &str,
+    with_paths: &[String],
     target: Option<String>,
     profile: Option<String>,
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
+    let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
 
     // Resolve the runtime if we can (enclosing project or explicit flags). When
@@ -261,11 +284,8 @@ fn doctor(
 
     // Compose the session env we *would* set (runtime env + bundle roots).
     let session = match &resolved {
-        Some(r) => session_env(&r.env, &bundle, host.os),
-        None => EnvSet {
-            sep: if host.os == Os::Windows { ';' } else { ':' },
-            vars: ost_plugin::bundle_vars(&bundle, host.os),
-        },
+        Some(r) => session_env_with(&r.env, &bundle, &with_bundles, host.os),
+        None => standalone_session_env(&bundle, &with_bundles, host.os),
     };
 
     // Levels 0–1 run; 2+ are emitted as SKIP (need a real runtime).
@@ -446,16 +466,18 @@ fn build(
 /// `ost plugin run` — compose the runtime session and exec a command in it.
 fn run_session(
     bundle_path: &str,
+    with_paths: &[String],
     target: Option<String>,
     profile: Option<String>,
     command: Vec<String>,
     _fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
+    let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
     let r = require_real_runtime(target, profile)?;
 
-    let session = session_env(&r.env, &bundle, host.os);
+    let session = session_env_with(&r.env, &bundle, &with_bundles, host.os);
     let (prog, rest) = command.split_first().expect("clap requires >=1 arg");
 
     let mut cmd = Command::new(prog);
@@ -474,22 +496,21 @@ fn run_session(
 /// `ost plugin test` — run the verification pyramid L0..=`up_to` and write a report.
 fn test(
     bundle_path: &str,
+    with_paths: &[String],
     target: Option<String>,
     profile: Option<String>,
     up_to: u8,
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
+    let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
 
     let resolved = resolve_runtime(target, profile)?;
     let ctx = resolved.as_ref().map(runtime_context).unwrap_or_default();
     let session = match &resolved {
-        Some(r) => session_env(&r.env, &bundle, host.os),
-        None => EnvSet {
-            sep: if host.os == Os::Windows { ';' } else { ':' },
-            vars: ost_plugin::bundle_vars(&bundle, host.os),
-        },
+        Some(r) => session_env_with(&r.env, &bundle, &with_bundles, host.os),
+        None => standalone_session_env(&bundle, &with_bundles, host.os),
     };
 
     // L0 + L1 are static. L2..up_to execute the runtime's tools — but only when a
@@ -545,11 +566,13 @@ fn test(
 /// `ost plugin view` — open a fixture in usdview inside the runtime session.
 fn view(
     bundle_path: &str,
+    with_paths: &[String],
     fixture: &str,
     target: Option<String>,
     profile: Option<String>,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
+    let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
     let r = require_real_runtime(target, profile)?;
 
@@ -563,7 +586,7 @@ fn view(
         })?;
     let fixture_path = bundle.path(fixture); // absolute passes through; else under the bundle
 
-    let session = session_env(&r.env, &bundle, host.os);
+    let session = session_env_with(&r.env, &bundle, &with_bundles, host.os);
     let mut cmd = Command::new(&usdview);
     cmd.arg(fixture_path.as_str());
     session.apply(&mut cmd); // overlay the session env, no global mutation
@@ -579,16 +602,18 @@ fn view(
 /// `ost plugin test-view` — run the Level 6 usdview check on a fixture + report.
 fn test_view(
     bundle_path: &str,
+    with_paths: &[String],
     fixture: &str,
     target: Option<String>,
     profile: Option<String>,
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
+    let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
     let r = require_real_runtime(target, profile)?;
 
-    let session = session_env(&r.env, &bundle, host.os);
+    let session = session_env_with(&r.env, &bundle, &with_bundles, host.os);
     let probe = ProcessProbe::new(session.resolve());
     let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"]);
     let sess = Session {
@@ -717,6 +742,22 @@ fn load_bundle(path: &str) -> Result<Bundle> {
     Bundle::load(&root)
 }
 
+fn load_with_bundles(paths: &[String]) -> Result<Vec<Bundle>> {
+    paths.iter().map(|path| load_bundle(path)).collect()
+}
+
+fn standalone_session_env(bundle: &Bundle, with: &[Bundle], os: Os) -> EnvSet {
+    session_env_with(
+        &EnvSet {
+            sep: if os == Os::Windows { ';' } else { ':' },
+            vars: Vec::new(),
+        },
+        bundle,
+        with,
+        os,
+    )
+}
+
 /// Determine platform+profile from explicit flags or the enclosing project.
 /// Returns `None` when neither is available.
 fn selection(target: Option<String>, profile: Option<String>) -> Option<(String, String)> {
@@ -784,6 +825,8 @@ fn require_real_runtime(
 /// Build the Level 1 runtime context from a resolved runtime and its manifest.
 fn runtime_context(r: &crate::commands::Resolved) -> RuntimeContext {
     let mut ctx = RuntimeContext {
+        target_os: Some(r.runtime.variant.os),
+        cxx_abi: Some(runtime_cxx_abi(&r.runtime.variant)),
         pulled: r.pulled,
         ..RuntimeContext::default()
     };
@@ -804,6 +847,17 @@ fn runtime_context(r: &crate::commands::Resolved) -> RuntimeContext {
         }
     }
     ctx
+}
+
+fn runtime_cxx_abi(variant: &Variant) -> String {
+    match variant.os {
+        Os::Linux => "libstdcxx".into(),
+        Os::Macos => "libcxx".into(),
+        Os::Windows => match &variant.abi {
+            Abi::Msvc { toolset } => format!("msvc{toolset}"),
+            _ => "msvc".into(),
+        },
+    }
 }
 
 fn print_report(bundle: &Bundle, report: &DoctorReport) {
@@ -951,6 +1005,16 @@ fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ost_core::host::Arch;
+
+    fn variant(os: Os, abi: Abi) -> Variant {
+        Variant {
+            os,
+            arch: Arch::X86_64,
+            abi,
+            python: "313".into(),
+        }
+    }
 
     #[test]
     fn build_paths_are_keyed_by_target_id() {
@@ -967,5 +1031,28 @@ mod tests {
 
         // Different targets never share a build tree (no CMake-cache mixing).
         assert_ne!(bd, target_build_dir(&root, "cy2027-linux-x86_64-py313-usd"));
+    }
+
+    #[test]
+    fn runtime_cxx_abi_is_target_aware() {
+        assert_eq!(
+            runtime_cxx_abi(&variant(
+                Os::Linux,
+                Abi::Glibc {
+                    version: "2.28".into()
+                }
+            )),
+            "libstdcxx"
+        );
+        assert_eq!(runtime_cxx_abi(&variant(Os::Macos, Abi::Native)), "libcxx");
+        assert_eq!(
+            runtime_cxx_abi(&variant(
+                Os::Windows,
+                Abi::Msvc {
+                    toolset: "143".into()
+                }
+            )),
+            "msvc143"
+        );
     }
 }

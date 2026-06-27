@@ -78,6 +78,9 @@ pub struct Requires {
     /// component -> version range, e.g. `materialx: ">=1.39,<1.40"`.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub components: IndexMap<String, String>,
+    /// Extra bundle-relative directories containing runtime shared libraries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_libs: Vec<String>,
 }
 
 /// Where the bundle's USD `plugInfo.json` lives, relative to the bundle root.
@@ -162,6 +165,7 @@ provides:
 requires:
   capabilities: [usd-stage-read]
   components: { materialx: ">=1.39,<1.40" }
+  runtime_libs: [third_party/lib]
 usd:
   plug_info: plugin/resources/usdluma/plugInfo.json
 tests:
@@ -183,6 +187,7 @@ tests:
             m.requires.components.get("materialx").map(String::as_str),
             Some(">=1.39,<1.40")
         );
+        assert_eq!(m.requires.runtime_libs, vec!["third_party/lib"]);
     }
 
     #[test]

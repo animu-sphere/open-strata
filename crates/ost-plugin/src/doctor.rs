@@ -12,7 +12,9 @@
 //! manifest); it emits `SKIP` for Levels 2+ and points at `ost plugin test`,
 //! which executes those against a real runtime (see [`crate::run_levels`]).
 
+use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::IndexMap;
+use ost_core::host::Os;
 
 use crate::bundle::Bundle;
 use crate::version::{self, RangeError};
@@ -88,6 +90,8 @@ impl Diagnostic {
 /// from runtime resolution.
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeContext {
+    /// Target operating system for target-specific bundle checks.
+    pub target_os: Option<Os>,
     /// Whether a runtime has been pulled (its manifest exists on disk).
     pub pulled: bool,
     /// Backend source of the runtime (`mock`/`local`/`build`/`artifact`).
@@ -134,7 +138,7 @@ pub fn diagnose(bundle: &Bundle, ctx: &RuntimeContext, up_to_level: u8) -> Docto
     let mut diags = Vec::new();
 
     // ---- Level 0: bundle structure (no runtime needed) ----
-    diags.extend(level0(bundle));
+    diags.extend(level0(bundle, ctx.target_os));
 
     // ---- Level 1: runtime / ABI compatibility (reads the runtime manifest) ----
     if up_to_level >= 1 {
@@ -158,7 +162,7 @@ pub fn diagnose(bundle: &Bundle, ctx: &RuntimeContext, up_to_level: u8) -> Docto
     DoctorReport { diagnostics: diags }
 }
 
-fn level0(bundle: &Bundle) -> Vec<Diagnostic> {
+fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
     let m = &bundle.manifest;
     let mut diags = Vec::new();
 
@@ -189,11 +193,14 @@ fn level0(bundle: &Bundle) -> Vec<Diagnostic> {
     } else {
         match std::fs::read_to_string(plug_info.as_std_path()) {
             Ok(src) => match serde_json::from_str::<serde_json::Value>(&src) {
-                Ok(_) => diags.push(Diagnostic::pass(
-                    "bundle.plug_info",
-                    0,
-                    format!("valid JSON at '{}'", m.usd.plug_info),
-                )),
+                Ok(json) => {
+                    diags.push(Diagnostic::pass(
+                        "bundle.plug_info",
+                        0,
+                        format!("valid JSON at '{}'", m.usd.plug_info),
+                    ));
+                    diags.push(check_plug_info_library_paths(bundle, &json, target_os));
+                }
                 Err(e) => diags.push(Diagnostic::fail(
                     "bundle.plug_info",
                     0,
@@ -410,16 +417,378 @@ fn range_error_diag(id: &str, range: &str, e: RangeError) -> Diagnostic {
     )
 }
 
+fn check_plug_info_library_paths(
+    bundle: &Bundle,
+    json: &serde_json::Value,
+    target_os: Option<Os>,
+) -> Diagnostic {
+    const ID: &str = "bundle.plug_info.library_path";
+
+    let Some(plugins) = json.get("Plugins").and_then(|v| v.as_array()) else {
+        return Diagnostic::fail(
+            ID,
+            0,
+            "plugInfo.json has no `Plugins` array",
+            vec!["add a USD `Plugins` array with a library plugin entry".into()],
+        );
+    };
+
+    let mut checked = Vec::new();
+    let existing_libs = find_shared_libraries(bundle);
+    let lib_dir = normalize_path(bundle.lib_dir());
+
+    for plugin in plugins {
+        if plugin.get("Type").and_then(|v| v.as_str()) != Some("library") {
+            continue;
+        }
+
+        let name = plugin
+            .get("Name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unnamed>");
+        let Some(library_path) = plugin.get("LibraryPath").and_then(|v| v.as_str()) else {
+            return Diagnostic::fail(
+                ID,
+                0,
+                format!("library plugin '{name}' has no `LibraryPath`"),
+                vec![
+                    "set `LibraryPath` to the built shared library under the bundle's lib/".into(),
+                ],
+            );
+        };
+        if library_path.trim().is_empty() {
+            return Diagnostic::fail(
+                ID,
+                0,
+                format!("library plugin '{name}' has an empty `LibraryPath`"),
+                vec![
+                    "set `LibraryPath` to the built shared library under the bundle's lib/".into(),
+                ],
+            );
+        }
+        if contains_template_token(library_path) {
+            return Diagnostic::fail(
+                ID,
+                0,
+                format!("library plugin '{name}' has unresolved LibraryPath '{library_path}'"),
+                vec!["generate plugInfo.json from plugInfo.json.in during CMake configure".into()],
+            );
+        }
+        if let Err(why) = check_portable_relative_path(library_path) {
+            return Diagnostic::fail(
+                ID,
+                0,
+                format!("library plugin '{name}' has unsafe LibraryPath '{library_path}': {why}"),
+                vec![
+                    "make `LibraryPath` relative to the plugInfo Root and inside the bundle".into(),
+                ],
+            );
+        }
+
+        if let Some(os) = target_os {
+            let expected = shared_library_suffix(os);
+            if !library_path.ends_with(expected) {
+                return Diagnostic::fail(
+                    ID,
+                    0,
+                    format!(
+                        "library plugin '{name}' uses LibraryPath '{library_path}', expected a {expected} library for {}",
+                        os.as_str()
+                    ),
+                    vec![format!(
+                        "regenerate plugInfo.json for the {} target with CMAKE_SHARED_LIBRARY_SUFFIX",
+                        os.as_str()
+                    )],
+                );
+            }
+        }
+
+        let root = plugin.get("Root").and_then(|v| v.as_str()).unwrap_or(".");
+        if contains_template_token(root) {
+            return Diagnostic::fail(
+                ID,
+                0,
+                format!("library plugin '{name}' has unresolved Root '{root}'"),
+                vec!["generate plugInfo.json from plugInfo.json.in during CMake configure".into()],
+            );
+        }
+        if let Err(why) = check_portable_relative_path(root) {
+            return Diagnostic::fail(
+                ID,
+                0,
+                format!("library plugin '{name}' has unsafe Root '{root}': {why}"),
+                vec!["keep `Root` relative to the plugInfo.json directory".into()],
+            );
+        }
+
+        let resolved = normalize_path(bundle.plug_info_root().join(root).join(library_path));
+        if !resolved.starts_with(&lib_dir) {
+            return Diagnostic::fail(
+                ID,
+                0,
+                format!(
+                    "library plugin '{name}' LibraryPath resolves to '{}', outside bundle lib/",
+                    resolved.to_string().replace('\\', "/")
+                ),
+                vec!["point `LibraryPath` at the shared library staged under bundle lib/".into()],
+            );
+        }
+
+        if !existing_libs.is_empty() && !resolved.as_std_path().is_file() {
+            return Diagnostic::fail(
+                ID,
+                0,
+                format!(
+                    "LibraryPath '{}' does not match a built library (lib/ contains {})",
+                    library_path,
+                    existing_libs.join(", ")
+                ),
+                vec![
+                    "regenerate plugInfo.json for the target, or rebuild the plugin library".into(),
+                ],
+            );
+        }
+
+        checked.push(library_path.to_string());
+    }
+
+    if checked.is_empty() {
+        return Diagnostic::fail(
+            ID,
+            0,
+            "plugInfo.json has no library plugin entry",
+            vec!["add a `Type: library` plugin entry with a concrete `LibraryPath`".into()],
+        );
+    }
+
+    let target_note = target_os
+        .map(|os| format!(" (target {})", os.as_str()))
+        .unwrap_or_else(|| " (target suffix not checked)".into());
+    let (subject, verb) = if checked.len() == 1 {
+        ("entry", "points")
+    } else {
+        ("entries", "point")
+    };
+    Diagnostic::pass(
+        ID,
+        0,
+        format!(
+            "{} LibraryPath {subject} {verb} under bundle lib/{target_note}",
+            checked.len()
+        ),
+    )
+}
+
 /// Find a built shared library in the bundle's `lib/` directory, if any.
 fn find_shared_library(bundle: &Bundle) -> Option<String> {
+    find_shared_libraries(bundle).into_iter().next()
+}
+
+fn find_shared_libraries(bundle: &Bundle) -> Vec<String> {
     let lib = bundle.lib_dir();
-    let entries = std::fs::read_dir(lib.as_std_path()).ok()?;
+    let entries = match std::fs::read_dir(lib.as_std_path()) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let mut libs = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if matches!(ext, "so" | "dll" | "dylib") {
-            return path.file_name().and_then(|n| n.to_str()).map(String::from);
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                libs.push(name.to_string());
+            }
         }
     }
-    None
+    libs.sort();
+    libs
+}
+
+fn shared_library_suffix(os: Os) -> &'static str {
+    match os {
+        Os::Linux => ".so",
+        Os::Macos => ".dylib",
+        Os::Windows => ".dll",
+    }
+}
+
+fn contains_template_token(s: &str) -> bool {
+    s.contains('@') || s.contains("{{") || s.contains("}}")
+}
+
+fn check_portable_relative_path(path: &str) -> std::result::Result<(), &'static str> {
+    let b = path.as_bytes();
+    if path.is_empty() {
+        return Err("it is empty");
+    }
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        return Err("it looks like a drive path");
+    }
+    if path.starts_with('/') || path.starts_with('\\') {
+        return Err("it is absolute");
+    }
+    Ok(())
+}
+
+fn normalize_path(path: Utf8PathBuf) -> Utf8PathBuf {
+    let mut normalized = Utf8PathBuf::new();
+    for component in path.components() {
+        match component {
+            camino::Utf8Component::CurDir => {}
+            camino::Utf8Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(Utf8Path::new(other.as_str())),
+        }
+    }
+    normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::PluginManifest;
+
+    fn library_path_diag(report: &DoctorReport) -> &Diagnostic {
+        report
+            .diagnostics
+            .iter()
+            .find(|d| d.id == "bundle.plug_info.library_path")
+            .expect("library path diagnostic exists")
+    }
+
+    fn bundle_with_plug_info(library_path: &str, built_lib: Option<&str>) -> (TempDir, Bundle) {
+        let dir = TempDir::new("doctor");
+        std::fs::create_dir_all(dir.path.join("plugin/resources/toy").as_std_path()).unwrap();
+        std::fs::create_dir_all(dir.path.join("lib").as_std_path()).unwrap();
+        if let Some(name) = built_lib {
+            std::fs::write(dir.path.join("lib").join(name).as_std_path(), "").unwrap();
+        }
+        let plug_info = format!(
+            r#"{{
+    "Plugins": [
+        {{
+            "Type": "library",
+            "Name": "ToyFileFormat",
+            "Root": ".",
+            "LibraryPath": "{library_path}",
+            "ResourcePath": ".",
+            "Info": {{}}
+        }}
+    ]
+}}"#
+        );
+        std::fs::write(
+            dir.path
+                .join("plugin/resources/toy/plugInfo.json")
+                .as_std_path(),
+            plug_info,
+        )
+        .unwrap();
+        let manifest = PluginManifest::parse(
+            r#"
+plugin: { name: toy, version: 0.1.0, kind: usd-fileformat }
+runtime: { openusd: ">=25.05,<26.0" }
+usd: { plug_info: plugin/resources/toy/plugInfo.json }
+"#,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            root: dir.path.clone(),
+            manifest,
+        };
+        (dir, bundle)
+    }
+
+    #[test]
+    fn plug_info_library_path_accepts_target_suffix_and_lib_layout() {
+        let (_dir, bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.so",
+            Some("libToyFileFormat.so"),
+        );
+        let report = diagnose(
+            &bundle,
+            &RuntimeContext {
+                target_os: Some(Os::Linux),
+                ..RuntimeContext::default()
+            },
+            0,
+        );
+        assert_eq!(library_path_diag(&report).status, Status::Pass);
+    }
+
+    #[test]
+    fn plug_info_library_path_rejects_windows_dll_for_linux_target() {
+        let (_dir, bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.dll",
+            Some("libToyFileFormat.dll"),
+        );
+        let report = diagnose(
+            &bundle,
+            &RuntimeContext {
+                target_os: Some(Os::Linux),
+                ..RuntimeContext::default()
+            },
+            0,
+        );
+        let diag = library_path_diag(&report);
+        assert_eq!(diag.status, Status::Fail);
+        assert!(diag.observed.contains("expected a .so library"));
+    }
+
+    #[test]
+    fn plug_info_library_path_rejects_paths_outside_bundle_lib() {
+        let (_dir, bundle) = bundle_with_plug_info("../libToyFileFormat.so", None);
+        let report = diagnose(
+            &bundle,
+            &RuntimeContext {
+                target_os: Some(Os::Linux),
+                ..RuntimeContext::default()
+            },
+            0,
+        );
+        let diag = library_path_diag(&report);
+        assert_eq!(diag.status, Status::Fail);
+        assert!(diag.observed.contains("outside bundle lib/"));
+    }
+
+    #[test]
+    fn plug_info_library_path_rejects_mismatched_built_library() {
+        let (_dir, bundle) =
+            bundle_with_plug_info("../../../lib/libWrong.so", Some("libToyFileFormat.so"));
+        let report = diagnose(
+            &bundle,
+            &RuntimeContext {
+                target_os: Some(Os::Linux),
+                ..RuntimeContext::default()
+            },
+            0,
+        );
+        let diag = library_path_diag(&report);
+        assert_eq!(diag.status, Status::Fail);
+        assert!(diag.observed.contains("does not match a built library"));
+    }
+
+    struct TempDir {
+        path: Utf8PathBuf,
+    }
+
+    impl TempDir {
+        fn new(tag: &str) -> TempDir {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let mut path = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
+            path.push(format!("ost-plugin-{tag}-{}-{nanos}", std::process::id()));
+            std::fs::create_dir_all(path.as_std_path()).unwrap();
+            TempDir { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(self.path.as_std_path());
+        }
+    }
 }
