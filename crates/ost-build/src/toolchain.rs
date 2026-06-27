@@ -46,7 +46,10 @@ impl Compiler {
         match self {
             Compiler::Host => (None, None),
             Compiler::Runtime => match os {
-                Os::Linux => (Some(format!("{root}/bin/gcc")), Some(format!("{root}/bin/g++"))),
+                Os::Linux => (
+                    Some(format!("{root}/bin/gcc")),
+                    Some(format!("{root}/bin/g++")),
+                ),
                 Os::Macos => (
                     Some(format!("{root}/bin/clang")),
                     Some(format!("{root}/bin/clang++")),
@@ -169,7 +172,11 @@ mod tests {
 
     #[test]
     fn runtime_policy_pins_bundled_compilers() {
-        let out = render_toolchain(&target(Os::Linux), Utf8Path::new("/store/rt"), &Compiler::Runtime);
+        let out = render_toolchain(
+            &target(Os::Linux),
+            Utf8Path::new("/store/rt"),
+            &Compiler::Runtime,
+        );
         assert!(out.contains("set(CMAKE_C_COMPILER \"/store/rt/bin/gcc\")"));
         assert!(out.contains("set(CMAKE_CXX_COMPILER \"/store/rt/bin/g++\")"));
     }

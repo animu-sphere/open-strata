@@ -78,7 +78,9 @@ fn parse_stdout(o: &Output) -> Value {
 }
 
 fn exit_code(o: &Output) -> i32 {
-    o.status.code().expect("process exited via code, not signal")
+    o.status
+        .code()
+        .expect("process exited via code, not signal")
 }
 
 /// Every envelope has these, regardless of success or failure.

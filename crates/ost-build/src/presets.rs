@@ -233,7 +233,10 @@ mod tests {
             vec![".strata/targets/cy2026-linux-x86_64-py313-usd/CMakePresets.json"]
         );
         // The user's own include and presets survive.
-        assert_eq!(includes_of(&Value::Object(root.clone())), vec!["vendor/Presets.json"]);
+        assert_eq!(
+            includes_of(&Value::Object(root.clone())),
+            vec!["vendor/Presets.json"]
+        );
         assert!(root.contains_key("configurePresets"));
     }
 
