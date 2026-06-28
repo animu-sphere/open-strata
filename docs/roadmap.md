@@ -6,6 +6,33 @@ start but may be unavailable initially.
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 
+## Release milestones
+
+Phases are the long-form structure; releases are the shipped increments cut from
+them. Each release is a coherent slice, not a phase boundary.
+
+- ✅ **v0.1.0** — first public release: foundation through OpenUSD/MaterialX
+  profiles and the static plugin-verification framework (Phases 0–3, Phase 4a).
+- ✅ **v0.2.0** — machine-readable `--json` output + error/exit-code contract,
+  build-lifecycle hardening (per-target trees, runtime-env-consistent CMake,
+  progress stream), and the security P0/P1 baseline (SEC-001…004).
+- ✅ **v0.3.0** — Phase 4b plugin-harness dogfooding round: relative-path
+  `plugin build|test`, MSVC bootstrap, loadable `plugInfo.json`, real USD-version
+  detection, `plugin package` artifacts, the fmt/clippy/test CI gates, and the
+  plugin bundle `license` field.
+- 🚧 **v0.4.0 — the schema plugin kind.** Where 0.3.0 made the *file-format*
+  bundle path solid, 0.4.0 adds `usd-schema` as a first-class kind and closes the
+  remaining Phase 4 scaffold/diagnostic gaps. Phase 6-independent. Scope:
+  - **Schema bundles (A)** — the four items in
+    [Phase 4 — schema-bundle backlog](#phase-4--schema-bundle-backlog-from-downstream-plugin-dogfooding-reports-34)
+    below: `usd-schema` template + codeless-aware L0, schema-in-an-existing-bundle,
+    the schema test contract, and per-variant `cxx_abi`.
+  - **Phase 4 close-out (B)** — P3 repo-shape scaffold and `ost doctor`
+    structuring (§14.5), both tagged `(v0.4.0)` in-place below.
+  - Out of scope (deferred): `plugin publish` + the runtime×plugin CI matrix
+    (blocked on the Phase 6 artifact source) and runtime/extension content
+    attribution (lands with the Phase 6 content store).
+
 ## Phase 0 — Foundation ✅
 
 Rust workspace + `ost` CLI skeleton, machine-readable platform manifests, project
@@ -33,7 +60,7 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
 - ✅ Digest-bearing runtime manifest (`runtime.json`, deterministic digest)
 - ✅ `ost doctor` (host descriptor, host tool detection, runtime report;
   deterministic exit: 0 healthy / precondition code (4) on issues)
-- ⬜ `ost doctor` structuring (§14.5): issues as
+- ⬜ **(v0.4.0)** `ost doctor` structuring (§14.5): issues as
   `{id, severity, summary, next_action}`, runtime `kind`
   (mock/adopted/built/downloaded) + execution capabilities, and `warnings`
   (e.g. `MOCK_RUNTIME_ACTIVE`); absorbs the agent "status" need into `doctor`
@@ -242,11 +269,56 @@ target being tested, not silently accept host-default metadata.
   compares it when a hand-authored or future packaged manifest records a scalar
   `runtime.cxx_abi`. The binary package step records the one resolved ABI for
   the artifact it emits.
-- ⬜ **P3 — repo-shape scaffold.** `ost init --bare` + `plugin new` leaves no
+- ⬜ **P3 (v0.4.0) — repo-shape scaffold.** `ost init --bare` + `plugin new` leaves no
   top-level `CMakeLists.txt`, so the repo isn't `cmake -S .`-able by non-`ost`
   users. A project-with-bundles template could emit a dual-mode root
   `CMakeLists.txt` + `CMakePresets.json` that `add_subdirectory()`s each bundle
   and resolves USD via `find_package(pxr)`.
+
+### Phase 4 — schema-bundle backlog (from downstream plugin dogfooding, reports #3/#4)
+
+**Targeted for v0.4.0 (scope A).** A second dogfooding pass confirmed the #1/#2 fixes (relative-path
+`plugin build|test`, MSVC bootstrap, `CMAKE_BUILD_TYPE=Release`,
+`bundle.plug_info.library_path`, full-id `runtime show` all green) and took up the
+typed-schema kind (`usd-schema`). `ost plugin new` advertises that kind but ships
+no generator, and the harness models only file-format bundles. Ranked:
+
+- ⬜ **`usd-schema` template + codeless-aware L0.** `ost plugin new usd-schema`
+  errors (`no template yet for kind 'usd-schema'`,
+  [scaffold.rs](../crates/ost-plugin/src/scaffold.rs)) — the KIND enum is plumbed
+  ahead of the generator. Ship a starter `schema.usda` (one single-apply `*API` +
+  the `customData` library block) and an owned `usdGenSchema` build step (reuses
+  the `plugin test` env that already puts `usdGenSchema` + Python on PATH). A
+  schema build has no hand-written `.cpp`; a **codeless** schema has no shared
+  library at all, so the L0 `plugin.shared_library` / `bundle.plug_info.library_path`
+  checks must become **codeless-aware** — skip them and validate the `Types` /
+  `"isCodeless": true` block instead, or doctor hard-fails a valid resource-only
+  schema.
+- ⬜ **Add a schema to an *existing* bundle.** Not only scaffold a standalone
+  `usd-schema`: a `schema.usda` + a build step that runs `usdGenSchema` and
+  **merges** the generated `Types` into a bundle's existing `plugInfo.json` (which
+  already carries an `SdfFileFormat` entry), reusing the `plugin build` env. USD
+  permits one `plugInfo`/library to provide both a file format and schema types,
+  so this supports co-locating a compiled schema in a file-format plugin without a
+  second bundle or `--with` orchestration. Splitting later is mechanical (move the
+  schema sources + `Types` block to a new `plugInfo`).
+- ⬜ **Schema test contract.** The schema analogue of the file-format L4
+  `stage_open`: assert the classes register (`Usd.SchemaRegistry`), an `*API`
+  applies to a prim, and authored attributes round-trip. Covers either bundle
+  shape (standalone or co-located).
+- ⬜ **Per-variant `cxx_abi` in the source manifest.** The L1 ABI check correctly
+  caught a stale scalar value, but the manifest field is single-valued while the
+  correct ABI is per-target (`msvc143` Windows / `libstdcxx` Linux / `libcxx`
+  macOS). Allow per-variant ABI or an "inherit from runtime" sentinel so a
+  cross-platform source bundle needn't be hand-edited per target. `doctor` already
+  derives the target ABI; this is the authoring-side complement.
+
+Not a task — closing a re-flagged item: the adopted-runtime version mis-detection
+these reports carry forward (`openusd 25.05.01` for a 26.08 install) is already
+fixed in [runtime.rs](../crates/ost-cli/src/commands/runtime.rs)
+(`detect_openusd_version` reads `pxr.h` at adopt time). A runtime adopted before
+that fix keeps the stale recorded version; re-pull (`runtime pull --from-usd`) to
+refresh it.
 
 ## Phase 5 — CI / Jenkins ⬜
 
