@@ -32,7 +32,7 @@ ost-plugin = { path = "crates/ost-plugin" }
 # Top-level dependency versions are pinned for reproducible builds. The tree no
 # longer needs to stay on edition <= 2021 (the toolchain is pinned to a current
 # stable in rust-toolchain.toml); relax or refresh these deliberately.
-anyhow = "=1.0.86"
+anyhow = "=1.0.103"
 thiserror = "=2.0.18"
 clap = { version = "=4.3.24", features = ["derive"] }
 serde = { version = "=1.0.210", features = ["derive"] }
