@@ -366,13 +366,30 @@ fn level1(bundle: &Bundle, ctx: &RuntimeContext) -> Vec<Diagnostic> {
         )),
     }
 
-    // runtime.cxx_abi — declared plugin ABI matches the runtime ABI.
-    diags.push(match_tag(
-        "runtime.cxx_abi",
-        m.runtime.cxx_abi.as_deref(),
-        ctx.cxx_abi.as_deref(),
-        "C++ ABI",
-    ));
+    // runtime.cxx_abi — the plugin's declared ABI matches the runtime's. The
+    // declared side may be a scalar, an `inherit` sentinel (defer to the runtime),
+    // or a per-OS map resolved against the target.
+    diags.push(match &m.runtime.cxx_abi {
+        None => Diagnostic::skip("runtime.cxx_abi", 1, "plugin declares no C++ ABI"),
+        Some(abi) if abi.is_inherit() => Diagnostic::skip(
+            "runtime.cxx_abi",
+            1,
+            "plugin defers its C++ ABI to the runtime (inherit)",
+        ),
+        Some(abi) => match abi.tag_for(ctx.target_os) {
+            Some(declared) => match_tag(
+                "runtime.cxx_abi",
+                Some(declared),
+                ctx.cxx_abi.as_deref(),
+                "C++ ABI",
+            ),
+            None => Diagnostic::skip(
+                "runtime.cxx_abi",
+                1,
+                "plugin declares no C++ ABI for the resolved target OS",
+            ),
+        },
+    });
 
     // runtime.python_abi — declared plugin Python ABI matches the runtime.
     diags.push(match_tag(
@@ -1083,6 +1100,58 @@ usd: { plug_info: plugin/resources/vrm/plugInfo.json }
             .iter()
             .all(|d| d.id != "plugin.discovery"));
         assert!(report.diagnostics.iter().all(|d| d.id != "usdcat.read"));
+    }
+
+    #[test]
+    fn cxx_abi_resolves_per_os_against_the_target() {
+        use crate::model::CxxAbi;
+        let (_dir, mut bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.so",
+            Some("libToyFileFormat.so"),
+        );
+        let mut map = indexmap::IndexMap::new();
+        map.insert("windows".to_string(), "msvc143".to_string());
+        map.insert("linux".to_string(), "libstdcxx".to_string());
+        bundle.manifest.runtime.cxx_abi = Some(CxxAbi::PerOs(map));
+
+        let ctx_for = |os: Os, runtime_abi: &str| RuntimeContext {
+            target_os: Some(os),
+            pulled: true,
+            cxx_abi: Some(runtime_abi.into()),
+            ..RuntimeContext::default()
+        };
+
+        // Matching per-OS entry vs the runtime ABI -> PASS.
+        let report = diagnose(&bundle, &ctx_for(Os::Linux, "libstdcxx"), 1);
+        assert_eq!(diag(&report, "runtime.cxx_abi").status, Status::Pass);
+
+        // Per-OS entry mismatching the runtime ABI -> FAIL.
+        let report = diagnose(&bundle, &ctx_for(Os::Windows, "msvc142"), 1);
+        assert_eq!(diag(&report, "runtime.cxx_abi").status, Status::Fail);
+
+        // A target OS not listed in the map -> SKIP (nothing declared for it).
+        let report = diagnose(&bundle, &ctx_for(Os::Macos, "libcxx"), 1);
+        assert_eq!(diag(&report, "runtime.cxx_abi").status, Status::Skip);
+    }
+
+    #[test]
+    fn cxx_abi_inherit_defers_to_runtime() {
+        use crate::model::CxxAbi;
+        let (_dir, mut bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.so",
+            Some("libToyFileFormat.so"),
+        );
+        bundle.manifest.runtime.cxx_abi = Some(CxxAbi::Scalar("inherit".into()));
+        let ctx = RuntimeContext {
+            target_os: Some(Os::Windows),
+            pulled: true,
+            cxx_abi: Some("msvc143".into()),
+            ..RuntimeContext::default()
+        };
+        let report = diagnose(&bundle, &ctx, 1);
+        let d = diag(&report, "runtime.cxx_abi");
+        assert_eq!(d.status, Status::Skip);
+        assert!(d.observed.contains("inherit"));
     }
 
     struct TempDir {

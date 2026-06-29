@@ -320,12 +320,16 @@ no generator, and the harness models only file-format bundles. Ranked:
   a real runtime. All Probe-unit-tested; covers either bundle shape (standalone or
   co-located). **Still ⬜:** verify end-to-end against a real OpenUSD runtime (like
   the other Phase 4b levels).
-- ⬜ **Per-variant `cxx_abi` in the source manifest.** The L1 ABI check correctly
-  caught a stale scalar value, but the manifest field is single-valued while the
-  correct ABI is per-target (`msvc143` Windows / `libstdcxx` Linux / `libcxx`
-  macOS). Allow per-variant ABI or an "inherit from runtime" sentinel so a
-  cross-platform source bundle needn't be hand-edited per target. `doctor` already
-  derives the target ABI; this is the authoring-side complement.
+- ✅ **Per-variant `cxx_abi` in the source manifest.** `runtime.cxx_abi` now
+  accepts a scalar (`msvc143`), a per-OS map
+  (`{ windows: msvc143, linux: libstdcxx, macos: libcxx }`), or the `inherit`
+  sentinel (defer to the runtime), via a `CxxAbi` enum. The L1 `runtime.cxx_abi`
+  check resolves the declared ABI against the target OS before comparing — PASS/FAIL
+  on a match/mismatch, SKIP for `inherit` or a target the map doesn't list — so a
+  cross-platform source bundle no longer needs hand-editing per target. `ost plugin
+  package` freezes the one resolved ABI as a scalar into the artifact. The
+  scaffold's file-format template documents the three forms. Unit-tested
+  (parse + per-OS/inherit resolution + doctor PASS/FAIL/SKIP).
 
 Not a task — closing a re-flagged item: the adopted-runtime version mis-detection
 these reports carry forward (`openusd 25.05.01` for a 26.08 install) is already
