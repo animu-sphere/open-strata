@@ -29,8 +29,8 @@ pub use bundle::Bundle;
 pub use doctor::{diagnose, Diagnostic, DoctorReport, RuntimeContext, Status};
 pub use levels::{run_levels, usdview_check, Probe, Session, ToolOutput};
 pub use model::{
-    PluginIdentity, PluginKind, PluginManifest, Requires, RuntimeReq, Tests, UsdSection,
-    PLUGIN_MANIFEST,
+    CxxAbi, PluginIdentity, PluginKind, PluginManifest, Requires, RuntimeReq, SchemaSection, Tests,
+    UsdSection, PLUGIN_MANIFEST,
 };
 pub use report::{environment_json, report_json, summary_text, write_report, REPORT_SCHEMA};
 pub use scaffold::scaffold;

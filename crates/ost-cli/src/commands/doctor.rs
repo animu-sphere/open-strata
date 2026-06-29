@@ -47,6 +47,71 @@ struct ToolStatus {
     path: Option<String>,
 }
 
+/// Severity of a diagnostic issue. Only [`Severity::Error`] fails the run;
+/// [`Severity::Warning`] is informational and keeps the exit code at `0`
+/// (§14.5: "情報的な warning のみなら exit 0").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Severity {
+    Error,
+    Warning,
+}
+
+impl Severity {
+    fn as_str(self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        }
+    }
+}
+
+/// One structured diagnostic (§14.5): a stable `id`, a `severity`, a human
+/// `summary`, and the `next_action` to take (the command to run, when there is
+/// one).
+struct Issue {
+    id: &'static str,
+    severity: Severity,
+    summary: String,
+    next_action: Option<String>,
+}
+
+impl Issue {
+    fn error(id: &'static str, summary: impl Into<String>, next_action: Option<String>) -> Issue {
+        Issue {
+            id,
+            severity: Severity::Error,
+            summary: summary.into(),
+            next_action,
+        }
+    }
+
+    fn warning(id: &'static str, summary: impl Into<String>, next_action: Option<String>) -> Issue {
+        Issue {
+            id,
+            severity: Severity::Warning,
+            summary: summary.into(),
+            next_action,
+        }
+    }
+}
+
+/// Whether any issue is an error (warnings do not fail the run).
+fn has_errors(issues: &[Issue]) -> bool {
+    issues.iter().any(|i| i.severity == Severity::Error)
+}
+
+/// Map a runtime backend `source` to its user-facing *kind* (§14.5):
+/// `mock` / `adopted` (`local`) / `built` (`build`) / `downloaded` (`artifact`).
+fn runtime_kind(source: &str) -> &'static str {
+    match source {
+        "mock" => "mock",
+        "local" => "adopted",
+        "build" => "built",
+        "artifact" => "downloaded",
+        _ => "unknown",
+    }
+}
+
 pub fn run(args: DoctorArgs, fmt: Format) -> Result<()> {
     let host = Host::detect();
     let abi = Abi::default_for(host.os);
@@ -62,10 +127,14 @@ pub fn run(args: DoctorArgs, fmt: Format) -> Result<()> {
         })
         .collect();
 
-    let mut issues: Vec<String> = Vec::new();
+    let mut issues: Vec<Issue> = Vec::new();
     for t in &tools {
         if t.required && t.path.is_none() {
-            issues.push(format!("required tool '{}' not found on PATH", t.name));
+            issues.push(Issue::error(
+                "tool.missing",
+                format!("required tool '{}' not found on PATH", t.name),
+                Some(format!("install {} and ensure it is on PATH", t.name)),
+            ));
         }
     }
 
@@ -73,15 +142,33 @@ pub fn run(args: DoctorArgs, fmt: Format) -> Result<()> {
     let runtime_section = match &args.platform {
         Some(platform) => {
             let r = resolve(platform, &args.profile)?;
+            let report = build_runtime_report(&r);
             if !r.pulled {
-                issues.push(format!(
-                    "runtime '{}' not pulled (run `ost runtime pull {} --profile {}`)",
-                    r.runtime.id(),
-                    platform,
-                    args.profile
+                issues.push(Issue::error(
+                    "runtime.not_pulled",
+                    format!("runtime '{}' not pulled", r.runtime.id()),
+                    Some(format!(
+                        "ost runtime pull {platform} --profile {}",
+                        args.profile
+                    )),
+                ));
+            } else if report.kind.as_deref() == Some("mock") {
+                // A mock runtime is healthy but can only drive static validation;
+                // execution-type checks (`ost plugin test` L2+) need a real one.
+                // Informational — does not fail the run (§14.5).
+                issues.push(Issue::warning(
+                    "MOCK_RUNTIME_ACTIVE",
+                    format!(
+                        "runtime '{}' is a mock — static validation only, no real OpenUSD execution",
+                        r.runtime.id()
+                    ),
+                    Some(format!(
+                        "ost runtime pull {platform} --profile {} --from-usd <path>",
+                        args.profile
+                    )),
                 ));
             }
-            Some(build_runtime_report(&r))
+            Some(report)
         }
         None => None,
     };
@@ -106,13 +193,14 @@ pub fn run(args: DoctorArgs, fmt: Format) -> Result<()> {
         );
     }
 
-    // Deterministic exit for CI. Issues are missing tools or an unpulled
+    // Deterministic exit for CI. Error issues are missing tools or an unpulled
     // runtime — preconditions (§14.4); the report above is this command's own
-    // output, so exit with that category code directly.
-    if issues.is_empty() {
-        Ok(())
-    } else {
+    // output, so exit with that category code directly. Warning-only runs
+    // (e.g. an active mock runtime) stay at exit 0 (§14.5).
+    if has_errors(&issues) {
         std::process::exit(ost_core::Category::Precondition.exit_code() as i32);
+    } else {
+        Ok(())
     }
 }
 
@@ -121,6 +209,12 @@ struct RuntimeReport {
     id: String,
     variant: String,
     pulled: bool,
+    /// User-facing runtime kind (mock/adopted/built/downloaded), or `None` until
+    /// the manifest is read (e.g. an unpulled runtime).
+    kind: Option<String>,
+    /// Whether this runtime can execute real OpenUSD (anything but `mock`), so
+    /// callers know whether `ost plugin test` L2+ can run against it.
+    executes_real: Option<bool>,
     digest: Option<String>,
     validation: Option<String>,
     capabilities: Vec<String>,
@@ -129,7 +223,20 @@ struct RuntimeReport {
     prefix: String,
 }
 
+impl RuntimeReport {
+    /// One-word execution capability for display: what the `kind` can drive.
+    fn execution(&self) -> &'static str {
+        match self.executes_real {
+            Some(true) => "real OpenUSD execution",
+            Some(false) => "static validation only",
+            None => "unknown",
+        }
+    }
+}
+
 fn build_runtime_report(r: &crate::commands::Resolved) -> RuntimeReport {
+    let mut kind = None;
+    let mut executes_real = None;
     let mut digest = None;
     let mut validation = None;
     let mut layout = Vec::new();
@@ -137,6 +244,8 @@ fn build_runtime_report(r: &crate::commands::Resolved) -> RuntimeReport {
     let manifest_path = r.prefix.join(MANIFEST_FILE);
     if let Ok(src) = std::fs::read_to_string(manifest_path.as_std_path()) {
         if let Ok(m) = RuntimeManifest::from_json(&src) {
+            kind = Some(runtime_kind(m.source.as_str()).to_string());
+            executes_real = Some(m.source.is_real());
             digest = Some(m.digest.clone());
             validation = Some(format!("{:?}", m.validation).to_lowercase());
             // Layout dirs live under the effective artifact prefix (the external
@@ -152,6 +261,8 @@ fn build_runtime_report(r: &crate::commands::Resolved) -> RuntimeReport {
         id: r.runtime.id(),
         variant: r.runtime.variant.slug(),
         pulled: r.pulled,
+        kind,
+        executes_real,
         digest,
         validation,
         capabilities: r.capabilities.clone(),
@@ -167,7 +278,7 @@ fn emit_human(
     store: &Store,
     tools: &[ToolStatus],
     runtime: Option<&RuntimeReport>,
-    issues: &[String],
+    issues: &[Issue],
 ) {
     println!("OpenStrata");
     println!("  version: {}", env!("CARGO_PKG_VERSION"));
@@ -205,6 +316,9 @@ fn emit_human(
         println!("  id:         {}", rt.id);
         println!("  variant:    {}", rt.variant);
         println!("  pulled:     {}", rt.pulled);
+        if let Some(kind) = &rt.kind {
+            println!("  kind:       {kind} ({})", rt.execution());
+        }
         if let Some(d) = &rt.digest {
             println!("  digest:     {d}");
         }
@@ -229,9 +343,22 @@ fn emit_human(
     if issues.is_empty() {
         println!("No issues found.");
     } else {
-        println!("Issues ({}):", issues.len());
+        let errors = issues
+            .iter()
+            .filter(|i| i.severity == Severity::Error)
+            .count();
+        let warnings = issues.len() - errors;
+        println!("Issues ({errors} error(s), {warnings} warning(s)):");
         for issue in issues {
-            println!("  - {issue}");
+            println!(
+                "  [{}] {}: {}",
+                issue.severity.as_str(),
+                issue.id,
+                issue.summary
+            );
+            if let Some(action) = &issue.next_action {
+                println!("        ↳ {action}");
+            }
         }
     }
 }
@@ -242,7 +369,7 @@ fn emit_json(
     store: &Store,
     tools: &[ToolStatus],
     runtime: Option<&RuntimeReport>,
-    issues: &[String],
+    issues: &[Issue],
 ) {
     let tool_items: Vec<_> = tools
         .iter()
@@ -267,6 +394,9 @@ fn emit_json(
             "id": rt.id,
             "variant": rt.variant,
             "pulled": rt.pulled,
+            "kind": rt.kind,
+            "executes_real": rt.executes_real,
+            "execution": rt.execution(),
             "digest": rt.digest,
             "validation": rt.validation,
             "prefix": rt.prefix,
@@ -276,8 +406,20 @@ fn emit_json(
         })
     });
 
+    let issue_items: Vec<_> = issues
+        .iter()
+        .map(|i| {
+            serde_json::json!({
+                "id": i.id,
+                "severity": i.severity.as_str(),
+                "summary": i.summary,
+                "next_action": i.next_action,
+            })
+        })
+        .collect();
+
     output::report(
-        issues.is_empty(),
+        !has_errors(issues),
         &serde_json::json!({
             "openstrata": {
                 "version": env!("CARGO_PKG_VERSION"),
@@ -291,7 +433,41 @@ fn emit_json(
             },
             "tools": tool_items,
             "runtime": runtime_json,
-            "issues": issues,
+            "issues": issue_items,
         }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_kind_maps_source_to_user_facing_label() {
+        assert_eq!(runtime_kind("mock"), "mock");
+        assert_eq!(runtime_kind("local"), "adopted");
+        assert_eq!(runtime_kind("build"), "built");
+        assert_eq!(runtime_kind("artifact"), "downloaded");
+        assert_eq!(runtime_kind("nonsense"), "unknown");
+    }
+
+    #[test]
+    fn only_errors_fail_the_run() {
+        // A warning-only run (e.g. an active mock runtime) stays healthy (exit 0).
+        let warnings = vec![Issue::warning("MOCK_RUNTIME_ACTIVE", "mock", None)];
+        assert!(!has_errors(&warnings));
+
+        // Any error makes the run fail.
+        let mixed = vec![
+            Issue::warning("MOCK_RUNTIME_ACTIVE", "mock", None),
+            Issue::error(
+                "tool.missing",
+                "cmake missing",
+                Some("install cmake".into()),
+            ),
+        ];
+        assert!(has_errors(&mixed));
+
+        assert!(!has_errors(&[]));
+    }
 }

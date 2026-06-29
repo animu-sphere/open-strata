@@ -30,7 +30,7 @@ use ost_core::paths::{find_project_root, STATE_DIR};
 use ost_core::variant::{Abi, Variant};
 use ost_core::{tools, Error, Host, Result};
 use ost_plugin::{
-    diagnose, run_levels, scaffold, session_env_with, usdview_check, Bundle, DoctorReport,
+    diagnose, run_levels, scaffold, session_env_with, usdview_check, Bundle, CxxAbi, DoctorReport,
     PluginKind, Probe, RuntimeContext, Session, Status, ToolOutput,
 };
 use ost_runtime::{EnvSet, RuntimeManifest, MANIFEST_FILE};
@@ -521,7 +521,9 @@ fn package(
     }
 
     let mut packaged_manifest = bundle.manifest.clone();
-    packaged_manifest.runtime.cxx_abi = ctx.cxx_abi.clone();
+    // The artifact targets exactly one variant, so freeze the one resolved ABI as
+    // a scalar (collapsing any per-OS/`inherit` source declaration).
+    packaged_manifest.runtime.cxx_abi = ctx.cxx_abi.clone().map(CxxAbi::Scalar);
     packaged_manifest.runtime.python_abi = ctx.python_abi.clone();
     let packaged_bundle = Bundle {
         root: bundle.root.clone(),

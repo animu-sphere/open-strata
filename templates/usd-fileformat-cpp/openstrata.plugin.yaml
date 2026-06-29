@@ -14,6 +14,9 @@ runtime:
   openusd: ">=25.05,<26.0"
   # Source bundles do not hard-code C++ ABI; `ost plugin doctor` compares the
   # resolved target/runtime ABI when a built or packaged manifest records one.
+  # To pin it, `cxx_abi` accepts a scalar (`msvc143`), the `inherit` sentinel
+  # (defer to the runtime), or a per-OS map for a cross-platform bundle:
+  #   cxx_abi: { windows: msvc143, linux: libstdcxx, macos: libcxx }
 provides:
   - usd-fileformat:{{extension}}
 requires:

@@ -1,0 +1,31 @@
+# OpenStrata plugin bundle manifest.
+# A plugin is a self-describing bundle, not a bare shared library: this file is
+# the contract `ost plugin inspect|build|doctor|test` resolve against.
+plugin:
+  name: {{name}}
+  version: 0.1.0
+  kind: usd-schema
+# SPDX license for this plugin's own code. Surfaced by `ost plugin inspect` and
+# recorded in the package manifest. Change it to match your project's license.
+license: Apache-2.0
+runtime:
+  # The OpenUSD version range this schema tolerates. The runtime supplies the
+  # certified point within it. A codeless schema declares no C++/Python ABI:
+  # it ships no compiled code, so there is no ABI to match.
+  openusd: ">=25.05,<27.0"
+schema:
+  # Codeless: this schema ships only resources (an enriched plugInfo.json with a
+  # `Types` block + a generatedSchema.usda), no generated C++ and no shared
+  # library. `ost plugin doctor` validates the `Types` block instead of a lib.
+  codeless: true
+provides:
+  - usd-schema:{{Name}}API
+usd:
+  # Where this bundle's plugInfo.json lives, relative to the bundle root.
+  # For a codeless schema this file *is* the build product (usdGenSchema writes
+  # it from schema.usda); a host-correct copy is committed so doctor works first.
+  plug_info: plugin/resources/{{name}}/plugInfo.json
+tests:
+  # A fixture that applies the API schema to a prim. The execution levels assert
+  # the classes register and the applied attributes round-trip.
+  smoke: [tests/fixtures/basic.usda]
