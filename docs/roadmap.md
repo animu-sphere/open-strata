@@ -273,11 +273,15 @@ target being tested, not silently accept host-default metadata.
   compares it when a hand-authored or future packaged manifest records a scalar
   `runtime.cxx_abi`. The binary package step records the one resolved ABI for
   the artifact it emits.
-- ⬜ **P3 (v0.4.0) — repo-shape scaffold.** `ost init --bare` + `plugin new` leaves no
-  top-level `CMakeLists.txt`, so the repo isn't `cmake -S .`-able by non-`ost`
-  users. A project-with-bundles template could emit a dual-mode root
-  `CMakeLists.txt` + `CMakePresets.json` that `add_subdirectory()`s each bundle
-  and resolves USD via `find_package(pxr)`.
+- ✅ **P3 (v0.4.0) — repo-shape scaffold.** `ost init --template plugin-workspace`
+  emits a dual-mode root `CMakeLists.txt` + `CMakePresets.json`: it resolves USD
+  once (`find_package(pxr)`) and **globs** every immediate subdirectory holding an
+  `openstrata.plugin.yaml` + `CMakeLists.txt`, `add_subdirectory()`-ing each — so a
+  repo of `ost plugin new` bundles is `cmake -S .`-able by non-`ost` users and new
+  bundles are picked up with no edit. Each bundle's `if(NOT pxr_FOUND)` guard lets
+  it build standalone (via `ost`) or under this root; the root `CMakePresets.json`
+  is the user's own (untouched by `ost configure`, which uses
+  `CMakeUserPresets.json`).
 
 ### Phase 4 — schema-bundle backlog (from downstream plugin dogfooding, reports #3/#4)
 

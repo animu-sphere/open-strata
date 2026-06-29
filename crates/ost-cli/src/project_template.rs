@@ -19,6 +19,8 @@ pub enum Template {
     CppLibrary,
     /// A minimal OpenUSD plugin project.
     UsdPlugin,
+    /// A dual-mode root for a repository of plugin bundles (`ost plugin new`).
+    PluginWorkspace,
     /// No files beyond the manifest — for an existing CMake project.
     Bare,
 }
@@ -29,9 +31,10 @@ impl Template {
         match s {
             "cpp-library" => Ok(Template::CppLibrary),
             "usd-plugin" => Ok(Template::UsdPlugin),
+            "plugin-workspace" => Ok(Template::PluginWorkspace),
             "bare" => Ok(Template::Bare),
             other => Err(Error::usage(format!(
-                "unknown template '{other}' (expected: cpp-library, usd-plugin, bare)"
+                "unknown template '{other}' (expected: cpp-library, usd-plugin, plugin-workspace, bare)"
             ))),
         }
     }
@@ -40,6 +43,7 @@ impl Template {
         match self {
             Template::CppLibrary => "cpp-library",
             Template::UsdPlugin => "usd-plugin",
+            Template::PluginWorkspace => "plugin-workspace",
             Template::Bare => "bare",
         }
     }
@@ -48,6 +52,7 @@ impl Template {
         match self {
             Template::CppLibrary => CPP_LIBRARY,
             Template::UsdPlugin => USD_PLUGIN,
+            Template::PluginWorkspace => PLUGIN_WORKSPACE,
             Template::Bare => &[],
         }
     }
@@ -107,6 +112,28 @@ const USD_PLUGIN: &[TemplateFile] = &[
     tf(
         "plugin/resources/plugInfo.json",
         include_str!("../../../templates/usd-plugin/plugin/resources/plugInfo.json"),
+    ),
+];
+
+/// A dual-mode workspace root: a CMakeLists.txt that resolves OpenUSD once and
+/// add_subdirectory()s every bundle, so the repo is `cmake -S .`-able without
+/// `ost`. Carries no per-bundle files — bundles are added with `ost plugin new`.
+const PLUGIN_WORKSPACE: &[TemplateFile] = &[
+    tf(
+        "CMakeLists.txt",
+        include_str!("../../../templates/plugin-workspace/CMakeLists.txt"),
+    ),
+    tf(
+        "CMakePresets.json",
+        include_str!("../../../templates/plugin-workspace/CMakePresets.json"),
+    ),
+    tf(
+        "README.md",
+        include_str!("../../../templates/plugin-workspace/README.md"),
+    ),
+    tf(
+        ".gitignore",
+        include_str!("../../../templates/plugin-workspace/.gitignore"),
     ),
 ];
 
@@ -239,8 +266,33 @@ mod tests {
             Template::CppLibrary
         );
         assert_eq!(Template::parse("usd-plugin").unwrap(), Template::UsdPlugin);
+        assert_eq!(
+            Template::parse("plugin-workspace").unwrap(),
+            Template::PluginWorkspace
+        );
         assert_eq!(Template::parse("bare").unwrap(), Template::Bare);
         assert!(Template::parse("nope").is_err());
+    }
+
+    #[test]
+    fn plugin_workspace_emits_a_dual_mode_glob_root() {
+        let dir = unique_tmp("workspace");
+        std::fs::create_dir_all(dir.as_std_path()).unwrap();
+        let written = scaffold(Template::PluginWorkspace, "vrm-plugins", &dir, false).unwrap();
+
+        assert!(written.iter().any(|p| p.as_str() == "CMakeLists.txt"));
+        assert!(written.iter().any(|p| p.as_str() == "CMakePresets.json"));
+
+        // The root resolves USD once and add_subdirectory()s discovered bundles,
+        // and its project() name is the substituted workspace name.
+        let cml = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
+        assert!(!cml.contains("{{"));
+        assert!(cml.contains("project(vrm-plugins"));
+        assert!(cml.contains("find_package(pxr"));
+        assert!(cml.contains("openstrata.plugin.yaml"));
+        assert!(cml.contains("add_subdirectory"));
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
 
     #[test]

@@ -29,7 +29,8 @@ pub struct InitArgs {
     #[arg(long)]
     platform: Option<String>,
 
-    /// Project template to scaffold: `cpp-library` (default) or `usd-plugin`.
+    /// Project template: `cpp-library` (default), `usd-plugin`, or
+    /// `plugin-workspace` (a dual-mode root for a repo of `ost plugin new` bundles).
     #[arg(long, default_value = "cpp-library", conflicts_with = "bare")]
     template: String,
 
