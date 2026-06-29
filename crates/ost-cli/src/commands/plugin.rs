@@ -976,9 +976,7 @@ fn regenerate_cohosted_schema(
         return Ok(());
     }
 
-    reset_dir(staging)?;
-    std::fs::create_dir_all(staging.as_std_path())
-        .map_err(|e| Error::io(staging.to_string(), e))?;
+    reset_dir(staging)?; // also (re)creates the dir
     println!("==> regenerating co-hosted schema with usdGenSchema");
     run_step(
         std::path::Path::new("python"),

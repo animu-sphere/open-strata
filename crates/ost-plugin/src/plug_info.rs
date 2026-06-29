@@ -21,9 +21,14 @@ pub(crate) fn parse_plug_info(src: &str) -> serde_json::Result<serde_json::Value
 /// file, so a co-hosting build must merge rather than clobber.
 ///
 /// The generated schema types are inserted into the target's first plugin
-/// entry's `Info.Types` (creating `Info`/`Types` if absent). Returns the merged
-/// plugInfo as pretty JSON. Errors if either side is not a `plugInfo`-shaped
-/// document (no `Plugins` array, or an empty one on the target).
+/// entry's `Info.Types` (creating `Info`/`Types` if absent). Any schema types
+/// already in the target from a previous merge (identified by their
+/// `schemaKind` marker) are first dropped, so a renamed or removed type does
+/// not linger as a stale entry across rebuilds; the co-host's own types (e.g.
+/// an `SdfFileFormat` entry, which carries no `schemaKind`) are preserved.
+/// Returns the merged plugInfo as pretty JSON. Errors if either side is not a
+/// `plugInfo`-shaped document (no `Plugins` array, or an empty one on the
+/// target).
 pub fn merge_schema_types(target_src: &str, generated_src: &str) -> Result<String, MergeError> {
     let mut target = parse_plug_info(target_src).map_err(|_| MergeError::Parse("target"))?;
     let generated = parse_plug_info(generated_src).map_err(|_| MergeError::Parse("generated"))?;
@@ -63,6 +68,10 @@ pub fn merge_schema_types(target_src: &str, generated_src: &str) -> Result<Strin
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or(MergeError::NoPlugins)?;
+    // Drop any previously-merged schema types (they carry usdGenSchema's
+    // `schemaKind` marker) so a rename or removal in `schema.usda` doesn't leave
+    // a stale entry — the co-host's own types (no `schemaKind`) stay.
+    types.retain(|_, v| v.get("schemaKind").is_none());
     for (k, v) in schema_types {
         types.insert(k, v);
     }
@@ -260,6 +269,38 @@ mod tests {
         assert!(types.contains_key("ToyVrmAPI"));
         // The library entry is preserved.
         assert_eq!(v["Plugins"][0]["LibraryPath"], "../../../lib/libToy.dll");
+    }
+
+    #[test]
+    fn merge_prunes_stale_schema_types_but_keeps_the_cohost_type() {
+        // A target that already carries a previously-merged schema type
+        // (`ToyOldAPI`, with a `schemaKind` marker) plus the file-format type.
+        let target = r#"{
+            "Plugins": [
+                {
+                    "Type": "library",
+                    "Name": "toy",
+                    "Info": { "Types": {
+                        "ToyFileFormat": { "bases": ["SdfFileFormat"] },
+                        "ToyOldAPI": { "schemaIdentifier": "OldAPI", "schemaKind": "singleApplyAPI", "bases": ["UsdAPISchemaBase"] }
+                    } }
+                }
+            ]
+        }"#;
+        // A fresh regenerate that renamed the schema type OldAPI -> NewAPI.
+        let generated = r#"{
+            "Plugins": [
+                { "Info": { "Types": { "ToyNewAPI": { "schemaIdentifier": "NewAPI", "schemaKind": "singleApplyAPI", "bases": ["UsdAPISchemaBase"] } } } }
+            ]
+        }"#;
+        let merged = merge_schema_types(target, generated).expect("merges");
+        let v = parse_plug_info(&merged).unwrap();
+        let types = v["Plugins"][0]["Info"]["Types"].as_object().unwrap();
+        // The stale schema type is gone, the new one is present, and the
+        // co-host's own (schemaKind-less) file-format type survives.
+        assert!(!types.contains_key("ToyOldAPI"));
+        assert!(types.contains_key("ToyNewAPI"));
+        assert!(types.contains_key("ToyFileFormat"));
     }
 
     #[test]
