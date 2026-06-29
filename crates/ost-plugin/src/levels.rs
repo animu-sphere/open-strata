@@ -2,13 +2,27 @@
 //! Execution levels 2–6 (harness §11), run against a *real* OpenUSD runtime.
 //!
 //! Unlike levels 0–1 (static manifest + filesystem checks), these run the
-//! runtime's tools inside the composed session env and interpret the result:
+//! runtime's tools inside the composed session env and interpret the result.
+//!
+//! The contract depends on the plugin kind. A **file-format** plugin:
 //!
 //! - **L2 `plugin.discovery`** — USD's plug registry sees the format
 //!   (`Sdf.FileFormat.FindByExtension`), proving `PXR_PLUGINPATH_NAME` and the
 //!   `plugInfo.json` line up and the library loads.
 //! - **L3 `usdcat.read`** — `usdcat` opens a smoke fixture and emits USDA.
 //! - **L4 `python.stage_open`** — `Usd.Stage.Open()` opens the fixture.
+//!
+//! A **schema** plugin (codeless or compiled) has its own analogue — there is no
+//! file extension to discover, so L2/L4 verify the *schema* contract instead:
+//!
+//! - **L2 `schema.registration`** — the declared schema types are known to
+//!   `Usd.SchemaRegistry` (the plugin registered them).
+//! - **L4 `schema.apply_roundtrip`** — the smoke fixture applies one of the
+//!   `*API` schemas to a prim, and its authored attributes survive a flatten
+//!   round-trip unchanged (the analogue of `python.stage_open`).
+//!
+//! Both kinds share the format-agnostic upper levels:
+//!
 //! - **L5 `golden.roundtrip`** — `usdcat --flatten` output matches a committed
 //!   golden, when one exists (else SKIP).
 //! - **L6 `usdview.launch`** — `usdview --quitAfterStartup` opens the stage and
@@ -65,7 +79,15 @@ pub struct Session<'a> {
 }
 
 /// Run execution levels 2..=`up_to` for `bundle` against `session`.
+///
+/// A schema bundle runs the schema contract (registration + apply round-trip) in
+/// place of the file-format discovery/read levels; both share the upper
+/// (format-agnostic) golden and usdview levels.
 pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnostic> {
+    if bundle.manifest.kind() == PluginKind::UsdSchema {
+        return run_schema_levels(bundle, session, up_to);
+    }
+
     let mut diags = Vec::new();
     if up_to >= 2 {
         diags.push(level2_discovery(bundle, session));
@@ -75,6 +97,26 @@ pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnost
     }
     if up_to >= 4 {
         diags.push(level4_stage_open(bundle, session));
+    }
+    if up_to >= 5 {
+        diags.push(level5_golden(bundle, session));
+    }
+    if up_to >= 6 {
+        diags.push(level6_usdview(bundle, session, None));
+    }
+    diags
+}
+
+/// Execution levels for a schema bundle. There is no file extension to discover
+/// and no custom `Read()` to exercise, so L2/L4 verify the schema contract; L3
+/// (`usdcat.read`) has no schema analogue and is omitted.
+fn run_schema_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    if up_to >= 2 {
+        diags.push(level2_schema_registration(bundle, session));
+    }
+    if up_to >= 4 {
+        diags.push(level4_schema_apply_roundtrip(bundle, session));
     }
     if up_to >= 5 {
         diags.push(level5_golden(bundle, session));
@@ -119,6 +161,162 @@ fn smoke_fixture(bundle: &Bundle) -> Option<Utf8PathBuf> {
         .or_else(|| bundle.manifest.all_fixtures().first().copied())?;
     Some(bundle.path(rel))
 }
+
+/// The schema type names this bundle registers, from `provides`
+/// (`usd-schema:<TypeName>`), e.g. `VrmHumanoidAPI`.
+fn schema_type_names(bundle: &Bundle) -> Vec<String> {
+    bundle
+        .manifest
+        .provides
+        .iter()
+        .filter_map(|p| p.strip_prefix("usd-schema:").map(str::to_string))
+        .collect()
+}
+
+/// Render schema type names as a Python list literal, e.g. `['A', 'B']`.
+fn py_name_list(names: &[String]) -> String {
+    let items: Vec<String> = names.iter().map(|n| format!("'{n}'")).collect();
+    format!("[{}]", items.join(", "))
+}
+
+fn level2_schema_registration(bundle: &Bundle, session: &Session) -> Diagnostic {
+    const ID: &str = "schema.registration";
+    let names = schema_type_names(bundle);
+    if names.is_empty() {
+        return Diagnostic::skip(
+            ID,
+            2,
+            "no schema types declared (set `provides: usd-schema:<TypeName>`)",
+        );
+    }
+    let Some(python) = &session.python else {
+        return Diagnostic::skip(ID, 2, "no python interpreter on the session PATH");
+    };
+
+    // Ask USD's schema registry whether each declared type is known. Codeless
+    // schemas register here too (that is the point — no C++ required).
+    let script = format!(
+        r#"import sys
+from pxr import Usd
+names = {names}
+def known(n):
+    try:
+        return Usd.SchemaRegistry.GetSchemaKind(n) != Usd.SchemaKind.Invalid
+    except Exception:
+        return False
+missing = [n for n in names if not known(n)]
+if missing:
+    sys.stderr.write('unregistered schema types: ' + ', '.join(missing))
+sys.exit(0 if not missing else 7)
+"#,
+        names = py_name_list(&names)
+    );
+    let out = session.probe.run(python, &["-c", &script]);
+    if out.unspawned() {
+        return Diagnostic::fail(
+            ID,
+            2,
+            format!("could not run python ({python})"),
+            vec!["ensure the runtime python is on PATH".into()],
+        );
+    }
+    if out.ok() {
+        Diagnostic::pass(
+            ID,
+            2,
+            format!("USD schema registry knows {}", names.join(", ")),
+        )
+    } else {
+        Diagnostic::fail(
+            ID,
+            2,
+            format!("schema types not registered: {}", tail(&out.stderr)),
+            vec![
+                "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
+                "verify plugInfo.json declares the schema `Types` (run `usdGenSchema`)".into(),
+            ],
+        )
+    }
+}
+
+fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnostic {
+    const ID: &str = "schema.apply_roundtrip";
+    let names = schema_type_names(bundle);
+    if names.is_empty() {
+        return Diagnostic::skip(ID, 4, "no schema types declared (set `provides`)");
+    }
+    let Some(python) = &session.python else {
+        return Diagnostic::skip(ID, 4, "no python interpreter on the session PATH");
+    };
+    let Some(fixture) = smoke_fixture(bundle) else {
+        return Diagnostic::skip(ID, 4, "no smoke fixture declared");
+    };
+    if !fixture.as_std_path().is_file() {
+        return Diagnostic::fail(ID, 4, format!("fixture '{fixture}' is missing"), vec![]);
+    }
+
+    // Open the fixture, find a prim with one of the schema APIs applied, snapshot
+    // its authored attributes, flatten the stage, re-open, and assert the API is
+    // still applied and the attribute values are unchanged. `__NAMES__`/
+    // `__FIXTURE__` are substituted (not `format!`-interpolated) so the script's
+    // Python dict/set literals keep their braces.
+    let path = fixture.to_string().replace('\\', "/");
+    let script = SCHEMA_ROUNDTRIP_PY
+        .replace("__NAMES__", &py_name_list(&names))
+        .replace("__FIXTURE__", &format!("'{path}'"));
+    let out = session.probe.run(python, &["-c", &script]);
+    if out.unspawned() {
+        return Diagnostic::fail(ID, 4, format!("could not run python ({python})"), vec![]);
+    }
+    if out.ok() {
+        Diagnostic::pass(
+            ID,
+            4,
+            "schema applies to a prim and authored attributes survive a flatten round-trip",
+        )
+    } else {
+        Diagnostic::fail(
+            ID,
+            4,
+            format!("schema apply/round-trip failed: {}", tail(&out.stderr)),
+            vec![
+                "confirm the fixture's `apiSchemas` names a registered schema (Level 2)".into(),
+                "check the applied attributes are declared by the schema".into(),
+            ],
+        )
+    }
+}
+
+/// Python for L4: apply-and-round-trip. Markers are substituted before running.
+const SCHEMA_ROUNDTRIP_PY: &str = r#"
+import sys
+from pxr import Usd
+names = __NAMES__
+stage = Usd.Stage.Open(__FIXTURE__)
+if not stage:
+    sys.stderr.write('could not open the fixture stage')
+    sys.exit(8)
+target = None
+for prim in stage.Traverse():
+    if any(n in prim.GetAppliedSchemas() for n in names):
+        target = prim
+        break
+if target is None:
+    sys.stderr.write('no prim applies any of: ' + ', '.join(names))
+    sys.exit(9)
+before = {a.GetName(): a.Get() for a in target.GetAttributes() if a.HasAuthoredValue()}
+flat = stage.Flatten()
+restage = Usd.Stage.Open(flat)
+reprim = restage.GetPrimAtPath(target.GetPath())
+if not reprim or not any(n in reprim.GetAppliedSchemas() for n in names):
+    sys.stderr.write('API schema not applied after flatten round-trip')
+    sys.exit(10)
+after = {a.GetName(): a.Get() for a in reprim.GetAttributes() if a.HasAuthoredValue()}
+if before != after:
+    sys.stderr.write('attribute values changed across round-trip: %r -> %r' % (before, after))
+    sys.exit(11)
+sys.exit(0)
+"#;
 
 fn level2_discovery(bundle: &Bundle, session: &Session) -> Diagnostic {
     const ID: &str = "plugin.discovery";
@@ -429,6 +627,95 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
             manifest,
         };
         (dir, bundle)
+    }
+
+    fn schema_bundle_with_fixture() -> (tempdir_like::Dir, Bundle) {
+        let dir = tempdir_like::Dir::new("levels-schema");
+        std::fs::create_dir_all(dir.path.join("tests/fixtures").as_std_path()).unwrap();
+        std::fs::write(
+            dir.path.join("tests/fixtures/basic.usda").as_std_path(),
+            "#usda 1.0\ndef Xform \"Root\" (prepend apiSchemas = [\"VrmSchemaAPI\"]) {}\n",
+        )
+        .unwrap();
+        let manifest = PluginManifest::parse(
+            r#"
+plugin: { name: vrm-schema, version: 0.1.0, kind: usd-schema }
+runtime: { openusd: ">=25.05,<27.0" }
+schema: { codeless: true }
+provides: ["usd-schema:VrmSchemaAPI"]
+usd: { plug_info: plugin/resources/vrm-schema/plugInfo.json }
+tests: { smoke: ["tests/fixtures/basic.usda"] }
+"#,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            root: dir.path.clone(),
+            manifest,
+        };
+        (dir, bundle)
+    }
+
+    #[test]
+    fn schema_levels_replace_fileformat_levels_and_pass() {
+        let (_d, bundle) = schema_bundle_with_fixture();
+        // Both the registration and round-trip scripts run `python` and succeed.
+        let probe = FakeProbe::new().on("python", Some(0), "", "");
+        let session = Session {
+            probe: &probe,
+            usdcat: None,
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+        let diags = run_levels(&bundle, &session, 4);
+        let ids: Vec<&str> = diags.iter().map(|d| d.id.as_str()).collect();
+        // The schema contract runs in place of the file-format discovery/read levels.
+        assert!(ids.contains(&"schema.registration"));
+        assert!(ids.contains(&"schema.apply_roundtrip"));
+        assert!(!ids.contains(&"plugin.discovery"));
+        assert!(!ids.contains(&"usdcat.read"));
+        let by_id = |id: &str| diags.iter().find(|d| d.id == id).unwrap().status;
+        assert_eq!(by_id("schema.registration"), Status::Pass);
+        assert_eq!(by_id("schema.apply_roundtrip"), Status::Pass);
+    }
+
+    #[test]
+    fn schema_registration_fails_when_type_unregistered() {
+        let (_d, bundle) = schema_bundle_with_fixture();
+        let probe = FakeProbe::new().on(
+            "python",
+            Some(7),
+            "",
+            "unregistered schema types: VrmSchemaAPI",
+        );
+        let session = Session {
+            probe: &probe,
+            usdcat: None,
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+        let d = &run_levels(&bundle, &session, 2)[0];
+        assert_eq!(d.id, "schema.registration");
+        assert_eq!(d.status, Status::Fail);
+        assert!(!d.suggested_actions.is_empty());
+    }
+
+    #[test]
+    fn schema_levels_skip_without_python() {
+        let (_d, bundle) = schema_bundle_with_fixture();
+        let probe = FakeProbe::new();
+        let session = Session {
+            probe: &probe,
+            usdcat: None,
+            python: None,
+            usdview: None,
+            has_display: false,
+        };
+        let diags = run_levels(&bundle, &session, 4);
+        let by_id = |id: &str| diags.iter().find(|d| d.id == id).unwrap().status;
+        assert_eq!(by_id("schema.registration"), Status::Skip);
+        assert_eq!(by_id("schema.apply_roundtrip"), Status::Skip);
     }
 
     #[test]

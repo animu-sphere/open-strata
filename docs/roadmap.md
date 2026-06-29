@@ -309,10 +309,17 @@ no generator, and the harness models only file-format bundles. Ranked:
   so this supports co-locating a compiled schema in a file-format plugin without a
   second bundle or `--with` orchestration. Splitting later is mechanical (move the
   schema sources + `Types` block to a new `plugInfo`).
-- ⬜ **Schema test contract.** The schema analogue of the file-format L4
-  `stage_open`: assert the classes register (`Usd.SchemaRegistry`), an `*API`
-  applies to a prim, and authored attributes round-trip. Covers either bundle
-  shape (standalone or co-located).
+- 🚧 **Schema test contract.** **Landed:** `ost plugin test` runs schema-specific
+  execution levels in place of the file-format discovery/read levels — **L2
+  `schema.registration`** (the declared `provides: usd-schema:<Type>` are known to
+  `Usd.SchemaRegistry`) and **L4 `schema.apply_roundtrip`** (the smoke fixture
+  applies an `*API` to a prim and its authored attributes survive a flatten
+  round-trip), sharing the format-agnostic L5/L6. `ost plugin doctor`'s L2+ SKIP
+  placeholders mirror these ids per kind, and the scaffold fixture now authors a
+  valid USD identifier namespace (`{{ident}}`, e.g. `vrm_schema:`) so it opens on
+  a real runtime. All Probe-unit-tested; covers either bundle shape (standalone or
+  co-located). **Still ⬜:** verify end-to-end against a real OpenUSD runtime (like
+  the other Phase 4b levels).
 - ⬜ **Per-variant `cxx_abi` in the source manifest.** The L1 ABI check correctly
   caught a stale scalar value, but the manifest field is single-valued while the
   correct ABI is per-target (`msvc143` Windows / `libstdcxx` Linux / `libcxx`

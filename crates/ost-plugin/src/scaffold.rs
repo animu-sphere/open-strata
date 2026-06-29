@@ -106,6 +106,11 @@ struct Vars {
     name: String,
     pascal: String,
     upper: String,
+    /// `name` as a valid USD identifier (hyphens/spaces → `_`). USD prim and
+    /// property names — including schema attribute namespaces like
+    /// `{{ident}}:example` — must match `[A-Za-z_][A-Za-z0-9_]*`, so a hyphenated
+    /// plugin name (`vrm-schema`) cannot be used there verbatim.
+    ident: String,
     extension: String,
 }
 
@@ -114,6 +119,7 @@ impl Vars {
         s.replace("{{name}}", &self.name)
             .replace("{{Name}}", &self.pascal)
             .replace("{{NAME}}", &self.upper)
+            .replace("{{ident}}", &self.ident)
             .replace("{{extension}}", &self.extension)
     }
 }
@@ -130,6 +136,15 @@ fn to_pascal(name: &str) -> String {
                 None => String::new(),
             }
         })
+        .collect()
+}
+
+/// Convert a plugin name to a valid USD identifier base: replace each `-`/space
+/// with `_` (USD prim/property names allow only `[A-Za-z_][A-Za-z0-9_]*`).
+/// `validate_name` guarantees the name already starts with a letter.
+fn to_ident(name: &str) -> String {
+    name.chars()
+        .map(|c| if c == '-' || c == ' ' { '_' } else { c })
         .collect()
 }
 
@@ -220,6 +235,7 @@ pub fn scaffold(
         name: name.to_string(),
         pascal: to_pascal(name),
         upper: to_pascal(name).to_ascii_uppercase(),
+        ident: to_ident(name),
         extension,
     };
 
@@ -267,6 +283,13 @@ mod tests {
         assert_eq!(to_pascal("toy"), "Toy");
         assert_eq!(to_pascal("my-fmt"), "MyFmt");
         assert_eq!(to_pascal("my_cool_fmt"), "MyCoolFmt");
+    }
+
+    #[test]
+    fn idents_replace_hyphens_and_spaces() {
+        assert_eq!(to_ident("vrm-schema"), "vrm_schema");
+        assert_eq!(to_ident("my cool fmt"), "my_cool_fmt");
+        assert_eq!(to_ident("toy"), "toy");
     }
 
     #[test]
@@ -362,6 +385,15 @@ mod tests {
         );
         assert!(plug_info.contains("VrmSchemaAPI"));
         assert!(!plug_info.contains("LibraryPath"));
+
+        // The fixture applies the API and uses a *valid* USD identifier namespace
+        // (`vrm_schema:`, not the hyphenated bundle name) so it opens on a real
+        // runtime for the L4 apply/round-trip level.
+        let fixture =
+            std::fs::read_to_string(dir.join("tests/fixtures/basic.usda").as_std_path()).unwrap();
+        assert!(fixture.contains("apiSchemas = [\"VrmSchemaAPI\"]"));
+        assert!(fixture.contains("vrm_schema:example"));
+        assert!(!fixture.contains("vrm-schema:example"));
 
         // The scaffolded bundle passes the static L0 diagnostics.
         let report = crate::diagnose(&bundle, &crate::RuntimeContext::default(), 0);

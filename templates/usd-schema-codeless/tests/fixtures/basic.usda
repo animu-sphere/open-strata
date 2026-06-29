@@ -7,5 +7,5 @@ def Xform "Root" (
     prepend apiSchemas = ["{{Name}}API"]
 )
 {
-    uniform token {{name}}:example = "hello"
+    uniform token {{ident}}:example = "hello"
 }

@@ -153,10 +153,19 @@ pub fn diagnose(bundle: &Bundle, ctx: &RuntimeContext, up_to_level: u8) -> Docto
         } else {
             "needs a real OpenUSD runtime (current backend is mock or absent)"
         };
-        diags.push(Diagnostic::skip("plugin.discovery", 2, reason));
-        diags.push(Diagnostic::skip("usdcat.read", 3, reason));
-        diags.push(Diagnostic::skip("python.stage_open", 4, reason));
-        diags.push(Diagnostic::skip("golden.roundtrip", 5, reason));
+        // Mirror the ids `run_levels` would emit so doctor's SKIP placeholders and
+        // an executed `ost plugin test` agree per kind. A schema bundle has no
+        // file extension to discover or read, so it gets the schema contract ids.
+        if bundle.manifest.kind() == crate::model::PluginKind::UsdSchema {
+            diags.push(Diagnostic::skip("schema.registration", 2, reason));
+            diags.push(Diagnostic::skip("schema.apply_roundtrip", 4, reason));
+            diags.push(Diagnostic::skip("golden.roundtrip", 5, reason));
+        } else {
+            diags.push(Diagnostic::skip("plugin.discovery", 2, reason));
+            diags.push(Diagnostic::skip("usdcat.read", 3, reason));
+            diags.push(Diagnostic::skip("python.stage_open", 4, reason));
+            diags.push(Diagnostic::skip("golden.roundtrip", 5, reason));
+        }
     }
 
     DoctorReport { diagnostics: diags }
@@ -1058,6 +1067,22 @@ usd: { plug_info: plugin/resources/vrm/plugInfo.json }
         let types = diag(&report, "bundle.plug_info.schema_types");
         assert_eq!(types.status, Status::Fail);
         assert!(types.observed.contains("LibraryPath"));
+    }
+
+    #[test]
+    fn schema_bundle_skips_l2plus_with_schema_level_ids() {
+        let (_dir, bundle) = codeless_schema_bundle(r#"{ "VrmSchemaAPI": { "bases": [] } }"#, None);
+        // up_to 2 triggers the L2+ SKIP placeholders.
+        let report = diagnose(&bundle, &RuntimeContext::default(), 2);
+        assert_eq!(diag(&report, "schema.registration").status, Status::Skip);
+        assert_eq!(diag(&report, "schema.apply_roundtrip").status, Status::Skip);
+        // The file-format placeholder ids are not emitted for a schema bundle, so
+        // doctor's SKIPs match the ids an executed `ost plugin test` would report.
+        assert!(report
+            .diagnostics
+            .iter()
+            .all(|d| d.id != "plugin.discovery"));
+        assert!(report.diagnostics.iter().all(|d| d.id != "usdcat.read"));
     }
 
     struct TempDir {
