@@ -28,9 +28,10 @@ them. Each release is a coherent slice, not a phase boundary.
     below. Done (✅): codeless `usd-schema` template + codeless-aware L0 doctor
     (e2e-hardened so it registers on a real runtime), the schema test contract
     (L2/L4, verified e2e on OpenUSD 26.08), co-hosting a schema in an existing
-    bundle, and per-variant `cxx_abi`. Remaining (⬜, blocked on `usdGenSchema`
-    being absent from the local installs): the `usdGenSchema` regenerate/merge
-    build step and the compiled (non-codeless) schema variant.
+    bundle, per-variant `cxx_abi`, and the `usdGenSchema` regenerate build step
+    (verified e2e on OpenUSD 26.08). Remaining (⬜): the compiled (non-codeless)
+    schema variant and automating the `usdGenSchema` `Types` *merge* into a
+    co-hosting bundle's existing `plugInfo.json`.
   - **Phase 4 close-out (B)** — P3 repo-shape scaffold and `ost doctor`
     structuring (§14.5), both tagged `(v0.4.0)` in-place below.
   - Out of scope (deferred): `plugin publish` + the runtime×plugin CI matrix
@@ -326,14 +327,26 @@ no generator, and the harness models only file-format bundles. Ranked:
   bundle co-hosting a codeless schema passes L2/L4. This is the co-location lean
   realized for the codeless case (commit the `Types` + `generatedSchema.usda` into
   the existing bundle — no second bundle, no `--with`).
-- ⬜ **usdGenSchema build step + compiled-schema variant** (blocked on
-  `usdGenSchema`, which is absent from the available local USD installs). Two
-  pieces remain: (1) run `usdGenSchema` through `ost plugin build` to *regenerate*
-  the codeless resources (and **merge** generated `Types` into a co-hosting
-  bundle's existing `plugInfo.json`) rather than relying on the committed copies;
-  (2) a *compiled* (non-codeless) schema template — the typed-C++ shape an importer
-  calls (`VrmHumanoidAPI::Apply`), which keeps the L0 library checks. Both need
-  `usdGenSchema` on a runtime to build and verify.
+- ✅ **`usdGenSchema` build step.** `ost plugin build` on a schema bundle runs the
+  template's `usdGenSchema` `CMakeLists.txt` step to regenerate the codeless
+  resources (`plugInfo.json` + `generatedSchema.usda`). The fix that made it work:
+  the build now composes the runtime **session** env (not just the MSVC delta) so
+  usdGenSchema can load `pxr` and resolve the base USD schemas
+  (`@usd/schema.usda@`); and ost parses the regenerated `plugInfo.json` as
+  JSON-with-comments (usdGenSchema writes a `#` banner). Note `usdGenSchema` itself
+  must be present in the runtime and needs `jinja2`/`PyYAML` — OpenUSD skips
+  installing it when those are absent at USD build time. **Verified end-to-end
+  against an adopted OpenUSD 26.08**: build → regenerate → `ost plugin test`
+  L0..L4 PASS.
+- ⬜ **Compiled (non-codeless) schema variant** — a typed-C++ schema template the
+  importer can call (`VrmHumanoidAPI::Apply`), keeping the L0 library checks. Needs
+  `usdGenSchema` to emit C++ and a compile against USD; the codeless path covers
+  the data-contract case today.
+- ⬜ **`usdGenSchema` `Types` merge into a co-hosting bundle.** For a co-hosting
+  build, merge the regenerated schema `Types` into a bundle's *existing*
+  `plugInfo.json` (which already carries an `SdfFileFormat` entry) rather than
+  overwriting it. Co-hosting works today by committing the `Types` +
+  `generatedSchema.usda`; this automates the regenerate path for that shape.
 - ✅ **Per-variant `cxx_abi` in the source manifest.** `runtime.cxx_abi` now
   accepts a scalar (`msvc143`), a per-OS map
   (`{ windows: msvc143, linux: libstdcxx, macos: libcxx }`), or the `inherit`
