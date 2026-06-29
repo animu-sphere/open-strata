@@ -20,7 +20,7 @@ them. Each release is a coherent slice, not a phase boundary.
   `plugin build|test`, MSVC bootstrap, loadable `plugInfo.json`, real USD-version
   detection, `plugin package` artifacts, the fmt/clippy/test CI gates, and the
   plugin bundle `license` field.
-- 🚧 **v0.4.0 — the schema plugin kind.** Where 0.3.0 made the *file-format*
+- ✅ **v0.4.0 — the schema plugin kind.** Where 0.3.0 made the *file-format*
   bundle path solid, 0.4.0 adds `usd-schema` as a first-class kind and closes the
   remaining Phase 4 scaffold/diagnostic gaps. Phase 6-independent. Scope:
   - **Schema bundles (A)** — the
@@ -30,8 +30,10 @@ them. Each release is a coherent slice, not a phase boundary.
     (L2/L4, verified e2e on OpenUSD 26.08), co-hosting a schema in an existing
     bundle, per-variant `cxx_abi`, the `usdGenSchema` regenerate build step, and
     the `usdGenSchema` `Types` *merge* into a co-hosting bundle's existing
-    `plugInfo.json` (all verified e2e on OpenUSD 26.08). Remaining (⬜): only the
-    compiled (non-codeless) schema variant.
+    `plugInfo.json` (all verified e2e on OpenUSD 26.08). **Deferred to a later
+    release:** the compiled (non-codeless) schema variant — the codeless +
+    co-hosting paths cover the data-contract use case; the typed-C++ importer API
+    is a heavier, separable increment.
   - **Phase 4 close-out (B)** — P3 repo-shape scaffold and `ost doctor`
     structuring (§14.5), both tagged `(v0.4.0)` in-place below.
   - Out of scope (deferred): `plugin publish` + the runtime×plugin CI matrix
