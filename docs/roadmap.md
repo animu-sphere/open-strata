@@ -62,11 +62,13 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
 - ✅ Digest-bearing runtime manifest (`runtime.json`, deterministic digest)
 - ✅ `ost doctor` (host descriptor, host tool detection, runtime report;
   deterministic exit: 0 healthy / precondition code (4) on issues)
-- ⬜ **(v0.4.0)** `ost doctor` structuring (§14.5): issues as
-  `{id, severity, summary, next_action}`, runtime `kind`
-  (mock/adopted/built/downloaded) + execution capabilities, and `warnings`
-  (e.g. `MOCK_RUNTIME_ACTIVE`); absorbs the agent "status" need into `doctor`
-  rather than a new command. Touches the runtime manifest schema
+- ✅ **(v0.4.0)** `ost doctor` structuring (§14.5): issues are now structured
+  `{id, severity, summary, next_action}` (human + `--json`), the runtime report
+  surfaces `kind` (mock/adopted/built/downloaded, derived from the manifest
+  `source` — no schema change) plus its execution capability (real OpenUSD vs
+  static-only), and an active mock runtime emits a `MOCK_RUNTIME_ACTIVE`
+  *warning* that does not fail the run (only `error`-severity issues do). Absorbs
+  the agent "status" need into `doctor` rather than a new command
 - ✅ `ost runtime validate` (schema, digest integrity, layout; records outcome
   in the manifest; deterministic exit)
 - ✅ `ost runtime explain` (delivered in Phase 3)
