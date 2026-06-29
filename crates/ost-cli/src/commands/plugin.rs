@@ -466,6 +466,22 @@ fn build(
     run_step(&cmake, &configure_args, &build_env)?;
     run_step(&cmake, &build_args, &build_env)?;
 
+    // A co-hosting bundle (a non-schema kind that also declares `usd-schema:`)
+    // regenerates its schema with usdGenSchema and *merges* the Types into its
+    // existing plugInfo.json — usdGenSchema overwrites a whole file, so a co-host
+    // must merge rather than clobber its SdfFileFormat entry. (A pure schema
+    // bundle regenerates via its own CMakeLists usdGenSchema target above.)
+    if bundle.manifest.kind() != PluginKind::UsdSchema
+        && !bundle.manifest.schema_provides().is_empty()
+    {
+        regenerate_cohosted_schema(
+            &bundle,
+            &r.artifact_prefix,
+            &target_dir.join("schema-gen"),
+            &build_env,
+        )?;
+    }
+
     // Record the compiler so the next build can detect a change. The plugin
     // build writes no full target lock, so this lives beside the toolchain.
     let record = target_dir.join("compiler.lock.json");
@@ -932,6 +948,67 @@ fn standalone_session_env(bundle: &Bundle, with: &[Bundle], os: Os) -> EnvSet {
         with,
         os,
     )
+}
+
+/// Regenerate a co-hosting bundle's schema with usdGenSchema and merge the
+/// generated `Types` into its existing `plugInfo.json`, copying the flattened
+/// `generatedSchema.usda` beside it. Runs the runtime's `usdGenSchema` script via
+/// `python` in the composed `build_env` (so `pxr` loads and the base USD schemas
+/// resolve). A no-op — keeping the committed resources — when the bundle ships no
+/// `schema.usda` or the runtime has no `usdGenSchema`.
+fn regenerate_cohosted_schema(
+    bundle: &Bundle,
+    artifact_prefix: &Utf8Path,
+    staging: &Utf8Path,
+    build_env: &[(String, String)],
+) -> Result<()> {
+    let schema_src = bundle.path("schema.usda");
+    if !schema_src.as_std_path().is_file() {
+        return Ok(()); // no schema source to regenerate from
+    }
+    // The usdGenSchema *script* in the runtime bin, run via `python` so we need no
+    // bare-name/`.cmd` resolution and stay cross-platform.
+    let gen_script = artifact_prefix.join("bin/usdGenSchema");
+    if !gen_script.as_std_path().is_file() {
+        println!(
+            "==> usdGenSchema not in the runtime; keeping the committed co-hosted schema resources"
+        );
+        return Ok(());
+    }
+
+    reset_dir(staging)?; // also (re)creates the dir
+    println!("==> regenerating co-hosted schema with usdGenSchema");
+    run_step(
+        std::path::Path::new("python"),
+        &[
+            gen_script.to_string(),
+            schema_src.to_string(),
+            staging.to_string(),
+        ],
+        build_env,
+    )?;
+
+    // Merge the generated schema Types into the bundle's plugInfo.json.
+    let target_pi = bundle.plug_info();
+    let generated_pi = staging.join("plugInfo.json");
+    let target_src = std::fs::read_to_string(target_pi.as_std_path())
+        .map_err(|e| Error::io(target_pi.to_string(), e))?;
+    let generated_src = std::fs::read_to_string(generated_pi.as_std_path())
+        .map_err(|e| Error::io(generated_pi.to_string(), e))?;
+    let merged = ost_plugin::merge_schema_types(&target_src, &generated_src)
+        .map_err(|e| Error::Operation(format!("merging schema Types: {e}")))?;
+    std::fs::write(target_pi.as_std_path(), merged)
+        .map_err(|e| Error::io(target_pi.to_string(), e))?;
+
+    // Copy the flattened schema definition beside the plugInfo (registration needs it).
+    let generated_schema = staging.join("generatedSchema.usda");
+    if generated_schema.as_std_path().is_file() {
+        let dest = bundle.plug_info_root().join("generatedSchema.usda");
+        std::fs::copy(generated_schema.as_std_path(), dest.as_std_path())
+            .map_err(|e| Error::io(dest.to_string(), e))?;
+    }
+    println!("    merged schema Types into {target_pi}");
+    Ok(())
 }
 
 fn reset_dir(dir: &Utf8Path) -> Result<()> {

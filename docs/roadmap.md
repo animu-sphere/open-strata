@@ -28,10 +28,10 @@ them. Each release is a coherent slice, not a phase boundary.
     below. Done (✅): codeless `usd-schema` template + codeless-aware L0 doctor
     (e2e-hardened so it registers on a real runtime), the schema test contract
     (L2/L4, verified e2e on OpenUSD 26.08), co-hosting a schema in an existing
-    bundle, per-variant `cxx_abi`, and the `usdGenSchema` regenerate build step
-    (verified e2e on OpenUSD 26.08). Remaining (⬜): the compiled (non-codeless)
-    schema variant and automating the `usdGenSchema` `Types` *merge* into a
-    co-hosting bundle's existing `plugInfo.json`.
+    bundle, per-variant `cxx_abi`, the `usdGenSchema` regenerate build step, and
+    the `usdGenSchema` `Types` *merge* into a co-hosting bundle's existing
+    `plugInfo.json` (all verified e2e on OpenUSD 26.08). Remaining (⬜): only the
+    compiled (non-codeless) schema variant.
   - **Phase 4 close-out (B)** — P3 repo-shape scaffold and `ost doctor`
     structuring (§14.5), both tagged `(v0.4.0)` in-place below.
   - Out of scope (deferred): `plugin publish` + the runtime×plugin CI matrix
@@ -342,11 +342,15 @@ no generator, and the harness models only file-format bundles. Ranked:
   importer can call (`VrmHumanoidAPI::Apply`), keeping the L0 library checks. Needs
   `usdGenSchema` to emit C++ and a compile against USD; the codeless path covers
   the data-contract case today.
-- ⬜ **`usdGenSchema` `Types` merge into a co-hosting bundle.** For a co-hosting
-  build, merge the regenerated schema `Types` into a bundle's *existing*
-  `plugInfo.json` (which already carries an `SdfFileFormat` entry) rather than
-  overwriting it. Co-hosting works today by committing the `Types` +
-  `generatedSchema.usda`; this automates the regenerate path for that shape.
+- ✅ **`usdGenSchema` `Types` merge into a co-hosting bundle.** `ost plugin build`
+  on a co-hosting bundle (a non-schema kind shipping a `schema.usda` and declaring
+  `usd-schema:<Type>`) runs usdGenSchema to a staging dir and **merges** the
+  generated schema `Types` into the bundle's *existing* `plugInfo.json` —
+  preserving the `SdfFileFormat` entry usdGenSchema would otherwise clobber — then
+  copies `generatedSchema.usda` beside it. Backed by a pure, unit-tested
+  `merge_schema_types`. **Verified e2e on OpenUSD 26.08:** the file-format type is
+  kept alongside the merged schema, and `ost plugin test` passes L2/L4. A no-op
+  (committed resources kept) when there is no `schema.usda` or no usdGenSchema.
 - ✅ **Per-variant `cxx_abi` in the source manifest.** `runtime.cxx_abi` now
   accepts a scalar (`msvc143`), a per-OS map
   (`{ windows: msvc143, linux: libstdcxx, macos: libcxx }`), or the `inherit`
