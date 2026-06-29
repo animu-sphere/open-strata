@@ -1538,7 +1538,7 @@ Used by:
 - ost-platform 0.3.0
 - ost-plugin 0.3.0
 - ost-runtime 0.3.0
-- anyhow 1.0.86 — https://github.com/dtolnay/anyhow
+- anyhow 1.0.103 — https://github.com/dtolnay/anyhow
 - directories 6.0.0 — https://github.com/soc/directories-rs
 - dirs-sys 0.5.0 — https://github.com/dirs-dev/dirs-sys-rs
 - itoa 1.0.18 — https://github.com/dtolnay/itoa
