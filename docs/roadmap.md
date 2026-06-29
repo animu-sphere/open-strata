@@ -25,10 +25,12 @@ them. Each release is a coherent slice, not a phase boundary.
   remaining Phase 4 scaffold/diagnostic gaps. Phase 6-independent. Scope:
   - **Schema bundles (A)** — the
     [Phase 4 — schema-bundle backlog](#phase-4--schema-bundle-backlog-from-downstream-plugin-dogfooding-reports-34)
-    below: the codeless `usd-schema` template + codeless-aware L0 doctor (✅ done),
-    then the `usdGenSchema` build step + compiled-schema variant,
-    schema-in-an-existing-bundle, the schema test contract, and per-variant
-    `cxx_abi`.
+    below. Done (✅): codeless `usd-schema` template + codeless-aware L0 doctor
+    (e2e-hardened so it registers on a real runtime), the schema test contract
+    (L2/L4, verified e2e on OpenUSD 26.08), co-hosting a schema in an existing
+    bundle, and per-variant `cxx_abi`. Remaining (⬜, blocked on `usdGenSchema`
+    being absent from the local installs): the `usdGenSchema` regenerate/merge
+    build step and the compiled (non-codeless) schema variant.
   - **Phase 4 close-out (B)** — P3 repo-shape scaffold and `ost doctor`
     structuring (§14.5), both tagged `(v0.4.0)` in-place below.
   - Out of scope (deferred): `plugin publish` + the runtime×plugin CI matrix
@@ -300,32 +302,38 @@ no generator, and the harness models only file-format bundles. Ranked:
   `ost plugin doctor` L0 is now **codeless-aware** — it SKIPs
   `plugin.shared_library` and validates the `Types` block via a new
   `bundle.plug_info.schema_types` check instead of `bundle.plug_info.library_path`,
-  so a valid resource-only schema no longer hard-fails. Verified by unit tests +
-  a CLI scaffold/inspect smoke.
-- ⬜ **`usd-schema` build step + compiled-schema variant.** Exercise the template's
-  `usdGenSchema` `CMakeLists.txt` end-to-end through `ost plugin build` against a
-  real runtime (gated on a runtime, like the other Phase 4b execution levels), and
-  add a *compiled* (non-codeless) schema template — the typed-C++ shape an importer
-  can call (`VrmHumanoidAPI::Apply`), which keeps the L0 library checks.
-- ⬜ **Add a schema to an *existing* bundle.** Not only scaffold a standalone
-  `usd-schema`: a `schema.usda` + a build step that runs `usdGenSchema` and
-  **merges** the generated `Types` into a bundle's existing `plugInfo.json` (which
-  already carries an `SdfFileFormat` entry), reusing the `plugin build` env. USD
-  permits one `plugInfo`/library to provide both a file format and schema types,
-  so this supports co-locating a compiled schema in a file-format plugin without a
-  second bundle or `--with` orchestration. Splitting later is mechanical (move the
-  schema sources + `Types` block to a new `plugInfo`).
-- 🚧 **Schema test contract.** **Landed:** `ost plugin test` runs schema-specific
-  execution levels in place of the file-format discovery/read levels — **L2
-  `schema.registration`** (the declared `provides: usd-schema:<Type>` are known to
-  `Usd.SchemaRegistry`) and **L4 `schema.apply_roundtrip`** (the smoke fixture
-  applies an `*API` to a prim and its authored attributes survive a flatten
+  so a valid resource-only schema no longer hard-fails. **E2e-hardened against a
+  real OpenUSD 26.08:** the scaffold now commits *registerable* resources — a
+  correct `Types` entry (`schemaIdentifier`/`schemaKind`/`bases`, no
+  self-referential `alias`) plus a flattened `generatedSchema.usda` beside it — so
+  a codeless schema registers in `Usd.SchemaRegistry` and applies out of the box
+  with no build step.
+- ✅ **Schema test contract (L2/L4), verified e2e.** `ost plugin test` runs
+  schema-specific execution levels in place of the file-format discovery/read
+  levels — **L2 `schema.registration`** (the `provides: usd-schema:<Type>` are
+  known to `Usd.SchemaRegistry`) and **L4 `schema.apply_roundtrip`** (the smoke
+  fixture applies an `*API` to a prim and its authored attributes survive a flatten
   round-trip), sharing the format-agnostic L5/L6. `ost plugin doctor`'s L2+ SKIP
-  placeholders mirror these ids per kind, and the scaffold fixture now authors a
-  valid USD identifier namespace (`{{ident}}`, e.g. `vrm_schema:`) so it opens on
-  a real runtime. All Probe-unit-tested; covers either bundle shape (standalone or
-  co-located). **Still ⬜:** verify end-to-end against a real OpenUSD runtime (like
-  the other Phase 4b levels).
+  placeholders mirror these ids per kind, and the scaffold fixture authors a valid
+  USD identifier namespace (`{{ident}}`, e.g. `vrm_schema:`). **Verified end-to-end
+  against an adopted OpenUSD 26.08** (both levels PASS); also Probe-unit-tested.
+- ✅ **Co-host a schema in an *existing* bundle (the consumable half).** USD lets
+  one `plugInfo` provide both an `SdfFileFormat` and schema types; a bundle of any
+  kind that declares `usd-schema:<Type>` in `provides` now runs the schema contract
+  (L2/L4) *alongside* its primary-kind levels (gated on the explicit `provides`,
+  not inferred `Info.Types`, so a file-format's own type is never mistaken for a
+  schema). doctor's SKIP placeholders mirror it. Verified e2e: a `usd-fileformat`
+  bundle co-hosting a codeless schema passes L2/L4. This is the co-location lean
+  realized for the codeless case (commit the `Types` + `generatedSchema.usda` into
+  the existing bundle — no second bundle, no `--with`).
+- ⬜ **usdGenSchema build step + compiled-schema variant** (blocked on
+  `usdGenSchema`, which is absent from the available local USD installs). Two
+  pieces remain: (1) run `usdGenSchema` through `ost plugin build` to *regenerate*
+  the codeless resources (and **merge** generated `Types` into a co-hosting
+  bundle's existing `plugInfo.json`) rather than relying on the committed copies;
+  (2) a *compiled* (non-codeless) schema template — the typed-C++ shape an importer
+  calls (`VrmHumanoidAPI::Apply`), which keeps the L0 library checks. Both need
+  `usdGenSchema` on a runtime to build and verify.
 - ✅ **Per-variant `cxx_abi` in the source manifest.** `runtime.cxx_abi` now
   accepts a scalar (`msvc143`), a per-OS map
   (`{ windows: msvc143, linux: libstdcxx, macos: libcxx }`), or the `inherit`
