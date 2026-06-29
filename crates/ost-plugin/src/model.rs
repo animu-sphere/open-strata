@@ -209,6 +209,18 @@ impl PluginManifest {
         self.plugin.kind
     }
 
+    /// The schema type identifiers this bundle *declares* via `provides`
+    /// (`usd-schema:<TypeName>`), e.g. `VrmHumanoidAPI`. This is the explicit,
+    /// declaration-only signal — unlike inferring types from the `plugInfo.json`,
+    /// it never mistakes a file-format plugin's own `Info.Types` for a schema — so
+    /// it is the gate for whether a non-schema bundle *co-hosts* a schema.
+    pub fn schema_provides(&self) -> Vec<&str> {
+        self.provides
+            .iter()
+            .filter_map(|p| p.strip_prefix("usd-schema:"))
+            .collect()
+    }
+
     /// Whether this bundle is a *codeless* schema: `kind: usd-schema` with
     /// `schema.codeless: true`. Such a bundle has no shared library — its entire
     /// contribution is the `plugInfo.json` `Types` block — so the L0 library

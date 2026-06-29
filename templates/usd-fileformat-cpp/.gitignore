@@ -2,3 +2,7 @@
 /build/
 /lib/
 .strata/
+
+# Python bytecode (USD tooling and plugin tests run Python).
+__pycache__/
+*.pyc

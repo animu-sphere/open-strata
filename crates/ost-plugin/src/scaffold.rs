@@ -92,6 +92,12 @@ const USD_SCHEMA_CODELESS: &[TemplateFile] = &[
         ),
     ),
     tf(
+        "plugin/resources/{{name}}/generatedSchema.usda",
+        include_str!(
+            "../../../templates/usd-schema-codeless/plugin/resources/{{name}}/generatedSchema.usda"
+        ),
+    ),
+    tf(
         "tests/fixtures/basic.usda",
         include_str!("../../../templates/usd-schema-codeless/tests/fixtures/basic.usda"),
     ),

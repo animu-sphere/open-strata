@@ -3,17 +3,20 @@
 Scaffolded by `ost plugin new usd-schema {{name}}`.
 
 This is a **codeless** schema: it ships no compiled C++ and no shared library.
-`usdGenSchema` turns `schema.usda` into the bundle's resources, and USD registers
-the classes entirely from `plugInfo.json`'s `Types` block.
+USD registers the classes entirely from `plugInfo.json`'s `Types` block plus the
+flattened `generatedSchema.usda`. Both are committed and correct out of the box,
+so the schema registers on a real runtime **without** a build step — `usdGenSchema`
+only *re*-generates them from `schema.usda` when you change the contract.
 
 ## Layout
 
 ```
-openstrata.plugin.yaml                     bundle contract (identity, runtime range, codeless flag)
-schema.usda                                authored class definitions (the source of truth)
-CMakeLists.txt                             runs usdGenSchema to (re)generate the resources
-plugin/resources/{{name}}/plugInfo.json    USD plugin registration (Types block; the build product)
-tests/fixtures/basic.usda                  applies {{Name}}API to a prim
+openstrata.plugin.yaml                          bundle contract (identity, runtime range, codeless flag)
+schema.usda                                     authored class definitions (the source of truth)
+CMakeLists.txt                                  re-runs usdGenSchema to regenerate the resources
+plugin/resources/{{name}}/plugInfo.json         USD plugin registration (Types block)
+plugin/resources/{{name}}/generatedSchema.usda  flattened schema definition (registration needs it)
+tests/fixtures/basic.usda                       applies {{Name}}API to a prim
 ```
 
 ## Workflow

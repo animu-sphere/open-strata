@@ -2,3 +2,7 @@
 /build/
 /lib/
 .strata/
+
+# Python bytecode (usdGenSchema and schema tests run Python).
+__pycache__/
+*.pyc
