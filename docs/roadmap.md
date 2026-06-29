@@ -23,10 +23,12 @@ them. Each release is a coherent slice, not a phase boundary.
 - 🚧 **v0.4.0 — the schema plugin kind.** Where 0.3.0 made the *file-format*
   bundle path solid, 0.4.0 adds `usd-schema` as a first-class kind and closes the
   remaining Phase 4 scaffold/diagnostic gaps. Phase 6-independent. Scope:
-  - **Schema bundles (A)** — the four items in
+  - **Schema bundles (A)** — the
     [Phase 4 — schema-bundle backlog](#phase-4--schema-bundle-backlog-from-downstream-plugin-dogfooding-reports-34)
-    below: `usd-schema` template + codeless-aware L0, schema-in-an-existing-bundle,
-    the schema test contract, and per-variant `cxx_abi`.
+    below: the codeless `usd-schema` template + codeless-aware L0 doctor (✅ done),
+    then the `usdGenSchema` build step + compiled-schema variant,
+    schema-in-an-existing-bundle, the schema test contract, and per-variant
+    `cxx_abi`.
   - **Phase 4 close-out (B)** — P3 repo-shape scaffold and `ost doctor`
     structuring (§14.5), both tagged `(v0.4.0)` in-place below.
   - Out of scope (deferred): `plugin publish` + the runtime×plugin CI matrix
@@ -283,18 +285,22 @@ target being tested, not silently accept host-default metadata.
 typed-schema kind (`usd-schema`). `ost plugin new` advertises that kind but ships
 no generator, and the harness models only file-format bundles. Ranked:
 
-- 🚧 **`usd-schema` template + codeless-aware L0.** **Landed:** the embedded
+- ✅ **`usd-schema` (codeless) template + codeless-aware L0 doctor.** The embedded
   `usd-schema-codeless` template (starter `schema.usda` with one single-apply
   `*API` + the `customData` library block and `skipCodeGeneration`, a resource-only
   `plugInfo.json`, a `usdGenSchema` `CMakeLists.txt`, and an apply-the-API
-  fixture); `ost plugin new usd-schema` scaffolds it. The manifest gained a
-  `schema.codeless` flag (`is_codeless_schema()`), and `ost plugin doctor` L0 is
-  now **codeless-aware** — it SKIPs `plugin.shared_library` and validates the
-  `Types` block via a new `bundle.plug_info.schema_types` check instead of
-  `bundle.plug_info.library_path`, so a valid resource-only schema no longer
-  hard-fails. **Still ⬜:** exercise the `usdGenSchema` build step end-to-end
-  against a real runtime (`ost plugin build`); a *compiled* (non-codeless) schema
-  template.
+  fixture); `ost plugin new usd-schema` scaffolds it instead of erroring. The
+  manifest gained a `schema.codeless` flag (`is_codeless_schema()`), and
+  `ost plugin doctor` L0 is now **codeless-aware** — it SKIPs
+  `plugin.shared_library` and validates the `Types` block via a new
+  `bundle.plug_info.schema_types` check instead of `bundle.plug_info.library_path`,
+  so a valid resource-only schema no longer hard-fails. Verified by unit tests +
+  a CLI scaffold/inspect smoke.
+- ⬜ **`usd-schema` build step + compiled-schema variant.** Exercise the template's
+  `usdGenSchema` `CMakeLists.txt` end-to-end through `ost plugin build` against a
+  real runtime (gated on a runtime, like the other Phase 4b execution levels), and
+  add a *compiled* (non-codeless) schema template — the typed-C++ shape an importer
+  can call (`VrmHumanoidAPI::Apply`), which keeps the L0 library checks.
 - ⬜ **Add a schema to an *existing* bundle.** Not only scaffold a standalone
   `usd-schema`: a `schema.usda` + a build step that runs `usdGenSchema` and
   **merges** the generated `Types` into a bundle's existing `plugInfo.json` (which
