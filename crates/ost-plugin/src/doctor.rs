@@ -207,7 +207,7 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
         ));
     } else {
         match std::fs::read_to_string(plug_info.as_std_path()) {
-            Ok(src) => match serde_json::from_str::<serde_json::Value>(&src) {
+            Ok(src) => match crate::plug_info::parse_plug_info(&src) {
                 Ok(json) => {
                     diags.push(Diagnostic::pass(
                         "bundle.plug_info",

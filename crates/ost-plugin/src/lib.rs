@@ -20,6 +20,7 @@ mod bundle;
 mod doctor;
 mod levels;
 mod model;
+mod plug_info;
 mod report;
 mod scaffold;
 mod session;

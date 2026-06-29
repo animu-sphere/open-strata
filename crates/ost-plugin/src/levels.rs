@@ -201,7 +201,7 @@ fn schema_types_from_plug_info(bundle: &Bundle) -> Vec<String> {
     let Ok(src) = std::fs::read_to_string(bundle.plug_info().as_std_path()) else {
         return Vec::new();
     };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&src) else {
+    let Ok(json) = crate::plug_info::parse_plug_info(&src) else {
         return Vec::new();
     };
     let Some(plugins) = json.get("Plugins").and_then(|v| v.as_array()) else {
