@@ -448,8 +448,23 @@ fn build(
     // `ost build` does, so a plugin build need not be wrapped in a vcvars shell.
     let msvc_env = maybe_bootstrap_msvc(tgt.os());
 
-    run_step(&cmake, &configure_args, &msvc_env)?;
-    run_step(&cmake, &build_args, &msvc_env)?;
+    // A schema bundle's build runs `usdGenSchema` as a CMake step, which loads
+    // `pxr` and resolves the base USD schemas (`@usd/schema.usda@`, where
+    // `APISchemaBase` is defined) through the plugin registry. That needs the
+    // runtime *session* env (`PXR_PLUGINPATH_NAME`, `PYTHONPATH`, the USD bin on
+    // the loader path) — not just the MSVC delta a compile needs. Compose both for
+    // a schema or schema-co-hosting build; a plain file-format build is unchanged.
+    let build_env = if bundle.manifest.kind() == PluginKind::UsdSchema
+        || !bundle.manifest.schema_provides().is_empty()
+    {
+        let session = session_env_with(&r.env, &bundle, &[], tgt.os());
+        compose_build_env(&msvc_env, &session)
+    } else {
+        msvc_env
+    };
+
+    run_step(&cmake, &configure_args, &build_env)?;
+    run_step(&cmake, &build_args, &build_env)?;
 
     // Record the compiler so the next build can detect a change. The plugin
     // build writes no full target lock, so this lives beside the toolchain.
@@ -1247,6 +1262,27 @@ fn finish(report: &DoctorReport) -> Result<()> {
         // validation mismatch (§14.4), so exit with that category code.
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
+}
+
+/// Compose the build environment for a schema bundle: the MSVC delta (compiler
+/// `PATH`/`LIB`/`INCLUDE`, when bootstrapped) plus the runtime *session* env that
+/// `usdGenSchema` needs (`PXR_PLUGINPATH_NAME`, `PYTHONPATH`, USD on the loader
+/// `PATH`). The session is resolved *over* a base carrying the MSVC delta, so its
+/// `PATH` prepends USD's entries in front of the compiler's rather than dropping
+/// them; case-variant keys (`Path` vs `PATH`) are folded so the original `PATH`
+/// is not duplicated. The MSVC-only keys (`LIB`/`INCLUDE`/`LIBPATH`), which the
+/// session does not carry, are kept by listing the delta first.
+fn compose_build_env(msvc_env: &[(String, String)], session: &EnvSet) -> Vec<(String, String)> {
+    let mut base: std::collections::HashMap<String, String> = std::env::vars().collect();
+    for (k, v) in msvc_env {
+        // Drop any case-variant of this key first so the case-folding lookup in
+        // `resolve_over` is unambiguous (Windows spells the search path `Path`).
+        base.retain(|bk, _| !bk.eq_ignore_ascii_case(k));
+        base.insert(k.clone(), v.clone());
+    }
+    let mut env = msvc_env.to_vec();
+    env.extend(session.resolve_over(&base));
+    env
 }
 
 fn run_step(program: &std::path::Path, args: &[String], env: &[(String, String)]) -> Result<()> {
