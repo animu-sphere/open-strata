@@ -20,7 +20,10 @@ if(NOT pxr_FOUND)
     find_package(pxr CONFIG REQUIRED)
 endif()
 
-file(GLOB _entries LIST_DIRECTORIES true RELATIVE
+# `CONFIGURE_DEPENDS` makes the build re-glob and reconfigure when a bundle is
+# added or removed, so a later `cmake --build` picks up new `ost plugin new`
+# bundles without a manual reconfigure.
+file(GLOB _entries LIST_DIRECTORIES true CONFIGURE_DEPENDS RELATIVE
      "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/*")
 foreach(_entry ${_entries})
     set(_bundle "${CMAKE_CURRENT_SOURCE_DIR}/${_entry}")

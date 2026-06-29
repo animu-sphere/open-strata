@@ -162,15 +162,48 @@ fn smoke_fixture(bundle: &Bundle) -> Option<Utf8PathBuf> {
     Some(bundle.path(rel))
 }
 
-/// The schema type names this bundle registers, from `provides`
-/// (`usd-schema:<TypeName>`), e.g. `VrmHumanoidAPI`.
+/// The schema type names this bundle registers. Primary source is `provides`
+/// (`usd-schema:<TypeName>`), e.g. `VrmHumanoidAPI`. When `provides` declares
+/// none — a bundle whose types live only in the generated `plugInfo.json` — fall
+/// back to the `Info.Types` keys so L2/L4 still verify them instead of SKIPping
+/// green (the L0 `bundle.plug_info.schema_types` check reads the same block).
 fn schema_type_names(bundle: &Bundle) -> Vec<String> {
-    bundle
+    let from_provides: Vec<String> = bundle
         .manifest
         .provides
         .iter()
         .filter_map(|p| p.strip_prefix("usd-schema:").map(str::to_string))
-        .collect()
+        .collect();
+    if !from_provides.is_empty() {
+        return from_provides;
+    }
+    schema_types_from_plug_info(bundle)
+}
+
+/// The schema type names declared under every plugin's `Info.Types` in the
+/// bundle's `plugInfo.json`. Empty when the file is absent/unreadable or carries
+/// no `Types` block.
+fn schema_types_from_plug_info(bundle: &Bundle) -> Vec<String> {
+    let Ok(src) = std::fs::read_to_string(bundle.plug_info().as_std_path()) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&src) else {
+        return Vec::new();
+    };
+    let Some(plugins) = json.get("Plugins").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for plugin in plugins {
+        if let Some(types) = plugin
+            .get("Info")
+            .and_then(|info| info.get("Types"))
+            .and_then(|t| t.as_object())
+        {
+            names.extend(types.keys().cloned());
+        }
+    }
+    names
 }
 
 /// Render schema type names as a Python list literal, e.g. `['A', 'B']`.
@@ -716,6 +749,40 @@ tests: { smoke: ["tests/fixtures/basic.usda"] }
         let by_id = |id: &str| diags.iter().find(|d| d.id == id).unwrap().status;
         assert_eq!(by_id("schema.registration"), Status::Skip);
         assert_eq!(by_id("schema.apply_roundtrip"), Status::Skip);
+    }
+
+    #[test]
+    fn schema_type_names_fall_back_to_plug_info_when_provides_is_empty() {
+        // A schema bundle that forgot `provides` but whose types live in the
+        // generated plugInfo.json must still be verified (not SKIP green).
+        let dir = tempdir_like::Dir::new("levels-schema-fallback");
+        std::fs::create_dir_all(dir.path.join("plugin/resources/vrm").as_std_path()).unwrap();
+        std::fs::write(
+            dir.path
+                .join("plugin/resources/vrm/plugInfo.json")
+                .as_std_path(),
+            r#"{ "Plugins": [ { "Info": { "Types": { "VrmHumanoidAPI": { "bases": [] } } } } ] }"#,
+        )
+        .unwrap();
+        let manifest = PluginManifest::parse(
+            r#"
+plugin: { name: vrm, version: 0.1.0, kind: usd-schema }
+runtime: { openusd: ">=25.05,<27.0" }
+schema: { codeless: true }
+usd: { plug_info: plugin/resources/vrm/plugInfo.json }
+"#,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            root: dir.path.clone(),
+            manifest,
+        };
+        // `provides` is empty, so the names come from the plugInfo `Info.Types`.
+        assert!(bundle.manifest.provides.is_empty());
+        assert_eq!(
+            schema_type_names(&bundle),
+            vec!["VrmHumanoidAPI".to_string()]
+        );
     }
 
     #[test]
