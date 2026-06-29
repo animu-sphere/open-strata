@@ -164,6 +164,12 @@ pub fn diagnose(bundle: &Bundle, ctx: &RuntimeContext, up_to_level: u8) -> Docto
             diags.push(Diagnostic::skip("plugin.discovery", 2, reason));
             diags.push(Diagnostic::skip("usdcat.read", 3, reason));
             diags.push(Diagnostic::skip("python.stage_open", 4, reason));
+            // A co-hosted schema (another kind that also declares
+            // `usd-schema:<Type>`) runs the schema contract too — mirror its ids.
+            if !bundle.manifest.schema_provides().is_empty() {
+                diags.push(Diagnostic::skip("schema.registration", 2, reason));
+                diags.push(Diagnostic::skip("schema.apply_roundtrip", 4, reason));
+            }
             diags.push(Diagnostic::skip("golden.roundtrip", 5, reason));
         }
     }

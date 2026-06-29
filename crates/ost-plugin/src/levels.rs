@@ -98,6 +98,20 @@ pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnost
     if up_to >= 4 {
         diags.push(level4_stage_open(bundle, session));
     }
+    // A bundle of another kind (e.g. a file-format plugin) may *co-host* a schema
+    // — declare `usd-schema:<Type>` and register schema types from the same
+    // plugInfo (USD allows one plugInfo to provide both an SdfFileFormat and
+    // schema types). Gate on the explicit `provides` declaration (not inferred
+    // plugInfo Types, which would catch the file-format's own type), then run the
+    // schema contract alongside the primary-kind levels.
+    if !bundle.manifest.schema_provides().is_empty() {
+        if up_to >= 2 {
+            diags.push(level2_schema_registration(bundle, session));
+        }
+        if up_to >= 4 {
+            diags.push(level4_schema_apply_roundtrip(bundle, session));
+        }
+    }
     if up_to >= 5 {
         diags.push(level5_golden(bundle, session));
     }
@@ -783,6 +797,72 @@ usd: { plug_info: plugin/resources/vrm/plugInfo.json }
             schema_type_names(&bundle),
             vec!["VrmHumanoidAPI".to_string()]
         );
+    }
+
+    #[test]
+    fn fileformat_co_hosting_a_schema_runs_both_contracts() {
+        // A file-format bundle that also declares `usd-schema:<Type>` in provides
+        // runs the schema levels alongside the file-format ones.
+        let dir = tempdir_like::Dir::new("levels-cohost");
+        std::fs::create_dir_all(dir.path.join("tests/fixtures").as_std_path()).unwrap();
+        std::fs::write(dir.path.join("tests/fixtures/basic.toy").as_std_path(), "x").unwrap();
+        let manifest = PluginManifest::parse(
+            r#"
+plugin: { name: toy, version: 0.1.0, kind: usd-fileformat }
+runtime: { openusd: ">=25.05,<27.0" }
+provides: ["usd-fileformat:toy", "usd-schema:ToyAPI"]
+usd: { plug_info: plugin/resources/toy/plugInfo.json }
+tests: { smoke: ["tests/fixtures/basic.toy"] }
+"#,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            root: dir.path.clone(),
+            manifest,
+        };
+        let probe =
+            FakeProbe::new()
+                .on("python", Some(0), "", "")
+                .on("usdcat", Some(0), "#usda 1.0\n", "");
+        let session = Session {
+            probe: &probe,
+            usdcat: Some("usdcat".into()),
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+        let ids: Vec<String> = run_levels(&bundle, &session, 4)
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        // Both the file-format and the co-hosted schema contracts ran.
+        assert!(ids.iter().any(|i| i == "plugin.discovery"));
+        assert!(ids.iter().any(|i| i == "python.stage_open"));
+        assert!(ids.iter().any(|i| i == "schema.registration"));
+        assert!(ids.iter().any(|i| i == "schema.apply_roundtrip"));
+    }
+
+    #[test]
+    fn plain_fileformat_does_not_run_schema_levels() {
+        // A file-format bundle with no `usd-schema:` in provides must NOT trigger
+        // the schema contract — its own plugInfo `Info.Types` is not a schema.
+        let (_d, bundle) = bundle_with_fixture();
+        let probe = FakeProbe::new()
+            .on("python", Some(0), "", "")
+            .on("usdcat", Some(0), "x", "");
+        let session = Session {
+            probe: &probe,
+            usdcat: Some("usdcat".into()),
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+        let ids: Vec<String> = run_levels(&bundle, &session, 4)
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert!(ids.iter().all(|i| i != "schema.registration"));
+        assert!(ids.iter().all(|i| i != "schema.apply_roundtrip"));
     }
 
     #[test]
