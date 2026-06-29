@@ -283,17 +283,18 @@ target being tested, not silently accept host-default metadata.
 typed-schema kind (`usd-schema`). `ost plugin new` advertises that kind but ships
 no generator, and the harness models only file-format bundles. Ranked:
 
-- ⬜ **`usd-schema` template + codeless-aware L0.** `ost plugin new usd-schema`
-  errors (`no template yet for kind 'usd-schema'`,
-  [scaffold.rs](../crates/ost-plugin/src/scaffold.rs)) — the KIND enum is plumbed
-  ahead of the generator. Ship a starter `schema.usda` (one single-apply `*API` +
-  the `customData` library block) and an owned `usdGenSchema` build step (reuses
-  the `plugin test` env that already puts `usdGenSchema` + Python on PATH). A
-  schema build has no hand-written `.cpp`; a **codeless** schema has no shared
-  library at all, so the L0 `plugin.shared_library` / `bundle.plug_info.library_path`
-  checks must become **codeless-aware** — skip them and validate the `Types` /
-  `"isCodeless": true` block instead, or doctor hard-fails a valid resource-only
-  schema.
+- 🚧 **`usd-schema` template + codeless-aware L0.** **Landed:** the embedded
+  `usd-schema-codeless` template (starter `schema.usda` with one single-apply
+  `*API` + the `customData` library block and `skipCodeGeneration`, a resource-only
+  `plugInfo.json`, a `usdGenSchema` `CMakeLists.txt`, and an apply-the-API
+  fixture); `ost plugin new usd-schema` scaffolds it. The manifest gained a
+  `schema.codeless` flag (`is_codeless_schema()`), and `ost plugin doctor` L0 is
+  now **codeless-aware** — it SKIPs `plugin.shared_library` and validates the
+  `Types` block via a new `bundle.plug_info.schema_types` check instead of
+  `bundle.plug_info.library_path`, so a valid resource-only schema no longer
+  hard-fails. **Still ⬜:** exercise the `usdGenSchema` build step end-to-end
+  against a real runtime (`ost plugin build`); a *compiled* (non-codeless) schema
+  template.
 - ⬜ **Add a schema to an *existing* bundle.** Not only scaffold a standalone
   `usd-schema`: a `schema.usda` + a build step that runs `usdGenSchema` and
   **merges** the generated `Types` into a bundle's existing `plugInfo.json` (which

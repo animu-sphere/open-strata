@@ -3,8 +3,8 @@
 //!
 //! Templates live under `templates/<kind>-<lang>/` and are compiled into the
 //! binary. Files (and path components) carry `{{token}}` placeholders that are
-//! substituted per invocation. Today only the `usd-fileformat-cpp` template
-//! exists; `usd-asset-resolver` and `usd-schema` slot in alongside it.
+//! substituted per invocation. Today `usd-fileformat-cpp` and
+//! `usd-schema-codeless` exist; `usd-asset-resolver` slots in alongside them.
 
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -58,6 +58,42 @@ const USD_FILEFORMAT_CPP: &[TemplateFile] = &[
     tf(
         "tests/fixtures/invalid.{{extension}}",
         include_str!("../../../templates/usd-fileformat-cpp/tests/fixtures/invalid.{{extension}}"),
+    ),
+];
+
+/// The `usd-schema-codeless` template: a resource-only (codeless) API schema —
+/// no C++, no shared library; usdGenSchema turns `schema.usda` into the bundle's
+/// `plugInfo.json` `Types` block.
+const USD_SCHEMA_CODELESS: &[TemplateFile] = &[
+    tf(
+        "openstrata.plugin.yaml",
+        include_str!("../../../templates/usd-schema-codeless/openstrata.plugin.yaml"),
+    ),
+    tf(
+        "CMakeLists.txt",
+        include_str!("../../../templates/usd-schema-codeless/CMakeLists.txt"),
+    ),
+    tf(
+        "README.md",
+        include_str!("../../../templates/usd-schema-codeless/README.md"),
+    ),
+    tf(
+        ".gitignore",
+        include_str!("../../../templates/usd-schema-codeless/.gitignore"),
+    ),
+    tf(
+        "schema.usda",
+        include_str!("../../../templates/usd-schema-codeless/schema.usda"),
+    ),
+    tf(
+        "plugin/resources/{{name}}/plugInfo.json",
+        include_str!(
+            "../../../templates/usd-schema-codeless/plugin/resources/{{name}}/plugInfo.json"
+        ),
+    ),
+    tf(
+        "tests/fixtures/basic.usda",
+        include_str!("../../../templates/usd-schema-codeless/tests/fixtures/basic.usda"),
     ),
 ];
 
@@ -147,9 +183,10 @@ pub fn scaffold(
 
     let files = match kind {
         PluginKind::UsdFileformat => USD_FILEFORMAT_CPP,
+        PluginKind::UsdSchema => USD_SCHEMA_CODELESS,
         other => {
             return Err(Error::Operation(format!(
-                "no template yet for kind '{}' (4a ships usd-fileformat; others follow)",
+                "no template yet for kind '{}' (ships usd-fileformat + usd-schema; others follow)",
                 other.as_str()
             )))
         }
@@ -292,6 +329,43 @@ mod tests {
             "../../../lib/libToyFileFormat{}",
             std::env::consts::DLL_SUFFIX
         )));
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn scaffolds_a_codeless_schema_bundle() {
+        let dir = unique_tmp("scaffold-schema");
+        // A schema needs no --extension.
+        let files = scaffold(PluginKind::UsdSchema, "vrm-schema", None, &dir).expect("scaffold");
+
+        // The schema source, the resource-only plugInfo.json, and the manifest landed.
+        assert!(files.iter().any(|f| f.as_str() == "schema.usda"));
+        assert!(files
+            .iter()
+            .any(|f| f.as_str() == "plugin/resources/vrm-schema/plugInfo.json"));
+        // No shared-library source or .in template for a codeless schema.
+        assert!(files.iter().all(|f| !f.as_str().ends_with(".in")));
+
+        // Placeholders are substituted and the bundle loads as a codeless schema.
+        let bundle = crate::Bundle::load(&dir).expect("loads");
+        assert_eq!(bundle.manifest.name(), "vrm-schema");
+        assert_eq!(bundle.manifest.kind(), PluginKind::UsdSchema);
+        assert!(bundle.manifest.is_codeless_schema());
+
+        // The committed plugInfo.json declares the schema type with no token left
+        // and no LibraryPath (it is resource-only).
+        let plug_info = std::fs::read_to_string(bundle.plug_info().as_std_path()).unwrap();
+        assert!(
+            !plug_info.contains("{{"),
+            "placeholder left in plugInfo.json"
+        );
+        assert!(plug_info.contains("VrmSchemaAPI"));
+        assert!(!plug_info.contains("LibraryPath"));
+
+        // The scaffolded bundle passes the static L0 diagnostics.
+        let report = crate::diagnose(&bundle, &crate::RuntimeContext::default(), 0);
+        assert!(report.passed(), "scaffolded schema should pass L0");
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }

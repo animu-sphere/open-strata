@@ -89,6 +89,19 @@ pub struct UsdSection {
     pub plug_info: String,
 }
 
+/// Schema-specific bundle settings; only meaningful when `plugin.kind` is
+/// `usd-schema`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaSection {
+    /// A *codeless* schema ships only resources — an enriched `plugInfo.json`
+    /// with a `Types` block (and a `generatedSchema.usda`) — with no generated
+    /// C++ and therefore no shared library. The L0 library checks
+    /// (`plugin.shared_library`, `bundle.plug_info.library_path`) do not apply to
+    /// it; doctor validates the schema `Types` block instead.
+    #[serde(default)]
+    pub codeless: bool,
+}
+
 /// Fixtures consumed by each verification level. All optional.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tests {
@@ -116,6 +129,10 @@ pub struct PluginManifest {
     #[serde(default)]
     pub requires: Requires,
     pub usd: UsdSection,
+    /// Schema-specific settings; only meaningful when `plugin.kind` is
+    /// `usd-schema`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<SchemaSection>,
     /// Bundle-relative paths to third-party notice/license files (e.g. for
     /// vendored dependencies). Validated as bundle-relative at load and copied
     /// into the package by `ost plugin package`.
@@ -138,6 +155,15 @@ impl PluginManifest {
 
     pub fn kind(&self) -> PluginKind {
         self.plugin.kind
+    }
+
+    /// Whether this bundle is a *codeless* schema: `kind: usd-schema` with
+    /// `schema.codeless: true`. Such a bundle has no shared library — its entire
+    /// contribution is the `plugInfo.json` `Types` block — so the L0 library
+    /// checks must be skipped and the schema `Types` validated instead.
+    pub fn is_codeless_schema(&self) -> bool {
+        self.kind() == PluginKind::UsdSchema
+            && self.schema.as_ref().map(|s| s.codeless).unwrap_or(false)
     }
 
     /// All fixtures referenced across every test level, deduplicated in order.
@@ -225,6 +251,30 @@ tests:
                 "tests/fixtures/invalid.lumagraph"
             ]
         );
+    }
+
+    #[test]
+    fn codeless_schema_is_detected_from_kind_and_flag() {
+        let codeless = "plugin:\n  name: vrmSchema\n  version: 0.1.0\n  kind: usd-schema\n\
+                        runtime:\n  openusd: \">=24.11,<27.0\"\nschema:\n  codeless: true\n\
+                        usd:\n  plug_info: plugin/resources/vrmSchema/plugInfo.json\n";
+        let m = PluginManifest::parse(codeless).expect("manifest parses");
+        assert_eq!(m.kind(), PluginKind::UsdSchema);
+        assert!(m.is_codeless_schema());
+
+        // A schema without the flag is a *compiled* schema — the library checks apply.
+        let compiled = "plugin:\n  name: vrmSchema\n  version: 0.1.0\n  kind: usd-schema\n\
+                        runtime:\n  openusd: \">=24.11,<27.0\"\n\
+                        usd:\n  plug_info: plugin/resources/vrmSchema/plugInfo.json\n";
+        assert!(!PluginManifest::parse(compiled)
+            .unwrap()
+            .is_codeless_schema());
+
+        // The flag only means codeless on a schema, never on a file-format plugin.
+        let fmt = "plugin:\n  name: toy\n  version: 0.1.0\n  kind: usd-fileformat\n\
+                   runtime:\n  openusd: \">=24.11,<27.0\"\nschema:\n  codeless: true\n\
+                   usd:\n  plug_info: p/plugInfo.json\n";
+        assert!(!PluginManifest::parse(fmt).unwrap().is_codeless_schema());
     }
 
     #[test]

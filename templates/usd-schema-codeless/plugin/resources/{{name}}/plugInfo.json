@@ -1,0 +1,19 @@
+{
+    "Plugins": [
+        {
+            "Type": "resource",
+            "Name": "{{name}}",
+            "Root": ".",
+            "ResourcePath": "resources",
+            "Info": {
+                "Types": {
+                    "{{Name}}API": {
+                        "bases": ["UsdAPISchemaBase"],
+                        "autoApply": [],
+                        "schemaKind": "singleApplyAPI"
+                    }
+                }
+            }
+        }
+    ]
+}

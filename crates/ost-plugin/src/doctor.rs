@@ -199,7 +199,15 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
                         0,
                         format!("valid JSON at '{}'", m.usd.plug_info),
                     ));
-                    diags.push(check_plug_info_library_paths(bundle, &json, target_os));
+                    // A codeless schema is resource-only: it declares schema
+                    // `Types` and ships no shared library, so the library-path
+                    // checks would hard-fail a perfectly valid bundle. Validate
+                    // the `Types` block instead.
+                    if m.is_codeless_schema() {
+                        diags.push(check_plug_info_schema_types(&json));
+                    } else {
+                        diags.push(check_plug_info_library_paths(bundle, &json, target_os));
+                    }
                 }
                 Err(e) => diags.push(Diagnostic::fail(
                     "bundle.plug_info",
@@ -217,22 +225,31 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
         }
     }
 
-    // plugin.shared_library — a built artifact in lib/.
-    match find_shared_library(bundle) {
-        Some(name) => diags.push(Diagnostic::pass(
+    // plugin.shared_library — a built artifact in lib/. A codeless schema ships
+    // no library at all, so this check does not apply to it.
+    if m.is_codeless_schema() {
+        diags.push(Diagnostic::skip(
             "plugin.shared_library",
             0,
-            format!("found lib/{name}"),
-        )),
-        None => diags.push(Diagnostic::fail(
-            "plugin.shared_library",
-            0,
-            "no shared library (.so/.dll/.dylib) in lib/",
-            vec![format!(
-                "build it with `ost plugin build {}`",
-                m.plugin.name
-            )],
-        )),
+            "codeless schema: resource-only, no shared library",
+        ));
+    } else {
+        match find_shared_library(bundle) {
+            Some(name) => diags.push(Diagnostic::pass(
+                "plugin.shared_library",
+                0,
+                format!("found lib/{name}"),
+            )),
+            None => diags.push(Diagnostic::fail(
+                "plugin.shared_library",
+                0,
+                "no shared library (.so/.dll/.dylib) in lib/",
+                vec![format!(
+                    "build it with `ost plugin build {}`",
+                    m.plugin.name
+                )],
+            )),
+        }
     }
 
     // bundle.fixtures — every referenced test fixture exists on disk.
@@ -582,6 +599,83 @@ fn check_plug_info_library_paths(
     )
 }
 
+/// Validate the `Types` block of a *codeless* schema's `plugInfo.json` — the
+/// resource-only analogue of [`check_plug_info_library_paths`].
+///
+/// A codeless schema registers its classes entirely through `plugInfo.json`:
+/// each plugin entry carries an `Info.Types` map (the schema class names) and,
+/// being resource-only, no `LibraryPath`. We assert that at least one schema
+/// type is declared and that the bundle does not also point at a library it does
+/// not ship.
+fn check_plug_info_schema_types(json: &serde_json::Value) -> Diagnostic {
+    const ID: &str = "bundle.plug_info.schema_types";
+
+    let Some(plugins) = json.get("Plugins").and_then(|v| v.as_array()) else {
+        return Diagnostic::fail(
+            ID,
+            0,
+            "plugInfo.json has no `Plugins` array",
+            vec!["add a USD `Plugins` entry declaring the schema `Info.Types`".into()],
+        );
+    };
+
+    let mut type_names = Vec::new();
+    let mut has_library_path = false;
+    for plugin in plugins {
+        if plugin
+            .get("LibraryPath")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty())
+        {
+            has_library_path = true;
+        }
+        if let Some(types) = plugin
+            .get("Info")
+            .and_then(|info| info.get("Types"))
+            .and_then(|t| t.as_object())
+        {
+            type_names.extend(types.keys().cloned());
+        }
+    }
+
+    if type_names.is_empty() {
+        return Diagnostic::fail(
+            ID,
+            0,
+            "codeless schema declares no types under any plugin's `Info.Types`",
+            vec![
+                "run `usdGenSchema schema.usda .` to populate the `Types` block".into(),
+                "or set `schema.codeless: false` if this schema ships a compiled library".into(),
+            ],
+        );
+    }
+
+    if has_library_path {
+        return Diagnostic::fail(
+            ID,
+            0,
+            format!(
+                "codeless schema declares {} type(s) but also a `LibraryPath` (codeless schemas ship no library)",
+                type_names.len()
+            ),
+            vec![
+                "drop the `LibraryPath` — a codeless schema is resource-only".into(),
+                "or set `schema.codeless: false` if it really ships a compiled library".into(),
+            ],
+        );
+    }
+
+    Diagnostic::pass(
+        ID,
+        0,
+        format!(
+            "codeless schema registers {} type(s): {}",
+            type_names.len(),
+            type_names.join(", ")
+        ),
+    )
+}
+
 fn check_runtime_lib_dirs(bundle: &Bundle) -> Diagnostic {
     const ID: &str = "bundle.runtime_libs";
 
@@ -872,6 +966,98 @@ usd: { plug_info: plugin/resources/toy/plugInfo.json }
         assert!(diag
             .observed
             .contains("not directories: third_party/zlib/bin"));
+    }
+
+    fn diag<'a>(report: &'a DoctorReport, id: &str) -> &'a Diagnostic {
+        report
+            .diagnostics
+            .iter()
+            .find(|d| d.id == id)
+            .unwrap_or_else(|| panic!("diagnostic '{id}' exists"))
+    }
+
+    /// Build a codeless-schema bundle whose plugInfo.json carries the given
+    /// `Info.Types` JSON object body and, optionally, a `LibraryPath`.
+    fn codeless_schema_bundle(types_body: &str, library_path: Option<&str>) -> (TempDir, Bundle) {
+        let dir = TempDir::new("doctor-schema");
+        std::fs::create_dir_all(dir.path.join("plugin/resources/vrm").as_std_path()).unwrap();
+        let lib_line = library_path
+            .map(|p| format!(",\n            \"LibraryPath\": \"{p}\""))
+            .unwrap_or_default();
+        let plug_info = format!(
+            r#"{{
+    "Plugins": [
+        {{
+            "Info": {{ "Types": {types_body} }},
+            "Name": "vrm",
+            "ResourcePath": "resources",
+            "Root": ".",
+            "Type": "resource"{lib_line}
+        }}
+    ]
+}}"#
+        );
+        std::fs::write(
+            dir.path
+                .join("plugin/resources/vrm/plugInfo.json")
+                .as_std_path(),
+            plug_info,
+        )
+        .unwrap();
+        let manifest = PluginManifest::parse(
+            r#"
+plugin: { name: vrm, version: 0.1.0, kind: usd-schema }
+runtime: { openusd: ">=25.05,<27.0" }
+schema: { codeless: true }
+usd: { plug_info: plugin/resources/vrm/plugInfo.json }
+"#,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            root: dir.path.clone(),
+            manifest,
+        };
+        (dir, bundle)
+    }
+
+    #[test]
+    fn codeless_schema_skips_library_and_validates_types() {
+        let (_dir, bundle) =
+            codeless_schema_bundle(r#"{ "VrmHumanoidAPI": { "bases": [] } }"#, None);
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+
+        // No shared library is required, and the library-path check is replaced
+        // by the schema-types check — which passes.
+        assert_eq!(diag(&report, "plugin.shared_library").status, Status::Skip);
+        let types = diag(&report, "bundle.plug_info.schema_types");
+        assert_eq!(types.status, Status::Pass);
+        assert!(types.observed.contains("VrmHumanoidAPI"));
+        // The library-path check does not run for a codeless schema.
+        assert!(report
+            .diagnostics
+            .iter()
+            .all(|d| d.id != "bundle.plug_info.library_path"));
+    }
+
+    #[test]
+    fn codeless_schema_fails_when_no_types_declared() {
+        let (_dir, bundle) = codeless_schema_bundle("{}", None);
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+        let types = diag(&report, "bundle.plug_info.schema_types");
+        assert_eq!(types.status, Status::Fail);
+        assert!(types.observed.contains("no types"));
+    }
+
+    #[test]
+    fn codeless_schema_fails_when_it_also_declares_a_library() {
+        let (_dir, bundle) = codeless_schema_bundle(
+            r#"{ "VrmHumanoidAPI": { "bases": [] } }"#,
+            Some("../../../lib/libVrm.so"),
+        );
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+        let types = diag(&report, "bundle.plug_info.schema_types");
+        assert_eq!(types.status, Status::Fail);
+        assert!(types.observed.contains("LibraryPath"));
     }
 
     struct TempDir {

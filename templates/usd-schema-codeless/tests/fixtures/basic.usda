@@ -1,0 +1,11 @@
+#usda 1.0
+(
+    doc = "Smoke fixture: applies {{Name}}API to a prim and authors its property."
+)
+
+def Xform "Root" (
+    prepend apiSchemas = ["{{Name}}API"]
+)
+{
+    uniform token {{name}}:example = "hello"
+}
