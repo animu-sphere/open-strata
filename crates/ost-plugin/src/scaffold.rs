@@ -388,6 +388,8 @@ mod tests {
         assert!(cmake.contains("-E env"));
         assert!(cmake.contains("PYTHONUTF8=1"));
         assert!(cmake.contains("PYTHONIOENCODING=utf-8"));
+        assert!(cmake.contains("USD_SCHEMA_PYTHON"));
+        assert!(cmake.contains("\"${USD_SCHEMA_PYTHON}\" \"${USD_GEN_SCHEMA}\""));
 
         // The committed plugInfo.json declares the schema type with no token left
         // and no LibraryPath (it is resource-only).

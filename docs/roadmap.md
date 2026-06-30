@@ -404,8 +404,9 @@ and surfaced these net-new items (post-0.4.0; candidates for the next release):
   doc string. The `ost`-owned schema step (the shipped build step and the compiled
   flow above) now sets `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8` in the composed
   schema build env; the codeless template's own CMake target does the same via
-  `cmake -E env` so direct CMake builds are protected too. The starter
-  `schema.usda` prose is ASCII, while edited UTF-8 doc text remains supported.
+  `cmake -E env` and invokes `python usdGenSchema ...` so direct CMake builds
+  are protected on Windows too. The starter `schema.usda` prose is ASCII, while
+  edited UTF-8 doc text remains supported.
 - ✅ **Schema name-composition guidance (the double-prefix footgun).**
   `usdGenSchema` prepends `libraryPrefix` to the class name for the C++/TfType, so a
   `libraryPrefix` equal to the plugin name plus a class already carrying that name
