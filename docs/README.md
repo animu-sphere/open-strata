@@ -6,6 +6,7 @@
 | [architecture.md](architecture.md) | Workspace layout, crate boundaries, and the domain model. |
 | [examples.md](examples.md) | Copy-pasteable examples for every `ost` command. |
 | [json-schema.md](json-schema.md) | The `--json` output contract: envelope, error codes, exit codes, and compatibility policy. |
+| [incident-notes.md](incident-notes.md) | Short debugging notes for incidents, root causes, fixes, and future guardrails. |
 | [roadmap.md](roadmap.md) | Phased delivery plan and current status. |
 | [phase-4-plugin-harness.md](phase-4-plugin-harness.md) | Phase 4 direction: the OpenUSD plugin verification harness, mapped onto the codebase. |
 | [dcc-hosts.md](dcc-hosts.md) | Direction: third-party DCC host support (Maya/Houdini/Nuke) — discovery, headless run/package, and cross-DCC USD compatibility. |

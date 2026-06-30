@@ -17,6 +17,7 @@ use indexmap::IndexMap;
 use ost_core::host::Os;
 
 use crate::bundle::Bundle;
+use crate::model::CxxAbi;
 use crate::version::{self, RangeError};
 
 /// Outcome of a single staged check.
@@ -81,6 +82,21 @@ impl Diagnostic {
             status: Status::Skip,
             observed: reason.into(),
             suggested_actions: Vec::new(),
+        }
+    }
+
+    pub(crate) fn skip_with_actions(
+        id: &str,
+        level: u8,
+        reason: impl Into<String>,
+        actions: Vec<String>,
+    ) -> Diagnostic {
+        Diagnostic {
+            id: id.into(),
+            level,
+            status: Status::Skip,
+            observed: reason.into(),
+            suggested_actions: actions,
         }
     }
 }
@@ -297,6 +313,12 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
     // bundle.runtime_libs — every loader-path directory declared by the bundle exists.
     diags.push(check_runtime_lib_dirs(bundle));
 
+    // schema.library_prefix — non-failing guidance for a usdGenSchema naming
+    // footgun: the generated C++/TfType name composes libraryPrefix + class name.
+    if let Some(hint) = check_schema_library_prefix(bundle) {
+        diags.push(hint);
+    }
+
     // session.plugin_path — the discovery root the session would set is present.
     let pxr_root = bundle.plug_info_root();
     diags.push(Diagnostic::pass(
@@ -383,16 +405,12 @@ fn level1(bundle: &Bundle, ctx: &RuntimeContext) -> Vec<Diagnostic> {
             "plugin defers its C++ ABI to the runtime (inherit)",
         ),
         Some(abi) => match abi.tag_for(ctx.target_os) {
-            Some(declared) => match_tag(
-                "runtime.cxx_abi",
-                Some(declared),
-                ctx.cxx_abi.as_deref(),
-                "C++ ABI",
-            ),
-            None => Diagnostic::skip(
+            Some(declared) => match_cxx_abi(abi, declared, ctx),
+            None => Diagnostic::skip_with_actions(
                 "runtime.cxx_abi",
                 1,
                 "plugin declares no C++ ABI for the resolved target OS",
+                missing_target_cxx_abi_actions(ctx),
             ),
         },
     });
@@ -454,6 +472,69 @@ fn match_tag(id: &str, declared: Option<&str>, runtime: Option<&str>, label: &st
         ),
         (None, _) => Diagnostic::skip(id, 1, format!("plugin declares no {label}")),
         (Some(_), None) => Diagnostic::skip(id, 1, format!("runtime records no {label}")),
+    }
+}
+
+fn match_cxx_abi(abi: &CxxAbi, declared: &str, ctx: &RuntimeContext) -> Diagnostic {
+    const ID: &str = "runtime.cxx_abi";
+    match ctx.cxx_abi.as_deref() {
+        Some(runtime) if declared == runtime => {
+            Diagnostic::pass(ID, 1, format!("C++ ABI {declared} matches runtime"))
+        }
+        Some(runtime) => {
+            let target = ctx
+                .target_os
+                .map(|os| format!(" for target {}", os.as_str()))
+                .unwrap_or_default();
+            Diagnostic::fail(
+                ID,
+                1,
+                format!("plugin C++ ABI '{declared}' != runtime '{runtime}'{target}"),
+                cxx_abi_mismatch_actions(abi, ctx.target_os, runtime),
+            )
+        }
+        None => Diagnostic::skip(ID, 1, "runtime records no C++ ABI"),
+    }
+}
+
+fn cxx_abi_mismatch_actions(abi: &CxxAbi, target_os: Option<Os>, runtime: &str) -> Vec<String> {
+    let target = target_os
+        .map(|os| os.as_str().to_string())
+        .unwrap_or_else(|| "the resolved target".into());
+    match abi {
+        CxxAbi::Scalar(_) => vec![
+            "for source bundles, prefer `runtime.cxx_abi: inherit` or a per-OS map such as `runtime.cxx_abi: { windows: msvc143, linux: libstdcxx, macos: libcxx }`".into(),
+            format!(
+                "for a target-specific artifact, rebuild for {target} and record `runtime.cxx_abi: {runtime}`"
+            ),
+        ],
+        CxxAbi::PerOs(_) => {
+            let key = target_os.map(os_key).unwrap_or("<target>");
+            vec![format!(
+                "set `runtime.cxx_abi.{key}` to `{runtime}`, or rebuild the plugin for {target}"
+            )]
+        }
+    }
+}
+
+fn missing_target_cxx_abi_actions(ctx: &RuntimeContext) -> Vec<String> {
+    let mut actions = vec![
+        "use `runtime.cxx_abi: inherit` for a source bundle that defers to each runtime".into(),
+    ];
+    if let (Some(os), Some(runtime)) = (ctx.target_os, ctx.cxx_abi.as_deref()) {
+        actions.push(format!(
+            "or add `runtime.cxx_abi.{}` with `{runtime}` for this target",
+            os_key(os)
+        ));
+    }
+    actions
+}
+
+fn os_key(os: Os) -> &'static str {
+    match os {
+        Os::Linux => "linux",
+        Os::Macos => "macos",
+        Os::Windows => "windows",
     }
 }
 
@@ -547,10 +628,13 @@ fn check_plug_info_library_paths(
                         "library plugin '{name}' uses LibraryPath '{library_path}', expected a {expected} library for {}",
                         os.as_str()
                     ),
-                    vec![format!(
-                        "regenerate plugInfo.json for the {} target with CMAKE_SHARED_LIBRARY_SUFFIX",
-                        os.as_str()
-                    )],
+                    vec![
+                        format!(
+                            "regenerate plugInfo.json for the {} target so `LibraryPath` ends in {expected}",
+                            os.as_str()
+                        ),
+                        "for source bundles, keep `plugInfo.json.in` and configure `LibraryPath` with `@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@` plus `@CMAKE_SHARED_LIBRARY_SUFFIX@`".into(),
+                    ],
                 );
             }
         }
@@ -597,6 +681,7 @@ fn check_plug_info_library_paths(
                 ),
                 vec![
                     "regenerate plugInfo.json for the target, or rebuild the plugin library".into(),
+                    "if the bundle is cross-platform source, generate `LibraryPath` per target from `plugInfo.json.in`".into(),
                 ],
             );
         }
@@ -754,6 +839,78 @@ fn check_runtime_lib_dirs(bundle: &Bundle) -> Diagnostic {
     )
 }
 
+fn check_schema_library_prefix(bundle: &Bundle) -> Option<Diagnostic> {
+    const ID: &str = "schema.library_prefix";
+
+    let schema = bundle.path("schema.usda");
+    let src = std::fs::read_to_string(schema.as_std_path()).ok()?;
+    let prefix = extract_usda_string_assignment(&src, "libraryPrefix")?;
+    if prefix.trim().is_empty() {
+        return None;
+    }
+
+    let prefixed_classes: Vec<String> = extract_usda_class_names(&src)
+        .into_iter()
+        .filter(|name| name.starts_with(&prefix))
+        .collect();
+    if prefixed_classes.is_empty() {
+        return None;
+    }
+
+    Some(Diagnostic::skip_with_actions(
+        ID,
+        0,
+        format!(
+            "schema.usda libraryPrefix '{prefix}' also prefixes class name(s): {}",
+            prefixed_classes.join(", ")
+        ),
+        vec![
+            "usdGenSchema composes generated C++/TfType names as `libraryPrefix + class`; avoid repeating the same leading token".into(),
+            "use a shorter/distinct `libraryPrefix`, or remove the prefix from the schema class name".into(),
+        ],
+    ))
+}
+
+fn extract_usda_string_assignment(src: &str, key: &str) -> Option<String> {
+    for line in src.lines() {
+        let line = strip_usda_comment(line).trim();
+        let Some(key_pos) = line.find(key) else {
+            continue;
+        };
+        let rest = line[key_pos + key.len()..].trim_start();
+        if !rest.starts_with('=') {
+            continue;
+        }
+        return extract_quoted(rest[1..].trim_start());
+    }
+    None
+}
+
+fn extract_usda_class_names(src: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in src.lines() {
+        let line = strip_usda_comment(line).trim_start();
+        let Some(rest) = line.strip_prefix("class") else {
+            continue;
+        };
+        if let Some(name) = extract_quoted(rest.trim_start()) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+fn extract_quoted(s: &str) -> Option<String> {
+    let start = s.find('"')?;
+    let rest = &s[start + 1..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn strip_usda_comment(line: &str) -> &str {
+    line.split_once('#').map(|(head, _)| head).unwrap_or(line)
+}
+
 /// Find a built shared library in the bundle's `lib/` directory, if any.
 fn find_shared_library(bundle: &Bundle) -> Option<String> {
     find_shared_libraries(bundle).into_iter().next()
@@ -840,6 +997,14 @@ mod tests {
             .expect("runtime libs diagnostic exists")
     }
 
+    fn schema_prefix_diag(report: &DoctorReport) -> &Diagnostic {
+        report
+            .diagnostics
+            .iter()
+            .find(|d| d.id == "schema.library_prefix")
+            .expect("schema libraryPrefix diagnostic exists")
+    }
+
     fn bundle_with_plug_info(library_path: &str, built_lib: Option<&str>) -> (TempDir, Bundle) {
         let dir = TempDir::new("doctor");
         std::fs::create_dir_all(dir.path.join("plugin/resources/toy").as_std_path()).unwrap();
@@ -917,6 +1082,10 @@ usd: { plug_info: plugin/resources/toy/plugInfo.json }
         let diag = library_path_diag(&report);
         assert_eq!(diag.status, Status::Fail);
         assert!(diag.observed.contains("expected a .so library"));
+        assert!(diag
+            .suggested_actions
+            .iter()
+            .any(|a| a.contains("plugInfo.json.in")));
     }
 
     #[test]
@@ -1093,6 +1262,39 @@ usd: { plug_info: plugin/resources/vrm/plugInfo.json }
     }
 
     #[test]
+    fn schema_library_prefix_hint_detects_double_prefix_risk() {
+        let (dir, bundle) = codeless_schema_bundle(r#"{ "FooBarAPI": { "bases": [] } }"#, None);
+        std::fs::write(
+            dir.path.join("schema.usda").as_std_path(),
+            r#"
+over "GLOBAL" (
+    customData = {
+        string libraryPrefix = "Foo"
+    }
+)
+{
+}
+
+class "FooBarAPI" (
+    inherits = </APISchemaBase>
+)
+{
+}
+"#,
+        )
+        .unwrap();
+
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+        let hint = schema_prefix_diag(&report);
+        assert_eq!(hint.status, Status::Skip);
+        assert!(hint.observed.contains("FooBarAPI"));
+        assert!(hint
+            .suggested_actions
+            .iter()
+            .any(|a| a.contains("libraryPrefix + class")));
+    }
+
+    #[test]
     fn schema_bundle_skips_l2plus_with_schema_level_ids() {
         let (_dir, bundle) = codeless_schema_bundle(r#"{ "VrmSchemaAPI": { "bases": [] } }"#, None);
         // up_to 2 triggers the L2+ SKIP placeholders.
@@ -1133,11 +1335,21 @@ usd: { plug_info: plugin/resources/vrm/plugInfo.json }
 
         // Per-OS entry mismatching the runtime ABI -> FAIL.
         let report = diagnose(&bundle, &ctx_for(Os::Windows, "msvc142"), 1);
-        assert_eq!(diag(&report, "runtime.cxx_abi").status, Status::Fail);
+        let d = diag(&report, "runtime.cxx_abi");
+        assert_eq!(d.status, Status::Fail);
+        assert!(d
+            .suggested_actions
+            .iter()
+            .any(|a| a.contains("runtime.cxx_abi.windows")));
 
         // A target OS not listed in the map -> SKIP (nothing declared for it).
         let report = diagnose(&bundle, &ctx_for(Os::Macos, "libcxx"), 1);
-        assert_eq!(diag(&report, "runtime.cxx_abi").status, Status::Skip);
+        let d = diag(&report, "runtime.cxx_abi");
+        assert_eq!(d.status, Status::Skip);
+        assert!(d
+            .suggested_actions
+            .iter()
+            .any(|a| a.contains("runtime.cxx_abi.macos")));
     }
 
     #[test]
@@ -1158,6 +1370,31 @@ usd: { plug_info: plugin/resources/vrm/plugInfo.json }
         let d = diag(&report, "runtime.cxx_abi");
         assert_eq!(d.status, Status::Skip);
         assert!(d.observed.contains("inherit"));
+    }
+
+    #[test]
+    fn cxx_abi_scalar_mismatch_suggests_inherit_or_per_os_map() {
+        use crate::model::CxxAbi;
+        let (_dir, mut bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.dylib",
+            Some("libToyFileFormat.dylib"),
+        );
+        bundle.manifest.runtime.cxx_abi = Some(CxxAbi::Scalar("msvc143".into()));
+        let ctx = RuntimeContext {
+            target_os: Some(Os::Macos),
+            pulled: true,
+            cxx_abi: Some("libcxx".into()),
+            ..RuntimeContext::default()
+        };
+
+        let report = diagnose(&bundle, &ctx, 1);
+        let d = diag(&report, "runtime.cxx_abi");
+        assert_eq!(d.status, Status::Fail);
+        assert!(d.suggested_actions.iter().any(|a| a.contains("inherit")));
+        assert!(d
+            .suggested_actions
+            .iter()
+            .any(|a| a.contains("windows: msvc143")));
     }
 
     struct TempDir {

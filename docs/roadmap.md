@@ -397,20 +397,24 @@ passed (Phase 4b `build` source confirmed on a second platform). It also took th
 Phase 4 schema lean further — building a *compiled, co-located* schema by hand —
 and surfaced these net-new items (post-0.4.0; candidates for the next release):
 
-- ⬜ **Force UTF-8 for the schema-gen step (locale-encoding bug).** `usdGenSchema`
+- ✅ **Force UTF-8 for the schema-gen step (locale-encoding bug).** `usdGenSchema`
   writes generated files in the process locale encoding; on a Japanese-locale
   Windows host (cp932) a non-ASCII char (an em-dash) in a `doc=` string aborts with
   `'cp932' codec can't encode`, and the error points at the codec, not the offending
   doc string. The `ost`-owned schema step (the shipped build step and the compiled
-  flow above) should set `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`, or warn on
-  non-encodable `doc=` text.
-- ⬜ **Schema name-composition guidance (the double-prefix footgun).**
+  flow above) now sets `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8` in the composed
+  schema build env; the codeless template's own CMake target does the same via
+  `cmake -E env` and invokes `python usdGenSchema ...` so direct CMake builds
+  are protected on Windows too. The starter `schema.usda` prose is ASCII, while
+  edited UTF-8 doc text remains supported.
+- ✅ **Schema name-composition guidance (the double-prefix footgun).**
   `usdGenSchema` prepends `libraryPrefix` to the class name for the C++/TfType, so a
   `libraryPrefix` equal to the plugin name plus a class already carrying that name
   doubles it (`Foo` + `FooBarAPI` → `FooFooBarAPI`), while the USD identifier/token
   stays the class name. The codeless scaffold hits this too. Nudge (a doctor hint or
   template guidance) toward a `libraryPrefix` distinct from the class's leading
-  token.
+  token. `ost plugin doctor` now emits a non-failing `schema.library_prefix` hint
+  when `schema.usda` has that repeated leading token shape.
 - ⬜ **Make `runtime show` / `doctor` reflect the real OpenUSD version.** Still
   reported on 0.4.0: an adopted install that is actually 26.x is shown as the
   placeholder `25.05.01`, so the L1 range check "passes" for the wrong reason. The
@@ -445,13 +449,13 @@ and surfaced these net-new items (post-0.4.0; candidates for the next release):
   `PyOpenGL` / `Jinja2`) on `PATH`, and a direct `bin/usdview` without the composed
   env fails (no runtime `lib/python` on `PYTHONPATH`) — already solved by
   `ost plugin view`/`run` / `eval "$(ost env …)"`; worth a doctor/docs nudge.
-- ⬜ **Doctor nudge: per-target metadata that 0.4.0 already supports but a bundle
+- ✅ **Doctor nudge: per-target metadata that 0.4.0 already supports but a bundle
   hasn't adopted.** The same pass found a hand-authored bundle still carrying a
   scalar `cxx_abi: msvc143` (fails on macOS `libcxx`) and a Windows `.dll`
   `LibraryPath` (macOS needs `.dylib`) — both already solvable in 0.4.0 (per-OS
   `cxx_abi` map; `plugInfo.json.in` per-target generation). A doctor hint when a
   scalar ABI or fixed-suffix `LibraryPath` mismatches the resolved target, pointing
-  at the per-OS forms, would close the adoption gap.
+  at the per-OS forms, now closes the adoption gap.
 
 ## Phase 5 — CI / Jenkins ⬜
 

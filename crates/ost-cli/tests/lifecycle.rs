@@ -13,6 +13,9 @@
 //!
 //! The full `init → pull → build → package` round-trip needs cmake + ninja + a
 //! compiler, so it is gated on their availability and skips cleanly otherwise.
+//! On Windows it is additionally opt-in: local shells and coding agents often
+//! have the toolchain installed, but the native build can be slow and a stopped
+//! test run can leave the just-built `ost.exe` locked.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -306,11 +309,19 @@ fn distinct_profiles_get_separate_target_trees() {
     }
 }
 
+const NATIVE_LIFECYCLE_ENV: &str = "OST_RUN_NATIVE_LIFECYCLE";
+
 /// Whether a full build can run here: cmake + ninja, and a usable compiler. On
 /// Windows the compiler is MSVC, which `ost build` bootstraps via vcvars — so
 /// defer to the *same* detection (`ost_build::msvc::bootstrap`) instead of
 /// assuming Visual Studio is installed. A missing toolchain skips, never fails.
-fn toolchain_ready() -> bool {
+fn native_lifecycle_ready() -> Result<(), String> {
+    if cfg!(windows) && std::env::var_os(NATIVE_LIFECYCLE_ENV).is_none() {
+        return Err(format!(
+            "native build lifecycle tests are opt-in on Windows; set {NATIVE_LIFECYCLE_ENV}=1"
+        ));
+    }
+
     fn on_path(exe: &str) -> bool {
         let probe = if cfg!(windows) { "where" } else { "which" };
         Command::new(probe)
@@ -319,22 +330,31 @@ fn toolchain_ready() -> bool {
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
-    if !on_path("cmake") || !on_path("ninja") {
-        return false;
+    if !on_path("cmake") {
+        return Err("cmake not found on PATH".to_string());
+    }
+    if !on_path("ninja") {
+        return Err("ninja not found on PATH".to_string());
     }
     if cfg!(windows) {
         // Same MSVC bootstrap the build uses; `Ok(None)` means no VS → skip.
-        return ost_build::msvc::bootstrap()
-            .map(|env| env.is_some())
-            .unwrap_or(false);
+        return match ost_build::msvc::bootstrap() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err("MSVC developer environment not found".to_string()),
+            Err(e) => Err(format!("MSVC bootstrap failed: {e}")),
+        };
     }
-    ["cc", "clang", "gcc"].iter().any(|c| on_path(c))
+    if ["cc", "clang", "gcc"].iter().any(|c| on_path(c)) {
+        Ok(())
+    } else {
+        Err("no C/C++ compiler found on PATH".to_string())
+    }
 }
 
 #[test]
 fn full_lifecycle_init_build_package() {
-    if !toolchain_ready() {
-        eprintln!("skipping full_lifecycle: cmake/ninja/compiler not all available");
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping full_lifecycle: {reason}");
         return;
     }
     let sb = Sandbox::new("full-lifecycle");
@@ -381,8 +401,8 @@ fn full_lifecycle_init_build_package() {
 
 #[test]
 fn build_failure_names_the_phase_and_log() {
-    if !toolchain_ready() {
-        eprintln!("skipping build_failure: cmake/ninja/compiler not all available");
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping build_failure: {reason}");
         return;
     }
     let sb = Sandbox::new("build-failure");
