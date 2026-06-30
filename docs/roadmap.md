@@ -183,8 +183,8 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
 - ✅ Multi-plugin sessions (`ost plugin doctor/run/test/view/test-view --with
   <bundle>…`) and bundle-declared `requires.runtime_libs` (extra non-USD runtime
   lib dirs, e.g. a plugin's zlib) — replaces hand-rolled usdview launch batch
-  files for the multi-plugin + 3rd-party-dep case. Dogfooding (usdVrm, reports
-  #1/#2) surfaced these prerequisites and shapes:
+  files for the multi-plugin + 3rd-party-dep case. Downstream plugin dogfooding
+  (reports #1/#2) surfaced these prerequisites and shapes:
   - **Every bundle path is absolutized at the `ost plugin` boundary** via
     `Bundle::load`, including every `--with <bundle>` arg. Its plugInfo root,
     `lib/`, `python/`, and any `requires.runtime_libs` dir are then composed as
@@ -193,8 +193,8 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
   - **`requires.runtime_libs` prepends to the session's dynamic-loader path**
     (`PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`), absolutized and validated
     as bundle-relative. Empty/absent stays the common case: a plugin that
-    statically links its 3rd-party deps (usdVrm vendors cgltf into one TU,
-    exports no symbols) drags zero extra lib dirs — the opposite of a plugin
+    statically links its 3rd-party deps (e.g. vendoring a parser into one TU,
+    exporting no symbols) drags zero extra lib dirs — the opposite of a plugin
     shipping a sibling `zlib.dll`.
   - **`plugInfo.json` `LibraryPath` is generated/validated per target** (suffix +
     lib-dir), since multi-plugin × multi-OS sessions multiply the scaffold's
@@ -210,7 +210,7 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
 - ⬜ `ost plugin publish` and the runtime×plugin CI matrix (`artifact` source
   lands with Phase 6)
 
-### Phase 4 — fix backlog (from usdVrm dogfooding, reports #1/#2)
+### Phase 4 — fix backlog (from downstream plugin dogfooding, reports #1/#2)
 
 A freshly scaffolded `usd-fileformat` bundle did not survive `ost plugin
 build`/`test` on Windows out of the box. Ranked, with the implicated code:
@@ -263,8 +263,8 @@ target being tested, not silently accept host-default metadata.
   `openstrata-cy2026-…-usd` id (the embedded platform/profile win); the variant
   slug is a fixed 3 tokens, so a hyphenated profile stays intact.
 - ✅ **P1 — harden target-generated `plugInfo.json` beyond the scaffold.**
-  A real usdVrm-style bundle with
-  `LibraryPath: "../../../lib/libUsdVrmFileFormat.dll"` is Windows-only even if
+  A real downstream bundle with
+  `LibraryPath: "../../../lib/lib<Name>FileFormat.dll"` is Windows-only even if
   README/CMake claim cross-platform support. Source commits `plugInfo.json.in`;
   CMake configures the concrete `plugInfo.json` with the target library prefix
   and `CMAKE_SHARED_LIBRARY_SUFFIX`; `ost plugin new` emits a host-concrete
@@ -340,10 +340,32 @@ no generator, and the harness models only file-format bundles. Ranked:
   installing it when those are absent at USD build time. **Verified end-to-end
   against an adopted OpenUSD 26.08**: build → regenerate → `ost plugin test`
   L0..L4 PASS.
-- ⬜ **Compiled (non-codeless) schema variant** — a typed-C++ schema template the
-  importer can call (`VrmHumanoidAPI::Apply`), keeping the L0 library checks. Needs
-  `usdGenSchema` to emit C++ and a compile against USD; the codeless path covers
-  the data-contract case today.
+- ⬜ **Compiled, co-located schema flow — "add a schema to an existing plugin".**
+  A downstream pilot built a typed `*API` schema *compiled into* an existing
+  file-format plugin's library + `plugInfo` (so the importer calls the generated
+  `<Schema>::Apply(prim)` instead of authoring raw attributes), and hand-rolled a
+  ~120-line script to do it — exactly the shape `ost` should own (a first-class
+  `ost plugin schema add <bundle>` or schema-awareness in `ost plugin build`). It
+  must:
+  - run `usdGenSchema` in the **composed runtime env** — the matching Python +
+    `pxr`, the codegen templates (`-t <runtime>/lib/usd/usd/resources/codegenTemplates`),
+    and the sublayer search path (`PXR_AR_DEFAULT_SEARCH_PATH=<runtime>/lib/usd/usd/resources`
+    so `@usd/schema.usda@` / `APISchemaBase` resolves) — robust even when a stale
+    pip `pxr` shadows the runtime (the value `ost` already adds elsewhere);
+  - default to the **compiled, co-located** shape: keep `api.h` / `tokens.{h,cpp}`
+    / `<schema>.{h,cpp}`, drop the Python-module helpers (`wrap*.cpp`, `module.cpp`,
+    `generatedSchema.module.h`, `generatedSchema.classes.txt`); offer `--codeless`
+    for the standalone case the current template already covers;
+  - **merge** the generated `Types` into the bundle's existing `plugInfo.json` and
+    stage `generatedSchema.usda` (the codeless-co-hosting merge already does this —
+    extend it to the compiled outputs), including into a separate **test**
+    `plugInfo` when the bundle's CTest builds its own;
+  - emit the library `*_EXPORTS` define / CMake snippet so the typed API links from
+    the same library (else the generated `*_API` macro resolves to *import* and the
+    authorer can't link it).
+  Keeps the L0 library checks (it ships a compiled library). A stale pip `pxr`
+  (USD 23.05) generating code that compiled and loaded clean against a 26.x runtime
+  confirms version skew is forgiving for a simple single-apply API.
 - ✅ **`usdGenSchema` `Types` merge into a co-hosting bundle.** `ost plugin build`
   on a co-hosting bundle (a non-schema kind shipping a `schema.usda` and declaring
   `usd-schema:<Type>`) runs usdGenSchema to a staging dir and **merges** the
@@ -364,12 +386,72 @@ no generator, and the harness models only file-format bundles. Ranked:
   scaffold's file-format template documents the three forms. Unit-tested
   (parse + per-OS/inherit resolution + doctor PASS/FAIL/SKIP).
 
-Not a task — closing a re-flagged item: the adopted-runtime version mis-detection
-these reports carry forward (`openusd 25.05.01` for a 26.08 install) is already
-fixed in [runtime.rs](../crates/ost-cli/src/commands/runtime.rs)
-(`detect_openusd_version` reads `pxr.h` at adopt time). A runtime adopted before
-that fix keeps the stale recorded version; re-pull (`runtime pull --from-usd`) to
-refresh it.
+### Phase 4 — dogfooding backlog (reports #5/#6 + a macOS source-build pass)
+
+A later dogfooding pass on **0.4.0** verified the shipped schema work end-to-end —
+`ost plugin new usd-schema` scaffolds a real codeless bundle (asks #1/#3 met),
+`ost init --template plugin-workspace` answers the "no root CMake" ask, and a
+**macOS arm64 `ost runtime pull --build`** built OpenUSD 25.05.01 from source with
+imaging/usdview, then `runtime validate` + `ost plugin test --up-to 6` + CTest all
+passed (Phase 4b `build` source confirmed on a second platform). It also took the
+Phase 4 schema lean further — building a *compiled, co-located* schema by hand —
+and surfaced these net-new items (post-0.4.0; candidates for the next release):
+
+- ⬜ **Force UTF-8 for the schema-gen step (locale-encoding bug).** `usdGenSchema`
+  writes generated files in the process locale encoding; on a Japanese-locale
+  Windows host (cp932) a non-ASCII char (an em-dash) in a `doc=` string aborts with
+  `'cp932' codec can't encode`, and the error points at the codec, not the offending
+  doc string. The `ost`-owned schema step (the shipped build step and the compiled
+  flow above) should set `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`, or warn on
+  non-encodable `doc=` text.
+- ⬜ **Schema name-composition guidance (the double-prefix footgun).**
+  `usdGenSchema` prepends `libraryPrefix` to the class name for the C++/TfType, so a
+  `libraryPrefix` equal to the plugin name plus a class already carrying that name
+  doubles it (`Foo` + `FooBarAPI` → `FooFooBarAPI`), while the USD identifier/token
+  stays the class name. The codeless scaffold hits this too. Nudge (a doctor hint or
+  template guidance) toward a `libraryPrefix` distinct from the class's leading
+  token.
+- ⬜ **Make `runtime show` / `doctor` reflect the real OpenUSD version.** Still
+  reported on 0.4.0: an adopted install that is actually 26.x is shown as the
+  placeholder `25.05.01`, so the L1 range check "passes" for the wrong reason. The
+  adopt-time `detect_openusd_version` reads `pxr.h`
+  ([runtime.rs](../crates/ost-cli/src/commands/runtime.rs)), but a runtime adopted
+  before that fix keeps the stale value and nothing re-derives it. Re-derive/refresh
+  the recorded version on `runtime show`/`validate`, or flag a manifest version that
+  disagrees with the install's `pxr.h` `PXR_VERSION` and prompt a re-pull. Carried
+  since the first reports — promote from "needs a re-pull" to an enforced check.
+- ⬜ **`init --template` naming + discoverability.** `plugin-workspace` was hard to
+  find: no `ost workspace` command reinforces the term; the `init --template`
+  choices mix axes (`cpp-library` = language, `usd-plugin` = domain,
+  `plugin-workspace` = repo shape); "plugin" is overloaded (an `init` template *and*
+  the `ost plugin` subcommand that populates the repo); and `plugin-workspace` drops
+  the `usd-` prefix the other USD templates carry. Align the names on one axis
+  (e.g. `usd-plugin-workspace`), surface the shape in `init --help`, and add a
+  forward-pointer from `ost plugin new` ("create the repo root first with
+  `ost init --template …`").
+- ⬜ **Workspace template: support a nested `plugins/<name>/` layout.** The
+  `plugin-workspace` root auto-globs **root-level** bundle dirs; a repo that nests
+  bundles under `plugins/` (the "one project → N bundles under `plugins/`"
+  convention) isn't found. Offer a `plugins/*`-scoped glob, or make the glob root
+  configurable, so the nested layout the name implies works out of the box.
+- ⬜ **`--build` ergonomics surfaced by the macOS pass (overall a success).** Small
+  `ost`-actionable follow-ups: (1) **Apple-Silicon codesign assumes full Xcode** —
+  OpenUSD's `apple_utils.py` calls `xcodebuild -version`, which a Command-Line-Tools-
+  only host lacks; the build needed a local patch to fall back to ad-hoc
+  `codesign -s -`; `ost`'s `--build` could detect CLT-only and pass/patch the
+  fallback, or document it. (2) **CMake 4 + bundled oneTBB** needs
+  `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`; document as a known `--build-arg` (or detect
+  CMake ≥4 and inject). (3) **usdview needs Python UI packages** (`PySide6` /
+  `PyOpenGL` / `Jinja2`) on `PATH`, and a direct `bin/usdview` without the composed
+  env fails (no runtime `lib/python` on `PYTHONPATH`) — already solved by
+  `ost plugin view`/`run` / `eval "$(ost env …)"`; worth a doctor/docs nudge.
+- ⬜ **Doctor nudge: per-target metadata that 0.4.0 already supports but a bundle
+  hasn't adopted.** The same pass found a hand-authored bundle still carrying a
+  scalar `cxx_abi: msvc143` (fails on macOS `libcxx`) and a Windows `.dll`
+  `LibraryPath` (macOS needs `.dylib`) — both already solvable in 0.4.0 (per-OS
+  `cxx_abi` map; `plugInfo.json.in` per-target generation). A doctor hint when a
+  scalar ABI or fixed-suffix `LibraryPath` mismatches the resolved target, pointing
+  at the per-OS forms, would close the adoption gap.
 
 ## Phase 5 — CI / Jenkins ⬜
 
