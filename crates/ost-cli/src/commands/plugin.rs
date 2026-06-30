@@ -1283,6 +1283,13 @@ fn runtime_context(r: &crate::commands::Resolved) -> RuntimeContext {
                 }
             }
         }
+        // The recorded OpenUSD version can be stale (a runtime adopted before the
+        // version was derived from `pxr.h`), which makes the L1 range check pass
+        // for the wrong reason. Prefer the install's actual `pxr.h` version when it
+        // is present so the gate reflects the real runtime (dogfooding #1–#5).
+        if let Some(real) = crate::commands::runtime::detect_openusd_version(&r.artifact_prefix) {
+            ctx.openusd_version = Some(real);
+        }
     }
     ctx
 }

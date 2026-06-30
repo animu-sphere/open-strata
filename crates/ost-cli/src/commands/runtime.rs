@@ -378,7 +378,7 @@ fn adopt_local(
 /// `26.08`): OpenUSD's `PXR_MAJOR_VERSION` is structurally 0, and a release like
 /// `v26.08` is `PXR_MINOR_VERSION 26` + `PXR_PATCH_VERSION 8`. `None` if the
 /// header is absent or unparseable (a header-less, binary-only install).
-fn detect_openusd_version(root: &Utf8Path) -> Option<String> {
+pub(crate) fn detect_openusd_version(root: &Utf8Path) -> Option<String> {
     let header = root.join("include/pxr/pxr.h");
     let src = std::fs::read_to_string(header.as_std_path()).ok()?;
     let field = |name: &str| -> Option<u32> {
@@ -405,7 +405,7 @@ fn detect_openusd_version(root: &Utf8Path) -> Option<String> {
 /// doesn't expose (`25.05.01` for upstream `25.05`), so compare numerically over
 /// only the leading components `pxr.h` provides. Returns `false` on either side
 /// being unparseable, so a malformed catalog entry still gets corrected.
-fn same_openusd_release(detected: &str, catalog: &str) -> bool {
+pub(crate) fn same_openusd_release(detected: &str, catalog: &str) -> bool {
     let nums = |s: &str| -> Option<Vec<u64>> {
         s.split('.').map(|p| p.trim().parse::<u64>().ok()).collect()
     };
@@ -413,6 +413,28 @@ fn same_openusd_release(detected: &str, catalog: &str) -> bool {
         (Some(d), Some(c)) => c.len() >= d.len() && d.iter().zip(&c).all(|(a, b)| a == b),
         _ => false,
     }
+}
+
+/// When the install's `pxr.h` names a different OpenUSD release than the manifest
+/// records, return `(recorded, real)` so callers can flag the stale manifest.
+///
+/// The adopt/build step records the version from `pxr.h`, but a runtime recorded
+/// before that derivation (or whose install changed underneath) keeps a stale
+/// value — which makes the L1 range check pass for the wrong reason (dogfooding
+/// reports #1–#5). `None` when there is no install header, no recorded `openusd`
+/// version, or the two name the same release.
+pub(crate) fn openusd_version_drift(
+    manifest: &RuntimeManifest,
+    artifact_prefix: &Utf8Path,
+) -> Option<(String, String)> {
+    let recorded = manifest
+        .extensions
+        .iter()
+        .find(|e| e.id == "openusd")?
+        .version
+        .clone();
+    let real = detect_openusd_version(artifact_prefix)?;
+    (!same_openusd_release(&real, &recorded)).then_some((recorded, real))
 }
 
 /// The USD-install subdirectories present under `root`. The `pxr` Python package
@@ -888,6 +910,14 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
                 );
             }
         }
+    }
+    // Flag a recorded OpenUSD version that disagrees with the install's pxr.h.
+    if let Some((recorded, real)) = openusd_version_drift(&manifest, &r.artifact_prefix) {
+        println!(
+            "\nNote: the install's pxr.h reports OpenUSD {real}, but the manifest records \
+             {recorded} (stale).\n      Re-pull to refresh: \
+             ost runtime pull {platform} --profile {profile} --from-usd <usd-root>"
+        );
     }
     Ok(())
 }

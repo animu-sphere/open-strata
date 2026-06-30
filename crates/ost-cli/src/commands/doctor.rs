@@ -168,6 +168,21 @@ pub fn run(args: DoctorArgs, fmt: Format) -> Result<()> {
                     )),
                 ));
             }
+            // A recorded OpenUSD version that disagrees with the install's pxr.h is
+            // stale — it skews the L1 range check. Warning, not error (§14.5).
+            if let Some((recorded, real)) = &report.openusd_drift {
+                issues.push(Issue::warning(
+                    "OPENUSD_VERSION_STALE",
+                    format!(
+                        "manifest records OpenUSD {recorded}, but the install's pxr.h is {real} \
+                         — the version gate may not reflect the real runtime"
+                    ),
+                    Some(format!(
+                        "ost runtime pull {platform} --profile {} --from-usd <usd-root> (refresh)",
+                        args.profile
+                    )),
+                ));
+            }
             Some(report)
         }
         None => None,
@@ -217,6 +232,9 @@ struct RuntimeReport {
     executes_real: Option<bool>,
     digest: Option<String>,
     validation: Option<String>,
+    /// `(recorded, real)` OpenUSD versions when the manifest disagrees with the
+    /// install's `pxr.h` — a stale recorded version that would skew the L1 gate.
+    openusd_drift: Option<(String, String)>,
     capabilities: Vec<String>,
     env_keys: Vec<String>,
     layout: Vec<(String, bool)>,
@@ -239,6 +257,7 @@ fn build_runtime_report(r: &crate::commands::Resolved) -> RuntimeReport {
     let mut executes_real = None;
     let mut digest = None;
     let mut validation = None;
+    let mut openusd_drift = None;
     let mut layout = Vec::new();
 
     let manifest_path = r.prefix.join(MANIFEST_FILE);
@@ -248,6 +267,7 @@ fn build_runtime_report(r: &crate::commands::Resolved) -> RuntimeReport {
             executes_real = Some(m.source.is_real());
             digest = Some(m.digest.clone());
             validation = Some(format!("{:?}", m.validation).to_lowercase());
+            openusd_drift = crate::commands::runtime::openusd_version_drift(&m, &r.artifact_prefix);
             // Layout dirs live under the effective artifact prefix (the external
             // USD root for an adopted runtime).
             for sub in &m.layout {
@@ -263,6 +283,7 @@ fn build_runtime_report(r: &crate::commands::Resolved) -> RuntimeReport {
         pulled: r.pulled,
         kind,
         executes_real,
+        openusd_drift,
         digest,
         validation,
         capabilities: r.capabilities.clone(),
