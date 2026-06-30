@@ -10,7 +10,7 @@ set(_resources  "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}")
 
 # usdGenSchema regenerates the resources, but it is not required to *use* this
 # bundle: the resource-only plugInfo.json is committed and is itself the build
-# product. So a missing usdGenSchema is a warning, not a hard error — otherwise
+# product. So a missing usdGenSchema is a warning, not a hard error; otherwise
 # this bundle would break a plain `cmake -S .` of a plugin-workspace root for a
 # non-`ost` user (whose CMAKE_PREFIX_PATH does not put the USD bin on PATH).
 # `ost plugin build` composes the resolved runtime so usdGenSchema + Python are
@@ -18,7 +18,7 @@ set(_resources  "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}")
 find_program(USD_GEN_SCHEMA usdGenSchema)
 if(NOT USD_GEN_SCHEMA)
     message(WARNING
-        "usdGenSchema not found on PATH — skipping schema regeneration; the "
+        "usdGenSchema not found on PATH; skipping schema regeneration; the "
         "committed plugin/resources/{{name}}/plugInfo.json is used as-is. To "
         "regenerate, build via `ost plugin build {{name}}` (puts the runtime's "
         "usdGenSchema + Python on PATH).")
@@ -28,7 +28,10 @@ endif()
 # Regenerate the resource-only schema output in place. The generated
 # plugInfo.json overwrites the committed host-correct copy with the same content.
 add_custom_target({{name}}_schema ALL
-    COMMAND "${USD_GEN_SCHEMA}" "${_schema_src}" "${_resources}"
+    COMMAND "${CMAKE_COMMAND}" -E env
+        "PYTHONUTF8=1"
+        "PYTHONIOENCODING=utf-8"
+        "${USD_GEN_SCHEMA}" "${_schema_src}" "${_resources}"
     BYPRODUCTS
         "${_resources}/plugInfo.json"
         "${_resources}/generatedSchema.usda"

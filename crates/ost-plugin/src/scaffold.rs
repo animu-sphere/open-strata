@@ -382,6 +382,13 @@ mod tests {
         assert_eq!(bundle.manifest.kind(), PluginKind::UsdSchema);
         assert!(bundle.manifest.is_codeless_schema());
 
+        // Direct CMake builds of the scaffold should protect usdGenSchema from
+        // host locale encodings (notably Japanese Windows cp932) too.
+        let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
+        assert!(cmake.contains("-E env"));
+        assert!(cmake.contains("PYTHONUTF8=1"));
+        assert!(cmake.contains("PYTHONIOENCODING=utf-8"));
+
         // The committed plugInfo.json declares the schema type with no token left
         // and no LibraryPath (it is resource-only).
         let plug_info = std::fs::read_to_string(bundle.plug_info().as_std_path()).unwrap();
@@ -400,6 +407,11 @@ mod tests {
         assert!(fixture.contains("apiSchemas = [\"VrmSchemaAPI\"]"));
         assert!(fixture.contains("vrm_schema:example"));
         assert!(!fixture.contains("vrm-schema:example"));
+
+        // The starter schema avoids non-ASCII prose so a fresh scaffold does not
+        // trigger locale-sensitive usdGenSchema failures before users edit it.
+        let schema = std::fs::read_to_string(dir.join("schema.usda").as_std_path()).unwrap();
+        assert!(schema.is_ascii());
 
         // The scaffolded bundle passes the static L0 diagnostics.
         let report = crate::diagnose(&bundle, &crate::RuntimeContext::default(), 0);
