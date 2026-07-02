@@ -30,14 +30,21 @@ jobs:
         run: cargo deny check
 
       - name: THIRD_PARTY_NOTICES.md is up to date
-        # Normalize CRLF -> LF: some upstream license files (e.g. generic-array)
-        # ship CRLF line endings that cargo-about embeds verbatim, while the
-        # committed file is LF (git normalized). Strip CR on both sides so the
-        # check is reproducible regardless of who/where it was generated.
+        # Normalize CRLF -> LF and collapse trailing blank lines before diffing:
+        # some upstream license files ship CRLF, and cargo-about/template changes
+        # can otherwise make the check fail on a final empty line only.
         run: |
-          cargo about generate about.hbs | tr -d '\r' > THIRD_PARTY_NOTICES.check.md
-          if ! diff -u THIRD_PARTY_NOTICES.md THIRD_PARTY_NOTICES.check.md; then
-            echo "::error::THIRD_PARTY_NOTICES.md is stale — run: cargo about generate about.hbs | tr -d '\\r' > THIRD_PARTY_NOTICES.md"
+          trap 'rm -f THIRD_PARTY_NOTICES.generated.md THIRD_PARTY_NOTICES.expected.md THIRD_PARTY_NOTICES.check.md' EXIT
+
+          normalize_notice() {
+            perl -0pe 's/\r//g; s/[ \t\n]+\z/\n/; $_ .= "\n" unless /\n\z/' "$1"
+          }
+
+          cargo about generate about.hbs --output-file THIRD_PARTY_NOTICES.generated.md
+          normalize_notice THIRD_PARTY_NOTICES.md > THIRD_PARTY_NOTICES.expected.md
+          normalize_notice THIRD_PARTY_NOTICES.generated.md > THIRD_PARTY_NOTICES.check.md
+
+          if ! diff -u THIRD_PARTY_NOTICES.expected.md THIRD_PARTY_NOTICES.check.md; then
+            echo "::error::THIRD_PARTY_NOTICES.md is stale — run: cargo about generate about.hbs --output-file THIRD_PARTY_NOTICES.md"
             exit 1
           fi
-          rm -f THIRD_PARTY_NOTICES.check.md
