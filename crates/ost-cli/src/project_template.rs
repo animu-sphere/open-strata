@@ -31,10 +31,10 @@ impl Template {
         match s {
             "cpp-library" => Ok(Template::CppLibrary),
             "usd-plugin" => Ok(Template::UsdPlugin),
-            "plugin-workspace" => Ok(Template::PluginWorkspace),
+            "usd-plugin-workspace" | "plugin-workspace" => Ok(Template::PluginWorkspace),
             "bare" => Ok(Template::Bare),
             other => Err(Error::usage(format!(
-                "unknown template '{other}' (expected: cpp-library, usd-plugin, plugin-workspace, bare)"
+                "unknown template '{other}' (expected: cpp-library, usd-plugin, usd-plugin-workspace, bare)"
             ))),
         }
     }
@@ -43,7 +43,7 @@ impl Template {
         match self {
             Template::CppLibrary => "cpp-library",
             Template::UsdPlugin => "usd-plugin",
-            Template::PluginWorkspace => "plugin-workspace",
+            Template::PluginWorkspace => "usd-plugin-workspace",
             Template::Bare => "bare",
         }
     }
@@ -270,6 +270,10 @@ mod tests {
             Template::parse("plugin-workspace").unwrap(),
             Template::PluginWorkspace
         );
+        assert_eq!(
+            Template::parse("usd-plugin-workspace").unwrap(),
+            Template::PluginWorkspace
+        );
         assert_eq!(Template::parse("bare").unwrap(), Template::Bare);
         assert!(Template::parse("nope").is_err());
     }
@@ -291,6 +295,7 @@ mod tests {
         assert!(cml.contains("find_package(pxr"));
         assert!(cml.contains("openstrata.plugin.yaml"));
         assert!(cml.contains("add_subdirectory"));
+        assert!(cml.contains("${CMAKE_CURRENT_SOURCE_DIR}/plugins"));
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }

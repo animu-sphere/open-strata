@@ -255,6 +255,8 @@ fn new(
             "kind": kind.as_str(),
             "name": name,
             "dir": dest.to_string(),
+            "workspace_template": "usd-plugin-workspace",
+            "workspace_command": "ost init --template usd-plugin-workspace",
             "files": files.iter().map(|f| f.to_string()).collect::<Vec<_>>(),
         }));
         return Ok(());
@@ -267,6 +269,7 @@ fn new(
     println!("\nNext:");
     println!("  ost plugin inspect {dest}");
     println!("  ost plugin doctor {dest}");
+    println!("  multi-bundle repo root: ost init --template usd-plugin-workspace");
     Ok(())
 }
 

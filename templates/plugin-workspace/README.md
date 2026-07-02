@@ -1,18 +1,19 @@
 # {{name}} — OpenStrata plugin workspace
 
 A repository that holds one or more OpenUSD plugin bundles. Scaffolded by
-`ost init --template plugin-workspace`.
+`ost init --template usd-plugin-workspace`.
 
 ## Add a bundle
 
 ```sh
 ost plugin new usd-fileformat myfmt --extension myfmt
 ost plugin new usd-schema     myschema
+ost plugin new usd-fileformat mynested --extension mynested --dir plugins/mynested
 ```
 
 Each command creates a self-contained bundle directory (with its own
 `openstrata.plugin.yaml` and `CMakeLists.txt`). The root `CMakeLists.txt` picks
-up every such bundle automatically.
+up root-level bundles and `plugins/<name>/` bundles automatically.
 
 ## Build with `ost` (recommended)
 
@@ -35,5 +36,5 @@ cmake --build build
 # or: cmake --preset default -DCMAKE_PREFIX_PATH=<your-openusd-install>
 ```
 
-New bundles are discovered automatically — no edit to the root `CMakeLists.txt`
-is needed.
+New root-level bundles and `plugins/<name>/` bundles are discovered
+automatically — no edit to the root `CMakeLists.txt` is needed.

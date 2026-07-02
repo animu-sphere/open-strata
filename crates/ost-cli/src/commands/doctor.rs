@@ -178,7 +178,7 @@ pub fn run(args: DoctorArgs, fmt: Format) -> Result<()> {
                          — the version gate may not reflect the real runtime"
                     ),
                     Some(format!(
-                        "ost runtime pull {platform} --profile {} --from-usd <usd-root> (refresh)",
+                        "ost runtime pull {platform} --profile {} --from-usd <usd-root> --force",
                         args.profile
                     )),
                 ));

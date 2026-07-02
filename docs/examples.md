@@ -38,6 +38,7 @@ ost platform show cy2026 --json      # machine-readable
 ```bash
 ost init                                      # cpp-library template, dir name + latest platform
 ost init --template usd-plugin                # scaffold a USD plugin project
+ost init --template usd-plugin-workspace      # root for one repo with many plugin bundles
 ost init --name my-show --platform cy2026     # explicit name + platform
 ost init --bare                               # manifest only — adopt an existing CMake project
 ost init --force                              # overwrite an existing manifest / template files
@@ -63,6 +64,7 @@ OST_USD_ROOT=/opt/usd ost runtime pull cy2026 --profile usd
 # build (build_usd.py) — build OpenUSD + deps from source into the store
 ost runtime pull cy2026 --profile usd --build /src/OpenUSD --jobs 8
 ost runtime pull cy2026 --profile usd --build /src/OpenUSD --build-arg --no-imaging
+# macOS + CMake 4 bundled deps: retry with --build-arg -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
 # build (CMake-direct) — build OpenUSD against pre-provided dependency prefixes
 ost runtime pull cy2026 --profile usd \
