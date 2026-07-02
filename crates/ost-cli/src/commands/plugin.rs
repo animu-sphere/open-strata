@@ -400,6 +400,11 @@ fn build(
         // ships/adopts are Release, so default the build type to match.
         "-DCMAKE_BUILD_TYPE=Release".to_string(),
     ];
+    let schema_sources_file = target_dir.join("schema-sources.cmake");
+    configure_args.push(format!(
+        "-DOPENSTRATA_SCHEMA_SOURCES_FILE={}",
+        cmake_path(&schema_sources_file)
+    ));
     if let Some(n) = &ninja {
         configure_args.push(format!(
             "-DCMAKE_MAKE_PROGRAM={}",
@@ -466,24 +471,37 @@ fn build(
         msvc_env
     };
 
-    run_step(&cmake, &configure_args, &build_env)?;
-    run_step(&cmake, &build_args, &build_env)?;
-
-    // A co-hosting bundle (a non-schema kind that also declares `usd-schema:`)
-    // regenerates its schema with usdGenSchema and *merges* the Types into its
-    // existing plugInfo.json — usdGenSchema overwrites a whole file, so a co-host
-    // must merge rather than clobber its SdfFileFormat entry. (A pure schema
-    // bundle regenerates via its own CMakeLists usdGenSchema target above.)
-    if bundle.manifest.kind() != PluginKind::UsdSchema
+    // A non-schema bundle can co-host a schema by declaring `usd-schema:*` and
+    // shipping schema.usda. Generate it before configure so any compiled C++ API
+    // sources can be included in the same plugin library. The plugInfo merge is
+    // delayed until after configure because the template regenerates
+    // plugInfo.json from plugInfo.json.in during configure.
+    let cohosted_schema = if bundle.manifest.kind() != PluginKind::UsdSchema
         && !bundle.manifest.schema_provides().is_empty()
     {
-        regenerate_cohosted_schema(
+        prepare_cohosted_schema(
             &bundle,
             &r.artifact_prefix,
             &target_dir.join("schema-gen"),
+            &schema_sources_dir(&target_dir),
+            &schema_sources_file,
             &build_env,
+        )?
+    } else {
+        clear_cohosted_schema_compile_state(
+            &schema_sources_dir(&target_dir),
+            &schema_sources_file,
         )?;
+        None
+    };
+
+    run_step(&cmake, &configure_args, &build_env)?;
+
+    if let Some(schema) = &cohosted_schema {
+        merge_cohosted_schema_resources(&bundle, schema)?;
     }
+
+    run_step(&cmake, &build_args, &build_env)?;
 
     // Record the compiler so the next build can detect a change. The plugin
     // build writes no full target lock, so this lives beside the toolchain.
@@ -953,30 +971,40 @@ fn standalone_session_env(bundle: &Bundle, with: &[Bundle], os: Os) -> EnvSet {
     )
 }
 
-/// Regenerate a co-hosting bundle's schema with usdGenSchema and merge the
-/// generated `Types` into its existing `plugInfo.json`, copying the flattened
-/// `generatedSchema.usda` beside it. Runs the runtime's `usdGenSchema` script via
-/// `python` in the composed `build_env` (so `pxr` loads and the base USD schemas
-/// resolve). A no-op — keeping the committed resources — when the bundle ships no
-/// `schema.usda` or the runtime has no `usdGenSchema`.
-fn regenerate_cohosted_schema(
+#[derive(Debug)]
+struct CohostedSchemaGeneration {
+    generated_plug_info: Utf8PathBuf,
+    generated_schema: Option<Utf8PathBuf>,
+    compiled_sources: usize,
+}
+
+/// Regenerate a co-hosting bundle's schema with usdGenSchema. If usdGenSchema
+/// emitted compiled C++ API files, stage those into `.strata/targets/<id>/` and
+/// write a CMake fragment that the template can include into the plugin library.
+/// The `plugInfo.json` merge happens after CMake configure, because configure may
+/// regenerate the target plugInfo from `plugInfo.json.in`.
+fn prepare_cohosted_schema(
     bundle: &Bundle,
     artifact_prefix: &Utf8Path,
     staging: &Utf8Path,
+    compiled_dir: &Utf8Path,
+    cmake_fragment: &Utf8Path,
     build_env: &[(String, String)],
-) -> Result<()> {
+) -> Result<Option<CohostedSchemaGeneration>> {
     let schema_src = bundle.path("schema.usda");
     if !schema_src.as_std_path().is_file() {
-        return Ok(()); // no schema source to regenerate from
+        clear_cohosted_schema_compile_state(compiled_dir, cmake_fragment)?;
+        return Ok(None); // no schema source to regenerate from
     }
     // The usdGenSchema *script* in the runtime bin, run via `python` so we need no
     // bare-name/`.cmd` resolution and stay cross-platform.
     let gen_script = artifact_prefix.join("bin/usdGenSchema");
     if !gen_script.as_std_path().is_file() {
+        clear_cohosted_schema_compile_state(compiled_dir, cmake_fragment)?;
         println!(
             "==> usdGenSchema not in the runtime; keeping the committed co-hosted schema resources"
         );
-        return Ok(());
+        return Ok(None);
     }
 
     reset_dir(staging)?; // also (re)creates the dir
@@ -991,26 +1019,59 @@ fn regenerate_cohosted_schema(
         build_env,
     )?;
 
-    // Merge the generated schema Types into the bundle's plugInfo.json.
-    let target_pi = bundle.plug_info();
     let generated_pi = staging.join("plugInfo.json");
+    let generated_schema = staging.join("generatedSchema.usda");
+    let compiled = stage_compiled_schema_sources(staging, compiled_dir, cmake_fragment)?;
+    if compiled.sources > 0 {
+        println!(
+            "    staged compiled schema API ({} source file(s), {} header(s))",
+            compiled.sources, compiled.headers
+        );
+    }
+
+    Ok(Some(CohostedSchemaGeneration {
+        generated_plug_info: generated_pi,
+        generated_schema: generated_schema
+            .as_std_path()
+            .is_file()
+            .then_some(generated_schema),
+        compiled_sources: compiled.sources,
+    }))
+}
+
+/// Merge a generated co-hosted schema's `Types` into the bundle's target
+/// `plugInfo.json`, preserving any existing library plugin entry, and copy the
+/// flattened `generatedSchema.usda` beside it.
+fn merge_cohosted_schema_resources(
+    bundle: &Bundle,
+    generated: &CohostedSchemaGeneration,
+) -> Result<()> {
+    let target_pi = bundle.plug_info();
     let target_src = std::fs::read_to_string(target_pi.as_std_path())
         .map_err(|e| Error::io(target_pi.to_string(), e))?;
-    let generated_src = std::fs::read_to_string(generated_pi.as_std_path())
-        .map_err(|e| Error::io(generated_pi.to_string(), e))?;
+    let generated_src = std::fs::read_to_string(generated.generated_plug_info.as_std_path())
+        .map_err(|e| Error::io(generated.generated_plug_info.to_string(), e))?;
     let merged = ost_plugin::merge_schema_types(&target_src, &generated_src)
         .map_err(|e| Error::Operation(format!("merging schema Types: {e}")))?;
     std::fs::write(target_pi.as_std_path(), merged)
         .map_err(|e| Error::io(target_pi.to_string(), e))?;
+    let test_plug_infos =
+        merge_schema_types_into_test_plug_infos(bundle, &target_pi, &generated_src)?;
 
     // Copy the flattened schema definition beside the plugInfo (registration needs it).
-    let generated_schema = staging.join("generatedSchema.usda");
-    if generated_schema.as_std_path().is_file() {
+    if let Some(generated_schema) = &generated.generated_schema {
         let dest = bundle.plug_info_root().join("generatedSchema.usda");
         std::fs::copy(generated_schema.as_std_path(), dest.as_std_path())
             .map_err(|e| Error::io(dest.to_string(), e))?;
     }
-    println!("    merged schema Types into {target_pi}");
+    if generated.compiled_sources > 0 {
+        println!("    merged schema Types into {target_pi} and linked compiled schema API");
+    } else {
+        println!("    merged schema Types into {target_pi}");
+    }
+    if test_plug_infos > 0 {
+        println!("    merged schema Types into {test_plug_infos} test plugInfo.json file(s)");
+    }
     Ok(())
 }
 
@@ -1019,6 +1080,239 @@ fn reset_dir(dir: &Utf8Path) -> Result<()> {
         std::fs::remove_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))?;
     }
     std::fs::create_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))
+}
+
+fn merge_schema_types_into_test_plug_infos(
+    bundle: &Bundle,
+    target_pi: &Utf8Path,
+    generated_src: &str,
+) -> Result<usize> {
+    let tests_dir = bundle.path("tests");
+    if !tests_dir.as_std_path().is_dir() {
+        return Ok(0);
+    }
+    let mut plug_infos = Vec::new();
+    collect_test_plug_infos(&tests_dir, &mut plug_infos)?;
+    let mut merged_count = 0;
+    for plug_info in plug_infos {
+        if plug_info == target_pi {
+            continue;
+        }
+        let target_src = std::fs::read_to_string(plug_info.as_std_path())
+            .map_err(|e| Error::io(plug_info.to_string(), e))?;
+        let merged = ost_plugin::merge_schema_types(&target_src, generated_src)
+            .map_err(|e| Error::Operation(format!("merging schema Types into {plug_info}: {e}")))?;
+        std::fs::write(plug_info.as_std_path(), merged)
+            .map_err(|e| Error::io(plug_info.to_string(), e))?;
+        merged_count += 1;
+    }
+    Ok(merged_count)
+}
+
+fn collect_test_plug_infos(dir: &Utf8Path, plug_infos: &mut Vec<Utf8PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))? {
+        let entry = entry.map_err(|e| Error::io(dir.to_string(), e))?;
+        let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|p| {
+            Error::config(format!(
+                "non-UTF-8 path in test plugInfo tree: {}",
+                p.display()
+            ))
+        })?;
+        let ty = entry
+            .file_type()
+            .map_err(|e| Error::io(path.to_string(), e))?;
+        if ty.is_dir() {
+            collect_test_plug_infos(&path, plug_infos)?;
+        } else if ty.is_file() && path.file_name() == Some("plugInfo.json") {
+            plug_infos.push(path);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct CompiledSchemaFiles {
+    sources: usize,
+    headers: usize,
+}
+
+fn stage_compiled_schema_sources(
+    staging: &Utf8Path,
+    compiled_dir: &Utf8Path,
+    cmake_fragment: &Utf8Path,
+) -> Result<CompiledSchemaFiles> {
+    clear_cohosted_schema_compile_state(compiled_dir, cmake_fragment)?;
+
+    let files = collect_compiled_schema_files(staging)?;
+    if files.is_empty() {
+        return Ok(CompiledSchemaFiles::default());
+    }
+
+    std::fs::create_dir_all(compiled_dir.as_std_path())
+        .map_err(|e| Error::io(compiled_dir.to_string(), e))?;
+
+    let mut staged = Vec::new();
+    let mut counts = CompiledSchemaFiles::default();
+    for rel in files {
+        let src = staging.join(&rel);
+        let dest = compiled_dir.join(&rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent.as_std_path())
+                .map_err(|e| Error::io(parent.to_string(), e))?;
+        }
+        std::fs::copy(src.as_std_path(), dest.as_std_path())
+            .map_err(|e| Error::io(format!("{src} -> {dest}"), e))?;
+        if is_cxx_source(&dest) {
+            counts.sources += 1;
+        } else if is_cxx_header(&dest) {
+            counts.headers += 1;
+        }
+        staged.push(dest);
+    }
+
+    write_schema_sources_fragment(compiled_dir, cmake_fragment, &staged)?;
+    Ok(counts)
+}
+
+fn clear_cohosted_schema_compile_state(
+    compiled_dir: &Utf8Path,
+    cmake_fragment: &Utf8Path,
+) -> Result<()> {
+    if compiled_dir.as_std_path().exists() {
+        std::fs::remove_dir_all(compiled_dir.as_std_path())
+            .map_err(|e| Error::io(compiled_dir.to_string(), e))?;
+    }
+    if cmake_fragment.as_std_path().exists() {
+        std::fs::remove_file(cmake_fragment.as_std_path())
+            .map_err(|e| Error::io(cmake_fragment.to_string(), e))?;
+    }
+    Ok(())
+}
+
+fn collect_compiled_schema_files(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
+    let mut files = Vec::new();
+    collect_compiled_schema_files_inner(root, root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_compiled_schema_files_inner(
+    root: &Utf8Path,
+    dir: &Utf8Path,
+    files: &mut Vec<Utf8PathBuf>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))? {
+        let entry = entry.map_err(|e| Error::io(dir.to_string(), e))?;
+        let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|p| {
+            Error::config(format!(
+                "non-UTF-8 path in generated schema output: {}",
+                p.display()
+            ))
+        })?;
+        let ty = entry
+            .file_type()
+            .map_err(|e| Error::io(path.to_string(), e))?;
+        if ty.is_dir() {
+            collect_compiled_schema_files_inner(root, &path, files)?;
+        } else if ty.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|e| Error::Operation(format!("schema output path error: {e}")))?;
+            if is_compiled_schema_file(rel) {
+                files.push(rel.to_path_buf());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_compiled_schema_file(rel: &Utf8Path) -> bool {
+    let Some(name) = rel.file_name() else {
+        return false;
+    };
+    if name == "module.cpp" || name == "generatedSchema.module.h" || name.starts_with("wrap") {
+        return false;
+    }
+    is_cxx_source(rel) || is_cxx_header(rel)
+}
+
+fn is_cxx_source(path: &Utf8Path) -> bool {
+    matches!(path.extension(), Some("cpp" | "cxx" | "cc"))
+}
+
+fn is_cxx_header(path: &Utf8Path) -> bool {
+    matches!(path.extension(), Some("h" | "hpp" | "hh"))
+}
+
+fn write_schema_sources_fragment(
+    compiled_dir: &Utf8Path,
+    cmake_fragment: &Utf8Path,
+    staged: &[Utf8PathBuf],
+) -> Result<()> {
+    let source_files: Vec<&Utf8PathBuf> = staged.iter().filter(|p| is_cxx_source(p)).collect();
+    let export_define = detect_schema_export_define(compiled_dir);
+
+    let mut body = String::new();
+    body.push_str("# Generated by `ost plugin build`; do not edit.\n");
+    body.push_str("if(NOT DEFINED PLUGIN_NAME)\n");
+    body.push_str("    message(FATAL_ERROR \"OPENSTRATA_SCHEMA_SOURCES_FILE requires PLUGIN_NAME to name the plugin target\")\n");
+    body.push_str("endif()\n");
+    body.push_str("target_include_directories(${PLUGIN_NAME} PRIVATE\n");
+    body.push_str(&format!("    \"{}\"\n", cmake_path(compiled_dir)));
+    body.push_str(")\n");
+    if !source_files.is_empty() {
+        body.push_str("target_sources(${PLUGIN_NAME} PRIVATE\n");
+        for path in source_files {
+            body.push_str(&format!("    \"{}\"\n", cmake_path(path)));
+        }
+        body.push_str(")\n");
+    }
+    if let Some(export_define) = export_define {
+        body.push_str(&format!(
+            "target_compile_definitions(${{PLUGIN_NAME}} PRIVATE {export_define})\n"
+        ));
+    }
+    write_text(cmake_fragment, body.trim_end())
+}
+
+fn detect_schema_export_define(path: &Utf8Path) -> Option<String> {
+    if path.as_std_path().is_dir() {
+        for entry in std::fs::read_dir(path.as_std_path()).ok()? {
+            let entry = entry.ok()?;
+            let child = Utf8PathBuf::from_path_buf(entry.path()).ok()?;
+            if let Some(found) = detect_schema_export_define(&child) {
+                return Some(found);
+            }
+        }
+        return None;
+    }
+    if path.file_name() != Some("api.h") {
+        return None;
+    }
+    let src = std::fs::read_to_string(path.as_std_path()).ok()?;
+    for marker in ["defined(", "#ifdef "] {
+        let mut rest = src.as_str();
+        while let Some(pos) = rest.find(marker) {
+            let after = &rest[pos + marker.len()..];
+            let candidate: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if candidate.ends_with("_EXPORTS") {
+                return Some(candidate);
+            }
+            rest = after;
+        }
+    }
+    None
+}
+
+fn schema_sources_dir(target_dir: &Utf8Path) -> Utf8PathBuf {
+    target_dir.join("schema-sources")
+}
+
+fn cmake_path(path: &Utf8Path) -> String {
+    path.to_string().replace('\\', "/")
 }
 
 fn stage_plugin_bundle(bundle: &Bundle, stage: &Utf8Path) -> Result<()> {
@@ -1594,9 +1888,167 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compiled_schema_staging_keeps_typed_api_and_drops_python_helpers() {
+        let root = unique_tmp("compiled-schema");
+        let staging = root.join("raw");
+        let compiled = root.join("compiled");
+        let fragment = root.join("schema-sources.cmake");
+        std::fs::create_dir_all(staging.as_std_path()).unwrap();
+
+        write_test_file(
+            &staging.join("api.h"),
+            "#if defined(TOYSCHEMA_EXPORTS)\n#define TOY_API ARCH_EXPORT\n#endif\n",
+        );
+        write_test_file(&staging.join("tokens.cpp"), "void tokens() {}\n");
+        write_test_file(&staging.join("tokens.h"), "#pragma once\n");
+        write_test_file(&staging.join("ToyAPI.cpp"), "void api() {}\n");
+        write_test_file(&staging.join("ToyAPI.h"), "#pragma once\n");
+        write_test_file(&staging.join("wrapToyAPI.cpp"), "void py() {}\n");
+        write_test_file(&staging.join("module.cpp"), "void module() {}\n");
+        write_test_file(&staging.join("generatedSchema.module.h"), "#pragma once\n");
+        write_test_file(&staging.join("plugInfo.json"), "{}\n");
+        write_test_file(&staging.join("generatedSchema.usda"), "#usda 1.0\n");
+
+        let counts = stage_compiled_schema_sources(&staging, &compiled, &fragment).expect("stages");
+
+        assert_eq!(counts.sources, 2);
+        assert_eq!(counts.headers, 3);
+        assert!(compiled.join("tokens.cpp").as_std_path().is_file());
+        assert!(compiled.join("ToyAPI.cpp").as_std_path().is_file());
+        assert!(!compiled.join("wrapToyAPI.cpp").as_std_path().exists());
+        assert!(!compiled.join("module.cpp").as_std_path().exists());
+        assert!(!compiled
+            .join("generatedSchema.module.h")
+            .as_std_path()
+            .exists());
+
+        let cmake = std::fs::read_to_string(fragment.as_std_path()).unwrap();
+        assert!(cmake.contains("target_sources(${PLUGIN_NAME} PRIVATE"));
+        assert!(cmake.contains("tokens.cpp"));
+        assert!(cmake.contains("ToyAPI.cpp"));
+        assert!(!cmake.contains("wrapToyAPI.cpp"));
+        assert!(!cmake.contains("module.cpp"));
+        assert!(
+            cmake.contains("target_compile_definitions(${PLUGIN_NAME} PRIVATE TOYSCHEMA_EXPORTS)")
+        );
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn codeless_schema_output_clears_stale_compiled_fragment() {
+        let root = unique_tmp("codeless-schema");
+        let staging = root.join("raw");
+        let compiled = root.join("compiled");
+        let fragment = root.join("schema-sources.cmake");
+        std::fs::create_dir_all(staging.as_std_path()).unwrap();
+        std::fs::create_dir_all(compiled.as_std_path()).unwrap();
+        write_test_file(&compiled.join("stale.cpp"), "void stale() {}\n");
+        write_test_file(
+            &fragment,
+            "target_sources(${PLUGIN_NAME} PRIVATE stale.cpp)\n",
+        );
+        write_test_file(&staging.join("plugInfo.json"), "{}\n");
+        write_test_file(&staging.join("generatedSchema.usda"), "#usda 1.0\n");
+
+        let counts = stage_compiled_schema_sources(&staging, &compiled, &fragment).expect("stages");
+
+        assert_eq!(counts.sources, 0);
+        assert_eq!(counts.headers, 0);
+        assert!(!compiled.as_std_path().exists());
+        assert!(!fragment.as_std_path().exists());
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn schema_resource_merge_also_updates_test_plug_infos() {
+        let root = unique_tmp("schema-resource-merge");
+        write_test_file(
+            &root.join("openstrata.plugin.yaml"),
+            "plugin:\n  name: toy\n  version: 0.1.0\n  kind: usd-fileformat\n\
+             runtime:\n  openusd: \">=25.05,<27.0\"\n\
+             provides:\n  - usd-fileformat:toy\n  - usd-schema:ToyAPI\n\
+             usd:\n  plug_info: plugin/resources/toy/plugInfo.json\n",
+        );
+        let target_plug_info = r#"{
+            "Plugins": [
+                { "Type": "library", "Name": "toy",
+                  "Info": { "Types": { "ToyFileFormat": { "bases": ["SdfFileFormat"] } } } }
+            ]
+        }"#;
+        write_test_file(
+            &root.join("plugin/resources/toy/plugInfo.json"),
+            target_plug_info,
+        );
+        write_test_file(&root.join("tests/cmake/plugInfo.json"), target_plug_info);
+
+        let generated_plug_info = root.join("raw/plugInfo.json");
+        let generated_schema = root.join("raw/generatedSchema.usda");
+        write_test_file(
+            &generated_plug_info,
+            r#"{
+                "Plugins": [
+                    { "Info": { "Types": {
+                        "ToyAPI": {
+                            "schemaIdentifier": "API",
+                            "schemaKind": "singleApplyAPI",
+                            "bases": ["UsdAPISchemaBase"]
+                        }
+                    } } }
+                ]
+            }"#,
+        );
+        write_test_file(&generated_schema, "#usda 1.0\n");
+
+        let bundle = Bundle::load(&root).expect("bundle loads");
+        let generated = CohostedSchemaGeneration {
+            generated_plug_info,
+            generated_schema: Some(generated_schema),
+            compiled_sources: 1,
+        };
+
+        merge_cohosted_schema_resources(&bundle, &generated).expect("merges resources");
+
+        let target = std::fs::read_to_string(bundle.plug_info().as_std_path()).unwrap();
+        let test =
+            std::fs::read_to_string(root.join("tests/cmake/plugInfo.json").as_std_path()).unwrap();
+        for src in [target, test] {
+            let value: serde_json::Value = serde_json::from_str(&src).unwrap();
+            let types = value["Plugins"][0]["Info"]["Types"].as_object().unwrap();
+            assert!(types.contains_key("ToyFileFormat"));
+            assert!(types.contains_key("ToyAPI"));
+        }
+        assert!(bundle
+            .plug_info_root()
+            .join("generatedSchema.usda")
+            .as_std_path()
+            .is_file());
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
     fn env_value<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
         env.iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(key))
             .map(|(_, v)| v.as_str())
+    }
+
+    fn write_test_file(path: &Utf8Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent.as_std_path()).unwrap();
+        }
+        std::fs::write(path.as_std_path(), contents).unwrap();
+    }
+
+    fn unique_tmp(tag: &str) -> Utf8PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut dir = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
+        dir.push(format!("ost-cli-{tag}-{}-{nanos}", std::process::id()));
+        dir
     }
 }

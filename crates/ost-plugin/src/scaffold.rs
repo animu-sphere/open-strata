@@ -359,6 +359,12 @@ mod tests {
             std::env::consts::DLL_SUFFIX
         )));
 
+        // New file-format bundles are schema-cohost ready: when `ost plugin
+        // build` generates a compiled schema fragment, CMake includes it into the
+        // same shared library. Bundles without a schema simply have no fragment.
+        let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
+        assert!(cmake.contains("OPENSTRATA_SCHEMA_SOURCES_FILE"));
+
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
 

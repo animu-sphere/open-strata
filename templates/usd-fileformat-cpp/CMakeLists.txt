@@ -29,6 +29,15 @@ target_include_directories(${PLUGIN_NAME} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     ${PXR_INCLUDE_DIRS})
 
+# `ost plugin build` writes this fragment when the bundle co-hosts a compiled
+# schema (`schema.usda` + `provides: usd-schema:*`). It adds the generated typed
+# API sources to this same shared library and defines the generated `*_EXPORTS`
+# macro so the schema symbols are exported from the plugin binary. Plain
+# file-format bundles have no fragment and stay unchanged.
+if(DEFINED OPENSTRATA_SCHEMA_SOURCES_FILE AND EXISTS "${OPENSTRATA_SCHEMA_SOURCES_FILE}")
+    include("${OPENSTRATA_SCHEMA_SOURCES_FILE}")
+endif()
+
 # Link the USD monolith if present, else the discrete libraries this plugin uses.
 if(TARGET usd_ms)
     target_link_libraries(${PLUGIN_NAME} PRIVATE usd_ms)

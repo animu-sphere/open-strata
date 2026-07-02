@@ -17,6 +17,8 @@ Phases 0–3 are implemented, and Phase 4 (the OpenUSD plugin verification harne
 is largely in: a real OpenUSD runtime can be **adopted** (`--from-usd`) or
 **built from source** (`--build`, via build_usd.py or CMake-direct), and the
 plugin pyramid runs Levels 0–5 (`ost plugin new|inspect|build|doctor|run|test`).
+`ost plugin build` also regenerates co-hosted `schema.usda` contracts and can
+link generated typed schema APIs into an existing plugin library.
 Tagged binary releases (`v*`) are live via cargo-dist; CI generation, sessions,
 GPU/AI, and the fetched artifact registry are still ahead. Linux x86_64 is the
 first-class target; other OS targets

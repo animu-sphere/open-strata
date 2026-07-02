@@ -49,14 +49,10 @@ them. Each release is a coherent slice, not a phase boundary.
     nudges, runtime-version drift reporting across `show`/`validate`/doctor JSON
     and human output, the discoverable `usd-plugin-workspace` template alias,
     `plugins/<name>/` workspace discovery, `ost plugin new` workspace guidance,
-    and macOS `runtime pull --build` notes for the known source-build edges.
-  - **Remaining before release:** decide whether the compiled, co-located schema
-    flow is small enough for this cut, then run the normal version/changelog/
-    release workflow.
-  - **Stretch:** the compiled, co-located schema flow ("add a typed API schema to
-    an existing plugin") can land in v0.5.0 if it stays a small, tested extension of
-    the existing `usdGenSchema` merge path; otherwise it becomes the first v0.6.0
-    feature.
+    macOS `runtime pull --build` notes for the known source-build edges, and the
+    compiled co-located schema flow in `ost plugin build`.
+  - **Remaining before release:** run the normal version/changelog/release
+    workflow, including a real-runtime smoke pass for the compiled schema path.
   - **Still out of scope:** `plugin publish`, the runtime×plugin CI matrix, and
     runtime/extension content attribution; those remain tied to the Phase 6
     artifact source/content store.
@@ -361,32 +357,17 @@ no generator, and the harness models only file-format bundles. Ranked:
   installing it when those are absent at USD build time. **Verified end-to-end
   against an adopted OpenUSD 26.08**: build → regenerate → `ost plugin test`
   L0..L4 PASS.
-- ⬜ **(v0.5.0 stretch) Compiled, co-located schema flow — "add a schema to an existing plugin".**
-  A downstream pilot built a typed `*API` schema *compiled into* an existing
-  file-format plugin's library + `plugInfo` (so the importer calls the generated
-  `<Schema>::Apply(prim)` instead of authoring raw attributes), and hand-rolled a
-  ~120-line script to do it — exactly the shape `ost` should own (a first-class
-  `ost plugin schema add <bundle>` or schema-awareness in `ost plugin build`). It
-  must:
-  - run `usdGenSchema` in the **composed runtime env** — the matching Python +
-    `pxr`, the codegen templates (`-t <runtime>/lib/usd/usd/resources/codegenTemplates`),
-    and the sublayer search path (`PXR_AR_DEFAULT_SEARCH_PATH=<runtime>/lib/usd/usd/resources`
-    so `@usd/schema.usda@` / `APISchemaBase` resolves) — robust even when a stale
-    pip `pxr` shadows the runtime (the value `ost` already adds elsewhere);
-  - default to the **compiled, co-located** shape: keep `api.h` / `tokens.{h,cpp}`
-    / `<schema>.{h,cpp}`, drop the Python-module helpers (`wrap*.cpp`, `module.cpp`,
-    `generatedSchema.module.h`, `generatedSchema.classes.txt`); offer `--codeless`
-    for the standalone case the current template already covers;
-  - **merge** the generated `Types` into the bundle's existing `plugInfo.json` and
-    stage `generatedSchema.usda` (the codeless-co-hosting merge already does this —
-    extend it to the compiled outputs), including into a separate **test**
-    `plugInfo` when the bundle's CTest builds its own;
-  - emit the library `*_EXPORTS` define / CMake snippet so the typed API links from
-    the same library (else the generated `*_API` macro resolves to *import* and the
-    authorer can't link it).
-  Keeps the L0 library checks (it ships a compiled library). A stale pip `pxr`
-  (USD 23.05) generating code that compiled and loaded clean against a 26.x runtime
-  confirms version skew is forgiving for a simple single-apply API.
+- ✅ **(v0.5.0) Compiled, co-located schema flow — "add a schema to an existing plugin".**
+  `ost plugin build` now recognizes a non-schema bundle that declares
+  `usd-schema:<Type>` and ships `schema.usda`, runs `usdGenSchema` in the composed
+  runtime/session environment, stages generated typed API sources into the same
+  plugin library via a generated CMake fragment, drops Python-module helper files,
+  defines the generated `*_EXPORTS` macro, merges the schema `Types` into the
+  bundle's existing `plugInfo.json`, copies `generatedSchema.usda`, and also
+  merges `Types` into `tests/**/plugInfo.json` when a bundle's CTest path carries
+  its own plugin registry. If `usdGenSchema` emits no C++ files (for example a
+  `skipCodeGeneration` codeless schema), the flow falls back to the resource-only
+  merge path.
 - ✅ **`usdGenSchema` `Types` merge into a co-hosting bundle.** `ost plugin build`
   on a co-hosting bundle (a non-schema kind shipping a `schema.usda` and declaring
   `usd-schema:<Type>`) runs usdGenSchema to a staging dir and **merges** the
