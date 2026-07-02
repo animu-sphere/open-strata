@@ -79,6 +79,21 @@ pub fn merge_schema_types(target_src: &str, generated_src: &str) -> Result<Strin
     serde_json::to_string_pretty(&target).map_err(|_| MergeError::Parse("serialize"))
 }
 
+/// Return the `Name` values of library plugin entries in a `plugInfo.json`.
+pub fn library_plugin_names(src: &str) -> Result<Vec<String>, MergeError> {
+    let value = parse_plug_info(src).map_err(|_| MergeError::Parse("plugInfo"))?;
+    let plugins = value
+        .get("Plugins")
+        .and_then(|p| p.as_array())
+        .ok_or(MergeError::NoPlugins)?;
+    Ok(plugins
+        .iter()
+        .filter(|plugin| plugin.get("Type").and_then(|t| t.as_str()) == Some("library"))
+        .filter_map(|plugin| plugin.get("Name").and_then(|n| n.as_str()))
+        .map(str::to_string)
+        .collect())
+}
+
 /// Why a [`merge_schema_types`] call could not produce a merged plugInfo.
 #[derive(Debug, PartialEq, Eq)]
 pub enum MergeError {
@@ -314,6 +329,21 @@ mod tests {
         assert_eq!(
             merge_schema_types(r#"{ "Plugins": [] }"#, generated),
             Err(MergeError::NoPlugins)
+        );
+    }
+
+    #[test]
+    fn library_plugin_names_reads_jsonc_library_entries() {
+        let src = r#"# generated
+        {
+            "Plugins": [
+                { "Type": "resource", "Name": "SchemaResources" },
+                { "Type": "library", "Name": "ToyFileFormat" },
+            ]
+        }"#;
+        assert_eq!(
+            library_plugin_names(src).expect("names"),
+            vec!["ToyFileFormat"]
         );
     }
 }

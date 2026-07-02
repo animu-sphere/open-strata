@@ -24,3 +24,11 @@ ost plugin test {{name}}        # orchestrate the levels and write a report
 Replace the body of `{{Name}}FileFormat::Read` with your format's parser. The
 scaffold emits an empty USDA layer so a `.{{extension}}` file opens as a valid
 (if empty) stage out of the box.
+
+## Co-hosting a Typed Schema
+
+To compile a generated API schema into this same plugin, add `schema.usda` at the
+bundle root and add `usd-schema:<TypeName>` to `provides` in
+`openstrata.plugin.yaml`. `ost plugin build` runs `usdGenSchema` in the resolved
+runtime environment, links the generated C++ API sources into this library, and
+merges the generated `Types` into `plugin/resources/{{name}}/plugInfo.json`.

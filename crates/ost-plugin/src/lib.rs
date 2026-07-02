@@ -33,7 +33,7 @@ pub use model::{
     CxxAbi, PluginIdentity, PluginKind, PluginManifest, Requires, RuntimeReq, SchemaSection, Tests,
     UsdSection, PLUGIN_MANIFEST,
 };
-pub use plug_info::{merge_schema_types, MergeError};
+pub use plug_info::{library_plugin_names, merge_schema_types, MergeError};
 pub use report::{environment_json, report_json, summary_text, write_report, REPORT_SCHEMA};
 pub use scaffold::scaffold;
 pub use session::{bundle_vars, session_env, session_env_with};
