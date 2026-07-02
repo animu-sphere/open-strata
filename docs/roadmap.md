@@ -39,20 +39,18 @@ them. Each release is a coherent slice, not a phase boundary.
   - Out of scope (deferred): `plugin publish` + the runtime×plugin CI matrix
     (blocked on the Phase 6 artifact source) and runtime/extension content
     attribution (lands with the Phase 6 content store).
-- 🚧 **v0.5.0 — schema authoring hardening + workspace ergonomics.** A
+- ✅ **v0.5.0 — schema authoring hardening + workspace ergonomics.** A
   consolidation release after the schema-kind milestone: make the v0.4 codeless
   and co-hosted schema paths reliable across Windows/macOS, remove the remaining
   "works only if you know the trick" UX, and keep Phase 6-dependent publishing
   work out of this cut. Scope:
-  - **Already landed:** UTF-8-forced schema generation, the
+  - **Delivered:** UTF-8-forced schema generation, the
     `schema.library_prefix` double-prefix hint, per-target metadata adoption
     nudges, runtime-version drift reporting across `show`/`validate`/doctor JSON
     and human output, the discoverable `usd-plugin-workspace` template alias,
     `plugins/<name>/` workspace discovery, `ost plugin new` workspace guidance,
     macOS `runtime pull --build` notes for the known source-build edges, and the
     compiled co-located schema flow in `ost plugin build`.
-  - **Remaining before release:** run the normal version/changelog/release
-    workflow, including a real-runtime smoke pass for the compiled schema path.
   - **Still out of scope:** `plugin publish`, the runtime×plugin CI matrix, and
     runtime/extension content attribution; those remain tied to the Phase 6
     artifact source/content store.
