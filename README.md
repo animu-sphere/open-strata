@@ -80,7 +80,7 @@ cargo test -p ost-cli --test lifecycle --locked -- --nocapture
 
 ```text
 ost platform   list | show <cy> | diff <a> <b>     inspect VFX platform years
-ost init [--template cpp-library|usd-plugin|--bare]  scaffold a buildable project
+ost init [--template cpp-library|usd-plugin|usd-plugin-workspace|--bare]  scaffold a buildable project
 ost runtime    pull | list | show | validate | explain   manage runtimes in the store
 ost env <cy> --profile <p> [--shell bash|pwsh]      print the activating environment
 ost devshell <cy> --profile <p>                     enter an interactive runtime shell
@@ -160,7 +160,7 @@ crates/
 platforms/        built-in VFX Reference Platform calendar-year manifests
 profiles/         capability bundles (core / dev / usd / lookdev)
 extensions/       controlled extension manifests (openusd / materialx)
-templates/        project scaffolds (cpp-library, usd-plugin) + plugin scaffold (usd-fileformat-cpp)
+templates/        project scaffolds + plugin scaffolds (usd-fileformat-cpp, usd-schema-codeless)
 schemas/          JSON schemas for platform / project / lock / plugin-report documents
 ```
 
@@ -174,6 +174,10 @@ definitions and override them by id.
 Tool overrides for non-PATH installs: `OST_NINJA` (ninja), `OST_UV` (uv). Runtime
 source fallbacks for `ost runtime pull`: `OST_USD_ROOT` (adopt), `OST_USD_SRC`
 (build), `OST_USD_DEPS` (CMake deps).
+
+On macOS source builds, full Xcode may be needed for upstream codesign; with
+CMake 4 and bundled dependencies, retry with
+`--build-arg -DCMAKE_POLICY_VERSION_MINIMUM=3.5` if configure fails.
 
 ## Security
 

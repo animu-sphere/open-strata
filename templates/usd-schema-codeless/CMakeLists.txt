@@ -11,7 +11,7 @@ set(_resources  "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}")
 # usdGenSchema regenerates the resources, but it is not required to *use* this
 # bundle: the resource-only plugInfo.json is committed and is itself the build
 # product. So a missing usdGenSchema is a warning, not a hard error; otherwise
-# this bundle would break a plain `cmake -S .` of a plugin-workspace root for a
+# this bundle would break a plain `cmake -S .` of a usd-plugin-workspace root for a
 # non-`ost` user (whose CMAKE_PREFIX_PATH does not put the USD bin on PATH).
 # `ost plugin build` composes the resolved runtime so usdGenSchema + Python are
 # on PATH and the regenerate target runs. Run the script through Python instead

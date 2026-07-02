@@ -596,6 +596,7 @@ fn build_from_source(
             "--build source '{src}' is not a directory"
         )));
     }
+    emit_macos_build_notes(opts);
     std::fs::create_dir_all(r.prefix.as_std_path())
         .map_err(|e| Error::io(r.prefix.to_string(), e))?;
 
@@ -625,6 +626,27 @@ fn build_from_source(
     // self-contained (deps installed into the prefix), so this stays empty.
     manifest.runtime_deps = opts.deps.iter().map(|d| d.replace('\\', "/")).collect();
     Ok(manifest)
+}
+
+fn emit_macos_build_notes(opts: &BuildOpts) {
+    if Host::detect().os != Os::Macos {
+        return;
+    }
+
+    eprintln!(
+        "note: macOS OpenUSD source builds may need full Xcode for upstream codesign; \
+         Command-Line-Tools-only hosts can require an ad-hoc codesign fallback"
+    );
+    eprintln!(
+        "note: with CMake 4 and bundled dependencies, retry with \
+         `--build-arg -DCMAKE_POLICY_VERSION_MINIMUM=3.5` if configure fails"
+    );
+    if opts.deps.is_empty() {
+        eprintln!(
+            "note: usdview builds need Python UI packages such as PySide6, PyOpenGL, \
+             and Jinja2 available to the build"
+        );
+    }
 }
 
 /// Drive the source tree's `build_scripts/build_usd.py` (handles dependencies).
@@ -873,7 +895,14 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
 
     if fmt.is_json() {
-        output::success(&serde_json::to_value(&manifest).expect("manifest serializes"));
+        let mut body = serde_json::to_value(&manifest).expect("manifest serializes");
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert(
+                "openusd_version_drift".into(),
+                openusd_version_drift_json(&manifest, &r.artifact_prefix, &platform, &profile),
+            );
+        }
+        output::success(&body);
         return Ok(());
     }
 
@@ -916,7 +945,7 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         println!(
             "\nNote: the install's pxr.h reports OpenUSD {real}, but the manifest records \
              {recorded} (stale).\n      Re-pull to refresh: \
-             ost runtime pull {platform} --profile {profile} --from-usd <usd-root>"
+             ost runtime pull {platform} --profile {profile} --from-usd <usd-root> --force"
         );
     }
     Ok(())
@@ -945,7 +974,17 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
 
     // Validate against the effective artifact prefix (the external USD root for
     // an adopted runtime; the store prefix otherwise).
-    let report = ost_runtime::validate(&r.artifact_prefix, &manifest);
+    let mut report = ost_runtime::validate(&r.artifact_prefix, &manifest);
+    if let Some((recorded, real)) = openusd_version_drift(&manifest, &r.artifact_prefix) {
+        report.checks.push(ost_runtime::Check {
+            name: "openusd-version-drift",
+            passed: false,
+            detail: Some(format!(
+                "manifest records OpenUSD {recorded}, but the install's pxr.h reports {real}; \
+                 re-pull with `ost runtime pull {platform} --profile {profile} --from-usd <usd-root> --force`"
+            )),
+        });
+    }
     let passed = report.passed();
 
     // Record the outcome back into the manifest (digest is unaffected).
@@ -1006,6 +1045,24 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         Ok(())
     } else {
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
+    }
+}
+
+fn openusd_version_drift_json(
+    manifest: &RuntimeManifest,
+    artifact_prefix: &Utf8Path,
+    platform: &str,
+    profile: &str,
+) -> serde_json::Value {
+    match openusd_version_drift(manifest, artifact_prefix) {
+        Some((recorded, detected)) => serde_json::json!({
+            "recorded": recorded,
+            "detected": detected,
+            "repair": format!(
+                "ost runtime pull {platform} --profile {profile} --from-usd <usd-root> --force"
+            ),
+        }),
+        None => serde_json::Value::Null,
     }
 }
 
@@ -1178,6 +1235,60 @@ mod tests {
         // mismatch so a malformed catalog entry gets overwritten.
         assert!(same_openusd_release("25.05", "25.05"));
         assert!(!same_openusd_release("25.05", "twentyfive"));
+    }
+
+    #[test]
+    fn openusd_version_drift_reports_stale_manifest() {
+        use ost_core::host::Arch;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut root = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
+        root.push(format!("ost-pxrd-{}-{nanos}", std::process::id()));
+        let pxr_dir = root.join("include/pxr");
+        std::fs::create_dir_all(pxr_dir.as_std_path()).unwrap();
+        std::fs::write(
+            pxr_dir.join("pxr.h").as_std_path(),
+            "#define PXR_MAJOR_VERSION 0\n\
+             #define PXR_MINOR_VERSION 26\n\
+             #define PXR_PATCH_VERSION 8\n",
+        )
+        .unwrap();
+
+        let host = Host {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        };
+        let rt = ost_runtime::Runtime::resolve("cy2026", "usd", &host, "3.13.x");
+        let manifest = RuntimeManifest::build(
+            &rt,
+            "3.13.x",
+            vec!["usd-stage-read".into()],
+            vec![],
+            vec![ExtensionRecord {
+                id: "openusd".into(),
+                version: "25.05.01".into(),
+                features: vec!["core".into()],
+            }],
+            1_700_000_000,
+            RuntimeSource::Local,
+        );
+
+        assert_eq!(
+            openusd_version_drift(&manifest, &root),
+            Some(("25.05.01".to_string(), "26.08".to_string()))
+        );
+        let json = openusd_version_drift_json(&manifest, &root, "cy2026", "usd");
+        assert_eq!(json["recorded"], "25.05.01");
+        assert_eq!(json["detected"], "26.08");
+        assert!(json["repair"]
+            .as_str()
+            .unwrap()
+            .contains("ost runtime pull cy2026 --profile usd"));
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[test]
