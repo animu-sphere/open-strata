@@ -496,12 +496,11 @@ fn build(
     };
 
     run_step(&cmake, &configure_args, &build_env)?;
+    run_step(&cmake, &build_args, &build_env)?;
 
     if let Some(schema) = &cohosted_schema {
         merge_cohosted_schema_resources(&bundle, schema)?;
     }
-
-    run_step(&cmake, &build_args, &build_env)?;
 
     // Record the compiler so the next build can detect a change. The plugin
     // build writes no full target lock, so this lives beside the toolchain.
@@ -1053,10 +1052,15 @@ fn merge_cohosted_schema_resources(
         .map_err(|e| Error::io(generated.generated_plug_info.to_string(), e))?;
     let merged = ost_plugin::merge_schema_types(&target_src, &generated_src)
         .map_err(|e| Error::Operation(format!("merging schema Types: {e}")))?;
+    let target_library_names = ost_plugin::library_plugin_names(&target_src).unwrap_or_default();
     std::fs::write(target_pi.as_std_path(), merged)
         .map_err(|e| Error::io(target_pi.to_string(), e))?;
-    let test_plug_infos =
-        merge_schema_types_into_test_plug_infos(bundle, &target_pi, &generated_src)?;
+    let test_plug_infos = merge_schema_types_into_test_plug_infos(
+        bundle,
+        &target_pi,
+        &target_library_names,
+        &generated_src,
+    )?;
 
     // Copy the flattened schema definition beside the plugInfo (registration needs it).
     if let Some(generated_schema) = &generated.generated_schema {
@@ -1085,21 +1089,29 @@ fn reset_dir(dir: &Utf8Path) -> Result<()> {
 fn merge_schema_types_into_test_plug_infos(
     bundle: &Bundle,
     target_pi: &Utf8Path,
+    target_library_names: &[String],
     generated_src: &str,
 ) -> Result<usize> {
     let tests_dir = bundle.path("tests");
-    if !tests_dir.as_std_path().is_dir() {
+    if !tests_dir.as_std_path().is_dir() || target_library_names.is_empty() {
         return Ok(0);
     }
     let mut plug_infos = Vec::new();
     collect_test_plug_infos(&tests_dir, &mut plug_infos)?;
     let mut merged_count = 0;
     for plug_info in plug_infos {
-        if plug_info == target_pi {
+        if plug_info == target_pi || !is_known_test_registry_plug_info(bundle, &plug_info) {
             continue;
         }
         let target_src = std::fs::read_to_string(plug_info.as_std_path())
             .map_err(|e| Error::io(plug_info.to_string(), e))?;
+        let candidate_library_names =
+            ost_plugin::library_plugin_names(&target_src).map_err(|e| {
+                Error::Operation(format!("reading library names from {plug_info}: {e}"))
+            })?;
+        if !library_names_overlap(target_library_names, &candidate_library_names) {
+            continue;
+        }
         let merged = ost_plugin::merge_schema_types(&target_src, generated_src)
             .map_err(|e| Error::Operation(format!("merging schema Types into {plug_info}: {e}")))?;
         std::fs::write(plug_info.as_std_path(), merged)
@@ -1107,6 +1119,15 @@ fn merge_schema_types_into_test_plug_infos(
         merged_count += 1;
     }
     Ok(merged_count)
+}
+
+fn is_known_test_registry_plug_info(bundle: &Bundle, plug_info: &Utf8Path) -> bool {
+    plug_info.starts_with(bundle.path("tests/cmake"))
+}
+
+fn library_names_overlap(left: &[String], right: &[String]) -> bool {
+    left.iter()
+        .any(|name| right.iter().any(|other| other == name))
 }
 
 fn collect_test_plug_infos(dir: &Utf8Path, plug_infos: &mut Vec<Utf8PathBuf>) -> Result<()> {
@@ -1218,7 +1239,7 @@ fn collect_compiled_schema_files_inner(
             let rel = path
                 .strip_prefix(root)
                 .map_err(|e| Error::Operation(format!("schema output path error: {e}")))?;
-            if is_compiled_schema_file(rel) {
+            if is_compiled_schema_file(root, rel) {
                 files.push(rel.to_path_buf());
             }
         }
@@ -1226,14 +1247,23 @@ fn collect_compiled_schema_files_inner(
     Ok(())
 }
 
-fn is_compiled_schema_file(rel: &Utf8Path) -> bool {
+fn is_compiled_schema_file(root: &Utf8Path, rel: &Utf8Path) -> bool {
     let Some(name) = rel.file_name() else {
         return false;
     };
-    if name == "module.cpp" || name == "generatedSchema.module.h" || name.starts_with("wrap") {
+    if name == "module.cpp" || name == "generatedSchema.module.h" {
+        return false;
+    }
+    if name.starts_with("wrap") && is_cxx_source(rel) && !has_matching_header(root, rel) {
         return false;
     }
     is_cxx_source(rel) || is_cxx_header(rel)
+}
+
+fn has_matching_header(root: &Utf8Path, rel: &Utf8Path) -> bool {
+    ["h", "hpp", "hh"]
+        .iter()
+        .any(|ext| root.join(rel).with_extension(ext).as_std_path().is_file())
 }
 
 fn is_cxx_source(path: &Utf8Path) -> bool {
@@ -1904,6 +1934,8 @@ mod tests {
         write_test_file(&staging.join("tokens.h"), "#pragma once\n");
         write_test_file(&staging.join("ToyAPI.cpp"), "void api() {}\n");
         write_test_file(&staging.join("ToyAPI.h"), "#pragma once\n");
+        write_test_file(&staging.join("wrapBehavior.cpp"), "void wrapped() {}\n");
+        write_test_file(&staging.join("wrapBehavior.h"), "#pragma once\n");
         write_test_file(&staging.join("wrapToyAPI.cpp"), "void py() {}\n");
         write_test_file(&staging.join("module.cpp"), "void module() {}\n");
         write_test_file(&staging.join("generatedSchema.module.h"), "#pragma once\n");
@@ -1912,10 +1944,11 @@ mod tests {
 
         let counts = stage_compiled_schema_sources(&staging, &compiled, &fragment).expect("stages");
 
-        assert_eq!(counts.sources, 2);
-        assert_eq!(counts.headers, 3);
+        assert_eq!(counts.sources, 3);
+        assert_eq!(counts.headers, 4);
         assert!(compiled.join("tokens.cpp").as_std_path().is_file());
         assert!(compiled.join("ToyAPI.cpp").as_std_path().is_file());
+        assert!(compiled.join("wrapBehavior.cpp").as_std_path().is_file());
         assert!(!compiled.join("wrapToyAPI.cpp").as_std_path().exists());
         assert!(!compiled.join("module.cpp").as_std_path().exists());
         assert!(!compiled
@@ -1927,6 +1960,7 @@ mod tests {
         assert!(cmake.contains("target_sources(${PLUGIN_NAME} PRIVATE"));
         assert!(cmake.contains("tokens.cpp"));
         assert!(cmake.contains("ToyAPI.cpp"));
+        assert!(cmake.contains("wrapBehavior.cpp"));
         assert!(!cmake.contains("wrapToyAPI.cpp"));
         assert!(!cmake.contains("module.cpp"));
         assert!(
@@ -1963,7 +1997,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_resource_merge_also_updates_test_plug_infos() {
+    fn schema_resource_merge_updates_only_matching_test_registries() {
         let root = unique_tmp("schema-resource-merge");
         write_test_file(
             &root.join("openstrata.plugin.yaml"),
@@ -1983,6 +2017,16 @@ mod tests {
             target_plug_info,
         );
         write_test_file(&root.join("tests/cmake/plugInfo.json"), target_plug_info);
+        write_test_file(&root.join("tests/fixtures/plugInfo.json"), target_plug_info);
+        write_test_file(
+            &root.join("tests/cmake/secondary/plugInfo.json"),
+            r#"{
+                "Plugins": [
+                    { "Type": "library", "Name": "other",
+                      "Info": { "Types": { "OtherFileFormat": { "bases": ["SdfFileFormat"] } } } }
+                ]
+            }"#,
+        );
 
         let generated_plug_info = root.join("raw/plugInfo.json");
         let generated_schema = root.join("raw/generatedSchema.usda");
@@ -2019,6 +2063,15 @@ mod tests {
             let types = value["Plugins"][0]["Info"]["Types"].as_object().unwrap();
             assert!(types.contains_key("ToyFileFormat"));
             assert!(types.contains_key("ToyAPI"));
+        }
+        for path in [
+            root.join("tests/fixtures/plugInfo.json"),
+            root.join("tests/cmake/secondary/plugInfo.json"),
+        ] {
+            let src = std::fs::read_to_string(path.as_std_path()).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&src).unwrap();
+            let types = value["Plugins"][0]["Info"]["Types"].as_object().unwrap();
+            assert!(!types.contains_key("ToyAPI"));
         }
         assert!(bundle
             .plug_info_root()

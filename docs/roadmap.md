@@ -364,10 +364,10 @@ no generator, and the harness models only file-format bundles. Ranked:
   plugin library via a generated CMake fragment, drops Python-module helper files,
   defines the generated `*_EXPORTS` macro, merges the schema `Types` into the
   bundle's existing `plugInfo.json`, copies `generatedSchema.usda`, and also
-  merges `Types` into `tests/**/plugInfo.json` when a bundle's CTest path carries
-  its own plugin registry. If `usdGenSchema` emits no C++ files (for example a
-  `skipCodeGeneration` codeless schema), the flow falls back to the resource-only
-  merge path.
+  merges `Types` into matching `tests/cmake/**/plugInfo.json` registries when a
+  bundle's CTest path carries its own plugin registry. If `usdGenSchema` emits no
+  C++ files (for example a `skipCodeGeneration` codeless schema), the flow falls
+  back to the resource-only merge path.
 - ✅ **`usdGenSchema` `Types` merge into a co-hosting bundle.** `ost plugin build`
   on a co-hosting bundle (a non-schema kind shipping a `schema.usda` and declaring
   `usd-schema:<Type>`) runs usdGenSchema to a staging dir and **merges** the
