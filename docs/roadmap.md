@@ -411,10 +411,10 @@ and surfaced these net-new items (post-0.4.0; candidates for the next release):
   `usdGenSchema` prepends `libraryPrefix` to the class name for the C++/TfType, so a
   `libraryPrefix` equal to the plugin name plus a class already carrying that name
   doubles it (`Foo` + `FooBarAPI` → `FooFooBarAPI`), while the USD identifier/token
-  stays the class name. The codeless scaffold hits this too. Nudge (a doctor hint or
-  template guidance) toward a `libraryPrefix` distinct from the class's leading
-  token. `ost plugin doctor` now emits a non-failing `schema.library_prefix` hint
-  when `schema.usda` has that repeated leading token shape.
+  stays the class name. The codeless scaffold now avoids this by keeping the
+  source class unprefixed (`API`) while the generated/public schema type remains
+  `<Name>API`; `ost plugin doctor` emits a non-failing `schema.library_prefix`
+  hint if edited `schema.usda` reintroduces the repeated leading token shape.
 - ⬜ **Make `runtime show` / `doctor` reflect the real OpenUSD version.** Still
   reported on 0.4.0: an adopted install that is actually 26.x is shown as the
   placeholder `25.05.01`, so the L1 range check "passes" for the wrong reason. The

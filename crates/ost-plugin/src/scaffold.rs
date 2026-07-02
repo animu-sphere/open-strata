@@ -412,12 +412,25 @@ mod tests {
 
         // The starter schema avoids non-ASCII prose so a fresh scaffold does not
         // trigger locale-sensitive usdGenSchema failures before users edit it.
+        // It also avoids repeating `libraryPrefix` in the class name: usdGenSchema
+        // composes those into the public schema type, so this source class still
+        // generates `VrmSchemaAPI` without tripping the doctor hint.
         let schema = std::fs::read_to_string(dir.join("schema.usda").as_std_path()).unwrap();
         assert!(schema.is_ascii());
+        assert!(schema.contains("string libraryPrefix    = \"VrmSchema\""));
+        assert!(schema.contains("class \"API\""));
+        assert!(!schema.contains("class \"VrmSchemaAPI\""));
 
         // The scaffolded bundle passes the static L0 diagnostics.
         let report = crate::diagnose(&bundle, &crate::RuntimeContext::default(), 0);
         assert!(report.passed(), "scaffolded schema should pass L0");
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|d| d.id != "schema.library_prefix"),
+            "fresh scaffold should not warn about repeated libraryPrefix"
+        );
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
