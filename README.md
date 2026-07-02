@@ -57,6 +57,25 @@ cargo test
 cargo clippy --workspace --all-targets
 ```
 
+For Windows or agent-driven local gates, prefer an isolated target directory so
+stale file locks in `target/` do not block Cargo:
+
+```powershell
+$env:CARGO_TARGET_DIR = Join-Path $env:TEMP "ost-cargo-target-$PID"
+$env:CARGO_INCREMENTAL = "0"
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+Native build/package lifecycle tests run automatically on non-Windows hosts when
+cmake, ninja, and a compiler are available. On Windows they are skipped by
+default; opt in explicitly when you want that coverage:
+
+```powershell
+$env:OST_RUN_NATIVE_LIFECYCLE = "1"
+cargo test -p ost-cli --test lifecycle --locked -- --nocapture
+```
+
 ## Commands
 
 ```text

@@ -1283,6 +1283,13 @@ fn runtime_context(r: &crate::commands::Resolved) -> RuntimeContext {
                 }
             }
         }
+        // The recorded OpenUSD version can be stale (a runtime adopted before the
+        // version was derived from `pxr.h`), which makes the L1 range check pass
+        // for the wrong reason. Prefer the install's actual `pxr.h` version when it
+        // is present so the gate reflects the real runtime (dogfooding #1–#5).
+        if let Some(real) = crate::commands::runtime::detect_openusd_version(&r.artifact_prefix) {
+            ctx.openusd_version = Some(real);
+        }
     }
     ctx
 }
@@ -1349,6 +1356,9 @@ fn finish(report: &DoctorReport) -> Result<()> {
 /// them; case-variant keys (`Path` vs `PATH`) are folded so the original `PATH`
 /// is not duplicated. The MSVC-only keys (`LIB`/`INCLUDE`/`LIBPATH`), which the
 /// session does not carry, are kept by listing the delta first.
+///
+/// `usdGenSchema` writes files through Python's text encoders, so force UTF-8 for
+/// schema builds regardless of the host locale (notably Japanese Windows cp932).
 fn compose_build_env(msvc_env: &[(String, String)], session: &EnvSet) -> Vec<(String, String)> {
     let mut base: std::collections::HashMap<String, String> = std::env::vars().collect();
     for (k, v) in msvc_env {
@@ -1359,7 +1369,26 @@ fn compose_build_env(msvc_env: &[(String, String)], session: &EnvSet) -> Vec<(St
     }
     let mut env = msvc_env.to_vec();
     env.extend(session.resolve_over(&base));
+    force_python_utf8(&mut env);
     env
+}
+
+fn force_python_utf8(env: &mut Vec<(String, String)>) {
+    upsert_env(env, "PYTHONUTF8", "1");
+    upsert_env(env, "PYTHONIOENCODING", "utf-8");
+}
+
+fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if let Some((existing_key, existing_value)) =
+        env.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(key))
+    {
+        existing_key.clear();
+        existing_key.push_str(key);
+        existing_value.clear();
+        existing_value.push_str(value);
+    } else {
+        env.push((key.into(), value.into()));
+    }
 }
 
 fn run_step(program: &std::path::Path, args: &[String], env: &[(String, String)]) -> Result<()> {
@@ -1519,6 +1548,36 @@ mod tests {
     }
 
     #[test]
+    fn schema_build_env_forces_python_utf8() {
+        let session = EnvSet {
+            sep: ';',
+            vars: Vec::new(),
+        };
+        let env = compose_build_env(
+            &[
+                ("PythonUtf8".into(), "0".into()),
+                ("PYTHONIOENCODING".into(), "cp932".into()),
+            ],
+            &session,
+        );
+
+        assert_eq!(env_value(&env, "PYTHONUTF8"), Some("1"));
+        assert_eq!(env_value(&env, "PYTHONIOENCODING"), Some("utf-8"));
+        assert_eq!(
+            env.iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("PYTHONUTF8"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            env.iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("PYTHONIOENCODING"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn plugin_package_paths_are_target_keyed() {
         let root = Utf8PathBuf::from("/bundle");
         let id = "cy2026-linux-x86_64-py313-usd";
@@ -1530,5 +1589,11 @@ mod tests {
             plugin_dist_dir(&root, "toy", "0.1.0", id),
             root.join("dist/plugins/toy/0.1.0").join(id)
         );
+    }
+
+    fn env_value<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        env.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
     }
 }

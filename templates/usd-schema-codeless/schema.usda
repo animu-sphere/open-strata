@@ -1,13 +1,13 @@
 #usda 1.0
 (
     """
-    {{Name}} — a codeless OpenUSD API schema scaffolded by
+    {{Name}} - a codeless OpenUSD API schema scaffolded by
     `ost plugin new usd-schema {{name}}`.
 
     `usdGenSchema schema.usda plugin/resources/{{name}}` turns this file into the
     bundle's resources (plugInfo.json `Types` block + generatedSchema.usda).
     Because `skipCodeGeneration = true`, no C++/Python is generated and the bundle
-    ships no shared library — the schema is registered entirely from plugInfo.json.
+    ships no shared library; the schema is registered entirely from plugInfo.json.
     """
     subLayers = [
         @usd/schema.usda@
@@ -26,7 +26,7 @@ over "GLOBAL" (
 {
 }
 
-class "{{Name}}API" (
+class "API" (
     inherits = </APISchemaBase>
     customData = {
         token apiSchemaType = "singleApply"

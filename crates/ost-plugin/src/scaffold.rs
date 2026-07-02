@@ -382,6 +382,15 @@ mod tests {
         assert_eq!(bundle.manifest.kind(), PluginKind::UsdSchema);
         assert!(bundle.manifest.is_codeless_schema());
 
+        // Direct CMake builds of the scaffold should protect usdGenSchema from
+        // host locale encodings (notably Japanese Windows cp932) too.
+        let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
+        assert!(cmake.contains("-E env"));
+        assert!(cmake.contains("PYTHONUTF8=1"));
+        assert!(cmake.contains("PYTHONIOENCODING=utf-8"));
+        assert!(cmake.contains("USD_SCHEMA_PYTHON"));
+        assert!(cmake.contains("\"${USD_SCHEMA_PYTHON}\" \"${USD_GEN_SCHEMA}\""));
+
         // The committed plugInfo.json declares the schema type with no token left
         // and no LibraryPath (it is resource-only).
         let plug_info = std::fs::read_to_string(bundle.plug_info().as_std_path()).unwrap();
@@ -401,9 +410,27 @@ mod tests {
         assert!(fixture.contains("vrm_schema:example"));
         assert!(!fixture.contains("vrm-schema:example"));
 
+        // The starter schema avoids non-ASCII prose so a fresh scaffold does not
+        // trigger locale-sensitive usdGenSchema failures before users edit it.
+        // It also avoids repeating `libraryPrefix` in the class name: usdGenSchema
+        // composes those into the public schema type, so this source class still
+        // generates `VrmSchemaAPI` without tripping the doctor hint.
+        let schema = std::fs::read_to_string(dir.join("schema.usda").as_std_path()).unwrap();
+        assert!(schema.is_ascii());
+        assert!(schema.contains("string libraryPrefix    = \"VrmSchema\""));
+        assert!(schema.contains("class \"API\""));
+        assert!(!schema.contains("class \"VrmSchemaAPI\""));
+
         // The scaffolded bundle passes the static L0 diagnostics.
         let report = crate::diagnose(&bundle, &crate::RuntimeContext::default(), 0);
         assert!(report.passed(), "scaffolded schema should pass L0");
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|d| d.id != "schema.library_prefix"),
+            "fresh scaffold should not warn about repeated libraryPrefix"
+        );
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
