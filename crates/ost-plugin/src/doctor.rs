@@ -842,7 +842,8 @@ fn check_runtime_lib_dirs(bundle: &Bundle) -> Diagnostic {
 fn check_schema_library_prefix(bundle: &Bundle) -> Option<Diagnostic> {
     const ID: &str = "schema.library_prefix";
 
-    let schema = bundle.path("schema.usda");
+    // The declared schema.source (or the conventional root schema.usda).
+    let (schema, _) = bundle.schema_source();
     let src = std::fs::read_to_string(schema.as_std_path()).ok()?;
     let prefix = extract_usda_string_assignment(&src, "libraryPrefix")?;
     if prefix.trim().is_empty() {

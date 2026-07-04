@@ -165,6 +165,9 @@ pub enum PluginCmd {
         #[arg(long)]
         profile: Option<String>,
     },
+    /// Manage a bundle's co-located USD schema.
+    #[command(subcommand)]
+    Schema(SchemaCmd),
     /// Verify usdview launches on a fixture (Level 6) and write a report.
     TestView {
         /// Path to the bundle directory.
@@ -244,7 +247,70 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             target,
             profile,
         } => test_view(&bundle, &with, &fixture, target, profile, fmt),
+        PluginCmd::Schema(SchemaCmd::Add {
+            bundle,
+            class,
+            source,
+            codeless,
+        }) => schema_add(&bundle, &class, &source, codeless, fmt),
     }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SchemaCmd {
+    /// Add a co-located schema to an existing (non-schema) bundle: write a
+    /// starter schema.usda and wire the manifest so the next `ost plugin
+    /// build` generates + links it into the same plugin library.
+    Add {
+        /// Path to the bundle directory.
+        bundle: String,
+        /// Source class name; the public type is <PascalBundleName><CLASS>,
+        /// e.g. bundle `toy` + class `MetadataAPI` -> `ToyMetadataAPI`.
+        #[arg(long, default_value = "API")]
+        class: String,
+        /// Bundle-relative path for the schema source.
+        #[arg(long, default_value = "schema/schema.usda")]
+        source: String,
+        /// Scaffold a codeless (skipCodeGeneration) schema: the build merges
+        /// only the generated resources, adding no C++ to the library.
+        #[arg(long)]
+        codeless: bool,
+    },
+}
+
+fn schema_add(bundle: &str, class: &str, source: &str, codeless: bool, fmt: Format) -> Result<()> {
+    let root = Utf8PathBuf::from(bundle);
+    let added = ost_plugin::add_cohosted_schema(&root, class, source, codeless)?;
+
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "added": true,
+            "schema_type": added.schema_type,
+            "provides": format!("usd-schema:{}", added.schema_type),
+            "source": added.source.to_string(),
+            "codeless": added.codeless,
+        }));
+        return Ok(());
+    }
+    println!(
+        "Added co-located schema {} ({})",
+        added.schema_type,
+        if added.codeless {
+            "codeless"
+        } else {
+            "compiled"
+        }
+    );
+    println!("  schema source:  {}", added.source);
+    println!(
+        "  manifest wired: provides usd-schema:{} + schema.source",
+        added.schema_type
+    );
+    println!("\nNext steps:");
+    println!("  1. edit {} (the real properties)", added.source);
+    println!("  2. ost plugin build {bundle}   # usdGenSchema + Types merge + link");
+    println!("  3. ost plugin test  {bundle}   # L2 registration / L4 apply round-trip");
+    Ok(())
 }
 
 fn new(
@@ -1196,8 +1262,17 @@ fn prepare_cohosted_schema(
     cmake_fragment: &Utf8Path,
     build_env: &[(String, String)],
 ) -> Result<Option<CohostedSchemaGeneration>> {
-    let schema_src = bundle.path("schema.usda");
+    let (schema_src, declared) = bundle.schema_source();
     if !schema_src.as_std_path().is_file() {
+        // A manifest-declared source that is missing is a broken wiring the
+        // user should hear about; the absent *conventional* file just means
+        // this bundle keeps its committed resources.
+        if declared {
+            return Err(Error::config(format!(
+                "schema.source declares '{schema_src}' but the file does not exist"
+            ))
+            .with_hint("create it (`ost plugin schema add` scaffolds one) or drop schema.source"));
+        }
         clear_cohosted_schema_compile_state(compiled_dir, cmake_fragment)?;
         return Ok(None); // no schema source to regenerate from
     }

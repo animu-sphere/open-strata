@@ -108,6 +108,15 @@ pub enum RuntimeCmd {
         #[arg(long, default_value = "core")]
         profile: String,
     },
+    /// Re-adopt a `local` runtime from its recorded USD root, refreshing the
+    /// manifest (real OpenUSD version, layout, digest) after install drift.
+    Repair {
+        /// Platform calendar-year id, e.g. `cy2026`, or a full runtime id.
+        platform: String,
+        /// Profile, e.g. `usd`.
+        #[arg(long, default_value = "core")]
+        profile: String,
+    },
     /// Explain how a profile resolves to capabilities and extensions.
     Explain {
         /// Platform calendar-year id, e.g. `cy2026`.
@@ -152,6 +161,7 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
         RuntimeCmd::List => list(fmt),
         RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
         RuntimeCmd::Validate { platform, profile } => validate(&platform, &profile, fmt),
+        RuntimeCmd::Repair { platform, profile } => repair(&platform, &profile, fmt),
         RuntimeCmd::Explain { platform, profile } => explain(&platform, &profile, fmt),
     }
 }
@@ -200,18 +210,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
     // Resolve the profile's capabilities to concrete extensions. This drives
     // both the prefix layout (USD plugins) and the recorded provenance, so
     // `pull` agrees with `runtime explain`.
-    let catalog = ost_extension::load_all()?;
-    let resolution = ost_extension::resolve(&catalog, &r.capabilities);
-    let has_usd = resolution.extensions.iter().any(|e| e.id == "openusd");
-    let extensions: Vec<ExtensionRecord> = resolution
-        .extensions
-        .iter()
-        .map(|e| ExtensionRecord {
-            id: e.id.clone(),
-            version: e.version.clone(),
-            features: e.features.iter().cloned().collect(),
-        })
-        .collect();
+    let (has_usd, extensions) = resolve_extensions(&r)?;
 
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -301,6 +300,24 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
     println!("\nValidate with:");
     println!("  ost runtime validate {} --profile {}", platform, profile);
     Ok(())
+}
+
+/// Resolve the profile's capabilities to concrete extensions (shared by `pull`
+/// and `repair`, so both record the same provenance `runtime explain` shows).
+fn resolve_extensions(r: &crate::commands::Resolved) -> Result<(bool, Vec<ExtensionRecord>)> {
+    let catalog = ost_extension::load_all()?;
+    let resolution = ost_extension::resolve(&catalog, &r.capabilities);
+    let has_usd = resolution.extensions.iter().any(|e| e.id == "openusd");
+    let extensions = resolution
+        .extensions
+        .iter()
+        .map(|e| ExtensionRecord {
+            id: e.id.clone(),
+            version: e.version.clone(),
+            features: e.features.iter().cloned().collect(),
+        })
+        .collect();
+    Ok((has_usd, extensions))
 }
 
 /// Split an `OST_USD_DEPS` value into dependency prefixes using the platform's
@@ -1299,8 +1316,8 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     if let Some((recorded, real)) = openusd_version_drift(&manifest, &r.artifact_prefix) {
         println!(
             "\nNote: the install's pxr.h reports OpenUSD {real}, but the manifest records \
-             {recorded} (stale).\n      Re-pull to refresh: \
-             ost runtime pull {platform} --profile {profile} --from-usd <usd-root> --force"
+             {recorded} (stale).\n      Fix with: {}",
+            drift_repair_command(&manifest, &platform, &profile)
         );
     }
     Ok(())
@@ -1331,12 +1348,13 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     // an adopted runtime; the store prefix otherwise).
     let mut report = ost_runtime::validate(&r.artifact_prefix, &manifest);
     if let Some((recorded, real)) = openusd_version_drift(&manifest, &r.artifact_prefix) {
+        let fix = drift_repair_command(&manifest, &platform, &profile);
         report.checks.push(ost_runtime::Check {
             name: "openusd-version-drift",
             passed: false,
             detail: Some(format!(
                 "manifest records OpenUSD {recorded}, but the install's pxr.h reports {real}; \
-                 re-pull with `ost runtime pull {platform} --profile {profile} --from-usd <usd-root> --force`"
+                 fix with `{fix}`"
             )),
         });
     }
@@ -1413,12 +1431,125 @@ fn openusd_version_drift_json(
         Some((recorded, detected)) => serde_json::json!({
             "recorded": recorded,
             "detected": detected,
-            "repair": format!(
-                "ost runtime pull {platform} --profile {profile} --from-usd <usd-root> --force"
-            ),
+            "repair": drift_repair_command(manifest, platform, profile),
         }),
         None => serde_json::Value::Null,
     }
+}
+
+/// The exact, copy-paste command that repairs a drifted runtime manifest
+/// (dogfooding #7: never make the user reconstruct flags or paths).
+fn drift_repair_command(manifest: &RuntimeManifest, platform: &str, profile: &str) -> String {
+    match (manifest.source, &manifest.external_prefix) {
+        // An adopted runtime records its USD root: one command, no blanks.
+        (RuntimeSource::Local, Some(_)) => {
+            format!("ost runtime repair {platform} --profile {profile}")
+        }
+        // A build runtime is refreshed by rebuilding into the store.
+        (RuntimeSource::Build, _) => {
+            format!("ost runtime pull {platform} --profile {profile} --build <usd-src> --force")
+        }
+        // An artifact runtime is re-materialized from its pinned digest.
+        (RuntimeSource::Artifact, _) => format!(
+            "ost runtime pull {platform} --profile {profile} --from-artifact {} --force",
+            manifest.artifact_digest.as_deref().unwrap_or("<digest>")
+        ),
+        _ => {
+            format!("ost runtime pull {platform} --profile {profile} --from-usd <usd-root> --force")
+        }
+    }
+}
+
+/// `ost runtime repair` — re-adopt a `local` runtime from its recorded USD
+/// root, refreshing the recorded OpenUSD version, layout, and digest in one
+/// step (the drift fix `runtime show`/`validate` point at).
+fn repair(platform: &str, profile: &str, fmt: Format) -> Result<()> {
+    let (platform, profile) = platform_profile(platform, profile);
+    let r = resolve(&platform, &profile)?;
+    let manifest_path = r.prefix.join(MANIFEST_FILE);
+    if !manifest_path.as_std_path().is_file() {
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' is not pulled (run `ost runtime pull {platform} --profile {profile}`)",
+                r.runtime.id()
+            ),
+        ));
+    }
+    let src = std::fs::read_to_string(manifest_path.as_std_path())
+        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+    let manifest = RuntimeManifest::from_json(&src)
+        .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
+
+    let usd_root = match (manifest.source, &manifest.external_prefix) {
+        (RuntimeSource::Local, Some(root)) => root.clone(),
+        _ => {
+            return Err(Error::coded(
+                "REPAIR_UNSUPPORTED_SOURCE",
+                ost_core::Category::Precondition,
+                format!(
+                    "repair re-adopts a `local` runtime from its recorded USD root; \
+                     runtime '{}' has source '{}'",
+                    manifest.id,
+                    manifest.source.as_str()
+                ),
+            )
+            .with_hint(format!(
+                "refresh it with: {}",
+                drift_repair_command(&manifest, &platform, &profile)
+            )));
+        }
+    };
+
+    let recorded_before = manifest
+        .extensions
+        .iter()
+        .find(|e| e.id == "openusd")
+        .map(|e| e.version.clone());
+
+    let (_has_usd, extensions) = resolve_extensions(&r)?;
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Re-adopt deliberately: re-probes the layout, re-reads pxr.h, and resets
+    // validation to pending — a repaired manifest still has to prove itself.
+    let repaired = adopt_local(&r, &usd_root, extensions, created)?;
+    let json = repaired
+        .to_json()
+        .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
+    std::fs::write(manifest_path.as_std_path(), format!("{json}\n"))
+        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+
+    let recorded_after = repaired
+        .extensions
+        .iter()
+        .find(|e| e.id == "openusd")
+        .map(|e| e.version.clone());
+
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "repaired": true,
+            "runtime": repaired.id,
+            "usd_root": usd_root,
+            "openusd_before": recorded_before,
+            "openusd_after": recorded_after,
+            "digest": repaired.digest,
+            "validation": repaired.validation.as_str(),
+        }));
+        return Ok(());
+    }
+    println!("Repaired runtime {} (re-adopted {usd_root})", repaired.id);
+    match (&recorded_before, &recorded_after) {
+        (Some(b), Some(a)) if b != a => println!("  openusd: {b} -> {a}"),
+        (_, Some(a)) => println!("  openusd: {a} (unchanged)"),
+        _ => {}
+    }
+    println!("  digest:  {}", repaired.digest);
+    println!("\nRe-validate with:");
+    println!("  ost runtime validate {platform} --profile {profile}");
+    Ok(())
 }
 
 fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
@@ -1619,6 +1750,30 @@ mod tests {
         assert_eq!(record.name, m.id);
         assert_eq!(record.validation, "passed");
         assert_eq!(record.runtime_digest.as_deref(), Some(m.digest.as_str()));
+    }
+
+    #[test]
+    fn drift_repair_command_is_copy_paste_exact_per_source() {
+        // Adopted local: the one-step repair command, no blanks to fill.
+        let mut local = exportable_manifest();
+        local.source = RuntimeSource::Local;
+        local.external_prefix = Some("/opt/usd".into());
+        assert_eq!(
+            drift_repair_command(&local, "cy2026", "usd"),
+            "ost runtime repair cy2026 --profile usd"
+        );
+
+        // Artifact: re-materialize from the exact pinned digest.
+        let mut artifact = exportable_manifest();
+        artifact.source = RuntimeSource::Artifact;
+        artifact.artifact_digest = Some(format!("sha256:{}", "ab".repeat(32)));
+        let cmd = drift_repair_command(&artifact, "cy2026", "usd");
+        assert!(cmd.contains("--from-artifact sha256:"), "{cmd}");
+        assert!(cmd.ends_with("--force"));
+
+        // Build: rebuild into the store (source tree is the one blank).
+        let build = exportable_manifest();
+        assert!(drift_repair_command(&build, "cy2026", "usd").contains("--build <usd-src>"));
     }
 
     #[test]

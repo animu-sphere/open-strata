@@ -35,6 +35,6 @@ pub use model::{
 };
 pub use plug_info::{library_plugin_names, merge_schema_types, MergeError};
 pub use report::{environment_json, report_json, summary_text, write_report, REPORT_SCHEMA};
-pub use scaffold::scaffold;
+pub use scaffold::{add_cohosted_schema, scaffold, AddedSchema};
 pub use session::{bundle_vars, session_env, session_env_with};
 pub use version::{satisfies, RangeError};
