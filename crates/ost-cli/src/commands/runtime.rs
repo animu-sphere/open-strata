@@ -5,9 +5,12 @@
 //! from one of several backend **sources** (§ Phase 4b): `mock` materializes a
 //! placeholder layout; `local` (`--from-usd`) adopts an existing OpenUSD install
 //! in place; `build` (`--build <usd-src>`) builds OpenUSD from source into the
-//! store via `build_usd.py`. The `artifact` source (fetch prebuilt) lands with
-//! Phase 6.
+//! store via `build_usd.py`; `artifact` (`--from-artifact <digest>`)
+//! materializes a prebuilt runtime from the local artifact registry (Phase 6).
+//! `export` is the reverse edge: it packs a pulled real runtime into the
+//! registry as a digest-addressed `openstrata.runtime` artifact.
 
+use std::fs::File;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,9 +18,10 @@ use clap::Subcommand;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+use ost_artifact::{ArtifactKind, ArtifactSource, ArtifactStore};
 use ost_core::host::Os;
 use ost_core::paths::Store;
-use ost_core::{tools, Error, Host, Result};
+use ost_core::{digest, tools, Error, Host, Result};
 use ost_runtime::{
     python_minor, ExtensionRecord, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
 };
@@ -69,6 +73,23 @@ pub enum RuntimeCmd {
         /// `OST_USD_DEPS` (path-separator list).
         #[arg(long)]
         deps: Vec<String>,
+        /// Materialize the runtime from a registry artifact (`artifact` source):
+        /// a digest reference (`sha256:<hex>` or a unique hex prefix) of an
+        /// `ost runtime export`ed artifact.
+        #[arg(long, conflicts_with_all = ["from_usd", "build", "deps"])]
+        from_artifact: Option<String>,
+    },
+    /// Export a pulled real runtime into the local artifact registry.
+    Export {
+        /// Platform calendar-year id, e.g. `cy2026`, or a full runtime id.
+        platform: String,
+        /// Profile, e.g. `usd`.
+        #[arg(long, default_value = "core")]
+        profile: String,
+        /// Also keep the producer output (archive + manifest.json + SHA256SUMS)
+        /// in this directory instead of a temporary staging dir.
+        #[arg(long)]
+        dist: Option<String>,
     },
     /// List runtimes present in the local store.
     List,
@@ -109,6 +130,7 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             jobs,
             build_args,
             deps,
+            from_artifact,
         } => pull(
             &platform,
             &profile,
@@ -119,9 +141,15 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
                 jobs,
                 build_args,
                 deps,
+                from_artifact,
             },
             fmt,
         ),
+        RuntimeCmd::Export {
+            platform,
+            profile,
+            dist,
+        } => export(&platform, &profile, dist.as_deref(), fmt),
         RuntimeCmd::List => list(fmt),
         RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
         RuntimeCmd::Validate { platform, profile } => validate(&platform, &profile, fmt),
@@ -156,6 +184,8 @@ pub struct PullSource {
     /// `--deps <prefix>` (or `OST_USD_DEPS`): when non-empty, build OpenUSD with
     /// CMake directly against these dependency prefixes instead of build_usd.py.
     pub deps: Vec<String>,
+    /// `--from-artifact <digest>`: materialize from the local artifact registry.
+    pub from_artifact: Option<String>,
 }
 
 fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format) -> Result<()> {
@@ -208,7 +238,9 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             .unwrap_or_default()
     };
 
-    let manifest = if let Some(usd_src) = build_src {
+    let manifest = if let Some(digest_ref) = &src.from_artifact {
+        fetch_from_artifact(&r, digest_ref)?
+    } else if let Some(usd_src) = build_src {
         let opts = BuildOpts {
             jobs: src.jobs,
             extra: src.build_args,
@@ -247,6 +279,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
         match manifest.source {
             RuntimeSource::Local => "Adopted",
             RuntimeSource::Build => "Built",
+            RuntimeSource::Artifact => "Fetched",
             _ => "Pulled",
         },
         manifest.id,
@@ -628,6 +661,331 @@ fn build_from_source(
     Ok(manifest)
 }
 
+/// Materialize a runtime from a registry artifact (`artifact` source): resolve
+/// the digest, re-verify the archive bytes, extract into the store prefix, and
+/// restore the runtime manifest that traveled in the artifact's provenance.
+fn fetch_from_artifact(r: &crate::commands::Resolved, digest_ref: &str) -> Result<RuntimeManifest> {
+    let store = ArtifactStore::discover();
+    let record = store.resolve(digest_ref)?;
+    if record.kind != ArtifactKind::Runtime {
+        return Err(Error::coded(
+            "ARTIFACT_KIND_MISMATCH",
+            ost_core::Category::Validation,
+            format!(
+                "artifact {} is a {} ('{}'), not a runtime",
+                record.short_digest(),
+                record.kind.as_str(),
+                record.name
+            ),
+        )
+        .with_hint("list runtime artifacts with `ost artifact list --kind runtime`"));
+    }
+
+    // The runtime manifest travels in the producer manifest (not in the
+    // archive), so the archive stays a pure USD tree and the manifest can be
+    // rewritten for the new materialization without unpacking first.
+    let producer = store.producer_manifest(&record)?;
+    let embedded = producer
+        .get("provenance")
+        .and_then(|p| p.get("runtime_manifest"))
+        .ok_or_else(|| {
+            Error::InvalidManifest(
+                "runtime artifact carries no provenance.runtime_manifest".to_string(),
+            )
+        })?;
+    let mut manifest: RuntimeManifest = serde_json::from_value(embedded.clone())
+        .map_err(|e| Error::parse("runtime_manifest in artifact", anyhow::Error::new(e)))?;
+
+    let requested = r.runtime.id();
+    if manifest.id != requested {
+        return Err(Error::coded(
+            "ARTIFACT_RUNTIME_MISMATCH",
+            ost_core::Category::Validation,
+            format!(
+                "artifact {} contains runtime '{}', but '{requested}' was requested",
+                record.short_digest(),
+                manifest.id
+            ),
+        )
+        .with_hint("check `ost artifact show <digest>` for the artifact's target/profile"));
+    }
+
+    // Digest-pinned fetch: re-hash the stored archive before trusting it. A
+    // store corrupted at rest must not materialize as a runtime.
+    let archive = store.archive_path(&record);
+    let mut f = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+    let (actual, _) =
+        digest::sha256_hex_reader(&mut f).map_err(|e| Error::io(archive.to_string(), e))?;
+    if actual != record.digest {
+        return Err(Error::coded(
+            "ARTIFACT_DIGEST_MISMATCH",
+            ost_core::Category::Validation,
+            format!(
+                "stored archive for {} hashes to {actual} — the local store is corrupted",
+                record.short_digest()
+            ),
+        )
+        .with_hint("re-import the artifact, then retry the pull"));
+    }
+
+    // Fresh materialization: never extract over a stale prefix.
+    if r.prefix.as_std_path().exists() {
+        std::fs::remove_dir_all(r.prefix.as_std_path())
+            .map_err(|e| Error::io(r.prefix.to_string(), e))?;
+    }
+    std::fs::create_dir_all(r.prefix.as_std_path())
+        .map_err(|e| Error::io(r.prefix.to_string(), e))?;
+
+    let file = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+    let decoder =
+        zstd::stream::read::Decoder::new(file).map_err(|e| Error::io(archive.to_string(), e))?;
+    let mut tar = tar::Archive::new(decoder);
+    // `unpack` refuses entries that would escape the destination.
+    tar.unpack(r.prefix.as_std_path())
+        .map_err(|e| Error::io(r.prefix.to_string(), e))?;
+
+    if !looks_like_usd(&r.prefix) {
+        return Err(Error::validation(format!(
+            "artifact {} extracted, but no OpenUSD install found under '{}'",
+            record.short_digest(),
+            r.prefix
+        )));
+    }
+
+    // The runtime now lives in the store: it is `artifact`-sourced, its files
+    // are local (no external root), and it points back at the registry entry.
+    // The canonical digest is unchanged — source fields are provenance, not
+    // identity.
+    manifest.source = RuntimeSource::Artifact;
+    manifest.external_prefix = None;
+    manifest.artifact_digest = Some(record.digest.clone());
+    Ok(manifest)
+}
+
+/// The gates a runtime must pass to be exported as a registry artifact.
+///
+/// Pure over the manifest, so the refusals are unit-testable: a `mock` runtime
+/// has no real artifacts to ship; external `runtime_deps` would not travel with
+/// the archive (the extracted runtime could not load them); and an unvalidated
+/// runtime must not become a digest CI pins (quality bar: every published
+/// artifact includes provenance and validation).
+fn check_exportable(manifest: &RuntimeManifest) -> Result<()> {
+    if !manifest.source.is_real() {
+        return Err(Error::coded(
+            "EXPORT_REAL_RUNTIME_REQUIRED",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' is a mock layout — there are no real artifacts to export",
+                manifest.id
+            ),
+        )
+        .with_hint("pull a real runtime first: `--from-usd <usd-root>` or `--build <usd-src>`"));
+    }
+    if !manifest.runtime_deps.is_empty() {
+        return Err(Error::coded(
+            "EXPORT_DEPS_NOT_PORTABLE",
+            ost_core::Category::Validation,
+            format!(
+                "runtime '{}' links against external dependency prefixes ({}) that would \
+                 not travel with the artifact",
+                manifest.id,
+                manifest.runtime_deps.join(", ")
+            ),
+        )
+        .with_hint(
+            "export a self-contained runtime: build via build_usd.py (no --deps), \
+             which installs dependencies into the prefix",
+        ));
+    }
+    if manifest.validation != Validation::Passed {
+        return Err(Error::coded(
+            "EXPORT_VALIDATION_REQUIRED",
+            ost_core::Category::Validation,
+            format!(
+                "runtime '{}' has not passed validation (status: {})",
+                manifest.id,
+                manifest.validation.as_str()
+            ),
+        )
+        .with_hint("run `ost runtime validate <platform> --profile <profile>` first"));
+    }
+    Ok(())
+}
+
+/// The producer `manifest.json` for a runtime artifact (`openstrata.runtime`).
+///
+/// Mirrors the package/plugin producer manifests (same top-level identity +
+/// `files[]`), with the full runtime manifest embedded under
+/// `provenance.runtime_manifest` so a fetch can restore `runtime.json` without
+/// the archive carrying store-specific state. `licenses` stays empty until
+/// runtime content attribution lands (see the roadmap's licensing section).
+fn runtime_artifact_manifest(
+    manifest: &RuntimeManifest,
+    archive_name: &str,
+    packed: &ost_build::PackResult,
+    created: u64,
+) -> serde_json::Value {
+    let version = manifest
+        .extensions
+        .iter()
+        .find(|e| e.id == "openusd")
+        .map(|e| e.version.clone())
+        .unwrap_or_else(|| manifest.platform.clone());
+    let files: Vec<_> = packed
+        .files
+        .iter()
+        .map(|f| serde_json::json!({ "path": f.path, "sha256": f.sha256, "size": f.size }))
+        .collect();
+    serde_json::json!({
+        "schema": 1,
+        "kind": ost_artifact::RUNTIME_KIND,
+        "name": manifest.id,
+        "version": version,
+        "target": manifest.variant.slug(),
+        "licenses": [],
+        "archive": archive_name,
+        "archive_digest": packed.archive_digest,
+        "archive_size": packed.archive_size,
+        "total_size": packed.total_size,
+        "created_unix": created,
+        "provenance": {
+            "platform": manifest.platform,
+            "profile": manifest.profile,
+            "validation": manifest.validation.as_str(),
+            "runtime": {
+                "id": manifest.id,
+                "digest": manifest.digest,
+                "source": manifest.source.as_str(),
+                "validation": manifest.validation.as_str(),
+            },
+            "runtime_manifest": serde_json::to_value(manifest).unwrap_or_default(),
+        },
+        "files": files,
+    })
+}
+
+/// `ost runtime export` — pack a pulled real runtime and register it in the
+/// local artifact registry, addressed by digest.
+fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Result<()> {
+    let (platform, profile) = platform_profile(platform, profile);
+    let r = resolve(&platform, &profile)?;
+    let manifest_path = r.prefix.join(MANIFEST_FILE);
+    if !manifest_path.as_std_path().is_file() {
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' is not pulled (run `ost runtime pull {platform} --profile {profile}`)",
+                r.runtime.id()
+            ),
+        ));
+    }
+    let src = std::fs::read_to_string(manifest_path.as_std_path())
+        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+    let manifest = RuntimeManifest::from_json(&src)
+        .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
+
+    check_exportable(&manifest)?;
+
+    // Pack the runtime's real artifacts: the effective prefix (external root
+    // for an adopted runtime), minus the store's own runtime.json — the
+    // manifest travels in the producer manifest instead, so the archive is a
+    // pure USD tree.
+    let effective = Utf8PathBuf::from(manifest.effective_prefix(&r.prefix));
+    let files: Vec<Utf8PathBuf> = ost_build::stage_files(&effective)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                Error::validation(e.to_string())
+            } else {
+                Error::io(effective.to_string(), e)
+            }
+        })?
+        .into_iter()
+        .filter(|p| p != &effective.join(MANIFEST_FILE))
+        .collect();
+    if files.is_empty() {
+        return Err(Error::validation(format!(
+            "runtime '{}' has no files under '{effective}' — nothing to export",
+            manifest.id
+        )));
+    }
+
+    let store = Store::discover();
+    let staging_default = store.cache().join("runtime-export").join(&manifest.id);
+    let dist_dir = match dist {
+        Some(d) => Utf8PathBuf::from(d),
+        None => staging_default.clone(),
+    };
+    if dist_dir.as_std_path().exists() {
+        std::fs::remove_dir_all(dist_dir.as_std_path())
+            .map_err(|e| Error::io(dist_dir.to_string(), e))?;
+    }
+    std::fs::create_dir_all(dist_dir.as_std_path())
+        .map_err(|e| Error::io(dist_dir.to_string(), e))?;
+
+    let archive_name = format!("{}.tar.zst", manifest.id);
+    let archive_path = dist_dir.join(&archive_name);
+    let packed = ost_build::pack_dir(&effective, &archive_path, &files)
+        .map_err(|e| Error::io(archive_path.to_string(), e))?;
+
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
+    let producer_json = serde_json::to_string_pretty(&producer)
+        .map_err(|e| Error::parse("runtime artifact manifest", anyhow::Error::new(e)))?;
+    let producer_path = dist_dir.join("manifest.json");
+    std::fs::write(producer_path.as_std_path(), format!("{producer_json}\n"))
+        .map_err(|e| Error::io(producer_path.to_string(), e))?;
+    let bare = packed
+        .archive_digest
+        .strip_prefix("sha256:")
+        .unwrap_or(&packed.archive_digest);
+    let sums = dist_dir.join("SHA256SUMS");
+    std::fs::write(sums.as_std_path(), format!("{bare}  {archive_name}\n"))
+        .map_err(|e| Error::io(sums.to_string(), e))?;
+
+    // Register in the registry. Export enforced the gates above, so the entry
+    // is `published` — the trusted tier CI pins.
+    let registry = ArtifactStore::discover();
+    let out = registry.import(&dist_dir, ArtifactSource::Published)?;
+
+    // The registry holds the canonical copy; drop the temporary staging unless
+    // the user asked to keep a dist dir.
+    if dist.is_none() {
+        let _ = std::fs::remove_dir_all(staging_default.as_std_path());
+    }
+
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "exported": true,
+            "already_present": out.already_present,
+            "runtime": manifest.id,
+            "digest": out.record.digest,
+            "archive_size": out.record.archive_size,
+            "files": out.record.file_count,
+            "dist": dist.map(|d| d.to_string()),
+        }));
+        return Ok(());
+    }
+    if out.already_present {
+        println!(
+            "Already in the registry: {} is stored as {}",
+            manifest.id,
+            out.record.short_digest()
+        );
+    } else {
+        println!("Exported runtime {}", manifest.id);
+    }
+    println!("  digest: {}", out.record.digest);
+    println!(
+        "  fetch anywhere with: ost runtime pull {platform} --profile {profile} --from-artifact {}",
+        out.record.digest
+    );
+    Ok(())
+}
+
 fn emit_macos_build_notes(opts: &BuildOpts) {
     if Host::detect().os != Os::Macos {
         return;
@@ -914,6 +1272,9 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     println!("Digest:     {}", manifest.digest);
     println!("Validation: {:?}", manifest.validation);
     println!("Source:     {}", manifest.source.as_str());
+    if let Some(ad) = &manifest.artifact_digest {
+        println!("Artifact:   {ad}");
+    }
     println!("Prefix:     {}", r.prefix);
     if let Some(ext) = &manifest.external_prefix {
         println!("USD root:   {ext}");
@@ -1183,6 +1544,88 @@ fn short_digest(digest: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ost_core::host::{Arch, Os};
+    use ost_runtime::Runtime;
+
+    /// A manifest shaped like a self-contained, validated `build` runtime.
+    fn exportable_manifest() -> RuntimeManifest {
+        let host = ost_core::Host {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        };
+        let rt = Runtime::resolve("cy2026", "usd", &host, "3.13.x");
+        let mut m = RuntimeManifest::build(
+            &rt,
+            "3.13.x",
+            vec!["usd-stage-read".into()],
+            vec!["bin".into(), "lib".into()],
+            vec![ExtensionRecord {
+                id: "openusd".into(),
+                version: "26.08".into(),
+                features: vec!["core".into()],
+            }],
+            1_750_000_000,
+            RuntimeSource::Build,
+        );
+        m.set_validation(Validation::Passed);
+        m
+    }
+
+    #[test]
+    fn export_gates_refuse_mock_deps_and_unvalidated() {
+        assert!(check_exportable(&exportable_manifest()).is_ok());
+
+        let mut mock = exportable_manifest();
+        mock.source = RuntimeSource::Mock;
+        let err = check_exportable(&mock).unwrap_err();
+        assert_eq!(err.code(), "EXPORT_REAL_RUNTIME_REQUIRED");
+
+        let mut deps = exportable_manifest();
+        deps.runtime_deps = vec!["/deps/tbb".into()];
+        let err = check_exportable(&deps).unwrap_err();
+        assert_eq!(err.code(), "EXPORT_DEPS_NOT_PORTABLE");
+
+        let mut pending = exportable_manifest();
+        pending.set_validation(Validation::Pending);
+        let err = check_exportable(&pending).unwrap_err();
+        assert_eq!(err.code(), "EXPORT_VALIDATION_REQUIRED");
+    }
+
+    #[test]
+    fn runtime_artifact_manifest_embeds_identity_and_provenance() {
+        let m = exportable_manifest();
+        let packed = ost_build::PackResult {
+            files: vec![],
+            archive_digest: format!("sha256:{}", "ab".repeat(32)),
+            total_size: 10,
+            archive_size: 5,
+        };
+        let producer = runtime_artifact_manifest(&m, "rt.tar.zst", &packed, 1_760_000_000);
+
+        assert_eq!(producer["kind"], "openstrata.runtime");
+        assert_eq!(producer["name"], m.id);
+        // Version prefers the openusd extension's real version.
+        assert_eq!(producer["version"], "26.08");
+        assert_eq!(producer["provenance"]["runtime"]["digest"], m.digest);
+        assert_eq!(producer["provenance"]["runtime"]["validation"], "passed");
+        // The embedded manifest restores byte-equal on fetch.
+        let embedded: RuntimeManifest =
+            serde_json::from_value(producer["provenance"]["runtime_manifest"].clone()).unwrap();
+        assert_eq!(embedded, m);
+
+        // It derives a valid registry record of kind `runtime`.
+        let record = ost_artifact::ArtifactRecord::from_producer_manifest(
+            &producer,
+            ArtifactSource::Published,
+            1_760_000_000,
+            "ost test",
+        )
+        .unwrap();
+        assert_eq!(record.kind, ArtifactKind::Runtime);
+        assert_eq!(record.name, m.id);
+        assert_eq!(record.validation, "passed");
+        assert_eq!(record.runtime_digest.as_deref(), Some(m.digest.as_str()));
+    }
 
     #[test]
     fn full_runtime_id_splits_into_platform_and_profile() {

@@ -51,7 +51,7 @@ minimal, buildable CMake project — so `ost build` works straight after
 ## runtime — manage runtimes in the store
 
 `runtime pull` materializes a runtime from a backend **source**. Pick the source
-by flag; precedence is build > adopt > mock.
+by flag; precedence is artifact > build > adopt > mock.
 
 ```bash
 # mock — placeholder layout, no real OpenUSD (works offline, for the static checks)
@@ -70,6 +70,20 @@ ost runtime pull cy2026 --profile usd --build /src/OpenUSD --build-arg --no-imag
 ost runtime pull cy2026 --profile usd \
   --build /src/OpenUSD --deps /opt/usd-deps \
   --build-arg -DPXR_BUILD_IMAGING=OFF
+
+# artifact — materialize a prebuilt runtime from the local artifact registry
+# (an `ost runtime export`ed runtime; see the artifact section below)
+ost runtime pull cy2026 --profile usd --from-artifact sha256:3fa9c1d2…
+```
+
+A pulled **real, validated** runtime can go the other way — into the registry —
+so other machines fetch it by digest instead of rebuilding:
+
+```bash
+ost runtime validate cy2026 --profile usd   # export requires a passed validation
+ost runtime export   cy2026 --profile usd   # pack + register; prints the digest
+# refused for: a mock runtime, external --deps prefixes (they would not travel),
+# or a runtime that has not passed validation
 ```
 
 ```bash
@@ -200,7 +214,9 @@ Plugin package artifacts land under
 Runtimes, plugin bundles, and project packages become registry **artifacts**:
 `tar.zst` + producer `manifest.json` + checksums, addressed by the archive's
 SHA-256 digest (never by mutable name). The store lives under
-`~/.ost/artifacts` (`OST_HOME`-aware).
+`~/.ost/artifacts` (`OST_HOME`-aware). Runtimes enter via `ost runtime export`
+and come back out via `ost runtime pull --from-artifact`; plugin bundles enter
+via `ost plugin publish`.
 
 ```bash
 # register a package output (a dist dir, or its manifest.json directly);
