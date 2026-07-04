@@ -451,7 +451,7 @@ Used by:
 - clap 4.3.24 — https://github.com/clap-rs/clap
 - colorchoice 1.0.5 — https://github.com/rust-cli/anstyle.git
 - serde_spanned 1.1.1 — https://github.com/toml-rs/toml
-- toml 0.9.5 — https://github.com/toml-rs/toml
+- toml 0.9.6 — https://github.com/toml-rs/toml
 - toml_datetime 0.7.5+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_edit 0.23.4 — https://github.com/toml-rs/toml
 - toml_parser 1.1.2+spec-1.1.0 — https://github.com/toml-rs/toml
