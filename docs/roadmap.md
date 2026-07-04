@@ -50,10 +50,37 @@ them. Each release is a coherent slice, not a phase boundary.
     and human output, the discoverable `usd-plugin-workspace` template alias,
     `plugins/<name>/` workspace discovery, `ost plugin new` workspace guidance,
     macOS `runtime pull --build` notes for the known source-build edges, and the
-    compiled co-located schema flow in `ost plugin build`.
+    schema build-hook groundwork for a compiled co-located flow.
   - **Still out of scope:** `plugin publish`, the runtime×plugin CI matrix, and
     runtime/extension content attribution; those remain tied to the Phase 6
-    artifact source/content store.
+    artifact source/content store. A first-class compiled co-located schema UX
+    (`ost plugin schema add` or a documented manifest-driven equivalent) also
+    remains a v0.6.0 follow-up from the v0.5.0 dogfooding recheck.
+- 🚧 **v0.6.0 — artifact registry + publishable plugin CI.** The first practical
+  Phase 6 slice: make runtime/plugin/package artifacts addressable by digest,
+  publish plugin package outputs into a local registry, and use those artifacts
+  as the source of truth for a small runtime×plugin CI matrix. Scope:
+  - **Artifact store MVP:** local content-addressed store and registry index,
+    `tar.zst` + manifest + checksums + validation report as the canonical bundle,
+    digest-pinned import/export, artifact integrity verification, and a
+    pull/fetch path for `RuntimeSource::Artifact`.
+  - **Plugin publish MVP:** `ost plugin publish` consumes an existing
+    `ost plugin package` output, refuses missing validation/provenance/license
+    notices, freezes inherited source metadata such as `cxx_abi: inherit` into a
+    concrete target ABI, and publishes by digest rather than by mutable name.
+  - **CI matrix MVP:** GitHub Actions first, Jenkins generator later. Matrix cells
+    are explicit support lines (`runtime artifact digest × plugin artifact digest
+    × target/profile`) rather than a naive Cartesian product. PR CI keeps cheap
+    mock/static checks; scheduled or release CI runs real runtime/plugin L0..L6
+    cells from the registry.
+  - **Dogfooding #7 follow-ups:** make the compiled co-located schema path
+    product-shaped (command or manifest UX, bundle-relative schema source paths
+    such as `schema/schema.usda`, generated C++ linked into the existing plugin
+    library, `Types` merge, `generatedSchema.usda` staging, export define);
+    improve adopted-runtime drift repair UX (`--fix`, `repair`, or exact
+    copy-paste re-adopt command); re-check macOS source-build ergonomics.
+  - **Deferred:** OCI layout / ORAS transport, remote hosted registry, Kubernetes
+    execution, full Jenkins command surface, and DCC host matrices.
 
 ## Phase 0 — Foundation ✅
 
@@ -461,16 +488,43 @@ first, keep the compiled schema flow as stretch unless it stays small.
   scalar ABI or fixed-suffix `LibraryPath` mismatches the resolved target, pointing
   at the per-OS forms, now closes the adoption gap.
 
-## Phase 5 — CI / Jenkins ⬜
+## Phase 5 — CI / Jenkins 🚧
 
 - ⬜ CI-safe flags (`--ci`, `--no-interactive`, `--report junit|json`, `--jobs auto`)
-- ⬜ Jenkinsfile template + matrix generation
+- 🚧 Runtime×plugin CI matrix, backed by Phase 6 artifact digests:
+  - ⬜ explicit support-cell manifest (`runtime digest`, plugin digest, target,
+    profile, verification level, required host labels)
+  - ⬜ GitHub Actions matrix for the first real-runtime support cells
+  - ⬜ JUnit + JSON report upload from `ost plugin test`
+  - ⬜ scheduled/release gate for L0..L6; PR gate keeps cheap mock/static jobs
+- ⬜ Jenkinsfile template + matrix generation (after the GitHub Actions shape is
+  proven)
 - ⬜ `ost ci init | generate jenkins`
 
-## Phase 6 — Artifact registry ⬜
+## Phase 6 — Artifact registry 🚧
 
-- ⬜ Content-addressed artifact store (digest pinning)
-- ⬜ `tar.zst` + manifest + checksums + validation report (MVP)
+- 🚧 **MVP boundary for v0.6.0:** local-first, digest-first artifact registry.
+  The registry is a content source for runtimes/plugins/packages, not yet a
+  remote service.
+- ⬜ Artifact identity model: `{kind, name, version, target, profile, digest,
+  created_at, producer, source, validation, licenses, sbom}` with deterministic
+  JSON and stable schema versions.
+- ⬜ Content-addressed artifact store (digest pinning), reusing `~/.ost/artifacts`
+  and a small JSON index before introducing SQLite.
+- ⬜ `tar.zst` + manifest + checksums + validation report as the canonical MVP
+  payload for runtime, plugin, and project package artifacts.
+- ⬜ `ost artifact import|export|list|show|verify` for local registry operations
+  and CI artifact handoff.
+- ⬜ `RuntimeSource::Artifact` fetch/use path for prebuilt runtimes, with
+  provenance surfaced by `runtime show`, `runtime validate`, and `doctor`.
+- ⬜ `ost plugin publish`: publish a packaged plugin artifact into the registry,
+  reject mutable or incomplete artifacts, and output the digest reference CI can
+  pin.
+- ⬜ Runtime/extension content attribution and per-artifact SBOM generation:
+  runtime manifests record upstream licenses/notices; published artifacts include
+  complete notices and a generated SPDX or CycloneDX SBOM.
+- ⬜ Trust policy hooks: distinguish `local`, `verified`, and `trusted`
+  artifacts; allow release CI to require a minimum trust level.
 - ⬜ OCI layout / registry / oras transport (later)
 
 ## Phase 7 — Sessions / sandbox ⬜
