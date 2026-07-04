@@ -137,6 +137,11 @@ pub struct RuntimeManifest {
     /// self-contained (build_usd.py installs deps into the prefix).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_deps: Vec<String>,
+    /// For an `artifact`-sourced runtime, the registry digest (`sha256:<hex>`)
+    /// of the artifact it was materialized from. Provenance, not identity (the
+    /// canonical `digest` above still describes the runtime itself).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_digest: Option<String>,
 }
 
 // Bumped to 3 when `mock: bool` generalized to `source` (Phase 4b backend
@@ -187,6 +192,7 @@ impl RuntimeManifest {
             source,
             external_prefix: None,
             runtime_deps: Vec::new(),
+            artifact_digest: None,
         }
     }
 

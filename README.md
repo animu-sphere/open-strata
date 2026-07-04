@@ -83,7 +83,7 @@ cargo test -p ost-cli --test lifecycle --locked -- --nocapture
 ```text
 ost platform   list | show <cy> | diff <a> <b>     inspect VFX platform years
 ost init [--template cpp-library|usd-plugin|usd-plugin-workspace|--bare]  scaffold a buildable project
-ost runtime    pull | list | show | validate | explain   manage runtimes in the store
+ost runtime    pull | list | show | validate | explain | export   manage runtimes in the store
 ost env <cy> --profile <p> [--shell bash|pwsh]      print the activating environment
 ost devshell <cy> --profile <p>                     enter an interactive runtime shell
 ost doctor [<cy> --profile <p>]                     host + tools + runtime diagnostics
@@ -106,8 +106,10 @@ Every command accepts `--json` for machine-readable output: a single, versioned
 [docs/examples.md](docs/examples.md) for a copy-pasteable tour of every command.
 
 `ost runtime pull` materializes a runtime from a backend *source*: a placeholder
-`mock` layout, an adopted existing install (`--from-usd`), or a from-source
-`build` (`--build`, via build_usd.py or CMake-direct with `--deps`).
+`mock` layout, an adopted existing install (`--from-usd`), a from-source
+`build` (`--build`, via build_usd.py or CMake-direct with `--deps`), or a
+prebuilt registry `artifact` (`--from-artifact <digest>`, produced by
+`ost runtime export`).
 
 ## Try it
 

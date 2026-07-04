@@ -63,8 +63,10 @@ them. Each release is a coherent slice, not a phase boundary.
   - **Artifact store MVP:** ✅ local content-addressed store and registry index
     (`ost-artifact`), `tar.zst` + manifest + checksums + validation report as
     the canonical bundle, digest-pinned `ost artifact import|export|list|show`,
-    and artifact integrity verification (`ost artifact verify`). Still ⬜: the
-    pull/fetch path for `RuntimeSource::Artifact`.
+    artifact integrity verification (`ost artifact verify`), and the
+    `RuntimeSource::Artifact` path: `ost runtime export` packs a validated real
+    runtime into the registry and `ost runtime pull --from-artifact <digest>`
+    materializes it anywhere.
   - **Plugin publish MVP:** ✅ `ost plugin publish` consumes an existing
     `ost plugin package` output, refuses missing validation/provenance/license/
     notices with per-cause stable error codes, requires the frozen concrete
@@ -126,8 +128,9 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
   resolved extensions, and validation status; fully deterministic so `--check`
   gates CI
 - ✅ Real runtime backends behind `pull` (Phase 4b): `local`/adopt and `build`
-  (build_usd.py / CMake-direct) supersede the mock layout; fetched `artifact`
-  source still ahead (Phase 6)
+  (build_usd.py / CMake-direct) supersede the mock layout; the fetched
+  `artifact` source landed with the Phase 6 registry (v0.6.0:
+  `runtime export` / `pull --from-artifact`)
 - ✅ Richer runtime validation: `runtime validate` asserts `usdcat` + `pxr` on a
   real runtime; native library load + USD stage open are exercised by the plugin
   execution levels (L2–L4, Phase 4b)
@@ -529,8 +532,22 @@ first, keep the compiled schema flow as stretch unless it stays small.
   *and* re-hashes every tar entry against the manifest `files[]`; `export`
   round-trips to a re-importable directory. Covered by unit + e2e tests
   ([artifact_registry.rs](../crates/ost-cli/tests/artifact_registry.rs)).
-- ⬜ `RuntimeSource::Artifact` fetch/use path for prebuilt runtimes, with
-  provenance surfaced by `runtime show`, `runtime validate`, and `doctor`.
+- ✅ `RuntimeSource::Artifact` fetch/use path for prebuilt runtimes.
+  `ost runtime export` packs a pulled real runtime (effective prefix, minus the
+  store's `runtime.json` — the runtime manifest travels in the producer
+  manifest's `provenance.runtime_manifest`) and registers it as a `published`
+  `openstrata.runtime` artifact, gated on a real source
+  (`EXPORT_REAL_RUNTIME_REQUIRED`), no external `runtime_deps`
+  (`EXPORT_DEPS_NOT_PORTABLE` — they would not travel), and passed validation
+  (`EXPORT_VALIDATION_REQUIRED`). `ost runtime pull --from-artifact <digest>`
+  re-verifies the archive bytes, refuses non-runtime kinds
+  (`ARTIFACT_KIND_MISMATCH`) and target/profile mismatches
+  (`ARTIFACT_RUNTIME_MISMATCH`), extracts into the store prefix, and restores
+  the manifest with `source: artifact` + the registry digest
+  (`artifact_digest`), surfaced by `runtime show`/`list` and `doctor`
+  (kind `downloaded`). Covered by unit + e2e tests
+  ([runtime_artifact.rs](../crates/ost-cli/tests/runtime_artifact.rs)),
+  including a two-store export → handoff → fetch round-trip.
 - ✅ `ost plugin publish`: consumes existing `ost plugin package` output (never
   re-packages) and registers it by digest as a `published` artifact. Entry is
   gated with per-cause stable codes CI can branch on:

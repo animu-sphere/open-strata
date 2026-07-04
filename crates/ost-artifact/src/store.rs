@@ -101,6 +101,20 @@ impl ArtifactStore {
         self.root.join("objects").join("sha256").join(digest_hex)
     }
 
+    /// Absolute path of a stored artifact's archive.
+    pub fn archive_path(&self, record: &ArtifactRecord) -> Utf8PathBuf {
+        self.object_dir(record.digest_hex()).join(&record.archive)
+    }
+
+    /// The stored producer manifest for a record, parsed.
+    pub fn producer_manifest(&self, record: &ArtifactRecord) -> Result<serde_json::Value> {
+        let path = self.object_dir(record.digest_hex()).join(MANIFEST_FILE);
+        let bytes =
+            std::fs::read(path.as_std_path()).map_err(|e| Error::io(path.to_string(), e))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| Error::parse(path.to_string(), anyhow::Error::new(e)))
+    }
+
     /// Import the producer output at `path` (a dist directory containing
     /// `manifest.json`, or the `manifest.json` itself) into the store.
     ///
