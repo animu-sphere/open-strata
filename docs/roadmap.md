@@ -72,10 +72,12 @@ them. Each release is a coherent slice, not a phase boundary.
     notices with per-cause stable error codes, requires the frozen concrete
     target ABI (`package` already collapses `cxx_abi: inherit`), and publishes
     by digest rather than by mutable name.
-  - **CI matrix MVP:** GitHub Actions first, Jenkins generator later. Matrix cells
-    are explicit support lines (`runtime artifact digest × plugin artifact digest
-    × target/profile`) rather than a naive Cartesian product. PR CI keeps cheap
-    mock/static checks; scheduled or release CI runs real runtime/plugin L0..L6
+  - **CI matrix MVP:** ✅ GitHub Actions first (Jenkins generator later). Matrix
+    cells are explicit support lines (`runtime artifact digest × plugin artifact
+    digest × target/profile`) in `openstrata.ci.yaml`, never a naive Cartesian
+    product; `ost ci init | validate [--resolve] | generate github` scaffolds,
+    gates, and renders them into a scheduled/dispatch workflow. PR CI keeps
+    cheap mock/static checks; the generated matrix runs real runtime/plugin
     cells from the registry.
   - **Dogfooding #7 follow-ups:** make the compiled co-located schema path
     product-shaped (command or manifest UX, bundle-relative schema source paths
@@ -498,14 +500,29 @@ first, keep the compiled schema flow as stretch unless it stays small.
 
 - ⬜ CI-safe flags (`--ci`, `--no-interactive`, `--report junit|json`, `--jobs auto`)
 - 🚧 Runtime×plugin CI matrix, backed by Phase 6 artifact digests:
-  - ⬜ explicit support-cell manifest (`runtime digest`, plugin digest, target,
-    profile, verification level, required host labels)
-  - ⬜ GitHub Actions matrix for the first real-runtime support cells
-  - ⬜ JUnit + JSON report upload from `ost plugin test`
-  - ⬜ scheduled/release gate for L0..L6; PR gate keeps cheap mock/static jobs
+  - ✅ **(v0.6.0)** explicit support-cell manifest (`openstrata.ci.yaml`, new
+    `ost-ci` crate): each cell pins `runtime_artifact` × `plugin_artifact` by
+    **full** registry digest (prefixes rejected — a prefix can silently start
+    matching a different artifact) plus platform/profile, verification level
+    (`up_to`), and host os/labels. `ost ci init` scaffolds it, `ost ci
+    validate` checks structure, `--resolve` additionally requires every pinned
+    digest to exist in the local registry.
+  - ✅ **(v0.6.0)** GitHub Actions generation: `ost ci generate github` renders
+    the matrix into a scheduled/dispatch workflow (`--stdout`/`--out`/
+    `--force`), one job per cell via explicit `matrix.include` (never a
+    Cartesian product, `fail-fast: false`), SHA-pinned actions (SEC-004). Each
+    job re-verifies both artifacts, materializes the runtime
+    (`pull --from-artifact`), extracts the plugin (`artifact extract`), runs
+    `ost plugin test --up-to <level>`, and uploads the report. Runners need
+    `ost` on PATH and the pinned artifacts in their `OST_HOME` registry
+    (self-hosted labels are the expected case). e2e:
+    [ci_matrix.rs](../crates/ost-cli/tests/ci_matrix.rs).
+  - ⬜ JUnit + JSON report upload from `ost plugin test` (the generated
+    workflow uploads the existing report dir; a JUnit format is still ahead)
+  - ✅ scheduled/release gate for L0..L6 (the generated workflow is
+    schedule + dispatch only); PR gate keeps cheap mock/static jobs
 - ⬜ Jenkinsfile template + matrix generation (after the GitHub Actions shape is
-  proven)
-- ⬜ `ost ci init | generate jenkins`
+  proven) — `ost ci generate jenkins` on the same `openstrata.ci.yaml` model
 
 ## Phase 6 — Artifact registry 🚧
 
@@ -525,12 +542,14 @@ first, keep the compiled schema flow as stretch unless it stays small.
   keeps the producer manifest byte-for-byte beside the archive and a regenerated
   `SHA256SUMS`; the plugin payload already carries its validation report inside
   the archive (`validation/report.json`).
-- ✅ `ost artifact import|export|list|show|verify` for local registry operations
-  and CI artifact handoff: import re-hashes the archive and refuses a
+- ✅ `ost artifact import|export|list|show|verify|extract` for local registry
+  operations and CI artifact handoff: import re-hashes the archive and refuses a
   digest/size mismatch (`ARTIFACT_DIGEST_MISMATCH`, exit 5); artifacts resolve
   by full digest or unique hex prefix; `verify` recomputes the archive digest
   *and* re-hashes every tar entry against the manifest `files[]`; `export`
-  round-trips to a re-importable directory. Covered by unit + e2e tests
+  round-trips to a re-importable directory; `extract` unpacks an artifact's
+  archive after re-verifying its digest (the runtime fetch and the CI matrix's
+  plugin-under-test step share it). Covered by unit + e2e tests
   ([artifact_registry.rs](../crates/ost-cli/tests/artifact_registry.rs)).
 - ✅ `RuntimeSource::Artifact` fetch/use path for prebuilt runtimes.
   `ost runtime export` packs a pulled real runtime (effective prefix, minus the

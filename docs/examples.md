@@ -238,7 +238,37 @@ ost artifact verify 3fa9c1
 # CI handoff: copy archive + manifest + SHA256SUMS + record out;
 # the exported directory is re-importable on another machine
 ost artifact export 3fa9c1 ./handoff/
+
+# unpack an artifact's archive (digest re-verified first) — e.g. a plugin
+# bundle under test in a CI matrix cell
+ost artifact extract 3fa9c1 ./plugin-under-test/
 ```
+
+## ci — the runtime×plugin support matrix
+
+Support cells are explicit claims — *this* runtime artifact × *this* plugin
+artifact × *this* platform/profile, verified up to a level — pinned by **full**
+registry digest in `openstrata.ci.yaml`. Generators render that one file into
+CI configuration (GitHub Actions today, Jenkins later).
+
+```bash
+ost ci init                       # scaffold openstrata.ci.yaml (commented starter)
+# …publish artifacts (ost runtime export / ost plugin publish), pin the digests…
+
+ost ci validate                   # structural checks (schema, names, digests, levels)
+ost ci validate --resolve         # + every pinned digest must exist in the local registry
+
+ost ci generate github            # write .github/workflows/ost-support-matrix.yml
+ost ci generate github --stdout   # print instead (inspect / pipe)
+ost ci generate github --force    # regenerate over the existing workflow
+```
+
+The generated workflow is scheduled/dispatch CI (PR CI should keep its cheap
+static checks): one job per cell (`fail-fast: false`), which re-verifies both
+artifacts, materializes the runtime (`runtime pull --from-artifact`), extracts
+the plugin (`artifact extract`), runs `ost plugin test --up-to <level>`, and
+uploads the report. Runners need `ost` on PATH and the pinned artifacts in
+their `OST_HOME` registry — self-hosted labels are the expected case.
 
 ## lock — reproducibility
 

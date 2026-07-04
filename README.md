@@ -94,7 +94,8 @@ ost package                                         install + tar.zst artifact +
 ost validate                                        validate a built/packaged target
 ost extension  list | why <id> | add <id>           inspect/request controlled extensions
 ost plugin     new | inspect | build | doctor | run | test | view | test-view | package | publish   OpenUSD plugin bundles
-ost artifact   import | list | show | verify | export   local digest-addressed artifact registry
+ost artifact   import | list | show | verify | export | extract   local digest-addressed artifact registry
+ost ci         init | validate | generate github    runtime×plugin support matrix -> CI workflow
 ost lock [--check]                                  generate/verify strata.lock
 ost uv <args...>                                    run uv pinned to the runtime Python
 ```
@@ -164,6 +165,7 @@ crates/
   ost-extension/  controlled extensions: model, loader, capability resolver
   ost-plugin/     OpenUSD plugin bundles: model, scaffold, verification levels, reports
   ost-artifact/   artifact registry: identity records, content-addressed store, verification
+  ost-ci/         CI support matrix (openstrata.ci.yaml) and workflow generation
   ost-manifest/   project (openstrata.toml) + lock (strata.lock) models
 platforms/        built-in VFX Reference Platform calendar-year manifests
 profiles/         capability bundles (core / dev / usd / lookdev)

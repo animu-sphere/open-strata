@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pub mod artifact;
 pub mod build;
+pub mod ci;
 pub mod compiler;
 pub mod configure;
 pub mod devshell;

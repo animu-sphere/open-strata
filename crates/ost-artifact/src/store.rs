@@ -330,6 +330,61 @@ impl ArtifactStore {
         Ok((record, written))
     }
 
+    /// Extract a stored artifact's archive into `dest`, re-verifying the
+    /// archive digest before trusting the bytes. Returns the record.
+    ///
+    /// This is the "use" edge of the registry: a runtime fetch or a CI job
+    /// unpacking a plugin bundle under test. Extraction requires an empty
+    /// destination and refuses entries that would escape it (tar unpack
+    /// sanitization).
+    pub fn extract(&self, digest_ref: &str, dest: &Utf8Path) -> Result<ArtifactRecord> {
+        let record = self.resolve(digest_ref)?;
+        let archive = self.archive_path(&record);
+
+        let mut f =
+            File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+        let (actual, _) =
+            digest::sha256_hex_reader(&mut f).map_err(|e| Error::io(archive.to_string(), e))?;
+        if actual != record.digest {
+            return Err(Error::coded(
+                "ARTIFACT_DIGEST_MISMATCH",
+                Category::Validation,
+                format!(
+                    "stored archive for {} hashes to {actual} — the local store is corrupted",
+                    record.short_digest()
+                ),
+            )
+            .with_hint("re-import the artifact from its original producer output"));
+        }
+
+        if dest.as_std_path().exists() {
+            if !dest.as_std_path().is_dir() {
+                return Err(Error::usage(format!(
+                    "extract destination '{dest}' exists but is not a directory"
+                )));
+            }
+            let mut entries = std::fs::read_dir(dest.as_std_path())
+                .map_err(|e| Error::io(dest.to_string(), e))?;
+            if let Some(entry) = entries.next() {
+                entry.map_err(|e| Error::io(dest.to_string(), e))?;
+                return Err(Error::usage(format!(
+                    "refusing to extract into non-empty directory '{dest}'"
+                )));
+            }
+        } else {
+            std::fs::create_dir_all(dest.as_std_path())
+                .map_err(|e| Error::io(dest.to_string(), e))?;
+        }
+        let file =
+            File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+        let decoder = zstd::stream::read::Decoder::new(file)
+            .map_err(|e| Error::io(archive.to_string(), e))?;
+        let mut tar = tar::Archive::new(decoder);
+        tar.unpack(dest.as_std_path())
+            .map_err(|e| Error::io(dest.to_string(), e))?;
+        Ok(record)
+    }
+
     /// Verify a stored artifact: recompute the archive digest, then hash every
     /// tar entry and compare it against the producer manifest's `files` list.
     pub fn verify(&self, digest_ref: &str) -> Result<VerifyReport> {
@@ -652,6 +707,40 @@ mod tests {
         let report = store.verify(&out.record.digest).unwrap();
         assert!(!report.archive_digest_ok);
         assert!(!report.passed());
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn extract_unpacks_verified_bytes_and_refuses_corruption() {
+        let root = tmp_root("extract");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+        let out = store.import(&dist, ArtifactSource::Published).unwrap();
+
+        let dest = root.join("unpacked");
+        let record = store.extract(&out.record.digest, &dest).unwrap();
+        assert_eq!(record.digest, out.record.digest);
+        let payload = dest.join("lib/payload.bin");
+        assert_eq!(
+            std::fs::read(payload.as_std_path()).unwrap(),
+            b"plugin bytes"
+        );
+        let err = store
+            .extract(&out.record.digest, &dest)
+            .expect_err("extract must refuse to merge into an existing tree");
+        assert_eq!(err.code(), "INVALID_ARGUMENT");
+
+        // Corrupt the stored archive: extract must refuse before unpacking.
+        let stored = store.archive_path(&out.record);
+        let mut bytes = std::fs::read(stored.as_std_path()).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        std::fs::write(stored.as_std_path(), &bytes).unwrap();
+        let err = store
+            .extract(&out.record.digest, &root.join("unpacked2"))
+            .expect_err("corrupted store must be refused");
+        assert_eq!(err.code(), "ARTIFACT_DIGEST_MISMATCH");
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }

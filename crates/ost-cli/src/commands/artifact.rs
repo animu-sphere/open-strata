@@ -51,6 +51,13 @@ pub enum ArtifactCmd {
         /// Destination directory (created if missing; files must not exist).
         dest: String,
     },
+    /// Unpack an artifact's archive into a directory (digest re-verified).
+    Extract {
+        /// Digest reference: sha256:<hex> or a unique hex prefix (>= 6 chars).
+        digest: String,
+        /// Destination directory (created if missing).
+        dest: String,
+    },
 }
 
 pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
@@ -61,6 +68,7 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
         ArtifactCmd::Show { digest } => show(&store, &digest, fmt),
         ArtifactCmd::Verify { digest } => verify(&store, &digest, fmt),
         ArtifactCmd::Export { digest, dest } => export(&store, &digest, &dest, fmt),
+        ArtifactCmd::Extract { digest, dest } => extract(&store, &digest, &dest, fmt),
     }
 }
 
@@ -246,6 +254,29 @@ fn export(store: &ArtifactStore, digest: &str, dest: &str, fmt: Format) -> Resul
     for p in &written {
         println!("  {p}");
     }
+    Ok(())
+}
+
+fn extract(store: &ArtifactStore, digest: &str, dest: &str, fmt: Format) -> Result<()> {
+    let dest = Utf8PathBuf::from(dest);
+    let record = store.extract(digest, &dest)?;
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "extracted": true,
+            "digest": record.digest,
+            "dest": dest.to_string(),
+            "files": record.file_count,
+        }));
+        return Ok(());
+    }
+    println!(
+        "Extracted {} ({} {} {}) to {dest} ({} file(s))",
+        record.short_digest(),
+        record.kind.as_str(),
+        record.name,
+        record.version,
+        record.file_count
+    );
     Ok(())
 }
 

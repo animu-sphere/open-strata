@@ -403,6 +403,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ost-ci"
+version = "0.5.0"
+dependencies = [
+ "ost-artifact",
+ "ost-core",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
 name = "ost-cli"
 version = "0.5.0"
 dependencies = [
@@ -411,6 +421,7 @@ dependencies = [
  "clap",
  "ost-artifact",
  "ost-build",
+ "ost-ci",
  "ost-core",
  "ost-extension",
  "ost-manifest",
@@ -420,8 +431,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "tar",
- "zstd",
 ]
 
 [[package]]

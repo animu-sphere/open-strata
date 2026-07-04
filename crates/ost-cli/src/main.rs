@@ -14,8 +14,8 @@ mod project_template;
 use clap::{Parser, Subcommand};
 
 use commands::{
-    artifact, build, configure, devshell, doctor, env, extension, init, lock, package, platform,
-    plugin, presets, runtime, uv, validate,
+    artifact, build, ci, configure, devshell, doctor, env, extension, init, lock, package,
+    platform, plugin, presets, runtime, uv, validate,
 };
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
@@ -80,6 +80,10 @@ enum Command {
     #[command(subcommand)]
     Artifact(artifact::ArtifactCmd),
 
+    /// Manage the CI support matrix and generate CI configuration.
+    #[command(subcommand)]
+    Ci(ci::CiCmd),
+
     /// Generate or verify the project lockfile (strata.lock).
     Lock(lock::LockArgs),
 
@@ -106,6 +110,7 @@ fn main() -> std::process::ExitCode {
         Command::Extension(cmd) => extension::run(cmd, fmt),
         Command::Plugin(cmd) => plugin::run(cmd, fmt),
         Command::Artifact(cmd) => artifact::run(cmd, fmt),
+        Command::Ci(cmd) => ci::run(cmd, fmt),
         Command::Lock(args) => lock::run(args, fmt),
         Command::Uv(args) => uv::run(args, fmt),
     };

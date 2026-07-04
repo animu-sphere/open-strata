@@ -10,7 +10,6 @@
 //! `export` is the reverse edge: it packs a pulled real runtime into the
 //! registry as a digest-addressed `openstrata.runtime` artifact.
 
-use std::fs::File;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,7 +20,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use ost_artifact::{ArtifactKind, ArtifactSource, ArtifactStore};
 use ost_core::host::Os;
 use ost_core::paths::Store;
-use ost_core::{digest, tools, Error, Host, Result};
+use ost_core::{tools, Error, Host, Result};
 use ost_runtime::{
     python_minor, ExtensionRecord, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
 };
@@ -710,39 +709,14 @@ fn fetch_from_artifact(r: &crate::commands::Resolved, digest_ref: &str) -> Resul
         .with_hint("check `ost artifact show <digest>` for the artifact's target/profile"));
     }
 
-    // Digest-pinned fetch: re-hash the stored archive before trusting it. A
-    // store corrupted at rest must not materialize as a runtime.
-    let archive = store.archive_path(&record);
-    let mut f = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
-    let (actual, _) =
-        digest::sha256_hex_reader(&mut f).map_err(|e| Error::io(archive.to_string(), e))?;
-    if actual != record.digest {
-        return Err(Error::coded(
-            "ARTIFACT_DIGEST_MISMATCH",
-            ost_core::Category::Validation,
-            format!(
-                "stored archive for {} hashes to {actual} — the local store is corrupted",
-                record.short_digest()
-            ),
-        )
-        .with_hint("re-import the artifact, then retry the pull"));
-    }
-
-    // Fresh materialization: never extract over a stale prefix.
+    // Fresh materialization: never extract over a stale prefix. The extract
+    // itself is digest-pinned — the store re-hashes the archive before
+    // trusting it, so a store corrupted at rest cannot become a runtime.
     if r.prefix.as_std_path().exists() {
         std::fs::remove_dir_all(r.prefix.as_std_path())
             .map_err(|e| Error::io(r.prefix.to_string(), e))?;
     }
-    std::fs::create_dir_all(r.prefix.as_std_path())
-        .map_err(|e| Error::io(r.prefix.to_string(), e))?;
-
-    let file = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
-    let decoder =
-        zstd::stream::read::Decoder::new(file).map_err(|e| Error::io(archive.to_string(), e))?;
-    let mut tar = tar::Archive::new(decoder);
-    // `unpack` refuses entries that would escape the destination.
-    tar.unpack(r.prefix.as_std_path())
-        .map_err(|e| Error::io(r.prefix.to_string(), e))?;
+    store.extract(&record.digest, &r.prefix)?;
 
     if !looks_like_usd(&r.prefix) {
         return Err(Error::validation(format!(
