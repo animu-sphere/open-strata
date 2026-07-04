@@ -225,6 +225,8 @@ impl ArtifactRecord {
             _ => "unknown".to_string(),
         };
 
+        let archive = require_archive_filename(manifest)?;
+
         Ok(ArtifactRecord {
             schema: RECORD_SCHEMA,
             kind,
@@ -233,7 +235,7 @@ impl ArtifactRecord {
             target: require_str(manifest, "target")?,
             profile,
             digest,
-            archive: require_str(manifest, "archive")?,
+            archive,
             archive_size: require_u64(manifest, "archive_size")?,
             total_size: require_u64(manifest, "total_size")?,
             file_count: manifest
@@ -298,6 +300,26 @@ pub fn is_sha256_ref(s: &str) -> bool {
         Some(hex) => hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()),
         None => false,
     }
+}
+
+fn require_archive_filename(manifest: &serde_json::Value) -> Result<String> {
+    let archive = require_str(manifest, "archive")?;
+    if !is_plain_archive_filename(&archive) {
+        return Err(Error::InvalidManifest(format!(
+            "producer manifest 'archive' must be a plain filename, got '{archive}'"
+        )));
+    }
+    Ok(archive)
+}
+
+fn is_plain_archive_filename(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains(':')
+        && !name.chars().any(char::is_control)
 }
 
 fn require_object<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a serde_json::Value> {
@@ -421,6 +443,28 @@ mod tests {
             ArtifactRecord::from_producer_manifest(&m, ArtifactSource::Imported, 0, "ost test")
                 .unwrap_err();
         assert!(err.to_string().contains("archive_digest"), "got: {err}");
+    }
+
+    #[test]
+    fn pathy_archive_filename_is_rejected() {
+        for archive in [
+            "",
+            ".",
+            "..",
+            "../toy.tar.zst",
+            "nested/toy.tar.zst",
+            "nested\\toy.tar.zst",
+            "/tmp/toy.tar.zst",
+            "C:toy.tar.zst",
+            "toy\nextra.tar.zst",
+        ] {
+            let mut m = plugin_manifest();
+            m["archive"] = serde_json::json!(archive);
+            let err =
+                ArtifactRecord::from_producer_manifest(&m, ArtifactSource::Imported, 0, "ost test")
+                    .unwrap_err();
+            assert!(err.to_string().contains("archive"), "got: {err}");
+        }
     }
 
     #[test]

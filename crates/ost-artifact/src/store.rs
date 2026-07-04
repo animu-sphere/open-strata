@@ -592,6 +592,30 @@ mod tests {
     }
 
     #[test]
+    fn import_rejects_a_pathy_archive_filename() {
+        let root = tmp_root("pathy-archive");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+        let manifest_path = dist.join(MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest_path.as_std_path()).unwrap()).unwrap();
+        manifest["archive"] = serde_json::json!("../toy-0.1.0-target.tar.zst");
+        std::fs::write(
+            manifest_path.as_std_path(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let err = store
+            .import(&dist, ArtifactSource::Imported)
+            .expect_err("archive path traversal must be refused before opening files");
+        assert_eq!(err.code(), "MANIFEST_INVALID");
+        assert!(store.list().unwrap().is_empty(), "nothing was registered");
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
     fn verify_passes_and_catches_store_corruption() {
         let root = tmp_root("verify");
         let store = ArtifactStore::at(root.join("store"));

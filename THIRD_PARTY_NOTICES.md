@@ -9,7 +9,7 @@ not edit by hand.
 
 ## Overview
 
-- Apache License 2.0 (78)
+- Apache License 2.0 (79)
 - MIT License (6)
 - Mozilla Public License 2.0 (1)
 - Unicode License Agreement - Data Files and Software (2016) (1)
@@ -1530,6 +1530,7 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
+- ost-artifact 0.5.0
 - ost-build 0.5.0
 - ost-cli 0.5.0 — https://github.com/animu-sphere/open-strata
 - ost-core 0.5.0
