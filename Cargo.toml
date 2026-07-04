@@ -38,14 +38,14 @@ ost-ci = { path = "crates/ost-ci" }
 # stable in rust-toolchain.toml); relax or refresh these deliberately.
 anyhow = "=1.0.103"
 thiserror = "=2.0.18"
-clap = { version = "=4.3.24", features = ["derive"] }
+clap = { version = "=4.6.1", features = ["derive"] }
 serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.143"
+serde_json = "=1.0.150"
 serde_yaml = "=0.9.34"
 toml = "=0.9.5"
 toml_edit = "=0.23.4"
-indexmap = { version = "=2.11.1", features = ["serde"] }
-camino = { version = "=1.1.12", features = ["serde1"] }
+indexmap = { version = "=2.14.0", features = ["serde"] }
+camino = { version = "=1.2.4", features = ["serde1"] }
 directories = "=6.0.0"
 sha2 = "=0.11.0"
 tar = "=0.4.46"
