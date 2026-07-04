@@ -60,14 +60,16 @@ them. Each release is a coherent slice, not a phase boundary.
   Phase 6 slice: make runtime/plugin/package artifacts addressable by digest,
   publish plugin package outputs into a local registry, and use those artifacts
   as the source of truth for a small runtime×plugin CI matrix. Scope:
-  - **Artifact store MVP:** local content-addressed store and registry index,
-    `tar.zst` + manifest + checksums + validation report as the canonical bundle,
-    digest-pinned import/export, artifact integrity verification, and a
+  - **Artifact store MVP:** ✅ local content-addressed store and registry index
+    (`ost-artifact`), `tar.zst` + manifest + checksums + validation report as
+    the canonical bundle, digest-pinned `ost artifact import|export|list|show`,
+    and artifact integrity verification (`ost artifact verify`). Still ⬜: the
     pull/fetch path for `RuntimeSource::Artifact`.
-  - **Plugin publish MVP:** `ost plugin publish` consumes an existing
-    `ost plugin package` output, refuses missing validation/provenance/license
-    notices, freezes inherited source metadata such as `cxx_abi: inherit` into a
-    concrete target ABI, and publishes by digest rather than by mutable name.
+  - **Plugin publish MVP:** ✅ `ost plugin publish` consumes an existing
+    `ost plugin package` output, refuses missing validation/provenance/license/
+    notices with per-cause stable error codes, requires the frozen concrete
+    target ABI (`package` already collapses `cxx_abi: inherit`), and publishes
+    by digest rather than by mutable name.
   - **CI matrix MVP:** GitHub Actions first, Jenkins generator later. Matrix cells
     are explicit support lines (`runtime artifact digest × plugin artifact digest
     × target/profile`) rather than a naive Cartesian product. PR CI keeps cheap
@@ -249,8 +251,9 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
   and session environment into a target-specific binary bundle artifact
   (`tar.zst` + `manifest.json` + `SHA256SUMS` under
   `<bundle>/dist/plugins/<name>/<version>/<target>/`)
-- ⬜ `ost plugin publish` and the runtime×plugin CI matrix (`artifact` source
-  lands with Phase 6)
+- ✅ **(v0.6.0)** `ost plugin publish` into the local artifact registry (Phase 6
+  MVP; see Phase 6 for the gates). Still ⬜: the runtime×plugin CI matrix and the
+  fetched `artifact` runtime source.
 
 ### Phase 4 — fix backlog (from downstream plugin dogfooding, reports #1/#2)
 
@@ -506,20 +509,36 @@ first, keep the compiled schema flow as stretch unless it stays small.
 - 🚧 **MVP boundary for v0.6.0:** local-first, digest-first artifact registry.
   The registry is a content source for runtimes/plugins/packages, not yet a
   remote service.
-- ⬜ Artifact identity model: `{kind, name, version, target, profile, digest,
-  created_at, producer, source, validation, licenses, sbom}` with deterministic
-  JSON and stable schema versions.
-- ⬜ Content-addressed artifact store (digest pinning), reusing `~/.ost/artifacts`
-  and a small JSON index before introducing SQLite.
-- ⬜ `tar.zst` + manifest + checksums + validation report as the canonical MVP
-  payload for runtime, plugin, and project package artifacts.
-- ⬜ `ost artifact import|export|list|show|verify` for local registry operations
-  and CI artifact handoff.
+- ✅ Artifact identity model (`ost-artifact` crate): `{kind, name, version,
+  target, profile, digest, created_unix, producer, source, validation, licenses,
+  sbom}` as a fixed-field record with deterministic JSON and a stable schema
+  version, always *derived* from a producer `manifest.json` (plugin-bundle,
+  project package, or the future `openstrata.runtime` tag) — never hand-authored.
+- ✅ Content-addressed artifact store (digest pinning) under `~/.ost/artifacts`:
+  `objects/sha256/<hex>/` object dirs staged + renamed atomically, plus a small
+  deterministic `index.json` (sorted by digest, rebuildable from the objects)
+  before introducing SQLite.
+- ✅ `tar.zst` + manifest + checksums as the canonical MVP payload: the store
+  keeps the producer manifest byte-for-byte beside the archive and a regenerated
+  `SHA256SUMS`; the plugin payload already carries its validation report inside
+  the archive (`validation/report.json`).
+- ✅ `ost artifact import|export|list|show|verify` for local registry operations
+  and CI artifact handoff: import re-hashes the archive and refuses a
+  digest/size mismatch (`ARTIFACT_DIGEST_MISMATCH`, exit 5); artifacts resolve
+  by full digest or unique hex prefix; `verify` recomputes the archive digest
+  *and* re-hashes every tar entry against the manifest `files[]`; `export`
+  round-trips to a re-importable directory. Covered by unit + e2e tests
+  ([artifact_registry.rs](../crates/ost-cli/tests/artifact_registry.rs)).
 - ⬜ `RuntimeSource::Artifact` fetch/use path for prebuilt runtimes, with
   provenance surfaced by `runtime show`, `runtime validate`, and `doctor`.
-- ⬜ `ost plugin publish`: publish a packaged plugin artifact into the registry,
-  reject mutable or incomplete artifacts, and output the digest reference CI can
-  pin.
+- ✅ `ost plugin publish`: consumes existing `ost plugin package` output (never
+  re-packages) and registers it by digest as a `published` artifact. Entry is
+  gated with per-cause stable codes CI can branch on:
+  `PUBLISH_VALIDATION_REQUIRED` (validation must have passed),
+  `PUBLISH_LICENSE_REQUIRED` (SPDX license), `PUBLISH_PROVENANCE_INCOMPLETE`
+  (runtime id + digest), `PUBLISH_ABI_UNRESOLVED` (a concrete frozen `cxx_abi`,
+  not `inherit`/per-OS), and `PUBLISH_NOTICES_MISSING` (declared notices must be
+  in the archive). Prints the digest reference CI pins.
 - ⬜ Runtime/extension content attribution and per-artifact SBOM generation:
   runtime manifests record upstream licenses/notices; published artifacts include
   complete notices and a generated SPDX or CycloneDX SBOM.

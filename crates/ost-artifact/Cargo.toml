@@ -1,0 +1,16 @@
+[package]
+name = "ost-artifact"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenStrata artifact registry: content-addressed local store, identity records, and integrity verification."
+
+[dependencies]
+ost-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+camino.workspace = true
+tar.workspace = true
+zstd.workspace = true
