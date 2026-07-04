@@ -180,6 +180,12 @@ ost plugin test toy --up-to 6 --target cy2026 --profile usd   # full pyramid inc
 
 # package a built plugin as a target-specific binary bundle artifact
 ost plugin package toy --target cy2026 --profile usd
+
+# publish the packaged artifact into the local registry, addressed by digest.
+# Refused (exit 5, stable per-cause codes) unless the package records a passed
+# validation, complete runtime provenance, a concrete frozen cxx_abi, a license,
+# and every declared notices file.
+ost plugin publish toy --target cy2026 --profile usd
 ```
 
 Reports land under `<bundle>/.strata/reports/<plugin>/<UTC>/`
@@ -188,6 +194,35 @@ Reports land under `<bundle>/.strata/reports/<plugin>/<UTC>/`
 Plugin package artifacts land under
 `<bundle>/dist/plugins/<name>/<version>/<target>/` with a `tar.zst`,
 `manifest.json`, and `SHA256SUMS`.
+
+## artifact — the local digest-addressed registry
+
+Runtimes, plugin bundles, and project packages become registry **artifacts**:
+`tar.zst` + producer `manifest.json` + checksums, addressed by the archive's
+SHA-256 digest (never by mutable name). The store lives under
+`~/.ost/artifacts` (`OST_HOME`-aware).
+
+```bash
+# register a package output (a dist dir, or its manifest.json directly);
+# the archive is re-hashed and a digest/size mismatch is refused (exit 5)
+ost artifact import toy/dist/plugins/toy/0.1.0/<target>/
+ost artifact import dist/my-show/1.0.0/<target>/manifest.json
+
+ost artifact list                       # everything in the registry
+ost artifact list --kind plugin         # filter: runtime | plugin | package
+
+# digests resolve in full or by unique hex prefix (>= 6 chars)
+ost artifact show sha256:3fa9c1d2…
+ost artifact show 3fa9c1
+
+# integrity: recompute the archive digest AND re-hash every tar entry
+# against the producer manifest's files[] (exit 5 on any mismatch)
+ost artifact verify 3fa9c1
+
+# CI handoff: copy archive + manifest + SHA256SUMS + record out;
+# the exported directory is re-importable on another machine
+ost artifact export 3fa9c1 ./handoff/
+```
 
 ## lock — reproducibility
 

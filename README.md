@@ -93,7 +93,8 @@ ost build [--check] [--dry-run] [--jobs N]          preflight, then cmake build 
 ost package                                         install + tar.zst artifact + manifest
 ost validate                                        validate a built/packaged target
 ost extension  list | why <id> | add <id>           inspect/request controlled extensions
-ost plugin     new | inspect | build | doctor | run | test | view | test-view   OpenUSD plugin bundles
+ost plugin     new | inspect | build | doctor | run | test | view | test-view | package | publish   OpenUSD plugin bundles
+ost artifact   import | list | show | verify | export   local digest-addressed artifact registry
 ost lock [--check]                                  generate/verify strata.lock
 ost uv <args...>                                    run uv pinned to the runtime Python
 ```
@@ -142,6 +143,8 @@ $ost plugin new usd-fileformat toy --extension toy
 $ost plugin build toy --target cy2026 --profile usd
 $ost plugin test  toy --target cy2026 --profile usd   # L0..L5 + report
 $ost plugin package toy --target cy2026 --profile usd
+$ost plugin publish toy --target cy2026 --profile usd   # register by digest
+$ost artifact list                                       # what the registry holds
 ```
 
 On Windows, `ost build` auto-loads the MSVC developer environment (`vcvars64.bat`);
@@ -158,6 +161,7 @@ crates/
   ost-build/      build target model, toolchain/preset generation, packaging, MSVC bootstrap
   ost-extension/  controlled extensions: model, loader, capability resolver
   ost-plugin/     OpenUSD plugin bundles: model, scaffold, verification levels, reports
+  ost-artifact/   artifact registry: identity records, content-addressed store, verification
   ost-manifest/   project (openstrata.toml) + lock (strata.lock) models
 platforms/        built-in VFX Reference Platform calendar-year manifests
 profiles/         capability bundles (core / dev / usd / lookdev)

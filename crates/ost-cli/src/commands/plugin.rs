@@ -90,6 +90,17 @@ pub enum PluginCmd {
         #[arg(long)]
         profile: Option<String>,
     },
+    /// Publish a packaged plugin artifact into the local registry (by digest).
+    Publish {
+        /// Path to the bundle directory.
+        bundle: String,
+        /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
+        #[arg(long)]
+        target: Option<String>,
+        /// Profile the package was built against. Defaults to the project's.
+        #[arg(long)]
+        profile: Option<String>,
+    },
     /// Run staged diagnostics (L0–L1) and write a report.
     Doctor {
         /// Path to the bundle directory.
@@ -194,6 +205,11 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             target,
             profile,
         } => package(&bundle, target, profile, fmt),
+        PluginCmd::Publish {
+            bundle,
+            target,
+            profile,
+        } => publish(&bundle, target, profile, fmt),
         PluginCmd::Doctor {
             bundle,
             with,
@@ -673,6 +689,196 @@ fn package(
 
     report_package(&id, &archive_path, &packed, fmt);
     Ok(())
+}
+
+/// `ost plugin publish` — enter a *packaged* plugin artifact into the local
+/// registry, addressed by digest (Phase 6 publish MVP).
+///
+/// Publish consumes `ost plugin package` output; it never re-packages. Entry is
+/// gated: the artifact must carry a passed static validation, complete runtime
+/// provenance, a concrete (frozen) C++ ABI, an SPDX license, and every notices
+/// file the bundle declares — an artifact CI pins by digest must not be missing
+/// the facts CI branches on.
+fn publish(
+    bundle_path: &str,
+    target: Option<String>,
+    profile: Option<String>,
+    fmt: Format,
+) -> Result<()> {
+    let bundle = load_bundle(bundle_path)?;
+    let (platform, profile) = selection(target, profile).ok_or_else(|| {
+        Error::usage(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
+        )
+    })?;
+    let (tgt, _r) = build_target(&platform, &profile)?;
+    let id = tgt.id();
+
+    let name = &bundle.manifest.plugin.name;
+    let version = &bundle.manifest.plugin.version;
+    let dist_dir = plugin_dist_dir(&bundle.root, name, version, &id);
+    let manifest_path = dist_dir.join("manifest.json");
+    if !manifest_path.as_std_path().is_file() {
+        return Err(Error::precondition(format!(
+            "no packaged artifact for '{name}' {version} ({id}) — expected {manifest_path}"
+        ))
+        .with_hint("run `ost plugin package` first; publish consumes its output"));
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(manifest_path.as_std_path())
+            .map_err(|e| Error::io(manifest_path.to_string(), e))?,
+    )
+    .map_err(|e| Error::parse(manifest_path.to_string(), anyhow::Error::new(e)))?;
+
+    check_publishable(&manifest, bundle.notices())?;
+
+    let store = ost_artifact::ArtifactStore::discover();
+    let out = store.import(&dist_dir, ost_artifact::ArtifactSource::Published)?;
+
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "published": true,
+            "already_present": out.already_present,
+            "digest": out.record.digest,
+            "artifact": serde_json::to_value(&out.record).unwrap_or_default(),
+        }));
+        return Ok(());
+    }
+    if out.already_present {
+        println!(
+            "Already published: {} {} {} is stored as {}",
+            out.record.kind.as_str(),
+            out.record.name,
+            out.record.version,
+            out.record.short_digest()
+        );
+    } else {
+        println!(
+            "Published {} {} for {}",
+            out.record.name, out.record.version, out.record.target
+        );
+    }
+    // The full reference is the line CI pins; print it unabbreviated.
+    println!("  digest: {}", out.record.digest);
+    println!("  pin it, e.g. `ost artifact show {}`", out.record.digest);
+    Ok(())
+}
+
+/// The publish gates, over the packaged artifact's `manifest.json`.
+///
+/// Each refusal carries its own stable code so CI can branch on *why* an
+/// artifact was rejected, and a hint naming the fix.
+fn check_publishable(manifest: &serde_json::Value, notices: &[String]) -> Result<()> {
+    if manifest.get("kind").and_then(|v| v.as_str()) != Some(ost_artifact::PLUGIN_BUNDLE_KIND) {
+        return Err(Error::coded(
+            "PUBLISH_NOT_A_PLUGIN_BUNDLE",
+            ost_core::Category::Validation,
+            "the packaged manifest is not a plugin-bundle artifact",
+        )
+        .with_hint("re-run `ost plugin package` to produce a current manifest"));
+    }
+
+    let provenance = manifest.get("provenance");
+    let validation_passed = provenance
+        .and_then(|p| p.get("validation"))
+        .and_then(|v| v.get("passed"))
+        .and_then(|b| b.as_bool());
+    if validation_passed != Some(true) {
+        return Err(Error::coded(
+            "PUBLISH_VALIDATION_REQUIRED",
+            ost_core::Category::Validation,
+            "the packaged artifact does not record a passed validation",
+        )
+        .with_hint("fix `ost plugin doctor` findings, then re-run `ost plugin package`"));
+    }
+
+    let license = manifest
+        .get("plugin")
+        .and_then(|p| p.get("license"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if license.is_none() {
+        return Err(Error::coded(
+            "PUBLISH_LICENSE_REQUIRED",
+            ost_core::Category::Validation,
+            "the packaged artifact records no license",
+        )
+        .with_hint(
+            "set `license: <SPDX id>` in openstrata.plugin.yaml and re-run `ost plugin package`",
+        ));
+    }
+
+    let runtime = provenance.and_then(|p| p.get("runtime"));
+    let runtime_complete = ["id", "digest"].iter().all(|k| {
+        runtime
+            .and_then(|r| r.get(*k))
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty())
+    });
+    if !runtime_complete {
+        return Err(Error::coded(
+            "PUBLISH_PROVENANCE_INCOMPLETE",
+            ost_core::Category::Validation,
+            "the packaged artifact does not record the runtime it was validated against",
+        )
+        .with_hint("re-run `ost plugin package` against a pulled runtime"));
+    }
+
+    // Package freezes `cxx_abi: inherit` / per-OS maps into one concrete tag;
+    // an artifact that still defers its ABI cannot be a support-matrix cell.
+    match provenance.and_then(|p| p.get("cxx_abi")) {
+        Some(serde_json::Value::String(tag)) if tag != "inherit" && !tag.is_empty() => {}
+        _ => {
+            return Err(Error::coded(
+                "PUBLISH_ABI_UNRESOLVED",
+                ost_core::Category::Validation,
+                "the packaged artifact does not freeze a concrete C++ ABI",
+            )
+            .with_hint(
+                "re-run `ost plugin package` — it resolves `cxx_abi: inherit`/per-OS maps \
+                 to the target's ABI",
+            ));
+        }
+    }
+
+    // Attribution is a release gate (§ Licensing): every notices file the
+    // bundle declares must actually be inside the archive.
+    let packed: Vec<&str> = manifest
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|f| f.get("path").and_then(|p| p.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let missing: Vec<&String> = notices
+        .iter()
+        .filter(|n| !packed.contains(&normalize_slash(n).as_str()))
+        .collect();
+    if !missing.is_empty() {
+        return Err(Error::coded(
+            "PUBLISH_NOTICES_MISSING",
+            ost_core::Category::Validation,
+            format!(
+                "declared notices file(s) missing from the packaged artifact: {}",
+                missing
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+        .with_hint("re-run `ost plugin package` so the notices are staged into the archive"));
+    }
+
+    Ok(())
+}
+
+/// Manifest `files[]` paths are forward-slashed; compare notices the same way.
+fn normalize_slash(path: &str) -> String {
+    path.replace('\\', "/")
 }
 
 /// `ost plugin run` — compose the runtime session and exec a command in it.
@@ -1832,6 +2038,81 @@ mod tests {
             abi,
             python: "313".into(),
         }
+    }
+
+    /// A publishable plugin manifest, as `ost plugin package` writes it.
+    fn publishable_manifest() -> serde_json::Value {
+        serde_json::json!({
+            "schema": 1,
+            "kind": "openstrata.plugin-bundle",
+            "plugin": { "name": "toy", "version": "0.1.0", "kind": "usd-fileformat", "license": "Apache-2.0" },
+            "target": "cy2026-windows-x86_64-msvc143-py313-usd",
+            "archive": "toy-0.1.0.tar.zst",
+            "archive_digest": format!("sha256:{}", "ab".repeat(32)),
+            "archive_size": 1,
+            "total_size": 2,
+            "provenance": {
+                "profile": "usd",
+                "cxx_abi": "msvc143",
+                "runtime": { "id": "openstrata-cy2026-usd", "digest": "sha256:feed" },
+                "validation": { "passed": true },
+            },
+            "files": [
+                { "path": "NOTICE.md", "sha256": "sha256:aa", "size": 1 },
+            ],
+        })
+    }
+
+    #[test]
+    fn publish_gates_accept_a_complete_artifact() {
+        assert!(check_publishable(&publishable_manifest(), &["NOTICE.md".into()]).is_ok());
+        // No declared notices is fine too — the gate is on *declared* files.
+        assert!(check_publishable(&publishable_manifest(), &[]).is_ok());
+    }
+
+    #[test]
+    fn publish_gates_refuse_incomplete_artifacts() {
+        type Mutation = Box<dyn Fn(&mut serde_json::Value)>;
+        let cases: Vec<(&str, Mutation)> = vec![
+            (
+                "PUBLISH_NOT_A_PLUGIN_BUNDLE",
+                Box::new(|m| m["kind"] = "other".into()),
+            ),
+            (
+                "PUBLISH_VALIDATION_REQUIRED",
+                Box::new(|m| m["provenance"]["validation"]["passed"] = false.into()),
+            ),
+            (
+                "PUBLISH_LICENSE_REQUIRED",
+                Box::new(|m| m["plugin"]["license"] = serde_json::Value::Null),
+            ),
+            (
+                "PUBLISH_PROVENANCE_INCOMPLETE",
+                Box::new(|m| m["provenance"]["runtime"]["digest"] = "".into()),
+            ),
+            (
+                "PUBLISH_ABI_UNRESOLVED",
+                Box::new(|m| m["provenance"]["cxx_abi"] = "inherit".into()),
+            ),
+            (
+                "PUBLISH_ABI_UNRESOLVED",
+                Box::new(|m| {
+                    m["provenance"]["cxx_abi"] = serde_json::json!({"windows": "msvc143"})
+                }),
+            ),
+        ];
+        for (code, mutate) in cases {
+            let mut m = publishable_manifest();
+            mutate(&mut m);
+            let err = check_publishable(&m, &[]).expect_err(code);
+            assert_eq!(err.code(), code);
+            assert_eq!(err.category(), ost_core::Category::Validation);
+        }
+
+        // A declared notices file absent from the archive is refused.
+        let err = check_publishable(&publishable_manifest(), &["THIRD_PARTY.md".into()])
+            .expect_err("missing notices");
+        assert_eq!(err.code(), "PUBLISH_NOTICES_MISSING");
     }
 
     #[test]

@@ -376,6 +376,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "ost-artifact"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "camino",
+ "ost-core",
+ "serde",
+ "serde_json",
+ "tar",
+ "zstd",
+]
+
+[[package]]
 name = "ost-build"
 version = "0.5.0"
 dependencies = [
@@ -396,6 +409,7 @@ dependencies = [
  "anyhow",
  "camino",
  "clap",
+ "ost-artifact",
  "ost-build",
  "ost-core",
  "ost-extension",
