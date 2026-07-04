@@ -336,6 +336,16 @@ pub fn add_cohosted_schema(
             manifest.name()
         )));
     }
+    let existing_schema_types = manifest.schema_provides();
+    if !existing_schema_types.is_empty() {
+        return Err(Error::config(format!(
+            "'{}' already provides co-hosted schema type(s): usd-schema:{} — one schema.usda per bundle; \
+             add further classes to the existing schema source",
+            manifest.name(),
+            existing_schema_types.join(", usd-schema:")
+        ))
+        .with_hint("edit the existing schema.usda (or schema.source) instead of running schema add again"));
+    }
     if let Some(existing) = manifest.schema.as_ref().and_then(|s| s.source.as_ref()) {
         return Err(Error::config(format!(
             "'{}' already declares schema.source: {existing} — one schema.usda per bundle; \
@@ -343,6 +353,14 @@ pub fn add_cohosted_schema(
             manifest.name()
         ))
         .with_hint("usdGenSchema generates every class in the file into the same library"));
+    }
+    let (conventional_schema, declared) = bundle.schema_source();
+    if !declared && conventional_schema.as_std_path().exists() {
+        return Err(Error::config(format!(
+            "'{}' already has a conventional schema source at schema.usda — one schema.usda per bundle; \
+             add further classes to that file or declare it with schema.source",
+            manifest.name()
+        )));
     }
     let schema_abs = bundle.path(source);
     if schema_abs.as_std_path().exists() {
@@ -784,6 +802,57 @@ mod tests {
         assert!(added.codeless);
         let schema = std::fs::read_to_string(dir.join("schema/schema.usda").as_std_path()).unwrap();
         assert!(schema.contains("bool skipCodeGeneration = true"));
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn schema_add_refuses_existing_cohosted_schema_without_redirecting_source() {
+        let dir = unique_tmp("schema-add-existing-cohost");
+        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+
+        let manifest_path = dir.join("openstrata.plugin.yaml");
+        let manifest = std::fs::read_to_string(manifest_path.as_std_path()).unwrap();
+        std::fs::write(
+            manifest_path.as_std_path(),
+            manifest.replace(
+                "provides:\n  - usd-fileformat:toy",
+                "provides:\n  - usd-fileformat:toy\n  - usd-schema:ToyMetadataAPI",
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("schema.usda").as_std_path(), "#usda 1.0\n").unwrap();
+
+        let err = add_cohosted_schema(&dir, "API", "schema/schema.usda", false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("already provides co-hosted schema type(s): usd-schema:ToyMetadataAPI"),
+            "{err}"
+        );
+        assert!(
+            !dir.join("schema/schema.usda").as_std_path().exists(),
+            "schema add must not redirect an existing conventional schema source"
+        );
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn schema_add_refuses_conventional_schema_source_before_writing_default_source() {
+        let dir = unique_tmp("schema-add-existing-source");
+        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+        std::fs::write(dir.join("schema.usda").as_std_path(), "#usda 1.0\n").unwrap();
+
+        let err = add_cohosted_schema(&dir, "API", "schema/schema.usda", false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("already has a conventional schema source"),
+            "{err}"
+        );
+        assert!(
+            !dir.join("schema/schema.usda").as_std_path().exists(),
+            "schema add must not write a new default source when schema.usda already exists"
+        );
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
