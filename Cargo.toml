@@ -40,7 +40,7 @@ clap = { version = "=4.3.24", features = ["derive"] }
 serde = { version = "=1.0.210", features = ["derive"] }
 serde_json = "=1.0.128"
 serde_yaml = "=0.9.34"
-toml = "=0.8.19"
+toml = "=0.9.5"
 toml_edit = "=0.22.20"
 indexmap = { version = "=2.11.1", features = ["serde"] }
 camino = { version = "=1.1.7", features = ["serde1"] }
