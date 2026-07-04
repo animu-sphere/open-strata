@@ -334,8 +334,9 @@ impl ArtifactStore {
     /// archive digest before trusting the bytes. Returns the record.
     ///
     /// This is the "use" edge of the registry: a runtime fetch or a CI job
-    /// unpacking a plugin bundle under test. Extraction refuses entries that
-    /// would escape `dest` (tar unpack sanitization).
+    /// unpacking a plugin bundle under test. Extraction requires an empty
+    /// destination and refuses entries that would escape it (tar unpack
+    /// sanitization).
     pub fn extract(&self, digest_ref: &str, dest: &Utf8Path) -> Result<ArtifactRecord> {
         let record = self.resolve(digest_ref)?;
         let archive = self.archive_path(&record);
@@ -356,7 +357,24 @@ impl ArtifactStore {
             .with_hint("re-import the artifact from its original producer output"));
         }
 
-        std::fs::create_dir_all(dest.as_std_path()).map_err(|e| Error::io(dest.to_string(), e))?;
+        if dest.as_std_path().exists() {
+            if !dest.as_std_path().is_dir() {
+                return Err(Error::usage(format!(
+                    "extract destination '{dest}' exists but is not a directory"
+                )));
+            }
+            let mut entries = std::fs::read_dir(dest.as_std_path())
+                .map_err(|e| Error::io(dest.to_string(), e))?;
+            if let Some(entry) = entries.next() {
+                entry.map_err(|e| Error::io(dest.to_string(), e))?;
+                return Err(Error::usage(format!(
+                    "refusing to extract into non-empty directory '{dest}'"
+                )));
+            }
+        } else {
+            std::fs::create_dir_all(dest.as_std_path())
+                .map_err(|e| Error::io(dest.to_string(), e))?;
+        }
         let file =
             File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
         let decoder = zstd::stream::read::Decoder::new(file)
@@ -708,6 +726,10 @@ mod tests {
             std::fs::read(payload.as_std_path()).unwrap(),
             b"plugin bytes"
         );
+        let err = store
+            .extract(&out.record.digest, &dest)
+            .expect_err("extract must refuse to merge into an existing tree");
+        assert_eq!(err.code(), "INVALID_ARGUMENT");
 
         // Corrupt the stored archive: extract must refuse before unpacking.
         let stored = store.archive_path(&out.record);

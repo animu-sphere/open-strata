@@ -205,6 +205,34 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["data"]["unresolved"].as_array().unwrap().len(), 0);
 
+    // The resolver also enforces the typed fields, not just digest existence.
+    std::fs::write(
+        sb.base.join("openstrata.ci.yaml"),
+        format!(
+            "schema: 1\ncells:\n  - name: swapped-kinds\n    runtime_artifact: {plugin_digest}\n    plugin_artifact: {runtime_digest}\n    platform: cy2026\n    profile: usd\n"
+        ),
+    )
+    .unwrap();
+    let out = sb.ost(&["--json", "ci", "validate", "--resolve"]);
+    assert_eq!(out.status.code(), Some(5));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let unresolved = v["data"]["unresolved"].as_array().unwrap();
+    assert_eq!(unresolved.len(), 2);
+    assert!(unresolved
+        .iter()
+        .any(|v| v.as_str().unwrap().contains("expected runtime")));
+    assert!(unresolved
+        .iter()
+        .any(|v| v.as_str().unwrap().contains("expected plugin")));
+
+    std::fs::write(
+        sb.base.join("openstrata.ci.yaml"),
+        format!(
+            "schema: 1\ncells:\n  - name: linux-usd-toy\n    runtime_artifact: {runtime_digest}\n    plugin_artifact: {plugin_digest}\n    platform: cy2026\n    profile: usd\n    up_to: 4\n    host:\n      os: linux\n      labels: [self-hosted, linux]\n"
+        ),
+    )
+    .unwrap();
+
     // The generated workflow pins the same digests into the include entry.
     let out = sb.ost(&["ci", "generate", "github", "--stdout"]);
     let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).unwrap();
@@ -225,4 +253,14 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     assert_eq!(v["data"]["extracted"], true);
     assert!(dest.join("lib/toy.dll").is_file());
     assert!(dest.join("plugInfo.json").is_file());
+
+    // A reused work dir must not silently merge stale files with pinned bytes.
+    let out = sb.ost(&[
+        "--json",
+        "artifact",
+        "extract",
+        &plugin_digest,
+        path_str(&dest),
+    ]);
+    assert_eq!(out.status.code(), Some(2));
 }

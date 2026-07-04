@@ -14,7 +14,7 @@
 use camino::Utf8PathBuf;
 use clap::Subcommand;
 
-use ost_artifact::ArtifactStore;
+use ost_artifact::{ArtifactKind, ArtifactStore};
 use ost_ci::{generate_github, starter_matrix, SupportMatrix, MATRIX_FILE, WORKFLOW_PATH};
 use ost_core::{Error, Result};
 
@@ -128,12 +128,19 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
     if resolve {
         let store = ArtifactStore::discover();
         for cell in &matrix.cells {
-            for (what, digest) in [
-                ("runtime", &cell.runtime_artifact),
-                ("plugin", &cell.plugin_artifact),
+            for (what, digest, expected) in [
+                ("runtime", &cell.runtime_artifact, ArtifactKind::Runtime),
+                ("plugin", &cell.plugin_artifact, ArtifactKind::Plugin),
             ] {
-                if store.resolve(digest).is_err() {
-                    unresolved.push(format!("{}: {what} {digest}", cell.name));
+                match store.resolve(digest) {
+                    Ok(record) if record.kind != expected => unresolved.push(format!(
+                        "{}: {what} {digest} is a {} artifact, expected {}",
+                        cell.name,
+                        record.kind.as_str(),
+                        expected.as_str()
+                    )),
+                    Ok(_) => {}
+                    Err(_) => unresolved.push(format!("{}: {what} {digest}", cell.name)),
                 }
             }
         }
