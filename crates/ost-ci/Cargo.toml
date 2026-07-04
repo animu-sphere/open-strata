@@ -1,0 +1,13 @@
+[package]
+name = "ost-ci"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenStrata CI support-matrix model and workflow generation (GitHub Actions first)."
+
+[dependencies]
+ost-core.workspace = true
+ost-artifact.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
