@@ -56,7 +56,7 @@ them. Each release is a coherent slice, not a phase boundary.
     artifact source/content store. A first-class compiled co-located schema UX
     (`ost plugin schema add` or a documented manifest-driven equivalent) also
     remains a v0.6.0 follow-up from the v0.5.0 dogfooding recheck.
-- 🚧 **v0.6.0 — artifact registry + publishable plugin CI.** The first practical
+- ✅ **v0.6.0 — artifact registry + publishable plugin CI.** The first practical
   Phase 6 slice: make runtime/plugin/package artifacts addressable by digest,
   publish plugin package outputs into a local registry, and use those artifacts
   as the source of truth for a small runtime×plugin CI matrix. Scope:
@@ -88,10 +88,10 @@ them. Each release is a coherent slice, not a phase boundary.
     staging, export define); ✅ adopted-runtime drift repair UX —
     `ost runtime repair` re-adopts a `local` runtime from its recorded USD root
     in one step, and every drift report (`show` human/JSON, `validate`) now
-    prints the exact copy-paste fix per source. Still ⬜ (needs a Mac):
-    re-check macOS source-build ergonomics.
-  - **Deferred:** OCI layout / ORAS transport, remote hosted registry, Kubernetes
-    execution, full Jenkins command surface, and DCC host matrices.
+    prints the exact copy-paste fix per source.
+  - **Deferred:** macOS source-build ergonomics re-check (needs a Mac), OCI
+    layout / ORAS transport, remote hosted registry, Kubernetes execution, full
+    Jenkins command surface, and DCC host matrices.
 
 ## Phase 0 — Foundation ✅
 
@@ -548,7 +548,7 @@ first, keep the compiled schema flow as stretch unless it stays small.
 
 ## Phase 6 — Artifact registry 🚧
 
-- 🚧 **MVP boundary for v0.6.0:** local-first, digest-first artifact registry.
+- ✅ **MVP boundary for v0.6.0:** local-first, digest-first artifact registry.
   The registry is a content source for runtimes/plugins/packages, not yet a
   remote service.
 - ✅ Artifact identity model (`ost-artifact` crate): `{kind, name, version,
