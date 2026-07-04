@@ -453,7 +453,7 @@ Used by:
 - serde_spanned 1.1.1 — https://github.com/toml-rs/toml
 - toml 0.9.5 — https://github.com/toml-rs/toml
 - toml_datetime 0.7.5+spec-1.1.0 — https://github.com/toml-rs/toml
-- toml_edit 0.23.4 — https://github.com/toml-rs/toml
+- toml_edit 0.23.5 — https://github.com/toml-rs/toml
 - toml_parser 1.1.2+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_writer 1.1.1+spec-1.1.0 — https://github.com/toml-rs/toml
 
