@@ -39,13 +39,13 @@ ost-ci = { path = "crates/ost-ci" }
 anyhow = "=1.0.103"
 thiserror = "=2.0.18"
 clap = { version = "=4.3.24", features = ["derive"] }
-serde = { version = "=1.0.210", features = ["derive"] }
-serde_json = "=1.0.128"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.143"
 serde_yaml = "=0.9.34"
-toml = "=0.8.19"
-toml_edit = "=0.22.20"
+toml = "=0.9.5"
+toml_edit = "=0.23.4"
 indexmap = { version = "=2.11.1", features = ["serde"] }
-camino = { version = "=1.1.7", features = ["serde1"] }
+camino = { version = "=1.1.12", features = ["serde1"] }
 directories = "=6.0.0"
 sha2 = "=0.11.0"
 tar = "=0.4.46"

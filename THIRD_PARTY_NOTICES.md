@@ -9,21 +9,19 @@ not edit by hand.
 
 ## Overview
 
-- Apache License 2.0 (80)
-- MIT License (6)
+- Apache License 2.0 (79)
+- MIT License (7)
 - Mozilla Public License 2.0 (1)
-- Unicode License Agreement - Data Files and Software (2016) (1)
+- Unicode License v3 (1)
 
 ## Apache License 2.0
 
 Used by:
+- windows-link 0.2.1 — https://github.com/microsoft/windows-rs
 - windows-sys 0.48.0 — https://github.com/microsoft/windows-rs
-- windows-sys 0.52.0 — https://github.com/microsoft/windows-rs
-- windows-sys 0.59.0 — https://github.com/microsoft/windows-rs
+- windows-sys 0.61.2 — https://github.com/microsoft/windows-rs
 - windows-targets 0.48.5 — https://github.com/microsoft/windows-rs
-- windows-targets 0.52.6 — https://github.com/microsoft/windows-rs
 - windows_x86_64_msvc 0.48.5 — https://github.com/microsoft/windows-rs
-- windows_x86_64_msvc 0.52.6 — https://github.com/microsoft/windows-rs
 
 ```
                                  Apache License
@@ -235,7 +233,7 @@ Used by:
 Used by:
 - clap_builder 4.3.24 — https://github.com/clap-rs/clap
 - clap_derive 4.3.12 — https://github.com/clap-rs/clap/tree/master/clap_derive
-- clap_lex 0.5.0 — https://github.com/clap-rs/clap/tree/master/clap_lex
+- clap_lex 0.5.1 — https://github.com/clap-rs/clap/tree/master/clap_lex
 
 ```
                                  Apache License
@@ -447,15 +445,17 @@ Used by:
 Used by:
 - anstream 0.3.2 — https://github.com/rust-cli/anstyle.git
 - anstyle-parse 0.2.7 — https://github.com/rust-cli/anstyle.git
-- anstyle-query 1.0.0 — https://github.com/rust-cli/anstyle
+- anstyle-query 1.1.5 — https://github.com/rust-cli/anstyle.git
 - anstyle-wincon 1.0.2 — https://github.com/rust-cli/anstyle.git
 - anstyle 1.0.14 — https://github.com/rust-cli/anstyle.git
 - clap 4.3.24 — https://github.com/clap-rs/clap
 - colorchoice 1.0.5 — https://github.com/rust-cli/anstyle.git
-- serde_spanned 0.6.9 — https://github.com/toml-rs/toml
-- toml 0.8.19 — https://github.com/toml-rs/toml
-- toml_datetime 0.6.11 — https://github.com/toml-rs/toml
-- toml_edit 0.22.20 — https://github.com/toml-rs/toml
+- serde_spanned 1.1.1 — https://github.com/toml-rs/toml
+- toml 0.9.5 — https://github.com/toml-rs/toml
+- toml_datetime 0.7.5+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml_edit 0.23.4 — https://github.com/toml-rs/toml
+- toml_parser 1.1.2+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml_writer 1.1.1+spec-1.1.0 — https://github.com/toml-rs/toml
 
 ```
                                  Apache License
@@ -876,22 +876,20 @@ limitations under the License.
 
 Used by:
 - bitflags 2.13.0 — https://github.com/bitflags/bitflags
-- camino 1.1.7 — https://github.com/camino-rs/camino
+- camino 1.1.12 — https://github.com/camino-rs/camino
 - cc 1.2.65 — https://github.com/rust-lang/cc-rs
 - cfg-if 1.0.4 — https://github.com/rust-lang/cfg-if
 - equivalent 1.0.2 — https://github.com/indexmap-rs/equivalent
 - errno 0.3.14 — https://github.com/lambda-fairy/rust-errno
-- filetime 0.2.23 — https://github.com/alexcrichton/filetime
+- filetime 0.2.29 — https://github.com/alexcrichton/filetime
 - find-msvc-tools 0.1.9 — https://github.com/rust-lang/cc-rs
 - hashbrown 0.15.5 — https://github.com/rust-lang/hashbrown
 - heck 0.4.1 — https://github.com/withoutboats/heck
 - indexmap 2.11.1 — https://github.com/indexmap-rs/indexmap
 - jobserver 0.1.34 — https://github.com/rust-lang/jobserver-rs
 - linux-raw-sys 0.12.1 — https://github.com/sunfishcode/linux-raw-sys
-- linux-raw-sys 0.4.15 — https://github.com/sunfishcode/linux-raw-sys
 - once_cell 1.21.4 — https://github.com/matklad/once_cell
 - pkg-config 0.3.33 — https://github.com/rust-lang/pkg-config-rs
-- rustix 0.38.44 — https://github.com/bytecodealliance/rustix
 - rustix 1.1.4 — https://github.com/bytecodealliance/rustix
 - tar 0.4.46 — https://github.com/composefs/tar-rs
 - xattr 1.6.1 — https://github.com/Stebalien/xattr
@@ -1109,7 +1107,7 @@ Used by:
 - cpufeatures 0.3.0 — https://github.com/RustCrypto/utils
 - crypto-common 0.2.2 — https://github.com/RustCrypto/traits
 - digest 0.11.3 — https://github.com/RustCrypto/traits
-- hybrid-array 0.4.12 — https://github.com/RustCrypto/hybrid-array
+- hybrid-array 0.4.13 — https://github.com/RustCrypto/hybrid-array
 - sha2 0.11.0 — https://github.com/RustCrypto/hashes
 
 ```
@@ -1546,17 +1544,18 @@ Used by:
 - itoa 1.0.18 — https://github.com/dtolnay/itoa
 - libc 0.2.186 — https://github.com/rust-lang/libc
 - proc-macro2 1.0.106 — https://github.com/dtolnay/proc-macro2
-- quote 1.0.36 — https://github.com/dtolnay/quote
-- ryu 1.0.18 — https://github.com/dtolnay/ryu
-- serde 1.0.210 — https://github.com/serde-rs/serde
-- serde_derive 1.0.210 — https://github.com/serde-rs/serde
-- serde_json 1.0.128 — https://github.com/serde-rs/json
+- quote 1.0.46 — https://github.com/dtolnay/quote
+- ryu 1.0.23 — https://github.com/dtolnay/ryu
+- serde 1.0.228 — https://github.com/serde-rs/serde
+- serde_core 1.0.228 — https://github.com/serde-rs/serde
+- serde_derive 1.0.228 — https://github.com/serde-rs/serde
+- serde_json 1.0.143 — https://github.com/serde-rs/json
 - serde_yaml 0.9.34+deprecated — https://github.com/dtolnay/serde-yaml
 - shlex 2.0.1 — https://github.com/comex/rust-shlex
 - syn 2.0.118 — https://github.com/dtolnay/syn
 - thiserror-impl 2.0.18 — https://github.com/dtolnay/thiserror
 - thiserror 2.0.18 — https://github.com/dtolnay/thiserror
-- unicode-ident 1.0.12 — https://github.com/dtolnay/unicode-ident
+- unicode-ident 1.0.24 — https://github.com/dtolnay/unicode-ident
 - utf8parse 0.2.2 — https://github.com/alacritty/vte
 - zstd-safe 7.2.4 — https://github.com/gyscos/zstd-rs
 - zstd-sys 2.0.16+zstd.1.5.7 — https://github.com/gyscos/zstd-rs
@@ -1641,7 +1640,7 @@ limitations under the License.
 ## MIT License
 
 Used by:
-- is-terminal 0.4.9 — https://github.com/sunfishcode/is-terminal
+- is-terminal 0.4.17 — https://github.com/sunfishcode/is-terminal
 - unsafe-libyaml 0.2.11 — https://github.com/dtolnay/unsafe-libyaml
 
 ```
@@ -1674,7 +1673,8 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- winnow 0.6.26 — https://github.com/winnow-rs/winnow
+- winnow 0.7.15 — https://github.com/winnow-rs/winnow
+- winnow 1.0.3 — https://github.com/winnow-rs/winnow
 
 ```
 Permission is hereby granted, free of charge, to any person obtaining
@@ -2159,34 +2159,51 @@ Exhibit B - &quot;Incompatible With Secondary Licenses&quot; Notice
 
 ```
 
-## Unicode License Agreement - Data Files and Software (2016)
+## Unicode License v3
 
 Used by:
-- unicode-ident 1.0.12 — https://github.com/dtolnay/unicode-ident
+- unicode-ident 1.0.24 — https://github.com/dtolnay/unicode-ident
 
 ```
-UNICODE, INC. LICENSE AGREEMENT - DATA FILES AND SOFTWARE
-
-Unicode Data Files include all data files under the directories http://www.unicode.org/Public/, http://www.unicode.org/reports/, http://www.unicode.org/cldr/data/, http://source.icu-project.org/repos/icu/, and http://www.unicode.org/utility/trac/browser/.
-
-Unicode Data Files do not include PDF online code charts under the directory http://www.unicode.org/Public/.
-
-Software includes any source code published in the Unicode Standard or under the directories http://www.unicode.org/Public/, http://www.unicode.org/reports/, http://www.unicode.org/cldr/data/, http://source.icu-project.org/repos/icu/, and http://www.unicode.org/utility/trac/browser/.
-
-NOTICE TO USER: Carefully read the following legal agreement. BY DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING UNICODE INC.&#x27;S DATA FILES (&quot;DATA FILES&quot;), AND/OR SOFTWARE (&quot;SOFTWARE&quot;), YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+UNICODE LICENSE V3
 
 COPYRIGHT AND PERMISSION NOTICE
 
-Copyright © 1991-2016 Unicode, Inc. All rights reserved. Distributed under the Terms of Use in http://www.unicode.org/copyright.html.
+Copyright © 1991-2023 Unicode, Inc.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of the Unicode data files and any associated documentation (the &quot;Data Files&quot;) or Unicode software and any associated documentation (the &quot;Software&quot;) to deal in the Data Files or Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, and/or sell copies of the Data Files or Software, and to permit persons to whom the Data Files or Software are furnished to do so, provided that either
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
 
-     (a) this copyright and permission notice appear with all copies of the Data Files or Software, or
-     (b) this copyright and permission notice appear in associated Documentation.
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the &quot;Data Files&quot;) or
+software and any associated documentation (the &quot;Software&quot;) to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
 
-THE DATA FILES AND SOFTWARE ARE PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF THIRD PARTY RIGHTS. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA FILES OR SOFTWARE.
+THE DATA FILES AND SOFTWARE ARE PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
 
-Except as contained in this notice, the name of a copyright holder shall not be used in advertising or otherwise to promote the sale, use or other dealings in these Data Files or Software without prior written authorization of the copyright holder.
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
 
 ```
 
