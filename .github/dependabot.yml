@@ -10,6 +10,13 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Cargo dependencies are exact-pinned for reproducible builds; surface upstream
   # releases (security and otherwise) as PRs without auto-applying them.
@@ -19,3 +26,10 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "deps"
+    groups:
+      cargo-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
