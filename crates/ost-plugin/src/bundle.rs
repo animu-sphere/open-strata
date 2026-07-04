@@ -57,6 +57,10 @@ impl Bundle {
         for notice in &manifest.notices {
             check_safe_relative("notices", notice)?;
         }
+        // The schema source is fed to usdGenSchema by the build step.
+        if let Some(src) = manifest.schema.as_ref().and_then(|s| s.source.as_ref()) {
+            check_safe_relative("schema.source", src)?;
+        }
 
         Ok(Bundle { root, manifest })
     }
@@ -110,6 +114,24 @@ impl Bundle {
     pub fn notices(&self) -> &[String] {
         &self.manifest.notices
     }
+
+    /// The schema source (`schema.usda`) the schema build step regenerates
+    /// from: the manifest-declared `schema.source` when present, else the
+    /// conventional `schema.usda` at the bundle root. The bool says whether it
+    /// was explicitly declared — a declared-but-missing source is a
+    /// configuration error, while a missing conventional file just means
+    /// "no schema here".
+    pub fn schema_source(&self) -> (Utf8PathBuf, bool) {
+        match self
+            .manifest
+            .schema
+            .as_ref()
+            .and_then(|s| s.source.as_ref())
+        {
+            Some(src) => (self.path(src), true),
+            None => (self.path("schema.usda"), false),
+        }
+    }
 }
 
 /// Reject a manifest-declared path that is not a safe, bundle-relative path.
@@ -125,7 +147,7 @@ impl Bundle {
 /// still caught when the bundle is validated on Linux CI (and vice versa) —
 /// `Path::components()` alone would miss it, since the host's separator rules
 /// differ.
-fn check_safe_relative(field: &str, rel: &str) -> Result<()> {
+pub(crate) fn check_safe_relative(field: &str, rel: &str) -> Result<()> {
     let reject = |why: &str| {
         Err(Error::config(format!(
             "{field}: '{rel}' is not a safe bundle-relative path — {why}"

@@ -152,6 +152,14 @@ pub struct SchemaSection {
     /// it; doctor validates the schema `Types` block instead.
     #[serde(default)]
     pub codeless: bool,
+    /// Bundle-relative path of the `schema.usda` source the schema build step
+    /// (usdGenSchema) regenerates from, e.g. `schema/schema.usda`. Defaults to
+    /// the conventional `schema.usda` at the bundle root when absent. Validated
+    /// as bundle-relative at load (SEC-002). Meaningful for both `usd-schema`
+    /// bundles and non-schema bundles that co-host a schema via
+    /// `provides: usd-schema:<Type>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Fixtures consumed by each verification level. All optional.

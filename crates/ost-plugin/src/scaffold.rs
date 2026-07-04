@@ -280,6 +280,279 @@ pub fn scaffold(
     Ok(written)
 }
 
+/// What [`add_cohosted_schema`] created/changed in the bundle.
+#[derive(Debug)]
+pub struct AddedSchema {
+    /// The public schema type usdGenSchema will generate (`libraryPrefix` +
+    /// source class), e.g. `ToyMetadataAPI` — also the new `provides` entry.
+    pub schema_type: String,
+    /// Bundle-relative path of the written `schema.usda` source.
+    pub source: Utf8PathBuf,
+    pub codeless: bool,
+}
+
+/// Add a co-located schema to an *existing* non-schema bundle: write a starter
+/// `schema.usda` at `source` and wire the manifest (`provides:
+/// usd-schema:<Type>` + `schema.source`) so the next `ost plugin build` runs
+/// usdGenSchema, links the generated typed C++ API into the same plugin
+/// library, merges the schema `Types` into the bundle's `plugInfo.json`, and
+/// stages `generatedSchema.usda` beside it.
+///
+/// `class` is the *source* class name (default `API`); the public type is
+/// `libraryPrefix` (the PascalCase bundle name) + `class`, matching how
+/// usdGenSchema composes type names — which is also why the class must not
+/// repeat the bundle-name prefix (the `schema.library_prefix` footgun).
+/// `codeless: true` writes a `skipCodeGeneration` schema instead: the build
+/// then falls back to the resource-only `Types` merge, generating no C++.
+pub fn add_cohosted_schema(
+    bundle_root: &Utf8Path,
+    class: &str,
+    source: &str,
+    codeless: bool,
+) -> Result<AddedSchema> {
+    let bundle = crate::Bundle::load(bundle_root)?;
+    let manifest = &bundle.manifest;
+
+    if manifest.kind() == PluginKind::UsdSchema {
+        return Err(Error::config(format!(
+            "'{}' already is a usd-schema bundle — edit its schema.usda directly \
+             (schema add co-locates a schema in a *non-schema* bundle)",
+            manifest.name()
+        )));
+    }
+    validate_class(class)?;
+    crate::bundle::check_safe_relative("schema source", source)?;
+    if !source.ends_with(".usda") {
+        return Err(Error::config(format!(
+            "schema source '{source}' must be a .usda file (usdGenSchema input)"
+        )));
+    }
+
+    let pascal = to_pascal(manifest.name());
+    let schema_type = format!("{pascal}{class}");
+    if manifest.schema_provides().iter().any(|t| *t == schema_type) {
+        return Err(Error::config(format!(
+            "'{}' already provides usd-schema:{schema_type}",
+            manifest.name()
+        )));
+    }
+    let existing_schema_types = manifest.schema_provides();
+    if !existing_schema_types.is_empty() {
+        return Err(Error::config(format!(
+            "'{}' already provides co-hosted schema type(s): usd-schema:{} — one schema.usda per bundle; \
+             add further classes to the existing schema source",
+            manifest.name(),
+            existing_schema_types.join(", usd-schema:")
+        ))
+        .with_hint("edit the existing schema.usda (or schema.source) instead of running schema add again"));
+    }
+    if let Some(existing) = manifest.schema.as_ref().and_then(|s| s.source.as_ref()) {
+        return Err(Error::config(format!(
+            "'{}' already declares schema.source: {existing} — one schema.usda per bundle; \
+             add further classes to that file",
+            manifest.name()
+        ))
+        .with_hint("usdGenSchema generates every class in the file into the same library"));
+    }
+    let (conventional_schema, declared) = bundle.schema_source();
+    if !declared && conventional_schema.as_std_path().exists() {
+        return Err(Error::config(format!(
+            "'{}' already has a conventional schema source at schema.usda — one schema.usda per bundle; \
+             add further classes to that file or declare it with schema.source",
+            manifest.name()
+        )));
+    }
+    let schema_abs = bundle.path(source);
+    if schema_abs.as_std_path().exists() {
+        return Err(Error::config(format!(
+            "'{source}' already exists — declare it with `schema.source: {source}` \
+             instead of re-scaffolding"
+        )));
+    }
+
+    // 1. The starter schema source.
+    let vars = Vars {
+        name: manifest.name().to_string(),
+        pascal: pascal.clone(),
+        upper: pascal.to_ascii_uppercase(),
+        ident: to_ident(manifest.name()),
+        extension: String::new(),
+    };
+    if let Some(parent) = schema_abs.parent() {
+        std::fs::create_dir_all(parent.as_std_path())
+            .map_err(|e| Error::io(parent.to_string(), e))?;
+    }
+    let schema_src = cohosted_schema_starter(&vars, class, codeless);
+    std::fs::write(schema_abs.as_std_path(), schema_src)
+        .map_err(|e| Error::io(schema_abs.to_string(), e))?;
+
+    // 2. Wire the manifest, textually (manifests carry the user's comments, so
+    // a parse→re-serialize round-trip would destroy them). The edited text is
+    // re-parsed and cross-checked before anything is written back.
+    let manifest_path = bundle.path(crate::PLUGIN_MANIFEST);
+    let original = std::fs::read_to_string(manifest_path.as_std_path())
+        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+    let provides_entry = format!("usd-schema:{schema_type}");
+    let edited = append_schema_source(&insert_provides_entry(&original, &provides_entry), source);
+
+    let reparsed = crate::PluginManifest::parse(&edited).map_err(|e| {
+        Error::config(format!(
+            "could not update {} automatically ({e}); add by hand:\n\
+             provides:\n  - {provides_entry}\nschema:\n  source: {source}",
+            crate::PLUGIN_MANIFEST
+        ))
+    })?;
+    let wired = reparsed.schema_provides().iter().any(|t| *t == schema_type)
+        && reparsed.schema.as_ref().and_then(|s| s.source.as_deref()) == Some(source);
+    if !wired {
+        return Err(Error::config(format!(
+            "could not update {} automatically; add by hand:\n\
+             provides:\n  - {provides_entry}\nschema:\n  source: {source}",
+            crate::PLUGIN_MANIFEST
+        )));
+    }
+    std::fs::write(manifest_path.as_std_path(), edited)
+        .map_err(|e| Error::io(manifest_path.to_string(), e))?;
+
+    Ok(AddedSchema {
+        schema_type,
+        source: Utf8PathBuf::from(source),
+        codeless,
+    })
+}
+
+/// A source class name: a C++-identifier-shaped PascalCase token, e.g.
+/// `API` or `MetadataAPI`. usdGenSchema turns it into a class name, so path
+/// or namespace characters must be rejected.
+fn validate_class(class: &str) -> Result<()> {
+    let ok = class
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_uppercase())
+        .unwrap_or(false)
+        && class.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::config(format!(
+            "invalid schema class '{class}': use a PascalCase identifier (letters, digits, '_'), \
+             e.g. API or MetadataAPI"
+        )))
+    }
+}
+
+/// The starter `schema.usda` for a co-located schema.
+fn cohosted_schema_starter(vars: &Vars, class: &str, codeless: bool) -> String {
+    let skip = if codeless { "true" } else { "false" };
+    let mode = if codeless {
+        "Because skipCodeGeneration = true, the build merges only the generated\n    \
+         resources (plugInfo.json Types + generatedSchema.usda); no C++ is added."
+    } else {
+        "The generated typed C++ API is compiled into the existing plugin\n    \
+         library; the schema Types are merged into the bundle's plugInfo.json."
+    };
+    let s = format!(
+        "\
+#usda 1.0
+(
+    \"\"\"
+    {{{{Name}}}}{class} - a co-located OpenUSD API schema for the {{{{name}}}}
+    plugin, scaffolded by `ost plugin schema add`.
+
+    `ost plugin build` runs usdGenSchema on this file in the composed runtime
+    session environment. {mode}
+    \"\"\"
+    subLayers = [
+        @usd/schema.usda@
+    ]
+)
+
+over \"GLOBAL\" (
+    customData = {{
+        string libraryName      = \"{{{{name}}}}\"
+        string libraryPath      = \".\"
+        string libraryPrefix    = \"{{{{Name}}}}\"
+        string tokensPrefix     = \"{{{{Name}}}}\"
+        bool skipCodeGeneration = {skip}
+    }}
+)
+{{
+}}
+
+class \"{class}\" (
+    inherits = </APISchemaBase>
+    customData = {{
+        token apiSchemaType = \"singleApply\"
+    }}
+    doc = \"\"\"A single-apply API schema. Replace the example property with the
+    real data contract this schema defines.\"\"\"
+)
+{{
+    uniform token {{{{ident}}}}:example = \"\" (
+        doc = \"Example attribute. Replace with the schema's real properties.\"
+    )
+}}
+"
+    );
+    vars.apply(&s)
+}
+
+/// Insert an entry into the manifest's top-level `provides:` list, preserving
+/// the rest of the text (comments included). Creates the block when absent.
+fn insert_provides_entry(src: &str, entry: &str) -> String {
+    let mut out = String::with_capacity(src.len() + entry.len() + 16);
+    let mut inserted = false;
+    for line in src.lines() {
+        if !inserted && line.starts_with("provides:") {
+            let rest = line["provides:".len()..].trim();
+            if let Some(inline) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+                // Inline list form: `provides: [a, b]` (or empty `[]`).
+                let items = inline.trim();
+                let joined = if items.is_empty() {
+                    entry.to_string()
+                } else {
+                    format!("{items}, {entry}")
+                };
+                out.push_str(&format!("provides: [{joined}]\n"));
+                inserted = true;
+                continue;
+            }
+            // Block form: prepend the entry as the first list item (order is
+            // not semantic), so we never have to find the end of the list.
+            out.push_str(line);
+            out.push('\n');
+            out.push_str(&format!("  - {entry}\n"));
+            inserted = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !inserted {
+        out.push_str(&format!("provides:\n  - {entry}\n"));
+    }
+    out
+}
+
+/// Declare `schema.source` in the manifest text: extend an existing top-level
+/// `schema:` block, or append one.
+fn append_schema_source(src: &str, source: &str) -> String {
+    let mut out = String::with_capacity(src.len() + source.len() + 24);
+    let mut inserted = false;
+    for line in src.lines() {
+        out.push_str(line);
+        out.push('\n');
+        if !inserted && line.starts_with("schema:") {
+            out.push_str(&format!("  source: {source}\n"));
+            inserted = true;
+        }
+    }
+    if !inserted {
+        out.push_str(&format!("schema:\n  source: {source}\n"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +709,149 @@ mod tests {
                 .iter()
                 .all(|d| d.id != "schema.library_prefix"),
             "fresh scaffold should not warn about repeated libraryPrefix"
+        );
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn provides_entry_insertion_handles_block_inline_and_absent_forms() {
+        // Block form: the entry is prepended to the list, comments preserved.
+        let block = "plugin:\n  name: toy\n# keep me\nprovides:\n  - usd-fileformat:toy\nusd:\n  plug_info: p\n";
+        let edited = insert_provides_entry(block, "usd-schema:ToyAPI");
+        assert!(edited.contains("# keep me"));
+        assert!(edited.contains("provides:\n  - usd-schema:ToyAPI\n  - usd-fileformat:toy"));
+
+        // Inline form, non-empty and empty.
+        let inline = insert_provides_entry("provides: [a, b]\n", "c");
+        assert_eq!(inline, "provides: [a, b, c]\n");
+        let empty = insert_provides_entry("provides: []\n", "c");
+        assert_eq!(empty, "provides: [c]\n");
+
+        // Absent: a new block is appended.
+        let absent = insert_provides_entry("plugin:\n  name: toy\n", "c");
+        assert!(absent.ends_with("provides:\n  - c\n"));
+    }
+
+    #[test]
+    fn schema_source_append_extends_or_creates_the_section() {
+        let with = append_schema_source("schema:\n  codeless: true\n", "schema/schema.usda");
+        assert!(with.contains("schema:\n  source: schema/schema.usda\n  codeless: true"));
+        let without = append_schema_source("plugin:\n  name: toy\n", "schema/schema.usda");
+        assert!(without.ends_with("schema:\n  source: schema/schema.usda\n"));
+    }
+
+    #[test]
+    fn schema_add_wires_a_fileformat_bundle() {
+        let dir = unique_tmp("schema-add");
+        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+
+        let added =
+            add_cohosted_schema(&dir, "API", "schema/schema.usda", false).expect("schema add");
+        assert_eq!(added.schema_type, "ToyAPI");
+
+        // The bundle reloads with the schema wired: the provides gate that
+        // drives the co-hosted build flow, and the declared source path.
+        let bundle = crate::Bundle::load(&dir).expect("reload");
+        assert_eq!(bundle.manifest.schema_provides(), vec!["ToyAPI"]);
+        let (src, declared) = bundle.schema_source();
+        assert!(declared);
+        assert_eq!(src, bundle.root.join("schema/schema.usda"));
+        assert!(src.as_std_path().is_file());
+
+        // Comments in the template manifest survived the textual edit.
+        let manifest_src =
+            std::fs::read_to_string(dir.join("openstrata.plugin.yaml").as_std_path()).unwrap();
+        assert!(manifest_src.contains("# OpenStrata plugin bundle manifest."));
+
+        // Compiled by default; the class avoids the double-prefix footgun and
+        // the file stays ASCII (locale-safe for usdGenSchema).
+        let schema = std::fs::read_to_string(src.as_std_path()).unwrap();
+        assert!(schema.contains("bool skipCodeGeneration = false"));
+        assert!(schema.contains("string libraryPrefix    = \"Toy\""));
+        assert!(schema.contains("class \"API\""));
+        assert!(schema.is_ascii());
+        assert!(!schema.contains("{{"), "placeholder left in schema.usda");
+
+        // Idempotence: the same type cannot be added twice.
+        let err = add_cohosted_schema(&dir, "API", "other.usda", false).unwrap_err();
+        assert!(err.to_string().contains("already provides"), "{err}");
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn schema_add_refusals() {
+        // A usd-schema bundle is refused (it IS the schema).
+        let dir = unique_tmp("schema-add-kind");
+        scaffold(PluginKind::UsdSchema, "vrm", None, &dir).expect("scaffold");
+        let err = add_cohosted_schema(&dir, "API", "schema/schema.usda", false).unwrap_err();
+        assert!(err.to_string().contains("already is a usd-schema"), "{err}");
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+
+        // Class and source shapes are validated.
+        let dir = unique_tmp("schema-add-shape");
+        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+        assert!(add_cohosted_schema(&dir, "api", "schema/schema.usda", false).is_err());
+        assert!(add_cohosted_schema(&dir, "API", "../outside.usda", false).is_err());
+        assert!(add_cohosted_schema(&dir, "API", "schema/schema.txt", false).is_err());
+
+        // Codeless writes skipCodeGeneration = true.
+        let added =
+            add_cohosted_schema(&dir, "API", "schema/schema.usda", true).expect("codeless add");
+        assert!(added.codeless);
+        let schema = std::fs::read_to_string(dir.join("schema/schema.usda").as_std_path()).unwrap();
+        assert!(schema.contains("bool skipCodeGeneration = true"));
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn schema_add_refuses_existing_cohosted_schema_without_redirecting_source() {
+        let dir = unique_tmp("schema-add-existing-cohost");
+        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+
+        let manifest_path = dir.join("openstrata.plugin.yaml");
+        let manifest = std::fs::read_to_string(manifest_path.as_std_path()).unwrap();
+        std::fs::write(
+            manifest_path.as_std_path(),
+            manifest.replace(
+                "provides:\n  - usd-fileformat:toy",
+                "provides:\n  - usd-fileformat:toy\n  - usd-schema:ToyMetadataAPI",
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("schema.usda").as_std_path(), "#usda 1.0\n").unwrap();
+
+        let err = add_cohosted_schema(&dir, "API", "schema/schema.usda", false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("already provides co-hosted schema type(s): usd-schema:ToyMetadataAPI"),
+            "{err}"
+        );
+        assert!(
+            !dir.join("schema/schema.usda").as_std_path().exists(),
+            "schema add must not redirect an existing conventional schema source"
+        );
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn schema_add_refuses_conventional_schema_source_before_writing_default_source() {
+        let dir = unique_tmp("schema-add-existing-source");
+        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+        std::fs::write(dir.join("schema.usda").as_std_path(), "#usda 1.0\n").unwrap();
+
+        let err = add_cohosted_schema(&dir, "API", "schema/schema.usda", false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("already has a conventional schema source"),
+            "{err}"
+        );
+        assert!(
+            !dir.join("schema/schema.usda").as_std_path().exists(),
+            "schema add must not write a new default source when schema.usda already exists"
         );
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();

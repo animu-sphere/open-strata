@@ -92,6 +92,10 @@ ost runtime show cy2026 --profile usd      # manifest: source, prefix, deps, dig
 ost runtime validate cy2026 --profile usd  # schema/digest/layout (+ usdcat/pxr if real)
 ost runtime explain cy2026 --profile lookdev   # capability -> extension graph
 ost runtime pull cy2026 --profile usd --force  # re-pull / rebuild
+
+# When an adopted install moved underneath its manifest (`show`/`validate`
+# report openusd-version-drift), one step re-adopts from the recorded USD root:
+ost runtime repair cy2026 --profile usd
 ```
 
 Source selection also reads env fallbacks: `OST_USD_ROOT` (adopt), `OST_USD_SRC`
@@ -191,6 +195,14 @@ ost plugin run toy --with ./plugins/other --target cy2026 --profile usd -- usdca
 ost plugin view      toy tests/fixtures/basic.toy --target cy2026 --profile usd
 ost plugin test-view toy tests/fixtures/basic.toy --target cy2026 --profile usd
 ost plugin test toy --up-to 6 --target cy2026 --profile usd   # full pyramid incl. L6
+
+# co-locate a USD schema in the existing bundle: scaffolds schema/schema.usda
+# and wires the manifest (provides: usd-schema:ToyAPI + schema.source); the next
+# `ost plugin build` runs usdGenSchema, links the generated C++ into the same
+# plugin library, and merges the schema Types into plugInfo.json
+ost plugin schema add toy
+ost plugin schema add toy --class MetadataAPI       # public type ToyMetadataAPI
+ost plugin schema add toy --codeless                # resource-only (no C++)
 
 # package a built plugin as a target-specific binary bundle artifact
 ost plugin package toy --target cy2026 --profile usd

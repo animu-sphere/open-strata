@@ -79,12 +79,17 @@ them. Each release is a coherent slice, not a phase boundary.
     gates, and renders them into a scheduled/dispatch workflow. PR CI keeps
     cheap mock/static checks; the generated matrix runs real runtime/plugin
     cells from the registry.
-  - **Dogfooding #7 follow-ups:** make the compiled co-located schema path
-    product-shaped (command or manifest UX, bundle-relative schema source paths
-    such as `schema/schema.usda`, generated C++ linked into the existing plugin
-    library, `Types` merge, `generatedSchema.usda` staging, export define);
-    improve adopted-runtime drift repair UX (`--fix`, `repair`, or exact
-    copy-paste re-adopt command); re-check macOS source-build ergonomics.
+  - **Dogfooding #7 follow-ups:** ✅ the compiled co-located schema path is
+    product-shaped — `ost plugin schema add` scaffolds a starter
+    `schema/schema.usda` (compiled by default, `--codeless` opt-out) and wires
+    the manifest (`provides: usd-schema:<Type>` + the new bundle-relative
+    `schema.source`), feeding the existing build flow (usdGenSchema, generated
+    C++ linked into the plugin library, `Types` merge, `generatedSchema.usda`
+    staging, export define); ✅ adopted-runtime drift repair UX —
+    `ost runtime repair` re-adopts a `local` runtime from its recorded USD root
+    in one step, and every drift report (`show` human/JSON, `validate`) now
+    prints the exact copy-paste fix per source. Still ⬜ (needs a Mac):
+    re-check macOS source-build ergonomics.
   - **Deferred:** OCI layout / ORAS transport, remote hosted registry, Kubernetes
     execution, full Jenkins command surface, and DCC host matrices.
 
@@ -401,6 +406,18 @@ no generator, and the harness models only file-format bundles. Ranked:
   bundle's CTest path carries its own plugin registry. If `usdGenSchema` emits no
   C++ files (for example a `skipCodeGeneration` codeless schema), the flow falls
   back to the resource-only merge path.
+- ✅ **(v0.6.0) First-class co-located schema UX: `ost plugin schema add`.**
+  One command turns an existing non-schema bundle into a schema co-host: it
+  scaffolds a starter schema source (default `schema/schema.usda`; compiled by
+  default, `--codeless` for resource-only; `--class` picks the source class,
+  composed as `<PascalBundleName><Class>` to stay clear of the
+  `schema.library_prefix` double-prefix footgun) and wires the manifest
+  *textually* — `provides: usd-schema:<Type>` plus the new bundle-relative
+  `schema.source` field (validated in-bundle, SEC-002) — preserving the user's
+  comments and re-parsing before writing back. The build flow and the
+  `schema.library_prefix` doctor hint honor `schema.source`; a
+  declared-but-missing source is a configuration error rather than a silent
+  no-op.
 - ✅ **`usdGenSchema` `Types` merge into a co-hosting bundle.** `ost plugin build`
   on a co-hosting bundle (a non-schema kind shipping a `schema.usda` and declaring
   `usd-schema:<Type>`) runs usdGenSchema to a staging dir and **merges** the
@@ -460,7 +477,12 @@ first, keep the compiled schema flow as stretch unless it stays small.
   manifest/install drift in both human output and `--json`; and `runtime validate`
   fails stale manifests with an `openusd-version-drift` check. Repair stays
   explicit: re-pull with `--force --from-usd` so the manifest digest/provenance is
-  refreshed deliberately.
+  refreshed deliberately. **(v0.6.0)** one-step repair landed: `ost runtime
+  repair` re-adopts a `local` runtime from its recorded USD root (re-reads
+  `pxr.h`, re-probes the layout, resets validation to pending), and every drift
+  report prints the exact per-source fix command — `repair` for adopted
+  runtimes, the pinned `--from-artifact <digest>` re-pull for artifact
+  runtimes, a `--build` re-pull for built ones.
 - ✅ **`init --template` naming + discoverability.** `plugin-workspace` was hard to
   find: no `ost workspace` command reinforces the term; the `init --template`
   choices mix axes (`cpp-library` = language, `usd-plugin` = domain,
