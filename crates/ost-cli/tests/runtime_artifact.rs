@@ -143,6 +143,32 @@ fn export_refuses_a_mock_runtime() {
 }
 
 #[test]
+fn export_dist_refuses_non_empty_directory_without_deleting_it() {
+    let sb = Sandbox::new("dist-safe");
+    stdout_json(&sb.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
+    sb.promote_mock_to_build();
+
+    let dist = sb.base.join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    let sentinel = dist.join("keep.txt");
+    std::fs::write(&sentinel, b"do not delete").unwrap();
+
+    let out = sb.ost(&[
+        "--json",
+        "runtime",
+        "export",
+        "cy2026",
+        "--profile",
+        "usd",
+        "--dist",
+        path_str(&dist),
+    ]);
+    let v = error_json(&out, 2);
+    assert_eq!(v["error"]["code"], "INVALID_ARGUMENT");
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"do not delete");
+}
+
+#[test]
 fn export_handoff_and_pull_from_artifact_roundtrip() {
     let sb1 = Sandbox::new("export");
     stdout_json(&sb1.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));

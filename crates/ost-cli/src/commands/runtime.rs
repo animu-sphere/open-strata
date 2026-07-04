@@ -912,16 +912,36 @@ fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Res
 
     let store = Store::discover();
     let staging_default = store.cache().join("runtime-export").join(&manifest.id);
-    let dist_dir = match dist {
-        Some(d) => Utf8PathBuf::from(d),
-        None => staging_default.clone(),
+    let dist_dir = if let Some(d) = dist {
+        let dir = Utf8PathBuf::from(d);
+        if dir.as_std_path().exists() {
+            if !dir.as_std_path().is_dir() {
+                return Err(Error::usage(format!(
+                    "--dist path '{dir}' exists but is not a directory"
+                )));
+            }
+            let mut entries =
+                std::fs::read_dir(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))?;
+            if let Some(entry) = entries.next() {
+                entry.map_err(|e| Error::io(dir.to_string(), e))?;
+                return Err(Error::usage(format!(
+                    "refusing to write runtime export into non-empty --dist directory '{dir}'"
+                )));
+            }
+        } else {
+            std::fs::create_dir_all(dir.as_std_path())
+                .map_err(|e| Error::io(dir.to_string(), e))?;
+        }
+        dir
+    } else {
+        if staging_default.as_std_path().exists() {
+            std::fs::remove_dir_all(staging_default.as_std_path())
+                .map_err(|e| Error::io(staging_default.to_string(), e))?;
+        }
+        std::fs::create_dir_all(staging_default.as_std_path())
+            .map_err(|e| Error::io(staging_default.to_string(), e))?;
+        staging_default.clone()
     };
-    if dist_dir.as_std_path().exists() {
-        std::fs::remove_dir_all(dist_dir.as_std_path())
-            .map_err(|e| Error::io(dist_dir.to_string(), e))?;
-    }
-    std::fs::create_dir_all(dist_dir.as_std_path())
-        .map_err(|e| Error::io(dist_dir.to_string(), e))?;
 
     let archive_name = format!("{}.tar.zst", manifest.id);
     let archive_path = dist_dir.join(&archive_name);
