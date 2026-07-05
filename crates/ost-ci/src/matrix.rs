@@ -403,12 +403,12 @@ impl SupportMatrix {
             .unwrap_or_else(|| cell.host.runs_on())
     }
 
-    /// Whether a cell resolves to a GitHub-hosted runner profile.
+    /// Whether a cell resolves to GitHub-hosted infrastructure.
     pub fn is_hosted(&self, cell: &SupportCell) -> bool {
-        cell.runner
-            .as_deref()
-            .and_then(|name| self.runners.get(name))
-            .is_some_and(RunnerProfile::is_hosted)
+        match cell.runner.as_deref() {
+            Some(name) => self.runners.get(name).is_some_and(RunnerProfile::is_hosted),
+            None => cell.host.labels.is_empty(),
+        }
     }
 
     /// Cells that build from checked-out source (`pull_request` / `main`).
@@ -587,10 +587,12 @@ cells:
         // up_to defaults to 5; labels default to the hosted runner.
         assert_eq!(m.cells[1].up_to, 5);
         assert_eq!(m.cells[1].host.runs_on(), vec!["windows-latest"]);
+        assert!(m.is_hosted(&m.cells[1]));
         assert_eq!(
             m.cells[0].host.runs_on(),
             vec!["self-hosted".to_string(), "linux".to_string()]
         );
+        assert!(!m.is_hosted(&m.cells[0]));
     }
 
     #[test]

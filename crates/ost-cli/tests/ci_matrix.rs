@@ -114,12 +114,12 @@ fn init_validate_generate_lifecycle() {
     ]);
     assert!(out.status.success());
     let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).unwrap();
-    let include = &doc["jobs"]["cell"]["strategy"]["matrix"]["include"];
+    let include = &doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"];
     assert_eq!(include.as_sequence().unwrap().len(), 1);
     assert_eq!(include[0]["name"], "example-linux-cy2026-usd");
     // A column-0 `steps:` would still parse (as a stray top-level key), so
     // assert the steps block actually sits under the job.
-    assert!(!doc["jobs"]["cell"]["steps"]
+    assert!(!doc["jobs"]["scheduled"]["steps"]
         .as_sequence()
         .unwrap()
         .is_empty());
@@ -385,7 +385,7 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     // The generated workflow pins the same digests into the include entry.
     let out = sb.ost(&["ci", "generate", "github", "--stdout"]);
     let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).unwrap();
-    let entry = &doc["jobs"]["cell"]["strategy"]["matrix"]["include"][0];
+    let entry = &doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"][0];
     assert_eq!(entry["runtime_artifact"], runtime_digest.as_str());
     assert_eq!(entry["plugin_artifact"], plugin_digest.as_str());
     assert_eq!(entry["up_to"], 4);

@@ -16,7 +16,7 @@
 //! is pinned to a full commit SHA (SEC-004), reusing the SHAs this repository
 //! itself pins.
 
-use crate::matrix::{SupportCell, SupportMatrix};
+use crate::matrix::{Lane, SupportCell, SupportMatrix};
 
 /// Default path of the generated support-matrix workflow.
 pub const WORKFLOW_PATH: &str = ".github/workflows/ost-support-matrix.yml";
@@ -100,16 +100,38 @@ pub fn generate_support(matrix: &SupportMatrix) -> Option<String> {
     if cells.is_empty() {
         return None;
     }
-    let mut include = String::new();
-    for cell in cells {
-        let plugin = cell
-            .plugin_artifact
-            .as_deref()
-            .expect("validated: support cells carry a plugin artifact");
-        include.push_str(&include_entry(
+
+    let scheduled: Vec<&SupportCell> = cells
+        .iter()
+        .filter(|c| c.lane == Lane::Scheduled)
+        .copied()
+        .collect();
+    let dispatch: Vec<&SupportCell> = cells
+        .iter()
+        .filter(|c| c.lane == Lane::WorkflowDispatch)
+        .copied()
+        .collect();
+
+    let mut on = String::new();
+    if !dispatch.is_empty() {
+        on.push_str("  workflow_dispatch:\n");
+    }
+    if !scheduled.is_empty() {
+        on.push_str(
+            "  schedule:\n    # Weekly; real-runtime cells are too heavy for per-PR CI (which should\n    # keep its cheap mock/static checks).\n    - cron: \"0 3 * * 1\"\n",
+        );
+    }
+
+    let mut jobs = String::new();
+    if !scheduled.is_empty() {
+        jobs.push_str(&support_job(matrix, "scheduled", "schedule", &scheduled));
+    }
+    if !dispatch.is_empty() {
+        jobs.push_str(&support_job(
             matrix,
-            cell,
-            &format!("            plugin_artifact: {plugin}\n"),
+            "dispatch",
+            "workflow_dispatch",
+            &dispatch,
         ));
     }
 
@@ -126,17 +148,34 @@ pub fn generate_support(matrix: &SupportMatrix) -> Option<String> {
 name: ost support matrix
 
 on:
-  workflow_dispatch:
-  schedule:
-    # Weekly; real-runtime cells are too heavy for per-PR CI (which should
-    # keep its cheap mock/static checks).
-    - cron: \"0 3 * * 1\"
-
+{on}
 permissions:
   contents: read
 
 jobs:
-  cell:
+{jobs}"
+    ))
+}
+
+/// One support-matrix job for a single support lane.
+fn support_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportCell]) -> String {
+    let mut include = String::new();
+    for cell in cells {
+        let plugin = cell
+            .plugin_artifact
+            .as_deref()
+            .expect("validated: support cells carry a plugin artifact");
+        include.push_str(&include_entry(
+            matrix,
+            cell,
+            &format!("            plugin_artifact: {plugin}\n"),
+        ));
+    }
+
+    format!(
+        "\
+\x20 {id}:
+    if: github.event_name == '{event}'
     name: ${{{{ matrix.name }}}}
     runs-on: ${{{{ matrix.runs_on }}}}
     strategy:
@@ -168,7 +207,7 @@ jobs:
           name: report-${{{{ matrix.name }}}}
           path: plugin-under-test/.strata/reports/
 "
-    ))
+    )
 }
 
 /// The shared step list of a source-CI job.
@@ -245,12 +284,12 @@ pub fn generate_source(matrix: &SupportMatrix) -> Option<String> {
     }
     let pr: Vec<&SupportCell> = source
         .iter()
-        .filter(|c| c.lane == crate::matrix::Lane::PullRequest)
+        .filter(|c| c.lane == Lane::PullRequest)
         .copied()
         .collect();
     let mainline: Vec<&SupportCell> = source
         .iter()
-        .filter(|c| c.lane == crate::matrix::Lane::Main)
+        .filter(|c| c.lane == Lane::Main)
         .copied()
         .collect();
 
@@ -385,7 +424,7 @@ mod tests {
 
         // It parses as YAML and carries an explicit include per cell.
         let doc: serde_yaml::Value = serde_yaml::from_str(&a).unwrap();
-        let include = &doc["jobs"]["cell"]["strategy"]["matrix"]["include"];
+        let include = &doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"];
         let entries = include.as_sequence().unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["name"], "linux-usd-toy");
@@ -397,23 +436,29 @@ mod tests {
         // Labels win; a label-less cell falls back to the hosted runner.
         assert_eq!(entries[0]["runs_on"].as_sequence().unwrap().len(), 2);
         assert_eq!(entries[1]["runs_on"][0], "windows-latest");
+        assert_eq!(entries[1]["hosted"], true);
 
         // `steps` must live under the job. A column-0 `steps:` (the v0.6.0
         // string-continuation bug) still *parses* as YAML — it just becomes a
         // stray top-level key — so assert placement, not merely parseability.
-        let steps = doc["jobs"]["cell"]["steps"].as_sequence().unwrap();
+        let steps = doc["jobs"]["scheduled"]["steps"].as_sequence().unwrap();
         assert_eq!(steps.len(), 7);
         assert!(doc.get("steps").is_none(), "no stray top-level steps key");
 
         // Never a Cartesian product: only `include`, no free axes.
-        let m = doc["jobs"]["cell"]["strategy"]["matrix"]
+        let m = doc["jobs"]["scheduled"]["strategy"]["matrix"]
             .as_mapping()
             .unwrap();
         assert_eq!(m.len(), 1, "matrix has only the include list");
 
-        // Scheduled/dispatch, not per-PR; fail-fast off; actions SHA-pinned.
+        // Scheduled, not per-PR; fail-fast off; actions SHA-pinned.
         assert!(doc["on"]["schedule"].is_sequence());
-        assert_eq!(doc["jobs"]["cell"]["strategy"]["fail-fast"], false);
+        assert!(doc["on"].get("workflow_dispatch").is_none());
+        assert_eq!(
+            doc["jobs"]["scheduled"]["if"],
+            "github.event_name == 'schedule'"
+        );
+        assert_eq!(doc["jobs"]["scheduled"]["strategy"]["fail-fast"], false);
         assert!(a.contains("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"));
         assert!(!a.contains("@v"), "no mutable action tags");
 
@@ -478,5 +523,41 @@ mod tests {
             .contains_key(serde_yaml::Value::from("push")));
         assert_eq!(doc["jobs"]["mainline"]["if"], "github.event_name == 'push'");
         assert!(doc["jobs"].get("pr").is_none());
+    }
+
+    #[test]
+    fn support_lanes_are_event_filtered() {
+        let mut m = matrix();
+        m.cells[1].lane = Lane::WorkflowDispatch;
+        let a = generate_support(&m).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&a).unwrap();
+
+        assert!(doc["on"]
+            .as_mapping()
+            .unwrap()
+            .contains_key(serde_yaml::Value::from("schedule")));
+        assert!(doc["on"]
+            .as_mapping()
+            .unwrap()
+            .contains_key(serde_yaml::Value::from("workflow_dispatch")));
+        assert_eq!(
+            doc["jobs"]["scheduled"]["if"],
+            "github.event_name == 'schedule'"
+        );
+        assert_eq!(
+            doc["jobs"]["dispatch"]["if"],
+            "github.event_name == 'workflow_dispatch'"
+        );
+
+        let scheduled = doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"]
+            .as_sequence()
+            .unwrap();
+        let dispatch = doc["jobs"]["dispatch"]["strategy"]["matrix"]["include"]
+            .as_sequence()
+            .unwrap();
+        assert_eq!(scheduled.len(), 1);
+        assert_eq!(scheduled[0]["name"], "linux-usd-toy");
+        assert_eq!(dispatch.len(), 1);
+        assert_eq!(dispatch[0]["name"], "windows-usd-toy");
     }
 }
