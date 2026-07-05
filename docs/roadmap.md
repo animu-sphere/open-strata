@@ -588,58 +588,72 @@ registered runner) settled the CI model: `openstrata.ci.yaml` + named runner
 profiles + digest-pinned artifacts is the portable contract; GitHub Actions is
 its first renderer, not the source of CI semantics. Ranked:
 
-- ⬜ **P0 — `ost ci generate github` emits invalid YAML.** The workflow
-  template joins the rendered `matrix.include` block with a `\` string-literal
+- ✅ **P0 — `ost ci generate github` emits invalid YAML.** The workflow
+  template joined the rendered `matrix.include` block with a `\` string-literal
   continuation ([github.rs](../crates/ost-ci/src/github.rs)); Rust's
   continuation also strips the next line's leading whitespace, so `steps:`
-  lands at column 0 instead of under `jobs.cell`. Downstream repos cannot
-  commit the generated workflow without hand-patching. Fix and add a
-  parse-the-generated-YAML assertion to the e2e test so the renderer cannot
-  regress to invalid output.
-- ⬜ **P0 — `strata.lock` extension versions don't match `runtime show`.**
-  `build_lock` ([lock.rs](../crates/ost-cli/src/commands/lock.rs)) resolves
+  landed at column 0 instead of under `jobs.cell`. Fixed with an
+  `\x20`-protected indent; the unit test and the e2e now assert *placement*
+  (`jobs.cell.steps` non-empty, no stray top-level key) — a column-0 `steps:`
+  still parses as YAML, so a parse-only assertion misses the regression.
+- ✅ **P0 — `strata.lock` extension versions don't match `runtime show`.**
+  `build_lock` ([lock.rs](../crates/ost-cli/src/commands/lock.rs)) resolved
   extensions from the static catalog (`ost_extension::resolve`), not from the
-  pulled runtime's manifest — an adopted OpenUSD 26.08 runtime locks as the
-  catalog's certified `25.05.01`, and `ost lock --check` still reports
-  `up_to_date: true` because `--check` re-derives from the same source. Record
-  the runtime manifest's real extension versions (or omit versions that cannot
-  be derived from the same source of truth as `runtime show`) so the lockfile
-  is safe as a CI gate.
-- ⬜ **P1 — `ost plugin package` reruns are not idempotent.** A second package
-  on Windows fails with access-denied (os error 5) at the reused
+  pulled runtime's manifest — an adopted OpenUSD 26.08 runtime locked as the
+  catalog's certified `25.05.01`, and `ost lock --check` still reported
+  `up_to_date: true` because `--check` re-derived from the same source. The
+  lock now pins the pulled runtime manifest's extension records (the same
+  source of truth `runtime show` reports); catalog resolution remains only as
+  the pre-pull fallback. A lifecycle e2e reproduces the drift and asserts
+  `--check` fails until a re-lock records the real version.
+- ✅ **P1 — `ost plugin package` reruns are not idempotent.** A second package
+  on Windows failed with access-denied (os error 5) at the reused
   `.strata/targets/<id>/package-stage`
-  ([plugin.rs](../crates/ost-cli/src/commands/plugin.rs)). Clean or replace the
-  stage safely per invocation (fresh staging dir, or readonly-attribute-
-  tolerant removal before restaging).
-- ⬜ **P1 — placeholder digests pass validation too quietly.** `ost ci init`
+  ([plugin.rs](../crates/ost-cli/src/commands/plugin.rs)): staging copies with
+  `fs::copy`, which preserves the source's read-only attribute, and Windows
+  refuses to delete read-only files. The stage reset now clears the attribute
+  recursively and retries once (Windows-only; other platforms delete by
+  parent-dir permission), unit-tested with a read-only staged file.
+- ✅ **P1 — placeholder digests pass validation too quietly.** `ost ci init`
   writes all-zero example digests and `ost ci validate` (without `--resolve`)
-  accepts them silently — easy to mistake for a usable matrix. Warn on
-  `sha256:000…0` placeholders even in syntax-only validation, and have
-  `ci generate github` refuse them unless `--allow-placeholders` is passed.
-- ⬜ **P1 — runner profiles + lanes in `openstrata.ci.yaml`.** Cells stop
-  carrying raw host labels and instead reference named `runners:` profiles —
-  `kind: github-hosted` (fixed image, e.g. `windows-2022`, `cost_class:
-  metered`, billing acknowledgement) or `kind: self-hosted` (labels,
-  capabilities, trust) — and declare a `lane` (`pull_request` / `main` /
-  `scheduled` / `workflow_dispatch`). The GitHub renderer maps profiles to
-  `runs-on`; support cells stay explicit support claims, never an inferred
-  Cartesian product; `workflow_dispatch` accepts approved choices only (no
-  arbitrary runner labels, commands, or artifact URLs).
-- ⬜ **P1 — source-CI lane: GitHub-hosted SDK build jobs.** Generate a PR
-  workflow that runs without self-hosted seeding: checkout → install/restore
-  `ost` → `ost ci validate` → `ost lock --check` → `ost artifact verify` +
-  `ost runtime pull --from-artifact <digest>` (a self-contained runtime SDK
-  artifact) → `ost plugin build` → `ost plugin test --up-to <level>` →
-  `ost plugin package` (never publish) → upload reports. The 0.6.0
-  artifact-seeded workflow remains the scheduled **support** lane for real
-  OpenUSD installs, DCC hosts, and GPU validation on self-hosted runners.
-- ⬜ **P2 — hosted-runner cost visibility + fork-PR safety.** `ost ci validate`
-  warns when a `github-hosted` profile lacks billing acknowledgement (error for
-  publish-capable cells); generated workflows emit a notice before
-  hosted-runner work starts. Generated PR workflows must never publish/promote
-  artifacts, expose secrets, target privileged self-hosted runners, or accept
-  user-supplied `runs-on`/commands/URLs; fork PRs are build-only unless a
-  maintainer re-runs a protected lane.
+  accepted them silently. `validate` now warns per hit (human `WARNING:` lines
+  + structured `CI_PLACEHOLDER_DIGEST` warnings in the `--json` envelope's
+  `warnings` array — its first real use), and `ci generate github` refuses a
+  placeholder matrix with the stable code `CI_PLACEHOLDER_DIGESTS` (exit 5)
+  unless `--allow-placeholders` is passed.
+- ✅ **P1 — runner profiles + lanes in `openstrata.ci.yaml`.** Cells reference
+  named `runners:` profiles — `kind: github-hosted` (fixed image, e.g.
+  `windows-2022`, optional `billing.acknowledgement`) or `kind: self-hosted`
+  (labels + capability tags) — instead of raw host labels (`host:` stays as
+  the legacy fallback; declaring both is a structural error), and declare a
+  `lane` (`pull_request` / `main` / `scheduled` / `workflow_dispatch`, default
+  `scheduled`) plus a `publish` policy (default `never`; `pull_request` +
+  `publish` is rejected outright). The GitHub renderer maps profiles to
+  `runs-on` (`image` → the image, `labels` → the list); support cells stay
+  explicit support claims, never an inferred Cartesian product. Still ⬜:
+  dispatch-input restrictions are moot for now — the generated workflows
+  accept no `workflow_dispatch` inputs at all.
+- 🚧 **P1 — source-CI lane: GitHub-hosted SDK build jobs.**
+  ✅ `ost ci generate github` now renders `pull_request`/`main` cells into a
+  second workflow (`ost-source-ci.yml`): checkout (SHA-pinned) →
+  `ost ci validate` → `ost artifact verify` + `ost runtime pull
+  --from-artifact <digest>` → `ost plugin build <bundle>` → `ost plugin test
+  --up-to <level>` → `ost plugin package` (never publish, `contents: read`
+  token, no secrets) → upload reports; per-cell `bundle:` selects the bundle
+  in a workspace repo. The 0.6.0 artifact-seeded workflow remains the
+  scheduled **support** lane. Still ⬜: an install/restore-`ost` step (the
+  generated job currently asserts `ost --version`) and hosted-runner registry
+  seeding for the runtime SDK artifact (needs a fetchable artifact transport —
+  Phase 6 remote registry).
+- 🚧 **P2 — hosted-runner cost visibility + fork-PR safety.**
+  ✅ `ost ci validate` warns (`CI_HOSTED_BILLING_UNACKNOWLEDGED`) when a
+  referenced `github-hosted` profile lacks `billing.acknowledgement:
+  required`, and fails (exit 5) when a publish-capable cell sits on such a
+  profile; generated hosted jobs print a `::notice` billing annotation before
+  work starts; generated PR workflows cannot publish (structural gate +
+  no publish step, no secrets, read-only token). Still ⬜: dispatch
+  approved-choice inputs (none generated yet) and trust levels for privileged
+  self-hosted runners (tracks SEC-006 / Phase 6 trust policy).
 - ⬜ **P2 — `ost ci plan --json`.** Preflight execution facts without money
   estimates: hosted job count, operator-managed runner classes, whether billing
   acknowledgement is required, publish-capable job count.
