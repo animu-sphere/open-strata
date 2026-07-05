@@ -659,10 +659,17 @@ its first renderer, not the source of CI semantics. Ranked:
   count, metered vs operator-managed runner classes, the hosted profiles still
   missing billing acknowledgement (`requires_billing_acknowledgement`), and
   the publish-capable job count. Facts only — never a currency estimate.
-- ⬜ **P2 — CI evidence in reports.** Verification reports record the runner
-  profile + resolved backend runner, lane, runtime/plugin digests,
-  target/profile, verification level, validation result, and package
-  provenance — so a support claim is reconstructible from its report.
+- ✅ **P2 — CI evidence in reports.** Generated workflows export a job-level
+  `OST_CI_*` contract (cell, lane, runner profile, `join()`-resolved
+  `runs-on`, pinned runtime/plugin digests) from the include entry, and every
+  report written inside the job — `report.json` and the `--json` envelope, via
+  `ost_plugin::ci_evidence_from_env` — records it as an additive `ci` block,
+  so a support claim is reconstructible from its report. Absent outside CI
+  (no `OST_CI_CELL`), so local reports are unchanged; the published
+  [plugin-report schema](../schemas/plugin-report.schema.json) documents the
+  block. Target/profile, verification level, and validation outcome were
+  already in the report body; package provenance stays in the package
+  `manifest.json`.
 - ✅ **P2 — workspace-level plugin testing.** `ost plugin test --workspace`
   discovers the workspace's plugin bundles (immediate subdirectories +
   `plugins/*`, matching the v0.5.0 CMake discovery), runs the verification
@@ -671,13 +678,15 @@ its first renderer, not the source of CI semantics. Ranked:
   bundle's report + `report_dir`), and fails if any bundle fails. `--with`
   bundles compose into every session; a bundle path together with
   `--workspace` is a usage error.
-- ⬜ **P2 — document the co-located schema migration path for existing
-  bundles.** `ost plugin schema add` covers the scaffold case; existing bundles
-  need the non-scaffold checklist: add `schema.source` + each
-  `usd-schema:<Type>` to `provides`, include `OPENSTRATA_SCHEMA_SOURCES_FILE`
-  from CMake, choose build-tree-only vs committed generated sources, merge
-  generated `Types` into the existing `plugInfo.json` (beside the
-  `SdfFileFormat` type), and stage `generatedSchema.usda` next to it.
+- ✅ **P2 — document the co-located schema migration path for existing
+  bundles.** [co-located-schema-migration.md](co-located-schema-migration.md):
+  when to co-host vs split a schema bundle, the `ost plugin schema add` fast
+  path and the hand-wiring equivalent (`schema.source` + `provides:
+  usd-schema:<Type>`), what the next build automates (usdGenSchema in the
+  session env, the `OPENSTRATA_SCHEMA_SOURCES_FILE` hook, the `Types` merge
+  that preserves the `SdfFileFormat` entry, `generatedSchema.usda` staging),
+  the committed-vs-build-tree decision, the `library_prefix` footgun, L2/L4
+  verification, and the per-target ABI/`LibraryPath` notes.
 
 ## Phase 6 — Artifact registry 🚧
 

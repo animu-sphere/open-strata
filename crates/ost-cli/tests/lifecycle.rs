@@ -52,16 +52,30 @@ impl Sandbox {
 
     /// Run `ost <args>` in the project dir against the sandbox store.
     fn ost(&self, args: &[&str]) -> Output {
-        Command::new(ost_bin())
-            .args(args)
+        self.ost_env(args, &[])
+    }
+
+    /// Like [`ost`], with extra environment variables on the spawned process.
+    fn ost_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Output {
+        let mut cmd = Command::new(ost_bin());
+        cmd.args(args)
             .current_dir(&self.work)
             .env("OST_HOME", &self.home)
             // Don't let a developer's adopt/build env leak into the mock pull.
             .env_remove("OST_USD_ROOT")
             .env_remove("OST_USD_SRC")
             .env_remove("OST_USD_DEPS")
-            .output()
-            .expect("spawn ost")
+            // CI evidence is opt-in per test invocation.
+            .env_remove("OST_CI_CELL")
+            .env_remove("OST_CI_LANE")
+            .env_remove("OST_CI_RUNNER_PROFILE")
+            .env_remove("OST_CI_RUNS_ON")
+            .env_remove("OST_CI_RUNTIME_ARTIFACT")
+            .env_remove("OST_CI_PLUGIN_ARTIFACT");
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
+        cmd.output().expect("spawn ost")
     }
 
     fn work_file(&self, rel: &str) -> PathBuf {
@@ -560,6 +574,55 @@ fn workspace_test_discovers_and_tests_every_bundle() {
         Some(2)
     );
     assert_eq!(sb.ost(&["--json", "plugin", "test"]).status.code(), Some(2));
+}
+
+/// Inside a generated CI job the `OST_CI_*` variables travel into every
+/// written report as a `ci` evidence block, so the report records which
+/// support cell it proves; outside CI the block is absent.
+#[test]
+fn report_records_ci_evidence_from_the_env_contract() {
+    let sb = Sandbox::new("cievidence");
+    init_and_pull(&sb);
+    let scaffold = sb.ost(&["plugin", "new", "usd-schema", "alpha"]);
+    assert!(
+        scaffold.status.success(),
+        "scaffold failed:\n{}",
+        out_text(&scaffold)
+    );
+
+    let digest = format!("sha256:{}", "ab".repeat(32));
+    let out = sb.ost_env(
+        &["--json", "plugin", "test", "alpha", "--up-to", "1"],
+        &[
+            ("OST_CI_CELL", "alpha-pr-windows"),
+            ("OST_CI_LANE", "pull_request"),
+            ("OST_CI_RUNNER_PROFILE", "windows-hosted"),
+            ("OST_CI_RUNS_ON", "windows-2022"),
+            ("OST_CI_RUNTIME_ARTIFACT", digest.as_str()),
+        ],
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], true, "test passes: {v}");
+    let ci = &v["data"]["ci"];
+    assert_eq!(ci["cell"], "alpha-pr-windows");
+    assert_eq!(ci["lane"], "pull_request");
+    assert_eq!(ci["runner_profile"], "windows-hosted");
+    assert_eq!(ci["runtime_artifact"], digest);
+    // The unset variable records as null, not a missing key.
+    assert!(ci["plugin_artifact"].is_null());
+
+    // The on-disk report.json carries the same evidence.
+    let report_dir = v["data"]["report_dir"].as_str().unwrap();
+    let report: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(report_dir).join("report.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(report["ci"]["cell"], "alpha-pr-windows");
+
+    // Outside CI (no OST_CI_CELL) the block is absent entirely.
+    let out = sb.ost(&["--json", "plugin", "test", "alpha", "--up-to", "1"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["data"].get("ci").is_none(), "no ci block outside CI: {v}");
 }
 
 /// `ost lock` pins extensions from the pulled runtime's manifest — the same
