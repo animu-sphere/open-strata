@@ -181,6 +181,34 @@ impl SupportMatrix {
     }
 }
 
+/// Whether a digest is the scaffold's all-zero placeholder. Structurally a
+/// valid `sha256:<64-hex>` reference, but never the digest of real bytes worth
+/// standing behind — cells still carrying it are not usable support claims.
+pub fn is_placeholder_digest(digest: &str) -> bool {
+    digest
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| !hex.is_empty() && hex.bytes().all(|b| b == b'0'))
+}
+
+impl SupportMatrix {
+    /// `"<cell>: <field>"` for every digest still carrying the scaffold's
+    /// all-zero placeholder, in document order.
+    pub fn placeholder_digests(&self) -> Vec<String> {
+        let mut hits = Vec::new();
+        for cell in &self.cells {
+            for (field, value) in [
+                ("runtime_artifact", &cell.runtime_artifact),
+                ("plugin_artifact", &cell.plugin_artifact),
+            ] {
+                if is_placeholder_digest(value) {
+                    hits.push(format!("{}: {field}", cell.name));
+                }
+            }
+        }
+        hits
+    }
+}
+
 /// The commented starter matrix `ost ci init` writes.
 pub fn starter_matrix() -> String {
     format!(
@@ -261,6 +289,33 @@ cells:
         // valid so only the *values* need editing.
         let m = SupportMatrix::from_yaml(&starter_matrix()).unwrap();
         assert_eq!(m.cells.len(), 1);
+        // ... but both placeholders are flagged so validate/generate can warn
+        // or refuse instead of quietly treating the scaffold as usable.
+        assert_eq!(
+            m.placeholder_digests(),
+            vec![
+                "example-linux-cy2026-usd: runtime_artifact",
+                "example-linux-cy2026-usd: plugin_artifact"
+            ]
+        );
+    }
+
+    #[test]
+    fn placeholder_detection_matches_only_all_zero_digests() {
+        assert!(is_placeholder_digest(&format!("sha256:{}", "0".repeat(64))));
+        assert!(!is_placeholder_digest(&format!(
+            "sha256:{}",
+            "ab".repeat(32)
+        )));
+        // A real digest that merely starts with zeros is not a placeholder.
+        assert!(!is_placeholder_digest(&format!(
+            "sha256:0{}",
+            "ab".repeat(31)
+        )));
+        assert!(!is_placeholder_digest("sha256:"));
+        assert!(!is_placeholder_digest("0000"));
+        let m = SupportMatrix::from_yaml(&valid_yaml()).unwrap();
+        assert!(m.placeholder_digests().is_empty());
     }
 
     #[test]

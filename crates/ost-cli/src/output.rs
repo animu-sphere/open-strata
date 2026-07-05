@@ -87,10 +87,16 @@ pub fn success(data: &serde_json::Value) {
 /// for report-style commands (`validate`, `lock --check`, `doctor`). The
 /// command still owns its process exit code (§14.4).
 pub fn report(ok: bool, data: &serde_json::Value) {
+    report_with_warnings(ok, data, &[]);
+}
+
+/// Like [`report`], carrying non-fatal `{code, message}` warnings in the
+/// envelope's `warnings` array (§14.3 — consumers must tolerate new codes).
+pub fn report_with_warnings(ok: bool, data: &serde_json::Value, warnings: &[serde_json::Value]) {
     json(&serde_json::json!({
         "ok": ok,
         "schema": SCHEMA_VERSION,
         "data": data,
-        "warnings": [],
+        "warnings": warnings,
     }));
 }
