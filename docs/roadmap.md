@@ -127,6 +127,13 @@ them. Each release is a coherent slice, not a phase boundary.
     ergonomics re-check, source-CI bootstrapping beyond the existing
     `ost --version` assertion, dispatch inputs, privileged-runner trust policy,
     and DCC host matrices.
+- ✅ **v0.8.0 — packaging reruns survive transient locked stage trees.** A
+  narrow follow-up from dogfooding report #9: `ost plugin package` and
+  `ost package` now reset staging directories with bounded retry, clear
+  read-only entries during cleanup, and fall back to a fresh sibling stage when
+  scanners or indexers still hold old files open. The fallback is visible as a
+  structured `STAGE_FALLBACK` warning, so CI can keep moving without hiding the
+  host condition.
 
 ## Phase 0 — Foundation ✅
 
@@ -696,10 +703,11 @@ its first renderer, not the source of CI semantics. Ranked:
 
 ### Phase 5 — v0.8.0 backlog (from dogfooding report #9, the v0.7.0 CI policy decision)
 
-Report #9 (2026-07-05) adopted `openstrata.ci.yaml` as the downstream repo's CI
-policy surface and verified the v0.7.0 CI/lock fixes; what it carried back is
-the one v0.7.0 fix that didn't hold plus consumer-side blockers (real artifact
-digests, a golden L5 fixture) that are theirs, not ours. Ranked:
+Released in v0.8.0. Report #9 (2026-07-05) adopted `openstrata.ci.yaml` as the
+downstream repo's CI policy surface and verified the v0.7.0 CI/lock fixes; what
+it carried back is the one v0.7.0 fix that didn't hold plus consumer-side
+blockers (real artifact digests, a golden L5 fixture) that are theirs, not ours.
+Ranked:
 
 - ✅ **P1 — `ost plugin package` rerun still hits access-denied (os error 5).**
   The v0.7.0 read-only fix addressed the wrong (or only half the) cause: the
