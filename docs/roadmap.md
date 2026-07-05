@@ -134,6 +134,36 @@ them. Each release is a coherent slice, not a phase boundary.
   scanners or indexers still hold old files open. The fallback is visible as a
   structured `STAGE_FALLBACK` warning, so CI can keep moving without hiding the
   host condition.
+- ⬜ **v0.9.0 — remote artifact transport + hosted source-CI closure.** Planned
+  from dogfooding report #10 (2026-07-05) and the remote-artifact-transport
+  plan ([remote-artifact-transport.md](remote-artifact-transport.md)). Report
+  #10 produced real digests for both lanes on 0.8.0, but the rendered PR lane
+  still cannot run on a GitHub-hosted runner: nothing installs `ost` there,
+  and nothing can seed the ~1.93 GiB runtime SDK artifact into the runner's
+  local-only registry. v0.9.0 closes that bootstrap gap end to end — the
+  plan's P0 slice. Scope (details in the
+  [Phase 6 — v0.9.0 backlog](#phase-6--v090-backlog-from-dogfooding-report-10--the-remote-artifact-transport-plan)):
+  - **Transport abstraction + read-only OCI pull (plan Phase 1):** an
+    `ArtifactTransport` contract with the existing filesystem store as one
+    adapter and a read-only OCI backend (GHCR-class registries) as the second;
+    `ost artifact resolve | pull` with digest-pin enforcement, the full
+    verification chain before an atomic local import, JSON pull evidence, and
+    stable `ARTIFACT_*` error codes.
+  - **CI contract + generated hosted bootstrap (plan Phase 2):**
+    `openstrata.ci.yaml` support lines gain a `runtime.remote` reference
+    (OCI uri + expected digest) beside the artifact digest; `ost ci generate
+    github` renders a pinned, checksum-verified `ost` install step and the
+    digest-pinned `ost artifact pull`, with `actions/cache` keyed by digest as
+    an optional optimization (cache is speed, never correctness); a public
+    E2E fixture repository proves fork-PR / push / cache-miss runs green.
+  - **Runtime export ergonomics (report #10):** a slim/SDK-profile export
+    (`include/lib/bin/plugin`-only) to cut the 14.4 GB adopted-tree payload,
+    multithreaded zstd / a `--level` knob, and progress output for the
+    currently ~52-minute silent `ost runtime export`.
+  - **Deferred (v0.10.0+):** OCI push + protected publish policy + OIDC
+    (plan Phase 3), and trust levels / provenance / SBOM / allowlist
+    hardening (plan Phase 4, tracks SEC-006 and the Phase 6 trust-policy
+    hooks).
 
 ## Phase 0 — Foundation ✅
 
@@ -657,7 +687,10 @@ its first renderer, not the source of CI semantics. Ranked:
   scheduled **support** lane. Still ⬜: an install/restore-`ost` step (the
   generated job currently asserts `ost --version`) and hosted-runner registry
   seeding for the runtime SDK artifact (needs a fetchable artifact transport —
-  Phase 6 remote registry).
+  Phase 6 remote registry). **Both targeted for v0.9.0** — see the
+  [Phase 6 — v0.9.0 backlog](#phase-6--v090-backlog-from-dogfooding-report-10--the-remote-artifact-transport-plan)
+  (report #10 confirmed the generated lane fails at "Check ost is available"
+  on a hosted runner until these land).
 - 🚧 **P2 — hosted-runner cost visibility + fork-PR safety.**
   ✅ `ost ci validate` warns (`CI_HOSTED_BILLING_UNACKNOWLEDGED`) when a
   referenced `github-hosted` profile lacks `billing.acknowledgement:
@@ -781,8 +814,92 @@ Ranked:
   runtime manifests record upstream licenses/notices; published artifacts include
   complete notices and a generated SPDX or CycloneDX SBOM.
 - ⬜ Trust policy hooks: distinguish `local`, `verified`, and `trusted`
-  artifacts; allow release CI to require a minimum trust level.
-- ⬜ OCI layout / registry / oras transport (later)
+  artifacts; allow release CI to require a minimum trust level. Direction now
+  settled in [remote-artifact-transport.md](remote-artifact-transport.md)
+  (integrity vs trust split, initial `local`/`verified`/`trusted` levels);
+  implementation lands with the plan's Phase 4 (post-v0.9.0).
+- 🚧 OCI layout / registry / oras transport — **targeted for v0.9.0** (read-only
+  pull first). Direction:
+  [remote-artifact-transport.md](remote-artifact-transport.md); ranked backlog
+  below.
+
+### Phase 6 — v0.9.0 backlog (from dogfooding report #10 + the remote-artifact-transport plan)
+
+**Targeted for v0.9.0.** Report #10 (2026-07-05) ran the v0.7.0 decision's
+next steps to completion on 0.8.0 — real runtime + plugin digests, a
+placeholder-free `openstrata.ci.yaml`, both workflows rendered, L5 golden
+gate green — and isolated the one remaining blocker: the generated
+`ost-source-ci.yml` fails at "Check ost is available" on any GitHub-hosted
+runner, because `ost` install and runtime-artifact transport are both left to
+the operator. The remote-artifact-transport plan
+([remote-artifact-transport.md](remote-artifact-transport.md)) is the design
+contract; this backlog is its P0 slice plus the report's export-ergonomics
+asks. Ranked:
+
+- ⬜ **P0 — `ArtifactTransport` contract + read-only OCI pull (plan Phase 1).**
+  A `resolve / pull / push` transport trait in front of the registry: the
+  existing filesystem store becomes one adapter (behavior unchanged), and a
+  read-only OCI backend (GHCR-class, ORAS artifact model) becomes the second.
+  New `ost artifact resolve <ref>` (tag → immutable digest) and
+  `ost artifact pull oci://…@sha256:<digest>` — pull downloads, runs the full
+  verification chain (archive digest → manifest schema/digest →
+  pre-extraction safety → per-file digests → artifact type / support-line
+  match → runtime digest/platform/ABI → trust policy), then imports
+  atomically into the local registry; transport success alone is never
+  success, and a failed step never leaves a usable artifact. `--json`
+  evidence records the remote locator, resolved OCI digest, registry
+  identity, auth mode, per-step verification status, and local import path.
+  Stable error codes (`ARTIFACT_REFERENCE_MUTABLE`,
+  `ARTIFACT_OCI_DIGEST_MISMATCH`, `ARTIFACT_TRANSPORT_FAILED`, …) so CI can
+  branch on cause. Integration-tested against a fixture/mock OCI registry:
+  corrupt archive, manifest substitution, wrong platform, and mutable-only
+  refs all fail.
+- ⬜ **P0 — digest-pin policy.** Tags are convenience, digests are the
+  contract: CI support lines and the lockfile require digest-bearing
+  references; source CI rejects mutable-only refs
+  (`ARTIFACT_REFERENCE_MUTABLE`); a digest-verification failure is always an
+  error, never a warning.
+- ⬜ **P0 — CI contract: remote runtime reference per support line.**
+  `openstrata.ci.yaml` runtime pins gain a `remote` block (`uri:
+  oci://…@sha256:<digest>` + `expected_oci_digest`) beside the existing
+  OpenStrata `artifact_digest`; source-CI (`pull_request`/`main`) lanes
+  require it, `ost ci validate`/`plan` surface it, and self-hosted lanes may
+  keep air-gapped local import (evidence records the source either way).
+- ⬜ **P0 — generated hosted bootstrap (plan Phase 2).** `ost ci generate
+  github` renders a bootstrap step that installs a version-pinned `ost` from
+  a release asset with checksum/provenance verification (bootstrap failure
+  distinct from artifact failure; `ost --version --json` saved into
+  evidence), then `ost artifact pull` of the digest-pinned runtime reference;
+  optional `actions/cache` restore/save of the validated registry directory
+  keyed by `{ost-version, os, arch, support-line, runtime-digest}` (never
+  branch names or run ids), falling back to the remote pull on a miss; then
+  the existing build → doctor → test → package → report-upload chain.
+  Replaces the current "assert `ost --version`" placeholder; closes the
+  Phase 5 source-CI lane's two ⬜ items.
+- ⬜ **P0 — public E2E fixture repository.** A tiny public OpenUSD plugin
+  repo with a pinned public runtime artifact and the committed generated
+  workflows: PR source CI, push source CI, and an explicit cache-disabled run
+  all green; fork PRs verified read-only (no publish credentials, no
+  self-hosted labels reachable). The fixture is a product-level contract in
+  continuous CI for renderer/transport changes.
+- ⬜ **P1 — slim/SDK-profile `runtime export`.** Report #10's adopted runtime
+  is a full USD build tree (14.4 GB / 18,029 files → a 1.93 GiB archive); an
+  `include/lib/bin/plugin`-only SDK profile cuts both the export time and the
+  per-PR download that the hosted lane now pays.
+- ⬜ **P1 — `runtime export` performance + progress.** Multithreaded zstd
+  and/or a `--level` knob, plus progress output — today's export ran ~52
+  minutes single-threaded with zero output (the staged `tar.zst` reports 0
+  bytes until the handle closes, so it looks hung).
+- ⬜ **P2 — L5 golden skip-message clarity (Phase 4 harness UX).** The
+  expected golden name is `<fixture-filename>.golden.usda` *including* the
+  fixture extension (`minimal.vrm.golden.usda`), and the golden must be the
+  flattened stage; the skip message should say both and ideally print the
+  generation recipe (`ost plugin run … usdcat --flatten … --out …`).
+- **Deferred to v0.10.0+:** `ost artifact push` + plugin publish over OCI +
+  protected publish policy + OIDC federation (plan Phase 3); trust levels in
+  manifest/CI contract, publisher identity/provenance, SBOM attach, trusted
+  runtime allowlist (plan Phase 4 — tracks SEC-006 and the trust-policy hooks
+  above); registry mirroring / air-gapped sync / multi-registry failover.
 
 ## Phase 7 — Sessions / sandbox ⬜
 
