@@ -58,6 +58,10 @@ pub enum GenerateCmd {
         /// Print the workflow to stdout instead of writing a file.
         #[arg(long)]
         stdout: bool,
+        /// Render even if cells still carry the scaffold's all-zero
+        /// placeholder digests.
+        #[arg(long)]
+        allow_placeholders: bool,
     },
 }
 
@@ -70,7 +74,15 @@ pub fn run(cmd: CiCmd, fmt: Format) -> Result<()> {
             out,
             force,
             stdout,
-        }) => generate(matrix.as_deref(), out.as_deref(), force, stdout, fmt),
+            allow_placeholders,
+        }) => generate(
+            matrix.as_deref(),
+            out.as_deref(),
+            force,
+            stdout,
+            allow_placeholders,
+            fmt,
+        ),
     }
 }
 
@@ -146,22 +158,44 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
         }
     }
 
+    // Placeholder digests are structurally valid, so syntax-only validation
+    // used to accept the untouched scaffold in silence — easy to mistake for a
+    // usable matrix (dogfooding report #8). Warn without failing.
+    let placeholders = matrix.placeholder_digests();
+
     let ok = unresolved.is_empty();
     if fmt.is_json() {
-        output::report(
+        let warnings: Vec<serde_json::Value> = placeholders
+            .iter()
+            .map(|hit| {
+                serde_json::json!({
+                    "code": "CI_PLACEHOLDER_DIGEST",
+                    "message": format!("placeholder digest — {hit}"),
+                })
+            })
+            .collect();
+        output::report_with_warnings(
             ok,
             &serde_json::json!({
                 "matrix": path.to_string(),
                 "cells": matrix.cells.len(),
                 "resolved": resolve,
                 "unresolved": unresolved,
+                "placeholders": placeholders,
             }),
+            &warnings,
         );
     } else {
         println!(
             "Matrix {path}: {} cell(s), structure OK",
             matrix.cells.len()
         );
+        for hit in &placeholders {
+            println!("  WARNING: placeholder digest — {hit}");
+        }
+        if !placeholders.is_empty() {
+            println!("  pin real digests: `ost runtime export`, `ost plugin publish`");
+        }
         for miss in &unresolved {
             println!("  UNRESOLVED: {miss}");
         }
@@ -181,9 +215,30 @@ fn generate(
     out: Option<&str>,
     force: bool,
     to_stdout: bool,
+    allow_placeholders: bool,
     fmt: Format,
 ) -> Result<()> {
     let (path, matrix) = load_matrix(matrix_flag)?;
+
+    // A workflow rendered from placeholder digests can only fail on a runner
+    // (or worse, be committed as if it were a real support claim) — refuse
+    // unless explicitly overridden.
+    let placeholders = matrix.placeholder_digests();
+    if !placeholders.is_empty() && !allow_placeholders {
+        return Err(Error::coded(
+            "CI_PLACEHOLDER_DIGESTS",
+            ost_core::Category::Validation,
+            format!(
+                "the matrix still carries the scaffold's placeholder digests ({})",
+                placeholders.join("; ")
+            ),
+        )
+        .with_hint(
+            "pin real digests (`ost runtime export`, `ost plugin publish`), \
+             or pass --allow-placeholders to render anyway",
+        ));
+    }
+
     let workflow = generate_github(&matrix);
 
     if to_stdout {

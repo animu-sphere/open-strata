@@ -81,20 +81,37 @@ fn init_validate_generate_lifecycle() {
     assert!(sb.base.join("openstrata.ci.yaml").is_file());
     assert_eq!(sb.ost(&["--json", "ci", "init"]).status.code(), Some(2));
 
-    // The starter matrix is structurally valid…
+    // The starter matrix is structurally valid, but its untouched placeholder
+    // digests are called out as envelope warnings (never a silent pass).
     let v = stdout_json(&sb.ost(&["--json", "ci", "validate"]));
     assert_eq!(v["ok"], true);
     assert_eq!(v["data"]["cells"], 1);
+    assert_eq!(v["data"]["placeholders"].as_array().unwrap().len(), 2);
+    let warnings = v["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 2);
+    assert_eq!(warnings[0]["code"], "CI_PLACEHOLDER_DIGEST");
 
-    // …but its placeholder digests do not resolve in an empty registry.
+    // …and those placeholders do not resolve in an empty registry.
     let out = sb.ost(&["--json", "ci", "validate", "--resolve"]);
     assert_eq!(out.status.code(), Some(5));
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["ok"], false);
     assert_eq!(v["data"]["unresolved"].as_array().unwrap().len(), 2);
 
+    // generate refuses a placeholder matrix unless explicitly overridden.
+    let out = sb.ost(&["--json", "ci", "generate", "github", "--stdout"]);
+    assert_eq!(out.status.code(), Some(5));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["code"], "CI_PLACEHOLDER_DIGESTS");
+
     // generate --stdout prints the workflow itself (parseable YAML).
-    let out = sb.ost(&["ci", "generate", "github", "--stdout"]);
+    let out = sb.ost(&[
+        "ci",
+        "generate",
+        "github",
+        "--stdout",
+        "--allow-placeholders",
+    ]);
     assert!(out.status.success());
     let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).unwrap();
     let include = &doc["jobs"]["cell"]["strategy"]["matrix"]["include"];
@@ -109,16 +126,23 @@ fn init_validate_generate_lifecycle() {
     assert!(doc.get("steps").is_none(), "no stray top-level steps key");
 
     // generate writes the default path; overwrite needs --force.
-    let v = stdout_json(&sb.ost(&["--json", "ci", "generate", "github"]));
+    let v = stdout_json(&sb.ost(&["--json", "ci", "generate", "github", "--allow-placeholders"]));
     let workflow = PathBuf::from(v["data"]["workflow"].as_str().unwrap());
     assert!(sb.base.join(&workflow).is_file());
     assert_eq!(
-        sb.ost(&["--json", "ci", "generate", "github"])
+        sb.ost(&["--json", "ci", "generate", "github", "--allow-placeholders"])
             .status
             .code(),
         Some(2)
     );
-    stdout_json(&sb.ost(&["--json", "ci", "generate", "github", "--force"]));
+    stdout_json(&sb.ost(&[
+        "--json",
+        "ci",
+        "generate",
+        "github",
+        "--force",
+        "--allow-placeholders",
+    ]));
 
     // A matrix that fails structural validation is a configuration error.
     std::fs::write(
