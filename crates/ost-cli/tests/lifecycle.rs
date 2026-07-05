@@ -64,7 +64,14 @@ impl Sandbox {
             // Don't let a developer's adopt/build env leak into the mock pull.
             .env_remove("OST_USD_ROOT")
             .env_remove("OST_USD_SRC")
-            .env_remove("OST_USD_DEPS");
+            .env_remove("OST_USD_DEPS")
+            // CI evidence is opt-in per test invocation.
+            .env_remove("OST_CI_CELL")
+            .env_remove("OST_CI_LANE")
+            .env_remove("OST_CI_RUNNER_PROFILE")
+            .env_remove("OST_CI_RUNS_ON")
+            .env_remove("OST_CI_RUNTIME_ARTIFACT")
+            .env_remove("OST_CI_PLUGIN_ARTIFACT");
         for (key, value) in envs {
             cmd.env(key, value);
         }
