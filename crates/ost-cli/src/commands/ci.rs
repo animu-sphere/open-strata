@@ -15,7 +15,7 @@ use camino::Utf8PathBuf;
 use clap::Subcommand;
 
 use ost_artifact::{ArtifactKind, ArtifactStore};
-use ost_ci::{generate_github, starter_matrix, SupportMatrix, MATRIX_FILE, WORKFLOW_PATH};
+use ost_ci::{generate_github, starter_matrix, SupportMatrix, MATRIX_FILE};
 use ost_core::{Error, Result};
 
 use crate::output::{self, Format};
@@ -140,10 +140,11 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
     if resolve {
         let store = ArtifactStore::discover();
         for cell in &matrix.cells {
-            for (what, digest, expected) in [
-                ("runtime", &cell.runtime_artifact, ArtifactKind::Runtime),
-                ("plugin", &cell.plugin_artifact, ArtifactKind::Plugin),
-            ] {
+            let mut refs = vec![("runtime", &cell.runtime_artifact, ArtifactKind::Runtime)];
+            if let Some(plugin) = &cell.plugin_artifact {
+                refs.push(("plugin", plugin, ArtifactKind::Plugin));
+            }
+            for (what, digest, expected) in refs {
                 match store.resolve(digest) {
                     Ok(record) if record.kind != expected => unresolved.push(format!(
                         "{}: {what} {digest} is a {} artifact, expected {}",
@@ -163,9 +164,16 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
     // usable matrix (dogfooding report #8). Warn without failing.
     let placeholders = matrix.placeholder_digests();
 
-    let ok = unresolved.is_empty();
+    // Hosted-runner billing: warn while a referenced github-hosted profile
+    // lacks `billing.acknowledgement: required`; a publish-capable cell on
+    // such a profile is an error (metered infrastructure must be opted into
+    // before CI can upload anything).
+    let ack_missing = matrix.hosted_ack_missing();
+    let ack_errors = matrix.hosted_ack_errors();
+
+    let ok = unresolved.is_empty() && ack_errors.is_empty();
     if fmt.is_json() {
-        let warnings: Vec<serde_json::Value> = placeholders
+        let mut warnings: Vec<serde_json::Value> = placeholders
             .iter()
             .map(|hit| {
                 serde_json::json!({
@@ -174,6 +182,15 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
                 })
             })
             .collect();
+        warnings.extend(ack_missing.iter().map(|name| {
+            serde_json::json!({
+                "code": "CI_HOSTED_BILLING_UNACKNOWLEDGED",
+                "message": format!(
+                    "GitHub-hosted runner '{name}' may incur billable usage — set \
+                     runners.{name}.billing.acknowledgement: required"
+                ),
+            })
+        }));
         output::report_with_warnings(
             ok,
             &serde_json::json!({
@@ -182,6 +199,8 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
                 "resolved": resolve,
                 "unresolved": unresolved,
                 "placeholders": placeholders,
+                "hosted_unacknowledged": ack_missing,
+                "billing_errors": ack_errors,
             }),
             &warnings,
         );
@@ -195,6 +214,13 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
         }
         if !placeholders.is_empty() {
             println!("  pin real digests: `ost runtime export`, `ost plugin publish`");
+        }
+        for name in &ack_missing {
+            println!("  WARNING: GitHub-hosted runner '{name}' may incur billable usage");
+            println!("           set runners.{name}.billing.acknowledgement: required");
+        }
+        for hit in &ack_errors {
+            println!("  ERROR: publish-capable cell needs billing acknowledgement — {hit}");
         }
         for miss in &unresolved {
             println!("  UNRESOLVED: {miss}");
@@ -239,40 +265,70 @@ fn generate(
         ));
     }
 
-    let workflow = generate_github(&matrix);
+    let workflows = generate_github(&matrix);
 
     if to_stdout {
-        // The workflow itself is the output document; keep it uncorrupted.
-        print!("{workflow}");
+        // The workflows themselves are the output; a multi-workflow matrix
+        // prints a `---`-separated YAML stream (one document per workflow).
+        let mut first = true;
+        for wf in &workflows {
+            if !first {
+                println!("---");
+            }
+            print!("{}", wf.yaml);
+            first = false;
+        }
         return Ok(());
     }
 
-    let out_path = Utf8PathBuf::from(out.unwrap_or(WORKFLOW_PATH));
-    if out_path.as_std_path().exists() && !force {
-        return Err(Error::usage(format!(
-            "'{out_path}' already exists (pass --force to regenerate over it)"
-        )));
+    // `--out` targets exactly one file, so it only fits a one-workflow matrix.
+    let out_paths: Vec<Utf8PathBuf> = match out {
+        Some(out) if workflows.len() > 1 => {
+            return Err(Error::usage(format!(
+                "the matrix renders {} workflows (source CI + support matrix) — \
+                 --out '{out}' targets a single file; use the default paths",
+                workflows.len()
+            )));
+        }
+        Some(out) => vec![Utf8PathBuf::from(out)],
+        None => workflows
+            .iter()
+            .map(|wf| Utf8PathBuf::from(wf.path))
+            .collect(),
+    };
+
+    // Check every destination before writing any, so --force is all-or-nothing.
+    for out_path in &out_paths {
+        if out_path.as_std_path().exists() && !force {
+            return Err(Error::usage(format!(
+                "'{out_path}' already exists (pass --force to regenerate over it)"
+            )));
+        }
     }
-    if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent.as_std_path())
-            .map_err(|e| Error::io(parent.to_string(), e))?;
+    for (wf, out_path) in workflows.iter().zip(&out_paths) {
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent.as_std_path())
+                .map_err(|e| Error::io(parent.to_string(), e))?;
+        }
+        std::fs::write(out_path.as_std_path(), &wf.yaml)
+            .map_err(|e| Error::io(out_path.to_string(), e))?;
     }
-    std::fs::write(out_path.as_std_path(), &workflow)
-        .map_err(|e| Error::io(out_path.to_string(), e))?;
 
     if fmt.is_json() {
         output::success(&serde_json::json!({
             "generated": true,
             "matrix": path.to_string(),
-            "workflow": out_path.to_string(),
+            // `workflow` predates the lane split; keep it as the first path.
+            "workflow": out_paths[0].to_string(),
+            "workflows": out_paths.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
             "cells": matrix.cells.len(),
         }));
         return Ok(());
     }
-    println!(
-        "Generated {out_path} from {path} ({} cell(s))",
-        matrix.cells.len()
-    );
+    for out_path in &out_paths {
+        println!("Generated {out_path} from {path}");
+    }
+    println!("  {} cell(s) total", matrix.cells.len());
     println!("  runners need `ost` on PATH and the pinned artifacts in their OST_HOME registry");
     Ok(())
 }

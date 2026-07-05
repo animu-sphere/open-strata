@@ -10,8 +10,12 @@
 pub mod github;
 pub mod matrix;
 
-pub use github::{generate_github, WORKFLOW_PATH};
+pub use github::{
+    generate_github, generate_source, generate_support, GeneratedWorkflow, SOURCE_WORKFLOW_PATH,
+    WORKFLOW_PATH,
+};
 pub use matrix::{
-    is_placeholder_digest, starter_matrix, HostOs, HostSpec, SupportCell, SupportMatrix,
-    MATRIX_FILE, MATRIX_SCHEMA, MAX_LEVEL,
+    is_placeholder_digest, starter_matrix, Acknowledgement, Billing, HostOs, HostSpec, Lane,
+    Publish, RunnerKind, RunnerProfile, SupportCell, SupportMatrix, MATRIX_FILE, MATRIX_SCHEMA,
+    MAX_LEVEL,
 };
