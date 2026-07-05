@@ -114,12 +114,12 @@ fn init_validate_generate_lifecycle() {
     ]);
     assert!(out.status.success());
     let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).unwrap();
-    let include = &doc["jobs"]["cell"]["strategy"]["matrix"]["include"];
+    let include = &doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"];
     assert_eq!(include.as_sequence().unwrap().len(), 1);
     assert_eq!(include[0]["name"], "example-linux-cy2026-usd");
     // A column-0 `steps:` would still parse (as a stray top-level key), so
     // assert the steps block actually sits under the job.
-    assert!(!doc["jobs"]["cell"]["steps"]
+    assert!(!doc["jobs"]["scheduled"]["steps"]
         .as_sequence()
         .unwrap()
         .is_empty());
@@ -152,6 +152,124 @@ fn init_validate_generate_lifecycle() {
     .unwrap();
     let out = sb.ost(&["--json", "ci", "validate", "--matrix", "bad.yaml"]);
     assert_eq!(out.status.code(), Some(3));
+}
+
+/// Runner profiles + lanes: a hosted PR cell renders into a source-CI
+/// workflow, billing acknowledgement is warned about while missing and
+/// gates publish-capable cells, and `generate` writes one file per lane
+/// family.
+#[test]
+fn runner_profiles_and_lanes_render_source_and_support_workflows() {
+    let sb = Sandbox::new("lanes");
+    let lanes_yaml = format!(
+        "\
+schema: 1
+runners:
+  windows-hosted:
+    kind: github-hosted
+    image: windows-2022
+  usd-linux-real:
+    kind: self-hosted
+    labels: [self-hosted, linux, x64, usd-26]
+cells:
+  - name: plugin-pr-windows
+    lane: pull_request
+    runner: windows-hosted
+    runtime_artifact: sha256:{a}
+    bundle: plugins/toy
+    platform: cy2026
+    profile: usd
+    up_to: 4
+  - name: linux-usd-support
+    runner: usd-linux-real
+    runtime_artifact: sha256:{a}
+    plugin_artifact: sha256:{b}
+    platform: cy2026
+    profile: usd
+",
+        a = "ab".repeat(32),
+        b = "cd".repeat(32)
+    );
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), &lanes_yaml).unwrap();
+
+    // validate passes, but warns about the unacknowledged hosted runner.
+    let v = stdout_json(&sb.ost(&["--json", "ci", "validate"]));
+    assert_eq!(v["ok"], true);
+    assert_eq!(
+        v["data"]["hosted_unacknowledged"],
+        serde_json::json!(["windows-hosted"])
+    );
+    let warnings = v["warnings"].as_array().unwrap();
+    assert!(warnings
+        .iter()
+        .any(|w| w["code"] == "CI_HOSTED_BILLING_UNACKNOWLEDGED"));
+
+    // A publish-capable cell on that runner turns the warning into an error.
+    let publishing = lanes_yaml.replace(
+        "    lane: pull_request\n",
+        "    lane: main\n    publish: candidate\n",
+    );
+    std::fs::write(sb.base.join("publishing.yaml"), &publishing).unwrap();
+    let out = sb.ost(&["--json", "ci", "validate", "--matrix", "publishing.yaml"]);
+    assert_eq!(out.status.code(), Some(5));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["data"]["billing_errors"].as_array().unwrap().len(), 1);
+
+    // Acknowledging billing clears both.
+    let acked = publishing.replace(
+        "    image: windows-2022\n",
+        "    image: windows-2022\n    billing:\n      acknowledgement: required\n",
+    );
+    std::fs::write(sb.base.join("acked.yaml"), &acked).unwrap();
+    let v = stdout_json(&sb.ost(&["--json", "ci", "validate", "--matrix", "acked.yaml"]));
+    assert_eq!(v["ok"], true);
+    assert!(v["warnings"].as_array().unwrap().is_empty());
+
+    // generate writes one workflow per lane family.
+    let v = stdout_json(&sb.ost(&["--json", "ci", "generate", "github"]));
+    let workflows = v["data"]["workflows"].as_array().unwrap();
+    assert_eq!(workflows.len(), 2);
+    let support = sb.base.join(".github/workflows/ost-support-matrix.yml");
+    let source = sb.base.join(".github/workflows/ost-source-ci.yml");
+    assert!(support.is_file());
+    assert!(source.is_file());
+
+    // The source workflow builds from source on the hosted image, gated to
+    // pull_request, with no publish step and a read-only token.
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&source).unwrap()).unwrap();
+    assert!(doc["on"]
+        .as_mapping()
+        .unwrap()
+        .contains_key(serde_yaml::Value::from("pull_request")));
+    let entries = doc["jobs"]["pr"]["strategy"]["matrix"]["include"]
+        .as_sequence()
+        .unwrap();
+    assert_eq!(entries[0]["runs_on"][0], "windows-2022");
+    assert_eq!(entries[0]["hosted"], true);
+    assert!(!doc["jobs"]["pr"]["steps"].as_sequence().unwrap().is_empty());
+    assert_eq!(doc["permissions"]["contents"], "read");
+    let text = std::fs::read_to_string(&source).unwrap();
+    assert!(!text.contains("plugin publish"));
+
+    // --out cannot target a two-workflow matrix.
+    assert_eq!(
+        sb.ost(&["--json", "ci", "generate", "github", "--out", "one.yml", "--force"])
+            .status
+            .code(),
+        Some(2)
+    );
+
+    // --stdout emits a two-document YAML stream.
+    let out = sb.ost(&["ci", "generate", "github", "--stdout"]);
+    assert!(out.status.success());
+    let stream = String::from_utf8(out.stdout).unwrap();
+    let docs: Vec<&str> = stream.split("\n---\n").collect();
+    assert_eq!(docs.len(), 2);
+    for doc in docs {
+        let _: serde_yaml::Value = serde_yaml::from_str(doc).expect("each document parses");
+    }
 }
 
 #[test]
@@ -267,7 +385,7 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     // The generated workflow pins the same digests into the include entry.
     let out = sb.ost(&["ci", "generate", "github", "--stdout"]);
     let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).unwrap();
-    let entry = &doc["jobs"]["cell"]["strategy"]["matrix"]["include"][0];
+    let entry = &doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"][0];
     assert_eq!(entry["runtime_artifact"], runtime_digest.as_str());
     assert_eq!(entry["plugin_artifact"], plugin_digest.as_str());
     assert_eq!(entry["up_to"], 4);
