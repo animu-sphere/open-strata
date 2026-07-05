@@ -678,8 +678,24 @@ fn package(
     };
 
     let session = session_env_with(&r.env, &packaged_bundle, &[], host.os);
-    let stage = target_state_dir(&bundle.root, &id).join("package-stage");
-    reset_dir(&stage)?;
+    // Reruns must not fail on a stage the previous run left temporarily
+    // undeletable (scanner-held handles, dogfooding report #9): stage into a
+    // fresh sibling instead, and surface that as a warning.
+    let preferred_stage = target_state_dir(&bundle.root, &id).join("package-stage");
+    let stage = ost_core::fs::prepare_staging_dir(preferred_stage.as_std_path())?;
+    let stage = Utf8PathBuf::from_path_buf(stage)
+        .map_err(|p| Error::Operation(format!("non-UTF-8 staging path: {}", p.display())))?;
+    let stage_warnings = if stage == preferred_stage {
+        Vec::new()
+    } else {
+        vec![serde_json::json!({
+            "code": "STAGE_FALLBACK",
+            "message": format!(
+                "previous package stage '{preferred_stage}' is held open by another \
+                 process; staged into '{stage}' instead (a later run sweeps it)"
+            ),
+        })]
+    };
     stage_plugin_bundle(&packaged_bundle, &stage)?;
     write_packaged_manifest(&stage.join(ost_plugin::PLUGIN_MANIFEST), &packaged_manifest)?;
     write_validation_files(&packaged_bundle, &report, &session, &stage)?;
@@ -767,7 +783,7 @@ fn package(
         &format!("{bare}  {archive_name}"),
     )?;
 
-    report_package(&id, &archive_path, &packed, fmt);
+    report_package(&id, &archive_path, &packed, &stage_warnings, fmt);
     Ok(())
 }
 
@@ -1486,45 +1502,9 @@ fn merge_cohosted_schema_resources(
 }
 
 fn reset_dir(dir: &Utf8Path) -> Result<()> {
-    if dir.as_std_path().exists() {
-        remove_dir_all_robust(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))?;
-    }
+    ost_core::fs::remove_dir_all_robust(dir.as_std_path())
+        .map_err(|e| Error::io(dir.to_string(), e))?;
     std::fs::create_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))
-}
-
-/// `remove_dir_all` that survives read-only entries on Windows. The staging
-/// copies use `fs::copy`, which preserves the source's read-only attribute, and
-/// Windows refuses to delete a read-only file — so a rerun over an existing
-/// stage failed with access-denied (os error 5). Clear the attribute and retry
-/// once; other platforms delete by parent-dir permission and need no retry.
-fn remove_dir_all_robust(dir: &std::path::Path) -> std::io::Result<()> {
-    match std::fs::remove_dir_all(dir) {
-        #[cfg(windows)]
-        Err(_) => {
-            clear_readonly_recursive(dir)?;
-            std::fs::remove_dir_all(dir)
-        }
-        other => other,
-    }
-}
-
-#[cfg(windows)]
-fn clear_readonly_recursive(path: &std::path::Path) -> std::io::Result<()> {
-    let meta = std::fs::symlink_metadata(path)?;
-    let mut perms = meta.permissions();
-    if perms.readonly() {
-        // Windows-only code: this clears FILE_ATTRIBUTE_READONLY; the lint's
-        // unix world-writable concern cannot apply under cfg(windows).
-        #[allow(clippy::permissions_set_readonly_false)]
-        perms.set_readonly(false);
-        std::fs::set_permissions(path, perms)?;
-    }
-    if meta.is_dir() {
-        for entry in std::fs::read_dir(path)? {
-            clear_readonly_recursive(&entry?.path())?;
-        }
-    }
-    Ok(())
 }
 
 fn merge_schema_types_into_test_plug_infos(
@@ -1939,17 +1919,32 @@ fn pretty_json(value: &serde_json::Value) -> Result<String> {
     serde_json::to_string_pretty(value).map_err(|e| Error::parse("json", anyhow::Error::new(e)))
 }
 
-fn report_package(id: &str, archive: &Utf8Path, packed: &ost_build::PackResult, fmt: Format) {
+fn report_package(
+    id: &str,
+    archive: &Utf8Path,
+    packed: &ost_build::PackResult,
+    warnings: &[serde_json::Value],
+    fmt: Format,
+) {
     if fmt.is_json() {
-        output::success(&serde_json::json!({
-            "packaged": true,
-            "target": id,
-            "archive": archive.to_string(),
-            "archive_digest": packed.archive_digest,
-            "archive_size": packed.archive_size,
-            "files": packed.files.len(),
-        }));
+        output::report_with_warnings(
+            true,
+            &serde_json::json!({
+                "packaged": true,
+                "target": id,
+                "archive": archive.to_string(),
+                "archive_digest": packed.archive_digest,
+                "archive_size": packed.archive_size,
+                "files": packed.files.len(),
+            }),
+            warnings,
+        );
         return;
+    }
+    for w in warnings {
+        if let Some(msg) = w["message"].as_str() {
+            eprintln!("warning: {msg}");
+        }
     }
     println!("Packaged plugin target {id}");
     println!("  archive:  {archive}");

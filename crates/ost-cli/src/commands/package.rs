@@ -58,13 +58,25 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         )
     })?;
 
-    // Install into a clean stage tree.
-    let stage = root.join(STATE_DIR).join("targets").join(&id).join("stage");
-    if stage.as_std_path().exists() {
-        std::fs::remove_dir_all(stage.as_std_path())
-            .map_err(|e| Error::io(stage.to_string(), e))?;
-    }
-    std::fs::create_dir_all(stage.as_std_path()).map_err(|e| Error::io(stage.to_string(), e))?;
+    // Install into a clean stage tree. Reruns must not fail on a stage the
+    // previous run left temporarily undeletable (scanner-held handles,
+    // dogfooding report #9): stage into a fresh sibling instead, and surface
+    // that as a warning.
+    let preferred_stage = root.join(STATE_DIR).join("targets").join(&id).join("stage");
+    let stage = ost_core::fs::prepare_staging_dir(preferred_stage.as_std_path())?;
+    let stage = Utf8PathBuf::from_path_buf(stage)
+        .map_err(|p| Error::Operation(format!("non-UTF-8 staging path: {}", p.display())))?;
+    let stage_warnings = if stage == preferred_stage {
+        Vec::new()
+    } else {
+        vec![serde_json::json!({
+            "code": "STAGE_FALLBACK",
+            "message": format!(
+                "previous package stage '{preferred_stage}' is held open by another \
+                 process; staged into '{stage}' instead (a later run sweeps it)"
+            ),
+        })]
+    };
 
     // Apply the runtime environment to `cmake --install` for the same reason
     // `ost build` and `ost run` do: install rules may invoke USD/Python tooling
@@ -173,7 +185,14 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         &format!("{bare}  {archive_name}"),
     )?;
 
-    report(&id, &archive_path, &packed, &validation, fmt);
+    report(
+        &id,
+        &archive_path,
+        &packed,
+        &validation,
+        &stage_warnings,
+        fmt,
+    );
     Ok(())
 }
 
@@ -191,19 +210,29 @@ fn report(
     archive: &Utf8PathBuf,
     packed: &ost_build::PackResult,
     validation: &str,
+    warnings: &[serde_json::Value],
     fmt: Format,
 ) {
     if fmt.is_json() {
-        output::success(&serde_json::json!({
-            "packaged": true,
-            "target": id,
-            "archive": archive.to_string(),
-            "archive_digest": packed.archive_digest,
-            "archive_size": packed.archive_size,
-            "files": packed.files.len(),
-            "validation": validation,
-        }));
+        output::report_with_warnings(
+            true,
+            &serde_json::json!({
+                "packaged": true,
+                "target": id,
+                "archive": archive.to_string(),
+                "archive_digest": packed.archive_digest,
+                "archive_size": packed.archive_size,
+                "files": packed.files.len(),
+                "validation": validation,
+            }),
+            warnings,
+        );
         return;
+    }
+    for w in warnings {
+        if let Some(msg) = w["message"].as_str() {
+            eprintln!("warning: {msg}");
+        }
     }
     println!("Packaged target {id}");
     println!("  archive:  {archive}");

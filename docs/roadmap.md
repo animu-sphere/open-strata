@@ -617,6 +617,9 @@ its first renderer, not the source of CI semantics. Ranked:
   refuses to delete read-only files. The stage reset now clears the attribute
   recursively and retries once (Windows-only; other platforms delete by
   parent-dir permission), unit-tested with a read-only staged file.
+  *Incomplete — report #9 hit the same error on a stage with no read-only
+  entries at all; the real second cause was transient scanner-held file
+  locks. Superseded by the v0.8.0 staging-fallback fix below.*
 - ✅ **P1 — placeholder digests pass validation too quietly.** `ost ci init`
   writes all-zero example digests and `ost ci validate` (without `--resolve`)
   accepted them silently. `validate` now warns per hit (human `WARNING:` lines
@@ -690,6 +693,30 @@ its first renderer, not the source of CI semantics. Ranked:
   that preserves the `SdfFileFormat` entry, `generatedSchema.usda` staging),
   the committed-vs-build-tree decision, the `library_prefix` footgun, L2/L4
   verification, and the per-target ABI/`LibraryPath` notes.
+
+### Phase 5 — v0.8.0 backlog (from dogfooding report #9, the v0.7.0 CI policy decision)
+
+Report #9 (2026-07-05) adopted `openstrata.ci.yaml` as the downstream repo's CI
+policy surface and verified the v0.7.0 CI/lock fixes; what it carried back is
+the one v0.7.0 fix that didn't hold plus consumer-side blockers (real artifact
+digests, a golden L5 fixture) that are theirs, not ours. Ranked:
+
+- ✅ **P1 — `ost plugin package` rerun still hits access-denied (os error 5).**
+  The v0.7.0 read-only fix addressed the wrong (or only half the) cause: the
+  failing host's `package-stage` had *no* read-only entries — the reset dies
+  when a scanner (Defender, indexer) still holds the previous run's fresh
+  files open without `FILE_SHARE_DELETE`, an inherently transient lock the
+  old clear-attribute-and-retry-once path never waited out. Staging now goes
+  through `ost_core::fs::prepare_staging_dir`
+  ([fs.rs](../crates/ost-core/src/fs.rs)): bounded remove retries (~0.4s,
+  clearing read-only between attempts), then **fall back to a fresh sibling
+  stage** (`package-stage-<16 hex>`) instead of failing — the rerun always
+  proceeds; the stuck tree is swept best-effort by every later run once the
+  handles close. A fallback surfaces as a `STAGE_FALLBACK` warning (the
+  `--json` envelope's `warnings` array / a stderr `warning:` line). Applied to
+  both `ost plugin package` and `ost package` (which still had the naked
+  `remove_dir_all`); unit-tested on Windows with a genuinely locked file
+  (opened without `FILE_SHARE_DELETE`) plus sweep/reset/readonly cases.
 
 ## Phase 6 — Artifact registry 🚧
 
