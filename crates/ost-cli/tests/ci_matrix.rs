@@ -100,6 +100,13 @@ fn init_validate_generate_lifecycle() {
     let include = &doc["jobs"]["cell"]["strategy"]["matrix"]["include"];
     assert_eq!(include.as_sequence().unwrap().len(), 1);
     assert_eq!(include[0]["name"], "example-linux-cy2026-usd");
+    // A column-0 `steps:` would still parse (as a stray top-level key), so
+    // assert the steps block actually sits under the job.
+    assert!(!doc["jobs"]["cell"]["steps"]
+        .as_sequence()
+        .unwrap()
+        .is_empty());
+    assert!(doc.get("steps").is_none(), "no stray top-level steps key");
 
     // generate writes the default path; overwrite needs --force.
     let v = stdout_json(&sb.ost(&["--json", "ci", "generate", "github"]));
