@@ -654,18 +654,23 @@ its first renderer, not the source of CI semantics. Ranked:
   no publish step, no secrets, read-only token). Still ⬜: dispatch
   approved-choice inputs (none generated yet) and trust levels for privileged
   self-hosted runners (tracks SEC-006 / Phase 6 trust policy).
-- ⬜ **P2 — `ost ci plan --json`.** Preflight execution facts without money
-  estimates: hosted job count, operator-managed runner classes, whether billing
-  acknowledgement is required, publish-capable job count.
+- ✅ **P2 — `ost ci plan --json`.** Preflight execution facts without money
+  estimates: cells per lane, the workflows `generate` would write, hosted job
+  count, metered vs operator-managed runner classes, the hosted profiles still
+  missing billing acknowledgement (`requires_billing_acknowledgement`), and
+  the publish-capable job count. Facts only — never a currency estimate.
 - ⬜ **P2 — CI evidence in reports.** Verification reports record the runner
   profile + resolved backend runner, lane, runtime/plugin digests,
   target/profile, verification level, validation result, and package
   provenance — so a support claim is reconstructible from its report.
-- ⬜ **P2 — workspace-level plugin testing.** `ost plugin test --workspace`
-  (or `ost workspace test`) discovers the workspace's plugin bundles (root +
-  `plugins/*`, matching the v0.5.0 CMake discovery) and runs their build/test
-  gates — the natural CI surface once one repo hosts schema, resolver, and
-  file-format bundles.
+- ✅ **P2 — workspace-level plugin testing.** `ost plugin test --workspace`
+  discovers the workspace's plugin bundles (immediate subdirectories +
+  `plugins/*`, matching the v0.5.0 CMake discovery), runs the verification
+  pyramid on each against one resolved runtime session, prints per-bundle
+  reports plus an aggregate summary (`--json`: one envelope with every
+  bundle's report + `report_dir`), and fails if any bundle fails. `--with`
+  bundles compose into every session; a bundle path together with
+  `--workspace` is a usage error.
 - ⬜ **P2 — document the co-located schema migration path for existing
   bundles.** `ost plugin schema add` covers the scaffold case; existing bundles
   need the non-scaffold checklist: add `schema.source` + each
