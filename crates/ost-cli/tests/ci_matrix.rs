@@ -340,6 +340,10 @@ cells:
     assert_eq!(v["data"]["created"], true);
     let v = stdout_json(&sb.ost(&["--json", "ci", "plan", "--matrix", "openstrata.ci.yaml"]));
     assert_eq!(v["data"]["hosted_jobs"], 0);
+    assert_eq!(
+        v["data"]["operator_managed_runner_classes"],
+        serde_json::json!(["self-hosted, linux, x64"])
+    );
     assert_eq!(v["data"]["workflows"].as_array().unwrap().len(), 1);
 }
 

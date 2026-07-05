@@ -255,23 +255,31 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
     let (path, matrix) = load_matrix(matrix_flag)?;
 
     // Referenced runner classes, partitioned by kind (deterministic order:
-    // first reference wins, cells are ordered).
+    // first reference wins, cells are ordered). Named runner profiles report
+    // their profile name; legacy `host` cells report the rendered runs-on
+    // labels so `plan` stays faithful to generated workflows.
     let mut metered: Vec<String> = Vec::new();
     let mut operator: Vec<String> = Vec::new();
+    let push_unique = |list: &mut Vec<String>, value: String| {
+        if !list.iter().any(|n| n == &value) {
+            list.push(value);
+        }
+    };
     for cell in &matrix.cells {
-        let Some(name) = cell.runner.as_deref() else {
-            continue;
-        };
-        let Some(profile) = matrix.runners.get(name) else {
-            continue;
-        };
-        let list = if profile.is_hosted() {
-            &mut metered
+        if let Some(name) = cell.runner.as_deref() {
+            let Some(profile) = matrix.runners.get(name) else {
+                continue;
+            };
+            let list = if profile.is_hosted() {
+                &mut metered
+            } else {
+                &mut operator
+            };
+            push_unique(list, name.to_string());
+        } else if cell.host.labels.is_empty() {
+            push_unique(&mut metered, cell.host.runs_on().join(", "));
         } else {
-            &mut operator
-        };
-        if !list.iter().any(|n| n == name) {
-            list.push(name.to_string());
+            push_unique(&mut operator, cell.host.runs_on().join(", "));
         }
     }
 
