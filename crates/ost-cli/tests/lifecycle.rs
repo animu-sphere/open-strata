@@ -514,6 +514,54 @@ fn generated_plugin_scaffolds_and_inspects() {
     assert!(find_first(&dist, "SHA256SUMS").is_some());
 }
 
+/// `ost plugin test --workspace` discovers bundles at the root and under
+/// plugins/*, tests each, and aggregates. Codeless schema scaffolds pass
+/// L0/L1 without a build, so this runs against the mock runtime.
+#[test]
+fn workspace_test_discovers_and_tests_every_bundle() {
+    let sb = Sandbox::new("wstest");
+    init_and_pull(&sb);
+
+    for args in [
+        vec!["plugin", "new", "usd-schema", "alpha"],
+        vec![
+            "plugin",
+            "new",
+            "usd-schema",
+            "beta",
+            "--dir",
+            "plugins/beta",
+        ],
+    ] {
+        let out = sb.ost(&args);
+        assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+    }
+
+    let v: serde_json::Value = serde_json::from_slice(
+        &sb.ost(&["--json", "plugin", "test", "--workspace", "--up-to", "1"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(v["ok"], true, "workspace test passes: {v}");
+    assert_eq!(v["data"]["total"], 2);
+    assert_eq!(v["data"]["failed"], 0);
+    let bundles = v["data"]["bundles"].as_array().unwrap();
+    assert_eq!(bundles.len(), 2);
+    for bundle in bundles {
+        let dir = bundle["report_dir"].as_str().unwrap();
+        assert!(Path::new(dir).is_dir(), "report dir exists: {dir}");
+    }
+
+    // Usage errors: a bundle path with --workspace, or neither.
+    assert_eq!(
+        sb.ost(&["--json", "plugin", "test", "alpha", "--workspace"])
+            .status
+            .code(),
+        Some(2)
+    );
+    assert_eq!(sb.ost(&["--json", "plugin", "test"]).status.code(), Some(2));
+}
+
 /// `ost lock` pins extensions from the pulled runtime's manifest — the same
 /// source of truth `runtime show` reports — so an install whose recorded
 /// extension version drifts (e.g. a re-adopted newer OpenUSD) makes
