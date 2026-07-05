@@ -92,13 +92,13 @@ them. Each release is a coherent slice, not a phase boundary.
   - **Deferred:** macOS source-build ergonomics re-check (needs a Mac), OCI
     layout / ORAS transport, remote hosted registry, Kubernetes execution, full
     Jenkins command surface, and DCC host matrices.
-- ⬜ **v0.7.0 — CI contract v2 + 0.6.0 CI/lock/package fixes.** Planned from
+- ✅ **v0.7.0 — CI contract v2 + 0.6.0 CI/lock/package fixes.** Released from
   dogfooding report #8 (2026-07-04) and the CI build-matrix policy notes
   (2026-07-05): first make the 0.6.0 CI surface trustworthy, then promote
   `openstrata.ci.yaml` from an artifact-seeded support matrix into a portable
   CI contract that GitHub Actions merely renders. Details in the
   [Phase 5 — v0.7.0 backlog](#phase-5--v070-backlog-from-dogfooding-report-8--the-ci-build-matrix-policy-notes).
-  Scope:
+  Delivered:
   - **Correctness first (report #8):** valid + deterministic
     `ost ci generate github` output, `strata.lock` extension versions that
     match `runtime show` (the lockfile must be safe as a CI gate), idempotent
@@ -116,14 +116,17 @@ them. Each release is a coherent slice, not a phase boundary.
   - **Workspace + docs:** workspace-level plugin test orchestration
     (`ost plugin test --workspace`) and a documented co-located schema
     migration path for existing (non-scaffold) bundles.
-  - **Acceptance (from the policy notes):** a plugin PR builds on a
-    GitHub-hosted runner from a digest-pinned runtime artifact; cells reference
+  - **Acceptance shape (from the policy notes):** generated source-CI jobs are
+    modeled to build plugin PRs on GitHub-hosted runners from digest-pinned
+    runtime artifacts once `ost` is available on the runner; cells reference
     runner profiles, never raw labels; fork PRs cannot publish or reach
     privileged self-hosted runners; a scheduled self-hosted cell revalidates a
     pinned runtime/plugin pair; generated workflows are valid, deterministic
     YAML.
   - **Deferred:** Jenkins renderer, remote/OCI registry transport, macOS
-    ergonomics re-check, DCC host matrices.
+    ergonomics re-check, source-CI bootstrapping beyond the existing
+    `ost --version` assertion, dispatch inputs, privileged-runner trust policy,
+    and DCC host matrices.
 
 ## Phase 0 — Foundation ✅
 
@@ -580,7 +583,7 @@ first, keep the compiled schema flow as stretch unless it stays small.
 
 ### Phase 5 — v0.7.0 backlog (from dogfooding report #8 + the CI build-matrix policy notes)
 
-**Targeted for v0.7.0.** A downstream `usd-plugin-workspace` pass on 0.6.0
+**Released in v0.7.0.** A downstream `usd-plugin-workspace` pass on 0.6.0
 (report #8, 2026-07-04) exercised `ost ci init|validate|generate`, `ost lock
 --check`, and `ost plugin package`, and a follow-up policy read (2026-07-05,
 after a self-hosted-labeled PR workflow queued forever on a repo with no

@@ -21,8 +21,10 @@ plugin pyramid runs Levels 0–5 (`ost plugin new|inspect|build|doctor|run|test`
 link generated typed schema APIs into an existing plugin library.
 Tagged binary releases (`v*`) are live via cargo-dist. The local digest-addressed
 artifact registry, plugin publishing, artifact-backed runtime pulls, and GitHub
-support-matrix generation are in; sessions, GPU/AI, remote registry transport,
-and broader DCC matrices are still ahead. Linux x86_64 is the first-class target;
+support-matrix generation are in. The v0.7.0 CI contract adds runner profiles,
+lanes, source/support workflow rendering, `ost ci plan`, workspace-level plugin
+testing, and CI evidence in plugin reports; sessions, GPU/AI, remote registry
+transport, and broader DCC matrices are still ahead. Linux x86_64 is the first-class target;
 other OS targets are modeled and partially working — these examples were
 exercised on Windows. See the [roadmap](docs/roadmap.md).
 
@@ -96,7 +98,7 @@ ost validate                                        validate a built/packaged ta
 ost extension  list | why <id> | add <id>           inspect/request controlled extensions
 ost plugin     new | inspect | build | doctor | run | test | view | test-view | schema add | package | publish   OpenUSD plugin bundles
 ost artifact   import | list | show | verify | export | extract   local digest-addressed artifact registry
-ost ci         init | validate | generate github    runtime×plugin support matrix -> CI workflow
+ost ci         init | validate | plan | generate github    runtime×plugin support matrix -> CI workflow
 ost lock [--check]                                  generate/verify strata.lock
 ost uv <args...>                                    run uv pinned to the runtime Python
 ```
