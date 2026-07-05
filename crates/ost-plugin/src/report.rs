@@ -22,6 +22,29 @@ use crate::doctor::{DoctorReport, Status};
 /// Schema version of `report.json` (bumped on breaking shape changes).
 pub const REPORT_SCHEMA: u32 = 1;
 
+/// CI evidence from the `OST_CI_*` contract (Phase 5). Generated workflows
+/// export these job-level variables so every report written inside a CI job
+/// records *which support claim* it proves: the cell, its lane, the runner
+/// profile and resolved `runs-on`, and the pinned artifact digests. Returns
+/// `None` outside CI (no `OST_CI_CELL`), so local reports are unchanged.
+pub fn ci_evidence_from_env() -> Option<serde_json::Value> {
+    let cell = std::env::var("OST_CI_CELL")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    let get = |key: &str| match std::env::var(key).ok().filter(|s| !s.is_empty()) {
+        Some(value) => serde_json::Value::String(value),
+        None => serde_json::Value::Null,
+    };
+    Some(serde_json::json!({
+        "cell": cell,
+        "lane": get("OST_CI_LANE"),
+        "runner_profile": get("OST_CI_RUNNER_PROFILE"),
+        "runs_on": get("OST_CI_RUNS_ON"),
+        "runtime_artifact": get("OST_CI_RUNTIME_ARTIFACT"),
+        "plugin_artifact": get("OST_CI_PLUGIN_ARTIFACT"),
+    }))
+}
+
 /// Build the machine-readable `report.json` body for a doctor run.
 pub fn report_json(bundle: &Bundle, report: &DoctorReport) -> serde_json::Value {
     let diagnostics: Vec<_> = report
@@ -38,7 +61,7 @@ pub fn report_json(bundle: &Bundle, report: &DoctorReport) -> serde_json::Value 
         })
         .collect();
 
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "schema": REPORT_SCHEMA,
         "plugin": bundle.manifest.plugin.name,
         "version": bundle.manifest.plugin.version,
@@ -51,7 +74,12 @@ pub fn report_json(bundle: &Bundle, report: &DoctorReport) -> serde_json::Value 
             "skip": report.count(Status::Skip),
         },
         "diagnostics": diagnostics,
-    })
+    });
+    // Additive: present only inside a CI job that exports the OST_CI_* vars.
+    if let Some(ci) = ci_evidence_from_env() {
+        body["ci"] = ci;
+    }
+    body
 }
 
 /// Build the `environment.json` body: the session env the run would set.

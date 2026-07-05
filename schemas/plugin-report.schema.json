@@ -44,6 +44,26 @@
         }
       }
     },
+    "ci": {
+      "type": "object",
+      "description": "CI evidence, present only when the run happened inside a generated CI job (the job exports OST_CI_* variables): which support cell this report proves, on which lane and runner, against which pinned artifacts. Fields other than `cell` are null when the job did not export them.",
+      "required": ["cell"],
+      "additionalProperties": false,
+      "properties": {
+        "cell": { "type": "string", "minLength": 1 },
+        "lane": {
+          "type": ["string", "null"],
+          "enum": ["pull_request", "main", "scheduled", "workflow_dispatch", null]
+        },
+        "runner_profile": { "type": ["string", "null"] },
+        "runs_on": {
+          "type": ["string", "null"],
+          "description": "The resolved runs-on labels, comma-joined."
+        },
+        "runtime_artifact": { "type": ["string", "null"] },
+        "plugin_artifact": { "type": ["string", "null"] }
+      }
+    },
     "summary": {
       "type": "object",
       "required": ["pass", "fail", "skip"],

@@ -75,22 +75,50 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
         .map(|l| format!("\"{l}\""))
         .collect::<Vec<_>>()
         .join(", ");
+    let runner_profile = cell
+        .runner
+        .as_deref()
+        .map(|name| format!("            runner_profile: {name}\n"))
+        .unwrap_or_default();
     format!(
         "          - name: {name}\n\
+         \x20           lane: {lane}\n\
          \x20           runtime_artifact: {runtime}\n\
          \x20           platform: {platform}\n\
          \x20           profile: {profile}\n\
          \x20           up_to: {up_to}\n\
          \x20           runs_on: [{runs_on}]\n\
          \x20           hosted: {hosted}\n\
+         {runner_profile}\
          {extra}",
         name = cell.name,
+        lane = cell.lane.as_str(),
         runtime = cell.runtime_artifact,
         platform = cell.platform,
         profile = cell.profile,
         up_to = cell.up_to,
         hosted = matrix.is_hosted(cell),
     )
+}
+
+/// The job-level `OST_CI_*` exports (CI evidence): every `ost` invocation in
+/// the job — and so every report.json it writes — records which support
+/// claim it proves (cell, lane, runner profile, resolved runs-on, pinned
+/// digests). `matrix.runner_profile` resolves to an empty string for
+/// label-based cells, which the report reader treats as absent.
+fn ci_env(with_plugin_artifact: bool) -> String {
+    let mut env = String::from(
+        "    env:\n\
+         \x20     OST_CI_CELL: ${{ matrix.name }}\n\
+         \x20     OST_CI_LANE: ${{ matrix.lane }}\n\
+         \x20     OST_CI_RUNNER_PROFILE: ${{ matrix.runner_profile }}\n\
+         \x20     OST_CI_RUNS_ON: ${{ join(matrix.runs_on, ',') }}\n\
+         \x20     OST_CI_RUNTIME_ARTIFACT: ${{ matrix.runtime_artifact }}",
+    );
+    if with_plugin_artifact {
+        env.push_str("\n      OST_CI_PLUGIN_ARTIFACT: ${{ matrix.plugin_artifact }}");
+    }
+    env
 }
 
 /// Render the support-matrix workflow (`scheduled`/`workflow_dispatch`
@@ -178,6 +206,7 @@ fn support_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportC
     if: github.event_name == '{event}'
     name: ${{{{ matrix.name }}}}
     runs-on: ${{{{ matrix.runs_on }}}}
+{env}
     strategy:
       # One broken support line must not hide the state of the others.
       fail-fast: false
@@ -206,7 +235,8 @@ fn support_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportC
         with:
           name: report-${{{{ matrix.name }}}}
           path: plugin-under-test/.strata/reports/
-"
+",
+        env = ci_env(true),
     )
 }
 
@@ -265,12 +295,14 @@ fn source_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportCe
     if: github.event_name == '{event}'
     name: ${{{{ matrix.name }}}}
     runs-on: ${{{{ matrix.runs_on }}}}
+{env}
     strategy:
       fail-fast: false
       matrix:
         include:
 {include}\
 {steps}",
+        env = ci_env(false),
         steps = source_steps(),
     )
 }
@@ -462,6 +494,17 @@ mod tests {
         assert!(a.contains("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"));
         assert!(!a.contains("@v"), "no mutable action tags");
 
+        // CI evidence: the job exports the OST_CI_* contract so every report
+        // written inside it records which support claim it proves.
+        let env = &doc["jobs"]["scheduled"]["env"];
+        assert_eq!(env["OST_CI_CELL"], "${{ matrix.name }}");
+        assert_eq!(env["OST_CI_LANE"], "${{ matrix.lane }}");
+        assert_eq!(
+            env["OST_CI_PLUGIN_ARTIFACT"],
+            "${{ matrix.plugin_artifact }}"
+        );
+        assert_eq!(entries[0]["lane"], "scheduled");
+
         // All cells are lane-default (scheduled): no source workflow.
         assert!(generate_source(&matrix()).is_none());
         assert_eq!(generate_github(&matrix()).len(), 1);
@@ -503,6 +546,16 @@ mod tests {
         assert_eq!(doc["permissions"]["contents"], "read");
         assert!(!a.contains("plugin publish"), "source CI never publishes");
         assert!(!a.contains("secrets."), "source CI uses no secrets");
+
+        // CI evidence: lane + profile travel in the include entry, and the
+        // job exports the OST_CI_* contract (no plugin digest on source CI —
+        // the bundle is built from the checkout).
+        assert_eq!(entries[0]["lane"], "pull_request");
+        assert_eq!(entries[0]["runner_profile"], "windows-hosted");
+        let env = &doc["jobs"]["pr"]["env"];
+        assert_eq!(env["OST_CI_CELL"], "${{ matrix.name }}");
+        assert_eq!(env["OST_CI_RUNS_ON"], "${{ join(matrix.runs_on, ',') }}");
+        assert!(env.get("OST_CI_PLUGIN_ARTIFACT").is_none());
 
         // The support half renders the scheduled cell alongside.
         let workflows = generate_github(&m);
