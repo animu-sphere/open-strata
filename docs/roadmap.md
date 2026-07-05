@@ -92,6 +92,38 @@ them. Each release is a coherent slice, not a phase boundary.
   - **Deferred:** macOS source-build ergonomics re-check (needs a Mac), OCI
     layout / ORAS transport, remote hosted registry, Kubernetes execution, full
     Jenkins command surface, and DCC host matrices.
+- ⬜ **v0.7.0 — CI contract v2 + 0.6.0 CI/lock/package fixes.** Planned from
+  dogfooding report #8 (2026-07-04) and the CI build-matrix policy notes
+  (2026-07-05): first make the 0.6.0 CI surface trustworthy, then promote
+  `openstrata.ci.yaml` from an artifact-seeded support matrix into a portable
+  CI contract that GitHub Actions merely renders. Details in the
+  [Phase 5 — v0.7.0 backlog](#phase-5--v070-backlog-from-dogfooding-report-8--the-ci-build-matrix-policy-notes).
+  Scope:
+  - **Correctness first (report #8):** valid + deterministic
+    `ost ci generate github` output, `strata.lock` extension versions that
+    match `runtime show` (the lockfile must be safe as a CI gate), idempotent
+    `ost plugin package` reruns, and placeholder digests that cannot be
+    mistaken for a usable matrix.
+  - **CI contract v2 (policy notes):** named runner profiles (`github-hosted`
+    image vs `self-hosted` labels — repo workflows stop hard-coding raw
+    `runs-on`) and lanes (`pull_request` / `main` / `scheduled` /
+    `workflow_dispatch`); a generated **source-CI** PR workflow that
+    builds+tests a plugin on a GitHub-hosted runner from a digest-pinned
+    runtime SDK artifact, keeping the 0.6.0 artifact-seeded workflow as the
+    scheduled **support** lane; hosted-runner billing acknowledgement +
+    `ost ci plan`; fork-PR safety; CI evidence (profile/lane/digests/outcome)
+    in reports.
+  - **Workspace + docs:** workspace-level plugin test orchestration
+    (`ost plugin test --workspace`) and a documented co-located schema
+    migration path for existing (non-scaffold) bundles.
+  - **Acceptance (from the policy notes):** a plugin PR builds on a
+    GitHub-hosted runner from a digest-pinned runtime artifact; cells reference
+    runner profiles, never raw labels; fork PRs cannot publish or reach
+    privileged self-hosted runners; a scheduled self-hosted cell revalidates a
+    pinned runtime/plugin pair; generated workflows are valid, deterministic
+    YAML.
+  - **Deferred:** Jenkins renderer, remote/OCI registry transport, macOS
+    ergonomics re-check, DCC host matrices.
 
 ## Phase 0 — Foundation ✅
 
@@ -545,6 +577,88 @@ first, keep the compiled schema flow as stretch unless it stays small.
     schedule + dispatch only); PR gate keeps cheap mock/static jobs
 - ⬜ Jenkinsfile template + matrix generation (after the GitHub Actions shape is
   proven) — `ost ci generate jenkins` on the same `openstrata.ci.yaml` model
+
+### Phase 5 — v0.7.0 backlog (from dogfooding report #8 + the CI build-matrix policy notes)
+
+**Targeted for v0.7.0.** A downstream `usd-plugin-workspace` pass on 0.6.0
+(report #8, 2026-07-04) exercised `ost ci init|validate|generate`, `ost lock
+--check`, and `ost plugin package`, and a follow-up policy read (2026-07-05,
+after a self-hosted-labeled PR workflow queued forever on a repo with no
+registered runner) settled the CI model: `openstrata.ci.yaml` + named runner
+profiles + digest-pinned artifacts is the portable contract; GitHub Actions is
+its first renderer, not the source of CI semantics. Ranked:
+
+- ⬜ **P0 — `ost ci generate github` emits invalid YAML.** The workflow
+  template joins the rendered `matrix.include` block with a `\` string-literal
+  continuation ([github.rs](../crates/ost-ci/src/github.rs)); Rust's
+  continuation also strips the next line's leading whitespace, so `steps:`
+  lands at column 0 instead of under `jobs.cell`. Downstream repos cannot
+  commit the generated workflow without hand-patching. Fix and add a
+  parse-the-generated-YAML assertion to the e2e test so the renderer cannot
+  regress to invalid output.
+- ⬜ **P0 — `strata.lock` extension versions don't match `runtime show`.**
+  `build_lock` ([lock.rs](../crates/ost-cli/src/commands/lock.rs)) resolves
+  extensions from the static catalog (`ost_extension::resolve`), not from the
+  pulled runtime's manifest — an adopted OpenUSD 26.08 runtime locks as the
+  catalog's certified `25.05.01`, and `ost lock --check` still reports
+  `up_to_date: true` because `--check` re-derives from the same source. Record
+  the runtime manifest's real extension versions (or omit versions that cannot
+  be derived from the same source of truth as `runtime show`) so the lockfile
+  is safe as a CI gate.
+- ⬜ **P1 — `ost plugin package` reruns are not idempotent.** A second package
+  on Windows fails with access-denied (os error 5) at the reused
+  `.strata/targets/<id>/package-stage`
+  ([plugin.rs](../crates/ost-cli/src/commands/plugin.rs)). Clean or replace the
+  stage safely per invocation (fresh staging dir, or readonly-attribute-
+  tolerant removal before restaging).
+- ⬜ **P1 — placeholder digests pass validation too quietly.** `ost ci init`
+  writes all-zero example digests and `ost ci validate` (without `--resolve`)
+  accepts them silently — easy to mistake for a usable matrix. Warn on
+  `sha256:000…0` placeholders even in syntax-only validation, and have
+  `ci generate github` refuse them unless `--allow-placeholders` is passed.
+- ⬜ **P1 — runner profiles + lanes in `openstrata.ci.yaml`.** Cells stop
+  carrying raw host labels and instead reference named `runners:` profiles —
+  `kind: github-hosted` (fixed image, e.g. `windows-2022`, `cost_class:
+  metered`, billing acknowledgement) or `kind: self-hosted` (labels,
+  capabilities, trust) — and declare a `lane` (`pull_request` / `main` /
+  `scheduled` / `workflow_dispatch`). The GitHub renderer maps profiles to
+  `runs-on`; support cells stay explicit support claims, never an inferred
+  Cartesian product; `workflow_dispatch` accepts approved choices only (no
+  arbitrary runner labels, commands, or artifact URLs).
+- ⬜ **P1 — source-CI lane: GitHub-hosted SDK build jobs.** Generate a PR
+  workflow that runs without self-hosted seeding: checkout → install/restore
+  `ost` → `ost ci validate` → `ost lock --check` → `ost artifact verify` +
+  `ost runtime pull --from-artifact <digest>` (a self-contained runtime SDK
+  artifact) → `ost plugin build` → `ost plugin test --up-to <level>` →
+  `ost plugin package` (never publish) → upload reports. The 0.6.0
+  artifact-seeded workflow remains the scheduled **support** lane for real
+  OpenUSD installs, DCC hosts, and GPU validation on self-hosted runners.
+- ⬜ **P2 — hosted-runner cost visibility + fork-PR safety.** `ost ci validate`
+  warns when a `github-hosted` profile lacks billing acknowledgement (error for
+  publish-capable cells); generated workflows emit a notice before
+  hosted-runner work starts. Generated PR workflows must never publish/promote
+  artifacts, expose secrets, target privileged self-hosted runners, or accept
+  user-supplied `runs-on`/commands/URLs; fork PRs are build-only unless a
+  maintainer re-runs a protected lane.
+- ⬜ **P2 — `ost ci plan --json`.** Preflight execution facts without money
+  estimates: hosted job count, operator-managed runner classes, whether billing
+  acknowledgement is required, publish-capable job count.
+- ⬜ **P2 — CI evidence in reports.** Verification reports record the runner
+  profile + resolved backend runner, lane, runtime/plugin digests,
+  target/profile, verification level, validation result, and package
+  provenance — so a support claim is reconstructible from its report.
+- ⬜ **P2 — workspace-level plugin testing.** `ost plugin test --workspace`
+  (or `ost workspace test`) discovers the workspace's plugin bundles (root +
+  `plugins/*`, matching the v0.5.0 CMake discovery) and runs their build/test
+  gates — the natural CI surface once one repo hosts schema, resolver, and
+  file-format bundles.
+- ⬜ **P2 — document the co-located schema migration path for existing
+  bundles.** `ost plugin schema add` covers the scaffold case; existing bundles
+  need the non-scaffold checklist: add `schema.source` + each
+  `usd-schema:<Type>` to `provides`, include `OPENSTRATA_SCHEMA_SOURCES_FILE`
+  from CMake, choose build-tree-only vs committed generated sources, merge
+  generated `Types` into the existing `plugInfo.json` (beside the
+  `SdfFileFormat` type), and stage `generatedSchema.usda` next to it.
 
 ## Phase 6 — Artifact registry 🚧
 

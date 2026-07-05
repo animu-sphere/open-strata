@@ -82,7 +82,7 @@ jobs:
       matrix:
         include:
 {include}\
-    steps:
+\x20   steps:
       - name: Check the pinned artifacts are in the local registry
         run: |
           ost artifact show ${{{{ matrix.runtime_artifact }}}}
@@ -164,6 +164,13 @@ mod tests {
         // Labels win; a label-less cell falls back to the hosted runner.
         assert_eq!(entries[0]["runs_on"].as_sequence().unwrap().len(), 2);
         assert_eq!(entries[1]["runs_on"][0], "windows-latest");
+
+        // `steps` must live under the job. A column-0 `steps:` (the v0.6.0
+        // string-continuation bug) still *parses* as YAML — it just becomes a
+        // stray top-level key — so assert placement, not merely parseability.
+        let steps = doc["jobs"]["cell"]["steps"].as_sequence().unwrap();
+        assert_eq!(steps.len(), 6);
+        assert!(doc.get("steps").is_none(), "no stray top-level steps key");
 
         // Never a Cartesian product: only `include`, no free axes.
         let m = doc["jobs"]["cell"]["strategy"]["matrix"]
