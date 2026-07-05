@@ -102,24 +102,46 @@ pub fn run(args: LockArgs, fmt: Format) -> Result<()> {
 pub(crate) fn build_lock(root: &Utf8Path, platform: &str, profile: &str) -> Result<Lock> {
     let (_target, r) = build_target(platform, profile)?;
 
-    let (digest_str, validation) = read_runtime_state(&r.prefix);
+    let manifest = read_runtime_manifest(&r.prefix);
+    let (digest_str, validation) = match &manifest {
+        Some(m) => (m.digest.clone(), map_validation(m.validation)),
+        None => (String::new(), Validation::Pending),
+    };
 
     // Hash the companion uv.lock if the project has one.
     let uv_lock_hash = std::fs::read(root.join("uv.lock").as_std_path())
         .ok()
         .map(|bytes| digest::sha256_hex(&bytes));
 
-    let catalog = ost_extension::load_all()?;
-    let resolution = ost_extension::resolve(&catalog, &r.capabilities);
-    let extensions: Vec<LockExtension> = resolution
-        .extensions
-        .iter()
-        .map(|e| LockExtension {
-            id: e.id.clone(),
-            version: e.version.clone(),
-            features: e.features.iter().cloned().collect(),
-        })
-        .collect();
+    // Pin extensions from the pulled runtime's manifest — the same source of
+    // truth `runtime show` reports — so an adopted install's real versions
+    // (e.g. OpenUSD 26.08) are what `--check` gates on, not the catalog's
+    // certified point. The catalog is only the pre-pull fallback.
+    let extensions: Vec<LockExtension> =
+        match manifest.as_ref().filter(|m| !m.extensions.is_empty()) {
+            Some(m) => m
+                .extensions
+                .iter()
+                .map(|e| LockExtension {
+                    id: e.id.clone(),
+                    version: e.version.clone(),
+                    features: e.features.clone(),
+                })
+                .collect(),
+            None => {
+                let catalog = ost_extension::load_all()?;
+                let resolution = ost_extension::resolve(&catalog, &r.capabilities);
+                resolution
+                    .extensions
+                    .iter()
+                    .map(|e| LockExtension {
+                        id: e.id.clone(),
+                        version: e.version.clone(),
+                        features: e.features.iter().cloned().collect(),
+                    })
+                    .collect()
+            }
+        };
 
     Ok(Lock {
         lock_version: 1,
@@ -154,15 +176,11 @@ fn render(lock: &Lock) -> Result<String> {
     Ok(format!("{json}\n"))
 }
 
-/// Read the runtime's digest and validation status from its manifest, if pulled.
-fn read_runtime_state(prefix: &Utf8Path) -> (String, Validation) {
-    let manifest = std::fs::read_to_string(prefix.join(MANIFEST_FILE).as_std_path())
+/// Read the pulled runtime's manifest, if present under the store prefix.
+fn read_runtime_manifest(prefix: &Utf8Path) -> Option<RuntimeManifest> {
+    std::fs::read_to_string(prefix.join(MANIFEST_FILE).as_std_path())
         .ok()
-        .and_then(|s| RuntimeManifest::from_json(&s).ok());
-    match manifest {
-        Some(m) => (m.digest, map_validation(m.validation)),
-        None => (String::new(), Validation::Pending),
-    }
+        .and_then(|s| RuntimeManifest::from_json(&s).ok())
 }
 
 fn map_validation(v: ost_runtime::Validation) -> Validation {

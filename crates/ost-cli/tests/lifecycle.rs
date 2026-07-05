@@ -514,6 +514,62 @@ fn generated_plugin_scaffolds_and_inspects() {
     assert!(find_first(&dist, "SHA256SUMS").is_some());
 }
 
+/// `ost lock` pins extensions from the pulled runtime's manifest — the same
+/// source of truth `runtime show` reports — so an install whose recorded
+/// extension version drifts (e.g. a re-adopted newer OpenUSD) makes
+/// `lock --check` fail instead of silently agreeing with the catalog's
+/// certified point (dogfooding report #8: runtime 26.08, lock 25.05.01,
+/// `--check` still `up_to_date: true`).
+#[test]
+fn lock_pins_extensions_from_the_runtime_manifest() {
+    let sb = Sandbox::new("lockext");
+    init_and_pull(&sb);
+
+    let lock = sb.ost(&["lock"]);
+    assert!(lock.status.success(), "lock failed:\n{}", out_text(&lock));
+    let check = sb.ost(&["lock", "--check"]);
+    assert!(
+        check.status.success(),
+        "fresh lock is up to date:\n{}",
+        out_text(&check)
+    );
+
+    // Simulate install drift: rewrite the manifest's openusd version the way
+    // a re-adopt of a newer install would record it.
+    let manifest_path = find_first(&sb.home, "runtime.json").expect("pulled runtime manifest");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let ext = doc["extensions"]
+        .as_array_mut()
+        .expect("manifest records extensions")
+        .iter_mut()
+        .find(|e| e["id"] == "openusd")
+        .expect("openusd extension recorded");
+    ext["version"] = "99.99".into();
+    std::fs::write(&manifest_path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+
+    // The drift is visible to --check ...
+    let check = sb.ost(&["lock", "--check"]);
+    assert!(
+        !check.status.success(),
+        "stale lock must fail --check after manifest drift:\n{}",
+        out_text(&check)
+    );
+
+    // ... and a refresh pins the manifest's version, not the catalog's.
+    let relock = sb.ost(&["lock"]);
+    assert!(
+        relock.status.success(),
+        "relock failed:\n{}",
+        out_text(&relock)
+    );
+    let lock_text = std::fs::read_to_string(sb.work_file("strata.lock")).unwrap();
+    assert!(
+        lock_text.contains("99.99"),
+        "lock records the runtime manifest's extension version:\n{lock_text}"
+    );
+}
+
 /// Find the first file under `dir` whose name ends with `suffix`.
 fn find_first(dir: &Path, suffix: &str) -> Option<PathBuf> {
     let mut stack = vec![dir.to_path_buf()];
