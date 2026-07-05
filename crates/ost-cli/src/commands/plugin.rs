@@ -1362,9 +1362,44 @@ fn merge_cohosted_schema_resources(
 
 fn reset_dir(dir: &Utf8Path) -> Result<()> {
     if dir.as_std_path().exists() {
-        std::fs::remove_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))?;
+        remove_dir_all_robust(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))?;
     }
     std::fs::create_dir_all(dir.as_std_path()).map_err(|e| Error::io(dir.to_string(), e))
+}
+
+/// `remove_dir_all` that survives read-only entries on Windows. The staging
+/// copies use `fs::copy`, which preserves the source's read-only attribute, and
+/// Windows refuses to delete a read-only file — so a rerun over an existing
+/// stage failed with access-denied (os error 5). Clear the attribute and retry
+/// once; other platforms delete by parent-dir permission and need no retry.
+fn remove_dir_all_robust(dir: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        #[cfg(windows)]
+        Err(_) => {
+            clear_readonly_recursive(dir)?;
+            std::fs::remove_dir_all(dir)
+        }
+        other => other,
+    }
+}
+
+#[cfg(windows)]
+fn clear_readonly_recursive(path: &std::path::Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    let mut perms = meta.permissions();
+    if perms.readonly() {
+        // Windows-only code: this clears FILE_ATTRIBUTE_READONLY; the lint's
+        // unix world-writable concern cannot apply under cfg(windows).
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(path, perms)?;
+    }
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            clear_readonly_recursive(&entry?.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn merge_schema_types_into_test_plug_infos(
@@ -2459,5 +2494,26 @@ mod tests {
         let mut dir = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
         dir.push(format!("ost-cli-{tag}-{}-{nanos}", std::process::id()));
         dir
+    }
+
+    /// A `package` rerun resets the previous stage. On Windows the staged
+    /// copies keep the source's read-only attribute, which used to fail the
+    /// reset with access-denied (dogfooding report #8); `reset_dir` must clear
+    /// it and proceed.
+    #[test]
+    fn reset_dir_survives_readonly_stage_entries() {
+        let stage = unique_tmp("stage");
+        let file = stage.join("resources").join("plugInfo.json");
+        std::fs::create_dir_all(file.parent().unwrap().as_std_path()).unwrap();
+        std::fs::write(file.as_std_path(), "{}").unwrap();
+        let mut perms = std::fs::metadata(file.as_std_path()).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(file.as_std_path(), perms).unwrap();
+
+        reset_dir(&stage).expect("reset over a read-only staged file");
+        assert!(stage.as_std_path().is_dir(), "stage was recreated");
+        assert!(!file.as_std_path().exists(), "old contents were removed");
+
+        std::fs::remove_dir_all(stage.as_std_path()).unwrap();
     }
 }
