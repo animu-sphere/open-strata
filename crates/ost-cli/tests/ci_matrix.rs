@@ -272,6 +272,81 @@ cells:
     }
 }
 
+/// `ost ci plan` reports execution facts (lanes, runner classes, billing)
+/// without rendering workflows or estimating money.
+#[test]
+fn plan_reports_execution_facts() {
+    let sb = Sandbox::new("plan");
+    let lanes_yaml = format!(
+        "\
+schema: 1
+runners:
+  windows-hosted:
+    kind: github-hosted
+    image: windows-2022
+  usd-linux-real:
+    kind: self-hosted
+    labels: [self-hosted, linux, x64, usd-26]
+cells:
+  - name: plugin-pr-windows
+    lane: pull_request
+    runner: windows-hosted
+    runtime_artifact: sha256:{a}
+    bundle: plugins/toy
+    platform: cy2026
+    profile: usd
+    up_to: 4
+  - name: linux-usd-support
+    runner: usd-linux-real
+    runtime_artifact: sha256:{a}
+    plugin_artifact: sha256:{b}
+    platform: cy2026
+    profile: usd
+",
+        a = "ab".repeat(32),
+        b = "cd".repeat(32)
+    );
+    std::fs::write(sb.base.join("lanes.yaml"), &lanes_yaml).unwrap();
+
+    let v = stdout_json(&sb.ost(&["--json", "ci", "plan", "--matrix", "lanes.yaml"]));
+    let d = &v["data"];
+    assert_eq!(d["cells"], 2);
+    assert_eq!(d["lanes"]["pull_request"], 1);
+    assert_eq!(d["lanes"]["scheduled"], 1);
+    assert_eq!(d["hosted_jobs"], 1);
+    assert_eq!(
+        d["metered_runner_classes"],
+        serde_json::json!(["windows-hosted"])
+    );
+    assert_eq!(
+        d["operator_managed_runner_classes"],
+        serde_json::json!(["usd-linux-real"])
+    );
+    assert_eq!(d["requires_billing_acknowledgement"], true);
+    assert_eq!(d["publish_capable_jobs"], 0);
+    assert_eq!(d["workflows"].as_array().unwrap().len(), 2);
+
+    // Acknowledged billing flips the requirement off.
+    let acked = lanes_yaml.replace(
+        "    image: windows-2022\n",
+        "    image: windows-2022\n    billing:\n      acknowledgement: required\n",
+    );
+    std::fs::write(sb.base.join("acked.yaml"), &acked).unwrap();
+    let v = stdout_json(&sb.ost(&["--json", "ci", "plan", "--matrix", "acked.yaml"]));
+    assert_eq!(v["data"]["requires_billing_acknowledgement"], false);
+
+    // A label-only support matrix plans one workflow and no hosted jobs.
+    let v = stdout_json(&sb.ost(&["--json", "ci", "init"]));
+    assert_eq!(v["data"]["created"], true);
+    let v = stdout_json(&sb.ost(&["--json", "ci", "plan", "--matrix", "openstrata.ci.yaml"]));
+    assert_eq!(v["data"]["hosted_jobs"], 0);
+    assert_eq!(
+        v["data"]["operator_managed_runner_classes"],
+        serde_json::json!(["self-hosted, linux, x64"])
+    );
+    assert_eq!(v["data"]["workflows"].as_array().unwrap().len(), 1);
+}
+
 #[test]
 fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     let sb = Sandbox::new("resolve");

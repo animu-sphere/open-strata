@@ -134,8 +134,12 @@ pub enum PluginCmd {
     },
     /// Orchestrate the verification pyramid (L0..L6) and write a report.
     Test {
-        /// Path to the bundle directory.
-        bundle: String,
+        /// Path to the bundle directory (omit with --workspace).
+        bundle: Option<String>,
+        /// Discover and test every bundle in the workspace: immediate
+        /// subdirectories and plugins/* holding an openstrata.plugin.yaml.
+        #[arg(long)]
+        workspace: bool,
         /// Additional plugin bundle(s) to include in the session env.
         #[arg(long = "with")]
         with: Vec<String>,
@@ -228,11 +232,21 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
         } => run_session(&bundle, &with, target, profile, command, fmt),
         PluginCmd::Test {
             bundle,
+            workspace,
             with,
             target,
             profile,
             up_to,
-        } => test(&bundle, &with, target, profile, up_to, fmt),
+        } => match (workspace, bundle) {
+            (true, Some(_)) => Err(Error::usage(
+                "--workspace discovers bundles itself — drop the bundle path",
+            )),
+            (true, None) => test_workspace(&with, target, profile, up_to, fmt),
+            (false, Some(bundle)) => test(&bundle, &with, target, profile, up_to, fmt),
+            (false, None) => Err(Error::usage(
+                "missing bundle path (or pass --workspace to test every bundle)",
+            )),
+        },
         PluginCmd::View {
             bundle,
             with,
@@ -989,47 +1003,10 @@ fn test(
     let bundle = load_bundle(bundle_path)?;
     let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
-
     let resolved = resolve_runtime(target, profile)?;
-    let ctx = resolved.as_ref().map(runtime_context).unwrap_or_default();
-    let session = match &resolved {
-        Some(r) => session_env_with(&r.env, &bundle, &with_bundles, host.os),
-        None => standalone_session_env(&bundle, &with_bundles, host.os),
-    };
 
-    // L0 + L1 are static. L2..up_to execute the runtime's tools — but only when a
-    // real runtime is present; otherwise keep the honest SKIPs.
-    let mut report = diagnose(&bundle, &ctx, 1);
-    if up_to >= 2 {
-        if ctx.real {
-            let probe = ProcessProbe::new(session.resolve());
-            let tools = locate_tools(resolved.as_ref(), &probe);
-            let sess = Session {
-                probe: &probe,
-                usdcat: tools.usdcat,
-                python: tools.python,
-                usdview: tools.usdview,
-                has_display: has_display(host.os),
-            };
-            report
-                .diagnostics
-                .extend(run_levels(&bundle, &sess, up_to.min(6)));
-        } else {
-            // Reuse diagnose's SKIP placeholders for the execution levels.
-            let skips = diagnose(&bundle, &ctx, up_to.min(5))
-                .diagnostics
-                .into_iter()
-                .filter(|d| d.level >= 2);
-            report.diagnostics.extend(skips);
-        }
-    }
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let reports_root = bundle.root.join(STATE_DIR).join("reports");
-    let report_dir = ost_plugin::write_report(&reports_root, &bundle, &report, &session, now)?;
+    let (report, report_dir) =
+        test_bundle(&bundle, &with_bundles, resolved.as_ref(), &host, up_to)?;
 
     if fmt.is_json() {
         let mut body = ost_plugin::report_json(&bundle, &report);
@@ -1045,6 +1022,154 @@ fn test(
         println!("\nReport: {report_dir}");
     }
     finish(&report)
+}
+
+/// Diagnose one bundle (L0..`up_to`) in the resolved session and write its
+/// report — the shared core of `plugin test` and `plugin test --workspace`.
+fn test_bundle(
+    bundle: &Bundle,
+    with_bundles: &[Bundle],
+    resolved: Option<&crate::commands::Resolved>,
+    host: &Host,
+    up_to: u8,
+) -> Result<(DoctorReport, Utf8PathBuf)> {
+    let ctx = resolved.map(runtime_context).unwrap_or_default();
+    let session = match resolved {
+        Some(r) => session_env_with(&r.env, bundle, with_bundles, host.os),
+        None => standalone_session_env(bundle, with_bundles, host.os),
+    };
+
+    // L0 + L1 are static. L2..up_to execute the runtime's tools — but only when a
+    // real runtime is present; otherwise keep the honest SKIPs.
+    let mut report = diagnose(bundle, &ctx, 1);
+    if up_to >= 2 {
+        if ctx.real {
+            let probe = ProcessProbe::new(session.resolve());
+            let tools = locate_tools(resolved, &probe);
+            let sess = Session {
+                probe: &probe,
+                usdcat: tools.usdcat,
+                python: tools.python,
+                usdview: tools.usdview,
+                has_display: has_display(host.os),
+            };
+            report
+                .diagnostics
+                .extend(run_levels(bundle, &sess, up_to.min(6)));
+        } else {
+            // Reuse diagnose's SKIP placeholders for the execution levels.
+            let skips = diagnose(bundle, &ctx, up_to.min(5))
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.level >= 2);
+            report.diagnostics.extend(skips);
+        }
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let reports_root = bundle.root.join(STATE_DIR).join("reports");
+    let report_dir = ost_plugin::write_report(&reports_root, bundle, &report, &session, now)?;
+    Ok((report, report_dir))
+}
+
+/// `ost plugin test --workspace` — discover the workspace's bundles and run
+/// the verification pyramid on each, mirroring the `usd-plugin-workspace`
+/// CMake discovery (immediate subdirectories and `plugins/*`).
+fn test_workspace(
+    with_paths: &[String],
+    target: Option<String>,
+    profile: Option<String>,
+    up_to: u8,
+    fmt: Format,
+) -> Result<()> {
+    let roots = discover_workspace_bundles(Utf8Path::new("."))?;
+    if roots.is_empty() {
+        return Err(Error::precondition(
+            "no plugin bundles found in immediate subdirectories or plugins/*",
+        )
+        .with_hint("run from the workspace root, or pass a bundle path instead of --workspace"));
+    }
+    let with_bundles = load_with_bundles(with_paths)?;
+    let host = Host::detect();
+    // One resolution for the whole workspace: every bundle tests against the
+    // same runtime session base.
+    let resolved = resolve_runtime(target, profile)?;
+
+    let mut results: Vec<(Bundle, DoctorReport, Utf8PathBuf)> = Vec::new();
+    for root in &roots {
+        let bundle = Bundle::load(root)?;
+        let (report, report_dir) =
+            test_bundle(&bundle, &with_bundles, resolved.as_ref(), &host, up_to)?;
+        if !fmt.is_json() {
+            println!("== {} ({root}) ==", bundle.manifest.plugin.name);
+            print_report(&bundle, &report);
+            println!("Report: {report_dir}\n");
+        }
+        results.push((bundle, report, report_dir));
+    }
+
+    let failed = results.iter().filter(|(_, r, _)| !r.passed()).count();
+    let all_passed = failed == 0;
+    if fmt.is_json() {
+        let bundles: Vec<serde_json::Value> = results
+            .iter()
+            .map(|(bundle, report, dir)| {
+                let mut body = ost_plugin::report_json(bundle, report);
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert(
+                        "report_dir".into(),
+                        serde_json::Value::String(dir.to_string()),
+                    );
+                }
+                body
+            })
+            .collect();
+        output::report(
+            all_passed,
+            &serde_json::json!({
+                "workspace": true,
+                "bundles": bundles,
+                "total": results.len(),
+                "failed": failed,
+            }),
+        );
+    } else {
+        println!("Workspace: {} bundle(s), {failed} failed", results.len());
+    }
+    if all_passed {
+        Ok(())
+    } else {
+        // Reports were already emitted; aggregate like a single failing test.
+        std::process::exit(ost_core::Category::Validation.exit_code() as i32);
+    }
+}
+
+/// Bundle directories of a workspace: immediate subdirectories and
+/// `plugins/*` entries holding an `openstrata.plugin.yaml`, sorted for
+/// deterministic ordering.
+fn discover_workspace_bundles(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
+    let mut found: Vec<Utf8PathBuf> = Vec::new();
+    let scan = |dir: &Utf8Path, found: &mut Vec<Utf8PathBuf>| -> Result<()> {
+        let Ok(entries) = std::fs::read_dir(dir.as_std_path()) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
+                continue;
+            };
+            if path.is_dir() && path.join(ost_plugin::PLUGIN_MANIFEST).is_file() {
+                found.push(path);
+            }
+        }
+        Ok(())
+    };
+    scan(root, &mut found)?;
+    scan(&root.join("plugins"), &mut found)?;
+    found.sort();
+    Ok(found)
 }
 
 /// `ost plugin view` — open a fixture in usdview inside the runtime session.

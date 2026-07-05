@@ -4,8 +4,9 @@
 //! - `init`     scaffold a commented `openstrata.ci.yaml` starter matrix.
 //! - `validate` structural checks; `--resolve` additionally requires every
 //!   pinned digest to exist in the local artifact registry.
-//! - `generate github` render the matrix into a scheduled GitHub Actions
-//!   workflow with one job per support cell.
+//! - `plan`     preflight execution facts (lanes, runners, billing) without
+//!   rendering or estimating money.
+//! - `generate github` render the matrix into workflows, one per lane family.
 //!
 //! The matrix is the single source of truth; generated workflows carry a
 //! "regenerate, don't edit" banner. Jenkins generation lands later on the same
@@ -15,7 +16,10 @@ use camino::Utf8PathBuf;
 use clap::Subcommand;
 
 use ost_artifact::{ArtifactKind, ArtifactStore};
-use ost_ci::{generate_github, starter_matrix, SupportMatrix, MATRIX_FILE};
+use ost_ci::{
+    generate_github, starter_matrix, Lane, Publish, SupportMatrix, MATRIX_FILE,
+    SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
+};
 use ost_core::{Error, Result};
 
 use crate::output::{self, Format};
@@ -36,6 +40,12 @@ pub enum CiCmd {
         /// Also require every pinned digest to resolve in the local registry.
         #[arg(long)]
         resolve: bool,
+    },
+    /// Report preflight execution facts (lanes, runners, billing).
+    Plan {
+        /// Path to the matrix file. Defaults to ./openstrata.ci.yaml.
+        #[arg(long)]
+        matrix: Option<String>,
     },
     /// Generate CI configuration from the support matrix.
     #[command(subcommand)]
@@ -69,6 +79,7 @@ pub fn run(cmd: CiCmd, fmt: Format) -> Result<()> {
     match cmd {
         CiCmd::Init { dir } => init(dir.as_deref(), fmt),
         CiCmd::Validate { matrix, resolve } => validate(matrix.as_deref(), resolve, fmt),
+        CiCmd::Plan { matrix } => plan(matrix.as_deref(), fmt),
         CiCmd::Generate(GenerateCmd::Github {
             matrix,
             out,
@@ -232,6 +243,115 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
     if !ok {
         // The report above is this command's single document (§14.3).
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
+    }
+    Ok(())
+}
+
+/// `ost ci plan` — cost/trust/execution facts a maintainer can preflight
+/// before generating workflows. Facts only: counts, referenced runner
+/// classes, and whether billing acknowledgement is still missing — never a
+/// currency estimate (billing depends on plan/visibility/runner size).
+fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
+    let (path, matrix) = load_matrix(matrix_flag)?;
+
+    // Referenced runner classes, partitioned by kind (deterministic order:
+    // first reference wins, cells are ordered). Named runner profiles report
+    // their profile name; legacy `host` cells report the rendered runs-on
+    // labels so `plan` stays faithful to generated workflows.
+    let mut metered: Vec<String> = Vec::new();
+    let mut operator: Vec<String> = Vec::new();
+    let push_unique = |list: &mut Vec<String>, value: String| {
+        if !list.iter().any(|n| n == &value) {
+            list.push(value);
+        }
+    };
+    for cell in &matrix.cells {
+        if let Some(name) = cell.runner.as_deref() {
+            let Some(profile) = matrix.runners.get(name) else {
+                continue;
+            };
+            let list = if profile.is_hosted() {
+                &mut metered
+            } else {
+                &mut operator
+            };
+            push_unique(list, name.to_string());
+        } else if cell.host.labels.is_empty() {
+            push_unique(&mut metered, cell.host.runs_on().join(", "));
+        } else {
+            push_unique(&mut operator, cell.host.runs_on().join(", "));
+        }
+    }
+
+    let hosted_jobs = matrix.cells.iter().filter(|c| matrix.is_hosted(c)).count();
+    let publish_capable = matrix
+        .cells
+        .iter()
+        .filter(|c| c.publish != Publish::Never)
+        .count();
+    let hosted_unacknowledged = matrix.hosted_ack_missing();
+    let lane_count = |lane: Lane| matrix.cells.iter().filter(|c| c.lane == lane).count();
+    let lanes = serde_json::json!({
+        "pull_request": lane_count(Lane::PullRequest),
+        "main": lane_count(Lane::Main),
+        "scheduled": lane_count(Lane::Scheduled),
+        "workflow_dispatch": lane_count(Lane::WorkflowDispatch),
+    });
+    let mut workflows: Vec<&str> = Vec::new();
+    if !matrix.support_cells().is_empty() {
+        workflows.push(WORKFLOW_PATH);
+    }
+    if !matrix.source_cells().is_empty() {
+        workflows.push(SOURCE_WORKFLOW_PATH);
+    }
+
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "matrix": path.to_string(),
+            "cells": matrix.cells.len(),
+            "lanes": lanes,
+            "workflows": workflows,
+            "hosted_jobs": hosted_jobs,
+            "metered_runner_classes": metered,
+            "operator_managed_runner_classes": operator,
+            "hosted_unacknowledged": hosted_unacknowledged,
+            "requires_billing_acknowledgement": !hosted_unacknowledged.is_empty(),
+            "publish_capable_jobs": publish_capable,
+        }));
+        return Ok(());
+    }
+
+    println!("Plan for {path}: {} cell(s)", matrix.cells.len());
+    println!(
+        "  lanes:            pull_request {}, main {}, scheduled {}, workflow_dispatch {}",
+        lane_count(Lane::PullRequest),
+        lane_count(Lane::Main),
+        lane_count(Lane::Scheduled),
+        lane_count(Lane::WorkflowDispatch),
+    );
+    println!("  workflows:        {}", workflows.join(", "));
+    println!("  hosted jobs:      {hosted_jobs} (metered classes: {})", {
+        if metered.is_empty() {
+            "none".to_string()
+        } else {
+            metered.join(", ")
+        }
+    });
+    println!(
+        "  operator-managed: {}",
+        if operator.is_empty() {
+            "none".to_string()
+        } else {
+            operator.join(", ")
+        }
+    );
+    println!("  publish-capable:  {publish_capable} job(s)");
+    if !hosted_unacknowledged.is_empty() {
+        println!(
+            "  NOTE: billing acknowledgement missing for: {}",
+            hosted_unacknowledged.join(", ")
+        );
+        println!("        set runners.<name>.billing.acknowledgement: required");
     }
     Ok(())
 }
