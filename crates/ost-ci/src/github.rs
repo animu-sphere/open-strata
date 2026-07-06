@@ -16,7 +16,7 @@
 //! is pinned to a full commit SHA (SEC-004), reusing the SHAs this repository
 //! itself pins.
 
-use crate::matrix::{Lane, SupportCell, SupportMatrix};
+use crate::matrix::{Bootstrap, Lane, SupportCell, SupportMatrix};
 
 /// Default path of the generated support-matrix workflow.
 pub const WORKFLOW_PATH: &str = ".github/workflows/ost-support-matrix.yml";
@@ -30,6 +30,9 @@ const CHECKOUT: &str = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e
 /// `actions/upload-artifact`, pinned (SEC-004). Matches release.yml.
 const UPLOAD_ARTIFACT: &str =
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7";
+
+/// `actions/cache`, pinned (SEC-004). Matches ci.yml.
+const CACHE: &str = "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0";
 
 /// The hosted-runner billing notice step, gated per include entry so
 /// self-hosted cells in the same job stay quiet.
@@ -240,23 +243,165 @@ fn support_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportC
     )
 }
 
+/// The hosted `ost` bootstrap step (transport plan, "Bootstrap policy"):
+/// download the version-pinned release asset for the runner's platform,
+/// verify its checksum (against the release's published `.sha256`, plus the
+/// matrix's exact-byte pin when one is declared), put the binary on PATH,
+/// and save bootstrap evidence. A failure here is a *bootstrap* failure —
+/// its own step — never conflated with an artifact/runtime failure.
+fn bootstrap_step(bootstrap: &Bootstrap) -> String {
+    let ost = &bootstrap.ost;
+    let mut pin_lines = String::new();
+    for (triple, hex) in &ost.sha256 {
+        pin_lines.push_str(&format!("            {triple}) pinned=\"{hex}\" ;;\n"));
+    }
+    format!(
+        "\
+\x20     - name: Bootstrap ost {version} (pinned release asset, checksum-verified)
+        if: ${{{{ matrix.hosted }}}}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          case \"${{RUNNER_OS}}-${{RUNNER_ARCH}}\" in
+            Linux-X64)   triple=x86_64-unknown-linux-musl ; ext=tar.xz ;;
+            macOS-ARM64) triple=aarch64-apple-darwin ; ext=tar.xz ;;
+            macOS-X64)   triple=x86_64-apple-darwin ; ext=tar.xz ;;
+            Windows-X64) triple=x86_64-pc-windows-msvc ; ext=zip ;;
+            *) echo \"::error title=ost bootstrap::no ost release asset for ${{RUNNER_OS}}-${{RUNNER_ARCH}}\" ; exit 1 ;;
+          esac
+          pinned=\"\"
+          case \"$triple\" in
+{pin_lines}\
+\x20           *) : ;;
+          esac
+          asset=\"ost-cli-${{triple}}.${{ext}}\"
+          base=\"https://github.com/{repository}/releases/download/v{version}\"
+          curl -fsSLo \"$asset\" \"$base/$asset\"
+          curl -fsSLo \"$asset.sha256\" \"$base/$asset.sha256\"
+          actual=\"$( (command -v sha256sum > /dev/null && sha256sum \"$asset\" || shasum -a 256 \"$asset\") | cut -d' ' -f1 )\"
+          published=\"$(cut -d' ' -f1 \"$asset.sha256\")\"
+          if [ \"$actual\" != \"$published\" ]; then
+            echo \"::error title=ost bootstrap::$asset hashes to $actual but the release publishes $published\" ; exit 1
+          fi
+          if [ -n \"$pinned\" ] && [ \"$actual\" != \"$pinned\" ]; then
+            echo \"::error title=ost bootstrap::$asset hashes to $actual but the CI contract pins $pinned\" ; exit 1
+          fi
+          mkdir -p .ost-ci/bootstrap-bin
+          if [ \"$ext\" = \"zip\" ]; then
+            powershell -NoProfile -Command \"Expand-Archive -LiteralPath '$asset' -DestinationPath '.ost-ci/bootstrap-bin' -Force\"
+          else
+            tar -xf \"$asset\" -C .ost-ci/bootstrap-bin
+          fi
+          bin=\"$(find .ost-ci/bootstrap-bin -type f \\( -name ost -o -name ost.exe \\) | head -n 1)\"
+          if [ -z \"$bin\" ]; then echo \"::error title=ost bootstrap::no ost binary inside $asset\" ; exit 1 ; fi
+          chmod +x \"$bin\" 2> /dev/null || true
+          echo \"$(cd \"$(dirname \"$bin\")\" && pwd)\" >> \"$GITHUB_PATH\"
+          printf '{{\"schema\":1,\"pinned_version\":\"%s\",\"asset\":\"%s\",\"sha256\":\"%s\"}}\\n' \"{version}\" \"$asset\" \"$actual\" > .ost-ci/bootstrap.json
+",
+        version = ost.version,
+        repository = ost.repository,
+    )
+}
+
+/// The `ost` availability check. With a bootstrap pin, hosted cells must
+/// report exactly the pinned version; the observed version always lands in
+/// the CI evidence.
+fn ost_version_step(bootstrap: Option<&Bootstrap>) -> String {
+    let assert = match bootstrap {
+        Some(b) => format!(
+            "\
+\x20         if [ \"${{{{ matrix.hosted }}}}\" = \"true\" ] && [ \"$version\" != \"ost {v}\" ]; then
+            echo \"::error title=ost bootstrap::expected 'ost {v}', got '$version'\" ; exit 1
+          fi
+",
+            v = b.ost.version
+        ),
+        None => String::new(),
+    };
+    format!(
+        "\
+\x20     - name: Check ost is available and record its version
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          version=\"$(ost --version)\"
+          echo \"$version\"
+{assert}\
+\x20         printf '{{\"schema\":1,\"ost_version\":\"%s\"}}\\n' \"$version\" > .ost-ci/ost-version.json
+"
+    )
+}
+
+/// The registry cache + remote pull steps. Cache is a bandwidth/time
+/// optimization keyed by {{ost-version, os, arch, support line, runtime
+/// digest}} — never branch names or run ids — and never a correctness
+/// precondition: a miss (or the `OST_CI_DISABLE_CACHE` repository variable)
+/// falls back to the digest-pinned remote pull, and a poisoned hosted cache
+/// is wiped and re-pulled rather than trusted.
+fn runtime_fetch_steps(bootstrap: Option<&Bootstrap>) -> String {
+    let mut out = String::new();
+    if let Some(bootstrap) = bootstrap {
+        out.push_str(&format!(
+            "\
+\x20     - name: Restore the artifact registry cache (speed only, never correctness)
+        if: ${{{{ matrix.hosted && vars.OST_CI_DISABLE_CACHE != 'true' }}}}
+        uses: {CACHE}
+        with:
+          path: .ost-ci-home/artifacts
+          key: ost-registry-{version}-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-${{{{ matrix.name }}}}-${{{{ matrix.runtime_artifact }}}}
+",
+            version = bootstrap.ost.version,
+        ));
+    }
+    out.push_str(
+        "\
+\x20     - name: Pull the pinned runtime SDK from its remote reference
+        if: ${{ matrix.runtime_remote != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          if ost artifact show \"${{ matrix.runtime_artifact }}\" --json > /dev/null 2>&1 \\
+             && ost artifact verify \"${{ matrix.runtime_artifact }}\" --json > .ost-ci/runtime-cache-verify.json; then
+            echo \"pinned runtime already present and verified (cache hit) -- skipping the remote pull\"
+          else
+            if [ \"${{ matrix.hosted }}\" = \"true\" ] && [ -n \"${OST_HOME:-}\" ]; then
+              rm -rf \"${OST_HOME}/artifacts\"
+            fi
+            ost artifact pull \"${{ matrix.runtime_remote }}\" --expect-artifact \"${{ matrix.runtime_artifact }}\" --require-kind runtime --json | tee .ost-ci/runtime-pull.json
+          fi
+",
+    );
+    out
+}
+
 /// The shared step list of a source-CI job.
-fn source_steps() -> String {
+fn source_steps(matrix: &SupportMatrix) -> String {
+    let bootstrap = matrix
+        .bootstrap
+        .as_ref()
+        .map(bootstrap_step)
+        .unwrap_or_default();
     format!(
         "\
 \x20   steps:
       - name: Check out the repository
         uses: {CHECKOUT}
 {BILLING_NOTICE}\
-\x20     - name: Check ost is available
-        shell: bash
-        run: ost --version
-      - name: Validate the CI manifest
+{bootstrap}\
+{version_check}\
+\x20     - name: Validate the CI manifest
         shell: bash
         run: ost ci validate
-      - name: Verify and materialize the pinned runtime SDK
+{fetch}\
+\x20     - name: Verify and materialize the pinned runtime SDK
         shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          printf '{{\"schema\":1,\"runtime_artifact\":\"%s\",\"source\":\"%s\"}}\\n' \"${{{{ matrix.runtime_artifact }}}}\" \"${{{{ matrix.runtime_remote != '' && 'remote-pull' || 'local-registry' }}}}\" > .ost-ci/runtime-source.json
           ost artifact verify ${{{{ matrix.runtime_artifact }}}}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
       - name: Build the plugin from source
@@ -268,13 +413,17 @@ fn source_steps() -> String {
       - name: Package the plugin (never published from this workflow)
         shell: bash
         run: ost plugin package ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
-      - name: Upload the verification report
+      - name: Upload the verification report and CI evidence
         if: always()
         uses: {UPLOAD_ARTIFACT}
         with:
           name: report-${{{{ matrix.name }}}}
-          path: ${{{{ matrix.bundle }}}}/.strata/reports/
-"
+          path: |
+            ${{{{ matrix.bundle }}}}/.strata/reports/
+            .ost-ci/
+",
+        version_check = ost_version_step(matrix.bootstrap.as_ref()),
+        fetch = runtime_fetch_steps(matrix.bootstrap.as_ref()),
     )
 }
 
@@ -283,19 +432,36 @@ fn source_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportCe
     let mut include = String::new();
     for cell in cells {
         let bundle = cell.bundle.as_deref().unwrap_or(".");
+        let remote = cell
+            .runtime_remote
+            .as_ref()
+            .map(|r| r.uri.as_str())
+            .unwrap_or("");
         include.push_str(&include_entry(
             matrix,
             cell,
-            &format!("            bundle: {bundle}\n"),
+            &format!(
+                "            bundle: {bundle}\n\
+                 \x20           runtime_remote: \"{remote}\"\n"
+            ),
         ));
     }
+    // Hosted cells get a workspace-local OST_HOME so the registry the cache
+    // step saves/restores has a deterministic path on every runner OS;
+    // self-hosted cells resolve to '' and keep the operator's store (an empty
+    // OST_HOME is treated as unset).
+    let ost_home = if matrix.bootstrap.is_some() {
+        "\n      OST_HOME: ${{ matrix.hosted && format('{0}/.ost-ci-home', github.workspace) || '' }}"
+    } else {
+        ""
+    };
     format!(
         "\
 \x20 {id}:
     if: github.event_name == '{event}'
     name: ${{{{ matrix.name }}}}
     runs-on: ${{{{ matrix.runs_on }}}}
-{env}
+{env}{ost_home}
     strategy:
       fail-fast: false
       matrix:
@@ -303,7 +469,7 @@ fn source_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportCe
 {include}\
 {steps}",
         env = ci_env(false),
-        steps = source_steps(),
+        steps = source_steps(matrix),
     )
 }
 
@@ -346,10 +512,13 @@ pub fn generate_source(matrix: &SupportMatrix) -> Option<String> {
 # Generated by `ost ci generate github` from openstrata.ci.yaml.
 # Regenerate after editing the matrix; do not edit the jobs by hand.
 #
-# Source CI: each job checks out the repo, materializes a digest-pinned
-# runtime SDK artifact from the runner's local registry (OST_HOME), and
-# builds/tests/packages the bundle from source. `ost` must be on PATH and
-# the registry must hold the pinned runtime artifact.
+# Source CI: each job checks out the repo, obtains a digest-pinned runtime
+# SDK artifact, and builds/tests/packages the bundle from source. On
+# GitHub-hosted runners the job bootstraps a pinned, checksum-verified `ost`
+# and pulls the runtime from the cell's remote (oci://) reference — an
+# actions/cache restore keyed by digest is a speed optimization, never a
+# correctness precondition. Self-hosted runners keep their operator-managed
+# `ost` and registry (air-gapped local import stays supported).
 #
 # Fork-PR safety: this workflow never publishes, never promotes, and uses no
 # secrets; keep it that way when editing the matrix.
@@ -369,7 +538,8 @@ jobs:
 mod tests {
     use super::*;
     use crate::matrix::{
-        HostOs, HostSpec, Lane, Publish, RunnerKind, RunnerProfile, SupportCell, MATRIX_SCHEMA,
+        HostOs, HostSpec, Lane, OstBootstrap, Publish, RunnerKind, RunnerProfile, RuntimeRemote,
+        SupportCell, MATRIX_SCHEMA,
     };
     use std::collections::BTreeMap;
 
@@ -379,6 +549,7 @@ mod tests {
             lane: Lane::default(),
             runner: None,
             runtime_artifact: format!("sha256:{}", "ab".repeat(32)),
+            runtime_remote: None,
             plugin_artifact: Some(format!("sha256:{}", "cd".repeat(32))),
             bundle: None,
             platform: "cy2026".into(),
@@ -392,6 +563,7 @@ mod tests {
     fn matrix() -> SupportMatrix {
         SupportMatrix {
             schema: MATRIX_SCHEMA,
+            bootstrap: None,
             runners: BTreeMap::new(),
             cells: vec![
                 SupportCell {
@@ -427,6 +599,16 @@ mod tests {
         );
         SupportMatrix {
             schema: MATRIX_SCHEMA,
+            bootstrap: Some(Bootstrap {
+                ost: OstBootstrap {
+                    version: "0.9.0".into(),
+                    repository: "animu-sphere/open-strata".into(),
+                    sha256: BTreeMap::from([(
+                        "x86_64-pc-windows-msvc".to_string(),
+                        "ee".repeat(32),
+                    )]),
+                },
+            }),
             runners,
             cells: vec![
                 SupportCell {
@@ -435,6 +617,13 @@ mod tests {
                     plugin_artifact: None,
                     bundle: Some("plugins/toy".into()),
                     up_to: 4,
+                    runtime_remote: Some(RuntimeRemote {
+                        uri: format!(
+                            "oci://ghcr.io/owner/openstrata-runtime@sha256:{}",
+                            "ee".repeat(32)
+                        ),
+                        expected_oci_digest: Some(format!("sha256:{}", "ee".repeat(32))),
+                    }),
                     ..cell("plugin-pr-windows")
                 },
                 SupportCell {
@@ -562,6 +751,130 @@ mod tests {
         assert_eq!(workflows.len(), 2);
         assert_eq!(workflows[0].path, WORKFLOW_PATH);
         assert_eq!(workflows[1].path, SOURCE_WORKFLOW_PATH);
+    }
+
+    #[test]
+    fn hosted_bootstrap_cache_and_remote_pull_render_into_source_ci() {
+        let m = lanes_matrix();
+        let a = generate_source(&m).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&a).unwrap();
+        let steps = doc["jobs"]["pr"]["steps"].as_sequence().unwrap();
+        let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+
+        // Bootstrap: hosted-gated, version-pinned URL, checksum verification,
+        // the matrix's exact-byte pin, and evidence output.
+        let bootstrap = steps
+            .iter()
+            .find(|s| {
+                s["name"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Bootstrap ost 0.9.0")
+            })
+            .expect("bootstrap step");
+        assert_eq!(bootstrap["if"], "${{ matrix.hosted }}");
+        let run = bootstrap["run"].as_str().unwrap();
+        assert!(
+            run.contains("https://github.com/animu-sphere/open-strata/releases/download/v0.9.0")
+        );
+        assert!(run.contains("ost-cli-${triple}.${ext}"));
+        assert!(run.contains(&"ee".repeat(32)), "matrix sha256 pin rendered");
+        assert!(run.contains(".ost-ci/bootstrap.json"));
+
+        // The version check asserts the pin on hosted runners.
+        let check = steps
+            .iter()
+            .find(|s| s["name"].as_str().unwrap().contains("record its version"))
+            .expect("version step");
+        assert!(check["run"].as_str().unwrap().contains("ost 0.9.0"));
+
+        // Cache: digest-keyed, hosted-gated, disableable, never branch/run ids.
+        let cache = steps
+            .iter()
+            .find(|s| s["name"].as_str().unwrap().contains("registry cache"))
+            .expect("cache step");
+        assert!(cache["uses"]
+            .as_str()
+            .unwrap()
+            .starts_with("actions/cache@"));
+        let key = cache["with"]["key"].as_str().unwrap();
+        assert!(key.contains("0.9.0"));
+        assert!(key.contains("${{ matrix.runtime_artifact }}"));
+        assert!(
+            !key.contains("github.ref"),
+            "cache identity is never a branch"
+        );
+        assert!(!key.contains("run_id"), "cache identity is never a run id");
+        assert!(cache["if"]
+            .as_str()
+            .unwrap()
+            .contains("vars.OST_CI_DISABLE_CACHE != 'true'"));
+
+        // Remote pull: gated on the cell's remote reference, digest-pinned,
+        // kind-checked, evidence-teed; cache hit skips it via verify.
+        let pull = steps
+            .iter()
+            .find(|s| s["name"].as_str().unwrap().contains("remote reference"))
+            .expect("pull step");
+        assert_eq!(pull["if"], "${{ matrix.runtime_remote != '' }}");
+        let run = pull["run"].as_str().unwrap();
+        assert!(run.contains("--expect-artifact"));
+        assert!(run.contains("--require-kind runtime"));
+        assert!(run.contains(".ost-ci/runtime-pull.json"));
+
+        // The include entry carries the pinned remote uri; the self-hosted
+        // mainline path stays possible (empty remote renders as "").
+        let entries = doc["jobs"]["pr"]["strategy"]["matrix"]["include"]
+            .as_sequence()
+            .unwrap();
+        assert!(entries[0]["runtime_remote"]
+            .as_str()
+            .unwrap()
+            .starts_with("oci://ghcr.io/owner/openstrata-runtime@sha256:"));
+
+        // Hosted cells get a workspace-local OST_HOME; the expression falls
+        // back to '' (treated as unset) for self-hosted cells.
+        let env = &doc["jobs"]["pr"]["env"];
+        assert!(env["OST_HOME"].as_str().unwrap().contains("matrix.hosted"));
+
+        // Evidence travels with the report upload.
+        let upload = steps.last().unwrap();
+        assert!(upload["with"]["path"]
+            .as_str()
+            .unwrap()
+            .contains(".ost-ci/"));
+
+        // Still no secrets, still never publishes.
+        assert!(!a.contains("secrets."), "source CI uses no secrets");
+        assert!(!a.contains("plugin publish"), "source CI never publishes");
+        assert!(names.iter().any(|n| n.contains("Validate the CI manifest")));
+    }
+
+    #[test]
+    fn matrix_without_bootstrap_renders_no_hosted_bootstrap_steps() {
+        // A self-hosted-only source matrix keeps the operator-managed flow:
+        // no bootstrap, no cache, no OST_HOME override.
+        let mut m = lanes_matrix();
+        m.bootstrap = None;
+        m.cells[0].runner = None;
+        m.cells[0].runtime_remote = None;
+        m.cells[0].host = HostSpec {
+            os: HostOs::Linux,
+            labels: vec!["self-hosted".into(), "linux".into()],
+        };
+        let a = generate_source(&m).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&a).unwrap();
+        let steps = doc["jobs"]["pr"]["steps"].as_sequence().unwrap();
+        let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+        assert!(!names.iter().any(|n| n.starts_with("Bootstrap ost")));
+        assert!(!names.iter().any(|n| n.contains("registry cache")));
+        assert!(doc["jobs"]["pr"]["env"].get("OST_HOME").is_none());
+        // The pull step still renders (gated per cell) but this cell's remote
+        // is empty, so it would be skipped at run time.
+        assert_eq!(
+            doc["jobs"]["pr"]["strategy"]["matrix"]["include"][0]["runtime_remote"],
+            ""
+        );
     }
 
     #[test]

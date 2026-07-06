@@ -289,6 +289,27 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
         .iter()
         .filter(|c| c.publish != Publish::Never)
         .count();
+    // Remote transport facts (v0.9.0): which cells pull their runtime from a
+    // remote registry, and which pinned `ost` the hosted bootstrap installs.
+    let remote_runtime_cells: Vec<&str> = matrix
+        .cells
+        .iter()
+        .filter(|c| c.runtime_remote.is_some())
+        .map(|c| c.name.as_str())
+        .collect();
+    let air_gapped_source_cells: Vec<&str> = matrix
+        .cells
+        .iter()
+        .filter(|c| c.lane.is_source() && c.runtime_remote.is_none())
+        .map(|c| c.name.as_str())
+        .collect();
+    let bootstrap = matrix.bootstrap.as_ref().map(|b| {
+        serde_json::json!({
+            "ost_version": b.ost.version,
+            "repository": b.ost.repository,
+            "sha256_pinned_targets": b.ost.sha256.keys().collect::<Vec<_>>(),
+        })
+    });
     let hosted_unacknowledged = matrix.hosted_ack_missing();
     let lane_count = |lane: Lane| matrix.cells.iter().filter(|c| c.lane == lane).count();
     let lanes = serde_json::json!({
@@ -317,6 +338,9 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
             "hosted_unacknowledged": hosted_unacknowledged,
             "requires_billing_acknowledgement": !hosted_unacknowledged.is_empty(),
             "publish_capable_jobs": publish_capable,
+            "bootstrap": bootstrap,
+            "remote_runtime_cells": remote_runtime_cells,
+            "air_gapped_source_cells": air_gapped_source_cells,
         }));
         return Ok(());
     }
@@ -346,6 +370,29 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
         }
     );
     println!("  publish-capable:  {publish_capable} job(s)");
+    match &matrix.bootstrap {
+        Some(b) => println!(
+            "  bootstrap:        ost {} from {} ({} exact-byte pin(s))",
+            b.ost.version,
+            b.ost.repository,
+            b.ost.sha256.len()
+        ),
+        None => println!("  bootstrap:        none (runners provide their own ost)"),
+    }
+    println!(
+        "  remote runtime:   {}",
+        if remote_runtime_cells.is_empty() {
+            "no cells pull from a remote registry".to_string()
+        } else {
+            remote_runtime_cells.join(", ")
+        }
+    );
+    if !air_gapped_source_cells.is_empty() {
+        println!(
+            "  air-gapped source: {} (runtime comes from the runner's local registry)",
+            air_gapped_source_cells.join(", ")
+        );
+    }
     if !hosted_unacknowledged.is_empty() {
         println!(
             "  NOTE: billing acknowledgement missing for: {}",

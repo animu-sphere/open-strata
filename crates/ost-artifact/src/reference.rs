@@ -105,6 +105,16 @@ impl OciReference {
         if registry.is_empty() {
             return Err(bad("empty registry host"));
         }
+        // `host[:port]` only. Registry references travel into generated CI
+        // files and request URLs, so the charset is deliberately narrow.
+        if !registry
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-:".contains(&b))
+        {
+            return Err(bad(&format!(
+                "registry host '{registry}' may only contain letters, digits, and .-:"
+            )));
+        }
 
         // The tag separator is a ':' after the last '/', so a registry port
         // (oci://host:5000/repo) never reads as a tag.
@@ -269,6 +279,8 @@ mod tests {
             "oci://ghcr.io/Owner/rt",              // uppercase repository
             "oci://ghcr.io/owner/rt@sha256:short", // malformed digest
             "oci://ghcr.io/owner/rt@md5:abc",      // wrong algorithm
+            "oci://ghcr.io$(x)/owner/rt",          // host with shell metachars
+            "oci://ghcr io/owner/rt",              // host with a space
             "oci://ghcr.io/owner/rt:",             // empty tag
             "oci://ghcr.io/owner/rt:bad tag",      // tag with a space
             "file://",                             // empty path
