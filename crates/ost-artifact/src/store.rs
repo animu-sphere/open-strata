@@ -422,58 +422,16 @@ impl ArtifactStore {
         // Hash each archived entry. Even when the archive digest already
         // matches, this proves the *manifest's* per-file claims — the digest
         // covers the bytes, the file list is what consumers trust per-file.
-        let file =
-            File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
-        let decoder = zstd::stream::read::Decoder::new(file)
-            .map_err(|e| Error::io(archive.to_string(), e))?;
-        let mut tar = tar::Archive::new(decoder);
-
-        let mut actual_files: Vec<(String, String, u64)> = Vec::new();
-        let entries = tar
-            .entries()
-            .map_err(|e| Error::io(archive.to_string(), e))?;
-        for entry in entries {
-            let mut entry = entry.map_err(|e| Error::io(archive.to_string(), e))?;
-            if !entry.header().entry_type().is_file() {
-                continue;
-            }
-            let path = entry
-                .path()
-                .map_err(|e| Error::io(archive.to_string(), e))?
-                .to_string_lossy()
-                .replace('\\', "/");
-            let (sha, size) = digest::sha256_hex_reader(&mut entry)
-                .map_err(|e| Error::io(archive.to_string(), e))?;
-            actual_files.push((path, sha, size));
-        }
-
-        let mut files_matched = 0u64;
-        let mut files_mismatched = Vec::new();
-        let mut files_missing = Vec::new();
-        let mut files_extra = Vec::new();
-
-        for want in &expected {
-            match actual_files.iter().find(|(p, _, _)| p == &want.path) {
-                Some((_, sha, size)) if *sha == want.sha256 && *size == want.size => {
-                    files_matched += 1;
-                }
-                Some(_) => files_mismatched.push(want.path.clone()),
-                None => files_missing.push(want.path.clone()),
-            }
-        }
-        for (path, _, _) in &actual_files {
-            if !expected.iter().any(|w| &w.path == path) {
-                files_extra.push(path.clone());
-            }
-        }
+        let walk = walk_archive(&archive)?;
+        let comparison = compare_archive_files(&walk.files, &expected);
 
         Ok(VerifyReport {
             digest: record.digest,
             archive_digest_ok,
-            files_matched,
-            files_mismatched,
-            files_missing,
-            files_extra,
+            files_matched: comparison.matched,
+            files_mismatched: comparison.mismatched,
+            files_missing: comparison.missing,
+            files_extra: comparison.extra,
         })
     }
 
@@ -517,8 +475,145 @@ impl ArtifactStore {
     }
 }
 
+/// One hashed file entry from an artifact archive walk.
+#[derive(Debug, Clone)]
+pub(crate) struct ArchiveFile {
+    pub path: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+/// The result of decoding and hashing every entry of a `tar.zst` archive.
+#[derive(Debug, Default)]
+pub(crate) struct ArchiveWalk {
+    /// Regular files, in archive order, with their content digests.
+    pub files: Vec<ArchiveFile>,
+    /// Entries that would be unsafe to extract, as `<why>: <path>` strings:
+    /// absolute or traversal paths, links, and special file types. The walk
+    /// itself never extracts, so listing them is safe.
+    pub unsafe_entries: Vec<String>,
+}
+
+/// Decode a `tar.zst` archive and hash every regular file, flagging entries
+/// that must never be extracted (pre-extraction safety, transport plan §
+/// "Verification order on pull").
+pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
+    let file = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+    let decoder =
+        zstd::stream::read::Decoder::new(file).map_err(|e| Error::io(archive.to_string(), e))?;
+    let mut tar = tar::Archive::new(decoder);
+
+    let mut walk = ArchiveWalk::default();
+    let mut seen_files = std::collections::HashSet::new();
+    let entries = tar
+        .entries()
+        .map_err(|e| Error::io(archive.to_string(), e))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| Error::io(archive.to_string(), e))?;
+        let path = entry
+            .path()
+            .map_err(|e| Error::io(archive.to_string(), e))?
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        if let Some(why) = unsafe_entry_path(&path) {
+            walk.unsafe_entries.push(format!("{why}: {path}"));
+            continue;
+        }
+        let kind = entry.header().entry_type();
+        match kind {
+            tar::EntryType::Regular => {
+                if !seen_files.insert(path.clone()) {
+                    walk.unsafe_entries
+                        .push(format!("duplicate file path: {path}"));
+                    continue;
+                }
+                let (sha, size) = digest::sha256_hex_reader(&mut entry)
+                    .map_err(|e| Error::io(archive.to_string(), e))?;
+                walk.files.push(ArchiveFile {
+                    path,
+                    sha256: sha,
+                    size,
+                });
+            }
+            tar::EntryType::Directory => {}
+            other => {
+                // Links and special files are refused wholesale: a symlink can
+                // redirect later writes outside the destination, and device /
+                // fifo entries have no place in an artifact.
+                walk.unsafe_entries
+                    .push(format!("unsupported entry type {other:?}: {path}"));
+            }
+        }
+    }
+    Ok(walk)
+}
+
+/// Why an archived path must not be extracted, if any.
+fn unsafe_entry_path(path: &str) -> Option<&'static str> {
+    if path.is_empty() {
+        return Some("empty path");
+    }
+    if path.starts_with('/') {
+        return Some("absolute path");
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Some("drive-letter path");
+    }
+    if path.split('/').any(|c| c == "..") {
+        return Some("parent traversal");
+    }
+    if path.chars().any(char::is_control) {
+        return Some("control character in path");
+    }
+    None
+}
+
+/// Comparison of hashed archive contents against a producer manifest file list.
+#[derive(Debug, Default)]
+pub(crate) struct FileComparison {
+    pub matched: u64,
+    pub mismatched: Vec<String>,
+    pub missing: Vec<String>,
+    pub extra: Vec<String>,
+}
+
+impl FileComparison {
+    pub fn passed(&self) -> bool {
+        self.mismatched.is_empty() && self.missing.is_empty() && self.extra.is_empty()
+    }
+}
+
+/// Compare hashed archive entries against the manifest's per-file claims.
+pub(crate) fn compare_archive_files(
+    actual: &[ArchiveFile],
+    expected: &[crate::record::ManifestFile],
+) -> FileComparison {
+    let mut cmp = FileComparison::default();
+    let mut seen_expected = std::collections::HashSet::new();
+    for want in expected {
+        if !seen_expected.insert(want.path.as_str()) {
+            cmp.mismatched.push(want.path.clone());
+            continue;
+        }
+        match actual.iter().find(|f| f.path == want.path) {
+            Some(f) if f.sha256 == want.sha256 && f.size == want.size => cmp.matched += 1,
+            Some(_) => cmp.mismatched.push(want.path.clone()),
+            None => cmp.missing.push(want.path.clone()),
+        }
+    }
+    let mut seen_actual = std::collections::HashSet::new();
+    for f in actual {
+        if !seen_actual.insert(f.path.as_str()) || !expected.iter().any(|w| w.path == f.path) {
+            cmp.extra.push(f.path.clone());
+        }
+    }
+    cmp
+}
+
 /// Accept either a dist directory or a direct path to its `manifest.json`.
-fn locate_manifest(path: &Utf8Path) -> Result<(Utf8PathBuf, Utf8PathBuf)> {
+pub(crate) fn locate_manifest(path: &Utf8Path) -> Result<(Utf8PathBuf, Utf8PathBuf)> {
     if path.as_std_path().is_dir() {
         let manifest = path.join(MANIFEST_FILE);
         if !manifest.as_std_path().is_file() {

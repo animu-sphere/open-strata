@@ -33,6 +33,29 @@ pub fn sha256_hex_reader(reader: &mut impl Read) -> io::Result<(String, u64)> {
     Ok((render(hasher), total))
 }
 
+/// Copy `reader` into `writer` while hashing, returning `sha256:<hex>` and the
+/// bytes copied. For transports that must verify a download without holding it
+/// in memory (an artifact archive is GBs).
+pub fn sha256_hex_copy(
+    reader: &mut impl Read,
+    writer: &mut impl io::Write,
+) -> io::Result<(String, u64)> {
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        writer.write_all(&buf[..n])?;
+        total += n as u64;
+    }
+    writer.flush()?;
+    Ok((render(hasher), total))
+}
+
 fn render(hasher: Sha256) -> String {
     let out = hasher.finalize();
     let mut hex = String::with_capacity(64);
@@ -63,5 +86,16 @@ mod tests {
         let (digest, size) = sha256_hex_reader(&mut cursor).unwrap();
         assert_eq!(digest, sha256_hex(data));
         assert_eq!(size, data.len() as u64);
+    }
+
+    #[test]
+    fn copy_hashes_and_writes_the_same_bytes() {
+        let data = b"openstrata transport blob";
+        let mut cursor = std::io::Cursor::new(&data[..]);
+        let mut out = Vec::new();
+        let (digest, size) = sha256_hex_copy(&mut cursor, &mut out).unwrap();
+        assert_eq!(digest, sha256_hex(data));
+        assert_eq!(size, data.len() as u64);
+        assert_eq!(out, data);
     }
 }

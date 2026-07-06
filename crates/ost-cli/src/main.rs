@@ -76,7 +76,8 @@ enum Command {
     #[command(subcommand)]
     Plugin(plugin::PluginCmd),
 
-    /// Import, inspect, verify, and export artifacts in the local registry.
+    /// Import, inspect, verify, export, and pull artifacts (local registry +
+    /// remote OCI transport).
     #[command(subcommand)]
     Artifact(artifact::ArtifactCmd),
 

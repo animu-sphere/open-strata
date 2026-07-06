@@ -131,6 +131,31 @@ to a specific code; it defaults to the `precondition` category. New code should
 use a specific code, so agents should prefer branching on `category` where a
 precise code is not yet guaranteed.
 
+### Artifact transport codes
+
+`ost artifact resolve | pull` (remote-artifact-transport.md, Phase 1) add a
+stable family CI can branch on. Any digest-verification failure is always an
+error, never a warning:
+
+| Code | Category |
+| --- | --- |
+| `ARTIFACT_REFERENCE_MUTABLE` | usage |
+| `ARTIFACT_PUSH_UNSUPPORTED` | usage |
+| `ARTIFACT_REMOTE_NOT_FOUND` | precondition |
+| `ARTIFACT_AUTH_DENIED` | precondition |
+| `ARTIFACT_TRANSPORT_FAILED` | external_tool |
+| `ARTIFACT_OCI_DIGEST_MISMATCH` | validation |
+| `ARTIFACT_ARCHIVE_DIGEST_MISMATCH` | validation |
+| `ARTIFACT_MANIFEST_INVALID` | validation |
+| `ARTIFACT_FILE_DIGEST_MISMATCH` | validation |
+| `ARTIFACT_ARCHIVE_UNSAFE` | validation |
+| `ARTIFACT_PLATFORM_MISMATCH` | validation |
+| `ARTIFACT_SUPPORT_LINE_MISMATCH` | validation |
+
+(The local registry's own `ARTIFACT_NOT_FOUND` / `ARTIFACT_DIGEST_MISMATCH` /
+`ARTIFACT_KIND_MISMATCH` / `ARTIFACT_RUNTIME_MISMATCH` predate the transport
+and keep their meanings.)
+
 ## Compatibility policy
 
 The `--json` contract is additive and versioned. Within a `schema` version:
