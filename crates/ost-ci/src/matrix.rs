@@ -201,7 +201,8 @@ pub struct RuntimeRemote {
     pub uri: String,
     /// The OCI manifest digest the uri must resolve to. Redundant when the
     /// uri already pins it (both must agree); kept as an explicit field so
-    /// the expectation survives copy-paste edits to the uri.
+    /// the expectation survives copy-paste edits to the uri. Required by the
+    /// CI matrix validator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_oci_digest: Option<String>,
 }
@@ -236,8 +237,8 @@ fn default_ost_repository() -> String {
 }
 
 impl RuntimeRemote {
-    /// The pinned OCI manifest digest: the uri's `@sha256:…` (validated to
-    /// agree with `expected_oci_digest` when both are present).
+    /// The pinned OCI manifest digest: the uri's `@sha256:…`, repeated by
+    /// `expected_oci_digest` in validated CI matrices.
     pub fn pinned_oci_digest(&self) -> Option<String> {
         match ost_artifact::RemoteReference::parse(&self.uri) {
             Ok(ost_artifact::RemoteReference::Oci(r)) => {
@@ -562,7 +563,7 @@ impl SupportMatrix {
 }
 
 /// Validate one cell's remote runtime reference: a digest-pinned `oci://`
-/// uri whose pin agrees with `expected_oci_digest` when both are present.
+/// uri whose pin is repeated in, and agrees with, `expected_oci_digest`.
 /// The values are later spliced into rendered workflow YAML/bash, so the
 /// reference parser's charset rules double as injection hardening.
 fn validate_runtime_remote(cell: &str, remote: &RuntimeRemote) -> Result<()> {
@@ -587,19 +588,23 @@ fn validate_runtime_remote(cell: &str, remote: &RuntimeRemote) -> Result<()> {
             remote.uri
         )));
     };
-    if let Some(expected) = &remote.expected_oci_digest {
-        if !ost_artifact::is_sha256_ref(expected) {
-            return Err(Error::InvalidManifest(format!(
-                "cell '{cell}': runtime_remote.expected_oci_digest '{expected}' is not a \
-                 full sha256:<64-hex> digest"
-            )));
-        }
-        if &uri_digest != expected {
-            return Err(Error::InvalidManifest(format!(
-                "cell '{cell}': runtime_remote.uri pins {uri_digest} but \
-                 expected_oci_digest is {expected} — the two must agree"
-            )));
-        }
+    let Some(expected) = &remote.expected_oci_digest else {
+        return Err(Error::InvalidManifest(format!(
+            "cell '{cell}': runtime_remote.expected_oci_digest is required and must repeat \
+             the uri's pinned OCI digest"
+        )));
+    };
+    if !ost_artifact::is_sha256_ref(expected) {
+        return Err(Error::InvalidManifest(format!(
+            "cell '{cell}': runtime_remote.expected_oci_digest '{expected}' is not a \
+             full sha256:<64-hex> digest"
+        )));
+    }
+    if &uri_digest != expected {
+        return Err(Error::InvalidManifest(format!(
+            "cell '{cell}': runtime_remote.uri pins {uri_digest} but \
+             expected_oci_digest is {expected} — the two must agree"
+        )));
     }
     Ok(())
 }
@@ -842,32 +847,35 @@ cells:
             "\
 schema: 1
 bootstrap:
-  ost:
-    version: \"0.9.0\"
+    ost:
+        version: \"0.9.0\"
 runners:
-  windows-hosted:
-    kind: github-hosted
-    image: windows-2022
-  usd-linux-real:
-    kind: self-hosted
-    labels: [self-hosted, linux, x64, usd-26]
+    windows-hosted:
+        kind: github-hosted
+        image: windows-2022
+    usd-linux-real:
+        kind: self-hosted
+        labels: [self-hosted, linux, x64, usd-26]
 cells:
-  - name: plugin-pr-windows
-    lane: pull_request
-    runner: windows-hosted
-    runtime_artifact: sha256:{a}
-    runtime_remote:
-      uri: oci://ghcr.io/owner/openstrata-runtime@sha256:{o}
-    bundle: plugins/toy
-    platform: cy2026
-    profile: usd
-    up_to: 4
-  - name: linux-usd-support
-    runner: usd-linux-real
-    runtime_artifact: sha256:{a}
-    plugin_artifact: sha256:{b}
-    platform: cy2026
-    profile: usd
+    -
+        name: plugin-pr-windows
+        lane: pull_request
+        runner: windows-hosted
+        runtime_artifact: sha256:{a}
+        runtime_remote:
+            uri: oci://ghcr.io/owner/openstrata-runtime@sha256:{o}
+            expected_oci_digest: sha256:{o}
+        bundle: plugins/toy
+        platform: cy2026
+        profile: usd
+        up_to: 4
+    -
+        name: linux-usd-support
+        runner: usd-linux-real
+        runtime_artifact: sha256:{a}
+        plugin_artifact: sha256:{b}
+        platform: cy2026
+        profile: usd
 ",
             a = "ab".repeat(32),
             b = "cd".repeat(32),
@@ -903,8 +911,8 @@ cells:
     #[test]
     fn billing_acknowledgement_clears_the_warning_and_gates_publish() {
         let acked = lanes_yaml().replace(
-            "    image: windows-2022\n",
-            "    image: windows-2022\n    billing:\n      acknowledgement: required\n",
+            "        image: windows-2022\n",
+            "        image: windows-2022\n        billing:\n            acknowledgement: required\n",
         );
         let m = SupportMatrix::from_yaml(&acked).unwrap();
         assert!(m.hosted_ack_missing().is_empty());
@@ -912,8 +920,8 @@ cells:
         // A publish-capable cell on an unacknowledged hosted profile is an
         // error (the pull_request lane cannot publish at all, so use main).
         let publishing = lanes_yaml().replace(
-            "    lane: pull_request\n",
-            "    lane: main\n    publish: candidate\n",
+            "        lane: pull_request\n",
+            "        lane: main\n        publish: candidate\n",
         );
         let m = SupportMatrix::from_yaml(&publishing).unwrap();
         assert_eq!(
@@ -924,20 +932,20 @@ cells:
 
     #[test]
     fn lane_and_runner_structural_errors_are_rejected() {
-        let plugin_line = format!("    plugin_artifact: sha256:{}\n", "cd".repeat(32));
+        let plugin_line = format!("        plugin_artifact: sha256:{}\n", "cd".repeat(32));
         let cases = [
             (
                 lanes_yaml().replace("runner: windows-hosted", "runner: nope"),
                 "unknown runner profile",
             ),
             (
-                lanes_yaml().replace("    image: windows-2022\n", ""),
+                lanes_yaml().replace("        image: windows-2022\n", ""),
                 "require an image",
             ),
             (
                 lanes_yaml().replace(
-                    "    labels: [self-hosted, linux, x64, usd-26]\n",
-                    "    image: ubuntu-24.04\n",
+                    "        labels: [self-hosted, linux, x64, usd-26]\n",
+                    "        image: ubuntu-24.04\n",
                 ),
                 "self-hosted profiles require runs-on labels",
             ),
@@ -951,15 +959,15 @@ cells:
             ),
             (
                 lanes_yaml().replace(
-                    "    lane: pull_request\n",
-                    "    lane: pull_request\n    publish: candidate\n",
+                    "        lane: pull_request\n",
+                    "        lane: pull_request\n        publish: candidate\n",
                 ),
                 "must never publish",
             ),
             (
                 lanes_yaml().replace(
-                    "    runner: usd-linux-real\n",
-                    "    runner: usd-linux-real\n    host:\n      labels: [self-hosted]\n",
+                    "        runner: usd-linux-real\n",
+                    "        runner: usd-linux-real\n        host:\n            labels: [self-hosted]\n",
                 ),
                 "both a runner profile and host.labels",
             ),
@@ -1078,6 +1086,14 @@ cells:
                     &format!("expected_oci_digest: sha256:{}", "ff".repeat(32)),
                 ),
                 "must agree",
+            ),
+            (
+                remote_yaml()
+                    .lines()
+                    .filter(|l| !l.contains("expected_oci_digest"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "expected_oci_digest is required",
             ),
             (
                 remote_yaml().replace(
