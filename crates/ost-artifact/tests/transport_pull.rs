@@ -30,6 +30,7 @@ struct Route {
     status: u16,
     content_type: &'static str,
     body: Vec<u8>,
+    extra_headers: String,
 }
 
 struct MockRegistry {
@@ -74,6 +75,19 @@ impl MockRegistry {
                 status: 200,
                 content_type,
                 body,
+                extra_headers: String::new(),
+            },
+        );
+    }
+
+    fn redirect(&self, path: &str, location: &str) {
+        self.routes.lock().unwrap().insert(
+            path.to_string(),
+            Route {
+                status: 307,
+                content_type: "application/json",
+                body: b"{}".to_vec(),
+                extra_headers: format!("Location: {location}\r\n"),
             },
         );
     }
@@ -160,7 +174,7 @@ fn handle_connection(
                 route.status,
                 route.content_type,
                 &route.body,
-                "",
+                &route.extra_headers,
             )
         }
         None => respond(&mut stream, 404, "application/json", b"{}", ""),
@@ -346,6 +360,26 @@ fn resolve_turns_a_tag_into_the_oci_digest() {
     );
     assert_eq!(resolved.registry, registry.host());
     assert_eq!(resolved.auth_mode, "anonymous");
+}
+
+#[test]
+fn resolve_follows_manifest_redirects() {
+    let registry = MockRegistry::start();
+    let bundle = make_bundle("toy", b"plugin bytes");
+    registry.register("fixtures/rt", "v1", &bundle);
+    registry.redirect(
+        "/v2/fixtures/rt/manifests/v1",
+        &format!("/v2/fixtures/rt/manifests/{}", bundle.oci_digest),
+    );
+
+    let transport = OciTransport::new(true);
+    let reference = oci_ref(&registry, "fixtures/rt", ":v1");
+    let resolved = transport.resolve(&reference).unwrap();
+
+    assert_eq!(
+        resolved.oci_digest.as_deref(),
+        Some(bundle.oci_digest.as_str())
+    );
 }
 
 #[test]
@@ -594,6 +628,41 @@ fn unsafe_archive_entries_are_refused_before_import() {
 
     let err = pull(&transport, &reference, &store, &PullPolicy::default())
         .expect_err("symlink smuggling must be refused");
+    assert_eq!(err.code(), "ARTIFACT_ARCHIVE_UNSAFE");
+    assert_store_empty(&store);
+
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn duplicate_archive_paths_are_refused_before_import() {
+    let registry = MockRegistry::start();
+    let mut archive_bytes = Vec::new();
+    {
+        let enc = zstd::stream::write::Encoder::new(&mut archive_bytes, 3)
+            .unwrap()
+            .auto_finish();
+        let mut tar = tar::Builder::new(enc);
+        for content in [&b"plugin bytes"[..], &b"substituted bytes"[..]] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, "lib/payload.bin", content)
+                .unwrap();
+        }
+        tar.finish().unwrap();
+    }
+    let bundle = make_bundle_from_archive("toy", b"plugin bytes", archive_bytes);
+    registry.register("fixtures/rt", "v1", &bundle);
+
+    let root = tmp_root("duplicate-path");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::new(true);
+    let reference = oci_ref(&registry, "fixtures/rt", &format!("@{}", bundle.oci_digest));
+
+    let err = pull(&transport, &reference, &store, &PullPolicy::default())
+        .expect_err("duplicate paths must be refused");
     assert_eq!(err.code(), "ARTIFACT_ARCHIVE_UNSAFE");
     assert_store_empty(&store);
 

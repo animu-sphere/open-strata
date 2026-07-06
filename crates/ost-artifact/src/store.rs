@@ -504,6 +504,7 @@ pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
     let mut tar = tar::Archive::new(decoder);
 
     let mut walk = ArchiveWalk::default();
+    let mut seen_files = std::collections::HashSet::new();
     let entries = tar
         .entries()
         .map_err(|e| Error::io(archive.to_string(), e))?;
@@ -522,6 +523,11 @@ pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
         let kind = entry.header().entry_type();
         match kind {
             tar::EntryType::Regular => {
+                if !seen_files.insert(path.clone()) {
+                    walk.unsafe_entries
+                        .push(format!("duplicate file path: {path}"));
+                    continue;
+                }
                 let (sha, size) = digest::sha256_hex_reader(&mut entry)
                     .map_err(|e| Error::io(archive.to_string(), e))?;
                 walk.files.push(ArchiveFile {
@@ -585,15 +591,21 @@ pub(crate) fn compare_archive_files(
     expected: &[crate::record::ManifestFile],
 ) -> FileComparison {
     let mut cmp = FileComparison::default();
+    let mut seen_expected = std::collections::HashSet::new();
     for want in expected {
+        if !seen_expected.insert(want.path.as_str()) {
+            cmp.mismatched.push(want.path.clone());
+            continue;
+        }
         match actual.iter().find(|f| f.path == want.path) {
             Some(f) if f.sha256 == want.sha256 && f.size == want.size => cmp.matched += 1,
             Some(_) => cmp.mismatched.push(want.path.clone()),
             None => cmp.missing.push(want.path.clone()),
         }
     }
+    let mut seen_actual = std::collections::HashSet::new();
     for f in actual {
-        if !expected.iter().any(|w| w.path == f.path) {
+        if !seen_actual.insert(f.path.as_str()) || !expected.iter().any(|w| w.path == f.path) {
             cmp.extra.push(f.path.clone());
         }
     }

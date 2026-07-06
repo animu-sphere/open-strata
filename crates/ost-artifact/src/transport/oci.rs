@@ -126,6 +126,58 @@ impl OciTransport {
         }
     }
 
+    /// Follow registry redirects manually. Authorization is only preserved
+    /// while the entire chain stays on the original registry origin.
+    fn get_following_redirects(
+        &self,
+        reference: &OciReference,
+        url: &str,
+        accept: &str,
+    ) -> Result<(ureq::Response, String)> {
+        let registry_origin = origin_of(url).to_string();
+        let mut auth_still_allowed = true;
+        let mut resp = self.get(reference, url, accept)?;
+        let mut hops = 0;
+        let mut current_url = url.to_string();
+
+        while (300..400).contains(&resp.status()) {
+            hops += 1;
+            if hops > MAX_REDIRECTS {
+                return Err(Error::coded(
+                    "ARTIFACT_TRANSPORT_FAILED",
+                    Category::ExternalTool,
+                    format!("{url} redirected more than {MAX_REDIRECTS} times"),
+                ));
+            }
+            let location = resp.header("location").ok_or_else(|| {
+                Error::coded(
+                    "ARTIFACT_TRANSPORT_FAILED",
+                    Category::ExternalTool,
+                    format!("{current_url} redirected without a Location header"),
+                )
+            })?;
+            let next = absolutize(&current_url, location);
+            let auth = if redirect_auth_allowed(&registry_origin, &mut auth_still_allowed, &next) {
+                self.auth_header(reference)?
+            } else {
+                None
+            };
+            resp = self
+                .raw_get(&next, accept, auth.as_deref())
+                .map_err(|f| self.classify(reference, &next, f))?;
+            current_url = next;
+        }
+
+        if !(200..300).contains(&resp.status()) {
+            return Err(self.classify(
+                reference,
+                &current_url,
+                RequestFailure::Status(resp.status(), Box::new(resp)),
+            ));
+        }
+        Ok((resp, current_url))
+    }
+
     fn raw_get(
         &self,
         url: &str,
@@ -292,9 +344,9 @@ impl OciTransport {
             self.base_url(&reference.registry),
             reference.repository
         );
-        let resp = self.get(reference, &url, MANIFEST_ACCEPT)?;
+        let (resp, final_url) = self.get_following_redirects(reference, &url, MANIFEST_ACCEPT)?;
         let body = read_capped(&mut resp.into_reader(), MAX_OCI_MANIFEST_BYTES)
-            .map_err(|e| Error::io(url.clone(), e))?;
+            .map_err(|e| Error::io(final_url, e))?;
         let computed = digest::sha256_hex(&body);
         if let Some(pin) = &reference.digest {
             if *pin != computed {
@@ -330,38 +382,8 @@ impl OciTransport {
             layer.digest
         );
 
-        let mut resp = self.get(reference, &url, "application/octet-stream")?;
-        // Follow CDN redirects by hand so Authorization never crosses hosts.
-        let mut hops = 0;
-        let mut current_url = url.clone();
-        while (300..400).contains(&resp.status()) {
-            hops += 1;
-            if hops > MAX_REDIRECTS {
-                return Err(Error::coded(
-                    "ARTIFACT_TRANSPORT_FAILED",
-                    Category::ExternalTool,
-                    format!("{url} redirected more than {MAX_REDIRECTS} times"),
-                ));
-            }
-            let location = resp.header("location").ok_or_else(|| {
-                Error::coded(
-                    "ARTIFACT_TRANSPORT_FAILED",
-                    Category::ExternalTool,
-                    format!("{current_url} redirected without a Location header"),
-                )
-            })?;
-            let next = absolutize(&current_url, location);
-            let same_host = host_of(&next) == host_of(&current_url);
-            let auth = if same_host {
-                self.auth_header(reference)?
-            } else {
-                None
-            };
-            resp = self
-                .raw_get(&next, "application/octet-stream", auth.as_deref())
-                .map_err(|f| self.classify(reference, &next, f))?;
-            current_url = next;
-        }
+        let (resp, _) =
+            self.get_following_redirects(reference, &url, "application/octet-stream")?;
 
         let file = std::fs::File::create(dest.as_std_path())
             .map_err(|e| Error::io(dest.to_string(), e))?;
@@ -614,10 +636,23 @@ fn absolutize(current: &str, location: &str) -> String {
     }
 }
 
-fn host_of(url: &str) -> &str {
-    url.split_once("://")
-        .map(|(_, rest)| rest.split('/').next().unwrap_or(rest))
-        .unwrap_or(url)
+fn origin_of(url: &str) -> &str {
+    if let Some((scheme, rest)) = url.split_once("://") {
+        let host = rest.split('/').next().unwrap_or(rest);
+        return &url[..scheme.len() + 3 + host.len()];
+    }
+    url.split('/').next().unwrap_or(url)
+}
+
+fn redirect_auth_allowed(
+    registry_origin: &str,
+    auth_still_allowed: &mut bool,
+    next_url: &str,
+) -> bool {
+    if origin_of(next_url) != registry_origin {
+        *auth_still_allowed = false;
+    }
+    *auth_still_allowed
 }
 
 /// Minimal query-string escaping for token-exchange parameters.
@@ -721,8 +756,43 @@ mod tests {
             absolutize("https://ghcr.io/v2/o/r/blobs/sha256:ab", "/v2/other"),
             "https://ghcr.io/v2/other"
         );
-        assert_eq!(host_of("https://ghcr.io/v2/x"), "ghcr.io");
-        assert_eq!(host_of("http://localhost:5000/v2/x"), "localhost:5000");
+        assert_eq!(origin_of("https://ghcr.io/v2/x"), "https://ghcr.io");
+        assert_eq!(
+            origin_of("http://localhost:5000/v2/x"),
+            "http://localhost:5000"
+        );
+    }
+
+    #[test]
+    fn redirect_auth_sticks_to_the_registry_origin() {
+        let registry = origin_of("https://registry.example/v2/o/r/blobs/sha256:ab").to_string();
+
+        let mut allowed = true;
+        assert!(redirect_auth_allowed(
+            &registry,
+            &mut allowed,
+            "https://registry.example/v2/o/r/blobs/sha256:cd"
+        ));
+        assert!(allowed);
+
+        let mut allowed = true;
+        assert!(!redirect_auth_allowed(
+            &registry,
+            &mut allowed,
+            "https://cdn.example/blob"
+        ));
+        assert!(!redirect_auth_allowed(
+            &registry,
+            &mut allowed,
+            "https://cdn.example/blob2"
+        ));
+
+        let mut allowed = true;
+        assert!(!redirect_auth_allowed(
+            &registry,
+            &mut allowed,
+            "http://registry.example/v2/o/r/blobs/sha256:cd"
+        ));
     }
 
     #[test]
