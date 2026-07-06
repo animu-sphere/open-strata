@@ -37,3 +37,10 @@ targets = [
 
 # Dev-dependencies are not shipped in the binary, so they need no attribution.
 ignore-dev-dependencies = true
+
+[ureq.clarify]
+license = "MIT"
+
+[[ureq.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "7e5886959f67f8c75063a9d55cd3cb08c5a8cbea9a944fa1df2d4ae038f53721"
