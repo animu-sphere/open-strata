@@ -155,13 +155,14 @@ them. Each release is a coherent slice, not a phase boundary.
     `ost artifact resolve | pull` with digest-pin enforcement, the full
     verification chain before an atomic local import, JSON pull evidence, and
     stable `ARTIFACT_*` error codes. Landed (#86).
-  - ⬜ **CI contract + generated hosted bootstrap (plan Phase 2):**
-    `openstrata.ci.yaml` support lines gain a `runtime.remote` reference
+  - 🚧 **CI contract + generated hosted bootstrap (plan Phase 2):**
+    `openstrata.ci.yaml` support lines gain a `runtime_remote` reference
     (OCI uri + expected digest) beside the artifact digest; `ost ci generate
     github` renders a pinned, checksum-verified `ost` install step and the
     digest-pinned `ost artifact pull`, with `actions/cache` keyed by digest as
-    an optional optimization (cache is speed, never correctness); a public
-    E2E fixture repository proves fork-PR / push / cache-miss runs green.
+    an optional optimization (cache is speed, never correctness) — landed; a
+    public E2E fixture repository proving fork-PR / push / cache-miss runs
+    green is the remaining piece.
   - ⬜ **Runtime export ergonomics (report #10):** a slim/SDK-profile export
     (`include/lib/bin/plugin`-only) to cut the 14.4 GB adopted-tree payload,
     multithreaded zstd / a `--level` knob, and progress output for the
@@ -734,21 +735,20 @@ its first renderer, not the source of CI semantics. Ranked:
   explicit support claims, never an inferred Cartesian product. Still ⬜:
   dispatch-input restrictions are moot for now — the generated workflows
   accept no `workflow_dispatch` inputs at all.
-- 🚧 **P1 — source-CI lane: GitHub-hosted SDK build jobs.**
-  ✅ `ost ci generate github` now renders `pull_request`/`main` cells into a
+- ✅ **P1 — source-CI lane: GitHub-hosted SDK build jobs.**
+  `ost ci generate github` renders `pull_request`/`main` cells into a
   second workflow (`ost-source-ci.yml`): checkout (SHA-pinned) →
   `ost ci validate` → `ost artifact verify` + `ost runtime pull
   --from-artifact <digest>` → `ost plugin build <bundle>` → `ost plugin test
   --up-to <level>` → `ost plugin package` (never publish, `contents: read`
   token, no secrets) → upload reports; per-cell `bundle:` selects the bundle
   in a workspace repo. The 0.6.0 artifact-seeded workflow remains the
-  scheduled **support** lane. Still ⬜: an install/restore-`ost` step (the
-  generated job currently asserts `ost --version`) and hosted-runner registry
-  seeding for the runtime SDK artifact (needs a fetchable artifact transport —
-  Phase 6 remote registry). **Both targeted for v0.9.0** — see the
-  [Phase 6 — v0.9.0 backlog](#phase-6--v090-backlog-from-dogfooding-report-10--the-remote-artifact-transport-plan)
-  (report #10 confirmed the generated lane fails at "Check ost is available"
-  on a hosted runner until these land).
+  scheduled **support** lane. The two gaps report #10 confirmed ("Check ost
+  is available" fails on a hosted runner) closed in v0.9.0: hosted cells now
+  get a pinned, checksum-verified `ost` bootstrap step and a digest-pinned
+  `ost artifact pull` from the cell's `runtime_remote` reference (plus an
+  optional digest-keyed registry cache) — see the
+  [Phase 6 — v0.9.0 backlog](#phase-6--v090-backlog-from-dogfooding-report-10--the-remote-artifact-transport-plan).
 - 🚧 **P2 — hosted-runner cost visibility + fork-PR safety.**
   ✅ `ost ci validate` warns (`CI_HOSTED_BILLING_UNACKNOWLEDGED`) when a
   referenced `github-hosted` profile lacks `billing.acknowledgement:
@@ -918,29 +918,41 @@ asks. Ranked:
   ([transport_pull.rs](../crates/ost-artifact/tests/transport_pull.rs)):
   corrupt archive, manifest substitution, wrong platform / kind, unsafe
   archive entries, and mutable-only refs all fail.
-- 🚧 **P0 — digest-pin policy.** Tags are convenience, digests are the
+- ✅ **P0 — digest-pin policy.** Tags are convenience, digests are the
   contract: `ost artifact pull` refuses mutable-only refs
   (`ARTIFACT_REFERENCE_MUTABLE`) and every digest-verification failure is an
-  error, never a warning (landed with the transport). Remaining: CI support
-  lines and the lockfile require digest-bearing references (lands with the
-  CI-contract item below).
-- ⬜ **P0 — CI contract: remote runtime reference per support line.**
-  `openstrata.ci.yaml` runtime pins gain a `remote` block (`uri:
+  error, never a warning (landed with the transport); `openstrata.ci.yaml`
+  `runtime_remote` references must themselves be digest-pinned and matching
+  their `expected_oci_digest` (landed with the CI contract below).
+- ✅ **P0 — CI contract: remote runtime reference per support line.**
+  `openstrata.ci.yaml` runtime pins gain a `runtime_remote` block (`uri:
   oci://…@sha256:<digest>` + `expected_oci_digest`) beside the existing
-  OpenStrata `artifact_digest`; source-CI (`pull_request`/`main`) lanes
-  require it, `ost ci validate`/`plan` surface it, and self-hosted lanes may
-  keep air-gapped local import (evidence records the source either way).
-- ⬜ **P0 — generated hosted bootstrap (plan Phase 2).** `ost ci generate
-  github` renders a bootstrap step that installs a version-pinned `ost` from
-  a release asset with checksum/provenance verification (bootstrap failure
-  distinct from artifact failure; `ost --version --json` saved into
-  evidence), then `ost artifact pull` of the digest-pinned runtime reference;
-  optional `actions/cache` restore/save of the validated registry directory
-  keyed by `{ost-version, os, arch, support-line, runtime-digest}` (never
-  branch names or run ids), falling back to the remote pull on a miss; then
-  the existing build → doctor → test → package → report-upload chain.
-  Replaces the current "assert `ost --version`" placeholder; closes the
-  Phase 5 source-CI lane's two ⬜ items.
+  OpenStrata `runtime_artifact` digest, and a matrix-level `bootstrap.ost`
+  pin (`version`, release `repository`, optional per-triple exact-byte
+  `sha256`). Source cells (`pull_request`/`main`) resolving to GitHub-hosted
+  runners require both; self-hosted lanes may keep air-gapped local import,
+  and CI evidence records the runtime's source either way
+  (`.ost-ci/runtime-source.json`). `ost ci validate` enforces the policy,
+  `ost ci plan` reports the bootstrap pin, remote-pulling cells, and
+  air-gapped source cells.
+- ✅ **P0 — generated hosted bootstrap (plan Phase 2).** `ost ci generate
+  github` renders, for hosted cells: a bootstrap step that installs the
+  version-pinned `ost` release asset with checksum verification (the
+  release's published `.sha256` plus the matrix's exact-byte pin when
+  declared; bootstrap failure is its own step, never conflated with an
+  artifact failure; the observed version is asserted against the pin and
+  saved into `.ost-ci/bootstrap.json` / `ost-version.json`); an optional
+  `actions/cache` restore of the registry keyed by `{ost-version, os, arch,
+  support-line, runtime-digest}` (never branch names or run ids, disableable
+  via the `OST_CI_DISABLE_CACHE` repository variable, a poisoned hosted
+  cache is wiped and re-pulled); then a digest-pinned `ost artifact pull
+  --expect-artifact --require-kind runtime` with `--json` evidence teed to
+  `.ost-ci/runtime-pull.json`, falling back cleanly on a cache hit; then the
+  existing build → test → package → report-upload chain, with `.ost-ci/`
+  evidence uploaded beside the reports. Replaces the "assert `ost
+  --version`" placeholder; the generated bootstrap was executed end to end
+  against the real v0.8.0 release assets (download → checksum → extract →
+  PATH → version assert) as part of verification.
 - ⬜ **P0 — public E2E fixture repository.** A tiny public OpenUSD plugin
   repo with a pinned public runtime artifact and the committed generated
   workflows: PR source CI, push source CI, and an explicit cache-disabled run

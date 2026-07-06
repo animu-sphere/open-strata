@@ -382,6 +382,13 @@ support_lines:
     lane: source-ci
 ```
 
+> **Shipped shape (v0.9.0):** the existing `openstrata.ci.yaml` schema pins
+> the runtime as a flat `runtime_artifact` digest, so the remote reference
+> landed additively as a sibling `runtime_remote: {uri, expected_oci_digest}`
+> block per cell — not a nested `runtime:` object — plus a matrix-level
+> `bootstrap.ost: {version, repository, sha256}` pin for the hosted `ost`
+> install. Semantics are as specified here.
+
 ### Policy
 
 - `source-ci` requires `runtime.remote.uri` and a digest pin.

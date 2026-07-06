@@ -71,6 +71,48 @@ fn path_str(p: &Path) -> &str {
     p.to_str().unwrap()
 }
 
+/// A two-lane matrix with the v0.9.0 hosted source-CI contract: a hosted PR
+/// cell carrying a `runtime_remote` pin plus the matrix-level `bootstrap`
+/// block, and a self-hosted support cell (air-gapped local import).
+fn lanes_yaml() -> String {
+    format!(
+        "\
+schema: 1
+bootstrap:
+  ost:
+    version: \"0.9.0\"
+runners:
+  windows-hosted:
+    kind: github-hosted
+    image: windows-2022
+  usd-linux-real:
+    kind: self-hosted
+    labels: [self-hosted, linux, x64, usd-26]
+cells:
+  - name: plugin-pr-windows
+    lane: pull_request
+    runner: windows-hosted
+    runtime_artifact: sha256:{a}
+    runtime_remote:
+      uri: oci://ghcr.io/owner/openstrata-runtime@sha256:{o}
+      expected_oci_digest: sha256:{o}
+    bundle: plugins/toy
+    platform: cy2026
+    profile: usd
+    up_to: 4
+  - name: linux-usd-support
+    runner: usd-linux-real
+    runtime_artifact: sha256:{a}
+    plugin_artifact: sha256:{b}
+    platform: cy2026
+    profile: usd
+",
+        a = "ab".repeat(32),
+        b = "cd".repeat(32),
+        o = "ee".repeat(32),
+    )
+}
+
 #[test]
 fn init_validate_generate_lifecycle() {
     let sb = Sandbox::new("lifecycle");
@@ -161,35 +203,7 @@ fn init_validate_generate_lifecycle() {
 #[test]
 fn runner_profiles_and_lanes_render_source_and_support_workflows() {
     let sb = Sandbox::new("lanes");
-    let lanes_yaml = format!(
-        "\
-schema: 1
-runners:
-  windows-hosted:
-    kind: github-hosted
-    image: windows-2022
-  usd-linux-real:
-    kind: self-hosted
-    labels: [self-hosted, linux, x64, usd-26]
-cells:
-  - name: plugin-pr-windows
-    lane: pull_request
-    runner: windows-hosted
-    runtime_artifact: sha256:{a}
-    bundle: plugins/toy
-    platform: cy2026
-    profile: usd
-    up_to: 4
-  - name: linux-usd-support
-    runner: usd-linux-real
-    runtime_artifact: sha256:{a}
-    plugin_artifact: sha256:{b}
-    platform: cy2026
-    profile: usd
-",
-        a = "ab".repeat(32),
-        b = "cd".repeat(32)
-    );
+    let lanes_yaml = lanes_yaml();
     std::fs::write(sb.base.join("openstrata.ci.yaml"), &lanes_yaml).unwrap();
 
     // validate passes, but warns about the unacknowledged hosted runner.
@@ -248,10 +262,19 @@ cells:
         .unwrap();
     assert_eq!(entries[0]["runs_on"][0], "windows-2022");
     assert_eq!(entries[0]["hosted"], true);
-    assert!(!doc["jobs"]["pr"]["steps"].as_sequence().unwrap().is_empty());
+    assert!(entries[0]["runtime_remote"]
+        .as_str()
+        .unwrap()
+        .starts_with("oci://ghcr.io/owner/openstrata-runtime@sha256:"));
+    let steps = doc["jobs"]["pr"]["steps"].as_sequence().unwrap();
+    let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert!(names.iter().any(|n| n.starts_with("Bootstrap ost 0.9.0")));
+    assert!(names.iter().any(|n| n.contains("registry cache")));
+    assert!(names.iter().any(|n| n.contains("remote reference")));
     assert_eq!(doc["permissions"]["contents"], "read");
     let text = std::fs::read_to_string(&source).unwrap();
     assert!(!text.contains("plugin publish"));
+    assert!(!text.contains("secrets."));
 
     // --out cannot target a two-workflow matrix.
     assert_eq!(
@@ -277,35 +300,7 @@ cells:
 #[test]
 fn plan_reports_execution_facts() {
     let sb = Sandbox::new("plan");
-    let lanes_yaml = format!(
-        "\
-schema: 1
-runners:
-  windows-hosted:
-    kind: github-hosted
-    image: windows-2022
-  usd-linux-real:
-    kind: self-hosted
-    labels: [self-hosted, linux, x64, usd-26]
-cells:
-  - name: plugin-pr-windows
-    lane: pull_request
-    runner: windows-hosted
-    runtime_artifact: sha256:{a}
-    bundle: plugins/toy
-    platform: cy2026
-    profile: usd
-    up_to: 4
-  - name: linux-usd-support
-    runner: usd-linux-real
-    runtime_artifact: sha256:{a}
-    plugin_artifact: sha256:{b}
-    platform: cy2026
-    profile: usd
-",
-        a = "ab".repeat(32),
-        b = "cd".repeat(32)
-    );
+    let lanes_yaml = lanes_yaml();
     std::fs::write(sb.base.join("lanes.yaml"), &lanes_yaml).unwrap();
 
     let v = stdout_json(&sb.ost(&["--json", "ci", "plan", "--matrix", "lanes.yaml"]));
@@ -325,6 +320,15 @@ cells:
     assert_eq!(d["requires_billing_acknowledgement"], true);
     assert_eq!(d["publish_capable_jobs"], 0);
     assert_eq!(d["workflows"].as_array().unwrap().len(), 2);
+    // v0.9.0 remote-transport facts: the bootstrap pin and which cells pull
+    // remotely vs stay air-gapped.
+    assert_eq!(d["bootstrap"]["ost_version"], "0.9.0");
+    assert_eq!(d["bootstrap"]["repository"], "animu-sphere/open-strata");
+    assert_eq!(
+        d["remote_runtime_cells"],
+        serde_json::json!(["plugin-pr-windows"])
+    );
+    assert_eq!(d["air_gapped_source_cells"], serde_json::json!([]));
 
     // Acknowledged billing flips the requirement off.
     let acked = lanes_yaml.replace(

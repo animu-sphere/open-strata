@@ -190,6 +190,65 @@ impl RunnerProfile {
     }
 }
 
+/// Remote transport reference for a cell's runtime artifact
+/// (remote-artifact-transport.md, "CI contract extension"). Tags are
+/// convenience, digests are the contract: the `uri` must pin the OCI manifest
+/// digest, so a hosted runner can fetch exactly the bytes this support line
+/// stands behind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeRemote {
+    /// `oci://<registry>/<repository>@sha256:<oci-manifest-digest>`.
+    pub uri: String,
+    /// The OCI manifest digest the uri must resolve to. Redundant when the
+    /// uri already pins it (both must agree); kept as an explicit field so
+    /// the expectation survives copy-paste edits to the uri. Required by the
+    /// CI matrix validator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_oci_digest: Option<String>,
+}
+
+/// How a GitHub-hosted source-CI runner obtains `ost` itself
+/// (remote-artifact-transport.md, "Bootstrap policy"): a version-pinned
+/// release asset with checksum verification. Self-hosted runners keep their
+/// operator-provisioned `ost`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bootstrap {
+    pub ost: OstBootstrap,
+}
+
+/// The pinned `ost` release the generated bootstrap step installs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OstBootstrap {
+    /// Release version, e.g. `0.9.0` (the release tag is `v<version>`).
+    pub version: String,
+    /// GitHub repository hosting the `ost` release assets.
+    #[serde(default = "default_ost_repository")]
+    pub repository: String,
+    /// Optional per-target-triple sha256 pins (bare 64-hex) for the release
+    /// archives, e.g. `x86_64-unknown-linux-musl: <hex>`. Stronger than the
+    /// release's published `.sha256` files: the CI contract pins the exact
+    /// bytes instead of trusting the download origin.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sha256: BTreeMap<String, String>,
+}
+
+fn default_ost_repository() -> String {
+    "animu-sphere/open-strata".to_string()
+}
+
+impl RuntimeRemote {
+    /// The pinned OCI manifest digest: the uri's `@sha256:…`, repeated by
+    /// `expected_oci_digest` in validated CI matrices.
+    pub fn pinned_oci_digest(&self) -> Option<String> {
+        match ost_artifact::RemoteReference::parse(&self.uri) {
+            Ok(ost_artifact::RemoteReference::Oci(r)) => {
+                r.digest.or_else(|| self.expected_oci_digest.clone())
+            }
+            _ => self.expected_oci_digest.clone(),
+        }
+    }
+}
+
 /// One explicit support line: runtime digest × plugin digest × target/profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupportCell {
@@ -204,6 +263,12 @@ pub struct SupportCell {
     pub runner: Option<String>,
     /// Full `sha256:<hex>` digest of the runtime artifact to materialize.
     pub runtime_artifact: String,
+    /// Remote transport reference for the runtime artifact. Required for
+    /// source cells on GitHub-hosted runners (nothing else can seed their
+    /// registry); optional for self-hosted cells, which may keep air-gapped
+    /// local import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_remote: Option<RuntimeRemote>,
     /// Full `sha256:<hex>` digest of the plugin artifact to verify. Required
     /// for support lanes; absent for source lanes (they build the bundle).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,6 +305,10 @@ fn is_kebab(name: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupportMatrix {
     pub schema: u32,
+    /// The pinned `ost` bootstrap for GitHub-hosted source CI. Required as
+    /// soon as any source cell resolves to a hosted runner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<Bootstrap>,
     /// Named runner profiles cells reference via `runner:` (deterministic
     /// order for rendering).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -270,6 +339,9 @@ impl SupportMatrix {
             return Err(Error::InvalidManifest(
                 "the support matrix declares no cells".to_string(),
             ));
+        }
+        if let Some(bootstrap) = &self.bootstrap {
+            validate_bootstrap(bootstrap)?;
         }
         for (name, profile) in &self.runners {
             if !is_kebab(name) {
@@ -389,6 +461,31 @@ impl SupportMatrix {
                     cell.up_to
                 )));
             }
+
+            if let Some(remote) = &cell.runtime_remote {
+                validate_runtime_remote(name, remote)?;
+            }
+            // A hosted source cell has no operator to seed its registry or
+            // put `ost` on PATH: the remote reference and the bootstrap pin
+            // are what make the generated workflow able to run at all
+            // (remote-artifact-transport.md, Phase 2). Self-hosted source
+            // cells may keep air-gapped local import.
+            if cell.lane.is_source() && self.is_hosted(cell) {
+                if cell.runtime_remote.is_none() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': source cells on GitHub-hosted runners require a \
+                         runtime_remote reference (uri: oci://…@sha256:<digest>) — \
+                         nothing else can seed the runner's registry"
+                    )));
+                }
+                if self.bootstrap.is_none() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': source cells on GitHub-hosted runners require the \
+                         matrix-level bootstrap block (bootstrap.ost.version) so the \
+                         generated workflow can install a pinned `ost`"
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -465,6 +562,102 @@ impl SupportMatrix {
     }
 }
 
+/// Validate one cell's remote runtime reference: a digest-pinned `oci://`
+/// uri whose pin is repeated in, and agrees with, `expected_oci_digest`.
+/// The values are later spliced into rendered workflow YAML/bash, so the
+/// reference parser's charset rules double as injection hardening.
+fn validate_runtime_remote(cell: &str, remote: &RuntimeRemote) -> Result<()> {
+    let parsed = ost_artifact::RemoteReference::parse(&remote.uri)
+        .map_err(|e| Error::InvalidManifest(format!("cell '{cell}': runtime_remote.uri: {e}")))?;
+    let uri_digest = match &parsed {
+        ost_artifact::RemoteReference::Oci(r) => r.digest.clone(),
+        ost_artifact::RemoteReference::File(_) => {
+            return Err(Error::InvalidManifest(format!(
+                "cell '{cell}': runtime_remote.uri must be an oci:// reference \
+                 (file:// sources are the air-gapped local-import path, not a remote pin)"
+            )));
+        }
+    };
+    // Tags are convenience, digests are the contract: the uri itself must be
+    // pinned — the generated `ost artifact pull` refuses mutable references
+    // (transport plan, digest-pin policy).
+    let Some(uri_digest) = uri_digest else {
+        return Err(Error::InvalidManifest(format!(
+            "cell '{cell}': runtime_remote.uri '{}' pins no digest — resolve the tag \
+             (`ost artifact resolve`) and pin the @sha256:<digest> form",
+            remote.uri
+        )));
+    };
+    let Some(expected) = &remote.expected_oci_digest else {
+        return Err(Error::InvalidManifest(format!(
+            "cell '{cell}': runtime_remote.expected_oci_digest is required and must repeat \
+             the uri's pinned OCI digest"
+        )));
+    };
+    if !ost_artifact::is_sha256_ref(expected) {
+        return Err(Error::InvalidManifest(format!(
+            "cell '{cell}': runtime_remote.expected_oci_digest '{expected}' is not a \
+             full sha256:<64-hex> digest"
+        )));
+    }
+    if &uri_digest != expected {
+        return Err(Error::InvalidManifest(format!(
+            "cell '{cell}': runtime_remote.uri pins {uri_digest} but \
+             expected_oci_digest is {expected} — the two must agree"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate the bootstrap block. Version/repository/pins are spliced into
+/// rendered workflow bash, so their charsets are deliberately narrow.
+fn validate_bootstrap(bootstrap: &Bootstrap) -> Result<()> {
+    let ost = &bootstrap.ost;
+    let version_ok = !ost.version.is_empty()
+        && ost
+            .version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        && !ost.version.starts_with('v');
+    if !version_ok {
+        return Err(Error::InvalidManifest(format!(
+            "bootstrap.ost.version '{}' must be a bare release version like 0.9.0 \
+             (no leading 'v', characters [A-Za-z0-9._-])",
+            ost.version
+        )));
+    }
+    let repo_ok = ost.repository.split('/').count() == 2
+        && ost.repository.split('/').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        });
+    if !repo_ok {
+        return Err(Error::InvalidManifest(format!(
+            "bootstrap.ost.repository '{}' must be an <owner>/<name> GitHub repository",
+            ost.repository
+        )));
+    }
+    for (triple, hex) in &ost.sha256 {
+        let triple_ok = !triple.is_empty()
+            && triple
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b));
+        if !triple_ok {
+            return Err(Error::InvalidManifest(format!(
+                "bootstrap.ost.sha256 key '{triple}' is not a target triple"
+            )));
+        }
+        if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::InvalidManifest(format!(
+                "bootstrap.ost.sha256['{triple}'] must be a bare 64-hex sha256, got '{hex}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Whether a digest is the scaffold's all-zero placeholder. Structurally a
 /// valid `sha256:<64-hex>` reference, but never the digest of real bytes worth
 /// standing behind — cells still carrying it are not usable support claims.
@@ -509,7 +702,19 @@ pub fn starter_matrix() -> String {
 # Cells may declare a lane (pull_request | main | scheduled |
 # workflow_dispatch; default scheduled) and reference a named runner
 # profile instead of raw labels. Source lanes (pull_request/main) build
-# the bundle from the checked-out repo and omit plugin_artifact:
+# the bundle from the checked-out repo and omit plugin_artifact.
+#
+# Source cells on GitHub-hosted runners additionally need (1) a
+# `runtime_remote` reference so the runner can pull the pinned runtime
+# SDK from an OCI registry, and (2) the matrix-level `bootstrap` block
+# so the generated workflow installs a pinned, checksum-verified `ost`:
+#
+#   bootstrap:
+#     ost:
+#       version: \"0.9.0\"
+#       # repository: animu-sphere/open-strata   # release-asset origin
+#       # sha256:                                # optional exact-byte pins
+#       #   x86_64-unknown-linux-musl: <64-hex of the release archive>
 #
 #   runners:
 #     windows-hosted:
@@ -526,10 +731,17 @@ pub fn starter_matrix() -> String {
 #       lane: pull_request
 #       runner: windows-hosted
 #       runtime_artifact: sha256:<runtime SDK digest>
+#       runtime_remote:
+#         uri: oci://ghcr.io/<owner>/<runtime-repo>@sha256:<oci-digest>
+#         expected_oci_digest: sha256:<oci-digest>
 #       bundle: plugins/myPlugin
 #       platform: cy2026
 #       profile: usd
 #       up_to: 4
+#
+# Self-hosted cells may omit runtime_remote and keep air-gapped local
+# import (`ost artifact import` on the runner); CI evidence records the
+# runtime's source either way.
 #
 # Generate GitHub Actions workflows from this file:
 #   ost ci generate github
@@ -634,31 +846,40 @@ cells:
         format!(
             "\
 schema: 1
+bootstrap:
+    ost:
+        version: \"0.9.0\"
 runners:
-  windows-hosted:
-    kind: github-hosted
-    image: windows-2022
-  usd-linux-real:
-    kind: self-hosted
-    labels: [self-hosted, linux, x64, usd-26]
+    windows-hosted:
+        kind: github-hosted
+        image: windows-2022
+    usd-linux-real:
+        kind: self-hosted
+        labels: [self-hosted, linux, x64, usd-26]
 cells:
-  - name: plugin-pr-windows
-    lane: pull_request
-    runner: windows-hosted
-    runtime_artifact: sha256:{a}
-    bundle: plugins/toy
-    platform: cy2026
-    profile: usd
-    up_to: 4
-  - name: linux-usd-support
-    runner: usd-linux-real
-    runtime_artifact: sha256:{a}
-    plugin_artifact: sha256:{b}
-    platform: cy2026
-    profile: usd
+    -
+        name: plugin-pr-windows
+        lane: pull_request
+        runner: windows-hosted
+        runtime_artifact: sha256:{a}
+        runtime_remote:
+            uri: oci://ghcr.io/owner/openstrata-runtime@sha256:{o}
+            expected_oci_digest: sha256:{o}
+        bundle: plugins/toy
+        platform: cy2026
+        profile: usd
+        up_to: 4
+    -
+        name: linux-usd-support
+        runner: usd-linux-real
+        runtime_artifact: sha256:{a}
+        plugin_artifact: sha256:{b}
+        platform: cy2026
+        profile: usd
 ",
             a = "ab".repeat(32),
-            b = "cd".repeat(32)
+            b = "cd".repeat(32),
+            o = "ee".repeat(32),
         )
     }
 
@@ -690,8 +911,8 @@ cells:
     #[test]
     fn billing_acknowledgement_clears_the_warning_and_gates_publish() {
         let acked = lanes_yaml().replace(
-            "    image: windows-2022\n",
-            "    image: windows-2022\n    billing:\n      acknowledgement: required\n",
+            "        image: windows-2022\n",
+            "        image: windows-2022\n        billing:\n            acknowledgement: required\n",
         );
         let m = SupportMatrix::from_yaml(&acked).unwrap();
         assert!(m.hosted_ack_missing().is_empty());
@@ -699,8 +920,8 @@ cells:
         // A publish-capable cell on an unacknowledged hosted profile is an
         // error (the pull_request lane cannot publish at all, so use main).
         let publishing = lanes_yaml().replace(
-            "    lane: pull_request\n",
-            "    lane: main\n    publish: candidate\n",
+            "        lane: pull_request\n",
+            "        lane: main\n        publish: candidate\n",
         );
         let m = SupportMatrix::from_yaml(&publishing).unwrap();
         assert_eq!(
@@ -711,20 +932,20 @@ cells:
 
     #[test]
     fn lane_and_runner_structural_errors_are_rejected() {
-        let plugin_line = format!("    plugin_artifact: sha256:{}\n", "cd".repeat(32));
+        let plugin_line = format!("        plugin_artifact: sha256:{}\n", "cd".repeat(32));
         let cases = [
             (
                 lanes_yaml().replace("runner: windows-hosted", "runner: nope"),
                 "unknown runner profile",
             ),
             (
-                lanes_yaml().replace("    image: windows-2022\n", ""),
+                lanes_yaml().replace("        image: windows-2022\n", ""),
                 "require an image",
             ),
             (
                 lanes_yaml().replace(
-                    "    labels: [self-hosted, linux, x64, usd-26]\n",
-                    "    image: ubuntu-24.04\n",
+                    "        labels: [self-hosted, linux, x64, usd-26]\n",
+                    "        image: ubuntu-24.04\n",
                 ),
                 "self-hosted profiles require runs-on labels",
             ),
@@ -738,17 +959,170 @@ cells:
             ),
             (
                 lanes_yaml().replace(
-                    "    lane: pull_request\n",
-                    "    lane: pull_request\n    publish: candidate\n",
+                    "        lane: pull_request\n",
+                    "        lane: pull_request\n        publish: candidate\n",
                 ),
                 "must never publish",
             ),
             (
                 lanes_yaml().replace(
-                    "    runner: usd-linux-real\n",
-                    "    runner: usd-linux-real\n    host:\n      labels: [self-hosted]\n",
+                    "        runner: usd-linux-real\n",
+                    "        runner: usd-linux-real\n        host:\n            labels: [self-hosted]\n",
                 ),
                 "both a runner profile and host.labels",
+            ),
+        ];
+        for (yaml, needle) in cases {
+            let err = SupportMatrix::from_yaml(&yaml).expect_err(needle);
+            assert!(
+                err.to_string().contains(needle),
+                "expected '{needle}' in: {err}"
+            );
+        }
+    }
+
+    /// A hosted source cell with the full v0.9.0 contract: remote runtime
+    /// reference + matrix-level bootstrap pin.
+    fn remote_yaml() -> String {
+        format!(
+            "\
+schema: 1
+bootstrap:
+  ost:
+    version: \"0.9.0\"
+runners:
+  linux-hosted:
+    kind: github-hosted
+    image: ubuntu-24.04
+    billing:
+      acknowledgement: required
+cells:
+  - name: plugin-pr-linux
+    lane: pull_request
+    runner: linux-hosted
+    runtime_artifact: sha256:{a}
+    runtime_remote:
+      uri: oci://ghcr.io/owner/openstrata-runtime@sha256:{o}
+      expected_oci_digest: sha256:{o}
+    bundle: plugins/toy
+    platform: cy2026
+    profile: usd
+    up_to: 4
+",
+            a = "ab".repeat(32),
+            o = "ee".repeat(32),
+        )
+    }
+
+    #[test]
+    fn remote_contract_parses_and_resolves_the_pin() {
+        let m = SupportMatrix::from_yaml(&remote_yaml()).unwrap();
+        let cell = &m.cells[0];
+        let remote = cell.runtime_remote.as_ref().unwrap();
+        assert_eq!(
+            remote.pinned_oci_digest().as_deref(),
+            Some(format!("sha256:{}", "ee".repeat(32)).as_str())
+        );
+        let bootstrap = m.bootstrap.as_ref().unwrap();
+        assert_eq!(bootstrap.ost.version, "0.9.0");
+        assert_eq!(bootstrap.ost.repository, "animu-sphere/open-strata");
+    }
+
+    #[test]
+    fn hosted_source_cells_require_remote_and_bootstrap() {
+        // Dropping the remote block fails: nothing can seed a hosted runner.
+        let no_remote = remote_yaml()
+            .lines()
+            .filter(|l| {
+                !l.contains("runtime_remote")
+                    && !l.contains("uri:")
+                    && !l.contains("expected_oci_digest")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let err = SupportMatrix::from_yaml(&no_remote).expect_err("remote required");
+        assert!(err.to_string().contains("runtime_remote"), "got: {err}");
+
+        // Dropping the bootstrap block fails: no pinned ost install.
+        let no_bootstrap =
+            remote_yaml().replace("bootstrap:\n  ost:\n    version: \"0.9.0\"\n", "");
+        let err = SupportMatrix::from_yaml(&no_bootstrap).expect_err("bootstrap required");
+        assert!(err.to_string().contains("bootstrap"), "got: {err}");
+
+        // A self-hosted source cell needs neither (air-gapped local import).
+        let self_hosted = no_bootstrap
+            .replace(
+                "  linux-hosted:\n    kind: github-hosted\n    image: ubuntu-24.04\n    billing:\n      acknowledgement: required\n",
+                "  linux-real:\n    kind: self-hosted\n    labels: [self-hosted, linux, x64]\n",
+            )
+            .replace("runner: linux-hosted", "runner: linux-real")
+            .lines()
+            .filter(|l| {
+                !l.contains("runtime_remote")
+                    && !l.contains("uri:")
+                    && !l.contains("expected_oci_digest")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        SupportMatrix::from_yaml(&self_hosted).expect("self-hosted source cells stay valid");
+    }
+
+    #[test]
+    fn remote_and_bootstrap_structural_errors_are_rejected() {
+        let o = "ee".repeat(32);
+        let cases = [
+            (
+                // Mutable-only remote reference: tags are not a contract,
+                // even when an expected digest sits beside them.
+                remote_yaml().replace(
+                    &format!("oci://ghcr.io/owner/openstrata-runtime@sha256:{o}"),
+                    "oci://ghcr.io/owner/openstrata-runtime:latest",
+                ),
+                "pins no digest",
+            ),
+            (
+                remote_yaml().replace(
+                    &format!("expected_oci_digest: sha256:{o}"),
+                    &format!("expected_oci_digest: sha256:{}", "ff".repeat(32)),
+                ),
+                "must agree",
+            ),
+            (
+                remote_yaml()
+                    .lines()
+                    .filter(|l| !l.contains("expected_oci_digest"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "expected_oci_digest is required",
+            ),
+            (
+                remote_yaml().replace(
+                    "uri: oci://ghcr.io/owner/openstrata-runtime",
+                    "uri: file:///seeded/dist",
+                ),
+                "must be an oci:// reference",
+            ),
+            (
+                remote_yaml().replace("version: \"0.9.0\"", "version: \"v0.9.0\""),
+                "bare release version",
+            ),
+            (
+                remote_yaml().replace("version: \"0.9.0\"", "version: \"0.9.0; rm -rf /\""),
+                "bare release version",
+            ),
+            (
+                remote_yaml().replace(
+                    "    version: \"0.9.0\"\n",
+                    "    version: \"0.9.0\"\n    repository: not-a-repo\n",
+                ),
+                "<owner>/<name>",
+            ),
+            (
+                remote_yaml().replace(
+                    "    version: \"0.9.0\"\n",
+                    "    version: \"0.9.0\"\n    sha256:\n      x86_64-unknown-linux-musl: nothex\n",
+                ),
+                "64-hex",
             ),
         ];
         for (yaml, needle) in cases {
