@@ -18,6 +18,9 @@ accepted = [
     "Unicode-DFS-2016",
     "CC0-1.0",
     "Unlicense",
+    # Mozilla CA certificate bundle data (webpki-roots, via ureq/rustls) —
+    # a permissive data license, redistributed unmodified.
+    "CDLA-Permissive-2.0",
     # File-level copyleft only; redistributed unmodified (via `directories` ->
     # `option-ext`), so it imposes no obligation on OpenStrata's own source.
     "MPL-2.0",

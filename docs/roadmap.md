@@ -821,7 +821,9 @@ Ranked:
 - 🚧 OCI layout / registry / oras transport — **targeted for v0.9.0** (read-only
   pull first). Direction:
   [remote-artifact-transport.md](remote-artifact-transport.md); ranked backlog
-  below.
+  below. The read-only pull slice (transport contract + OCI backend +
+  `ost artifact resolve|pull`) has landed; push and the publish policy stay
+  deferred to v0.10.0+.
 
 ### Phase 6 — v0.9.0 backlog (from dogfooding report #10 + the remote-artifact-transport plan)
 
@@ -836,29 +838,34 @@ the operator. The remote-artifact-transport plan
 contract; this backlog is its P0 slice plus the report's export-ergonomics
 asks. Ranked:
 
-- ⬜ **P0 — `ArtifactTransport` contract + read-only OCI pull (plan Phase 1).**
-  A `resolve / pull / push` transport trait in front of the registry: the
-  existing filesystem store becomes one adapter (behavior unchanged), and a
-  read-only OCI backend (GHCR-class, ORAS artifact model) becomes the second.
-  New `ost artifact resolve <ref>` (tag → immutable digest) and
-  `ost artifact pull oci://…@sha256:<digest>` — pull downloads, runs the full
-  verification chain (archive digest → manifest schema/digest →
-  pre-extraction safety → per-file digests → artifact type / support-line
-  match → runtime digest/platform/ABI → trust policy), then imports
-  atomically into the local registry; transport success alone is never
-  success, and a failed step never leaves a usable artifact. `--json`
+- ✅ **P0 — `ArtifactTransport` contract + read-only OCI pull (plan Phase 1).**
+  A `resolve / pull` transport trait (`push` declared, refused until the
+  publish phase) in front of the registry: the existing filesystem flow is
+  one adapter (`file://<dist-dir>`, behavior unchanged — same chain, same
+  evidence), and a read-only OCI backend (GHCR-class, ORAS artifact model,
+  bearer token exchange, manual cross-host redirects that never replay
+  `Authorization`) is the second. `ost artifact resolve <ref>` (tag →
+  immutable digest) and `ost artifact pull oci://…@sha256:<digest>` landed —
+  pull downloads, runs the full verification chain (OCI blob digests →
+  archive digest → manifest schema → pre-extraction safety → per-file
+  digests → kind / target / pinned-digest match → trust policy), then
+  imports atomically into the local registry; transport success alone is
+  never success, and a failed step never leaves a usable artifact. `--json`
   evidence records the remote locator, resolved OCI digest, registry
   identity, auth mode, per-step verification status, and local import path.
   Stable error codes (`ARTIFACT_REFERENCE_MUTABLE`,
-  `ARTIFACT_OCI_DIGEST_MISMATCH`, `ARTIFACT_TRANSPORT_FAILED`, …) so CI can
-  branch on cause. Integration-tested against a fixture/mock OCI registry:
-  corrupt archive, manifest substitution, wrong platform, and mutable-only
-  refs all fail.
-- ⬜ **P0 — digest-pin policy.** Tags are convenience, digests are the
-  contract: CI support lines and the lockfile require digest-bearing
-  references; source CI rejects mutable-only refs
-  (`ARTIFACT_REFERENCE_MUTABLE`); a digest-verification failure is always an
-  error, never a warning.
+  `ARTIFACT_OCI_DIGEST_MISMATCH`, `ARTIFACT_ARCHIVE_DIGEST_MISMATCH`,
+  `ARTIFACT_ARCHIVE_UNSAFE`, `ARTIFACT_TRANSPORT_FAILED`, …) so CI can
+  branch on cause. Integration-tested against a mock OCI registry
+  ([transport_pull.rs](../crates/ost-artifact/tests/transport_pull.rs)):
+  corrupt archive, manifest substitution, wrong platform / kind, unsafe
+  archive entries, and mutable-only refs all fail.
+- 🚧 **P0 — digest-pin policy.** Tags are convenience, digests are the
+  contract: `ost artifact pull` refuses mutable-only refs
+  (`ARTIFACT_REFERENCE_MUTABLE`) and every digest-verification failure is an
+  error, never a warning (landed with the transport). Remaining: CI support
+  lines and the lockfile require digest-bearing references (lands with the
+  CI-contract item below).
 - ⬜ **P0 — CI contract: remote runtime reference per support line.**
   `openstrata.ci.yaml` runtime pins gain a `remote` block (`uri:
   oci://…@sha256:<digest>` + `expected_oci_digest`) beside the existing

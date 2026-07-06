@@ -8,6 +8,11 @@
 //!   against the producer manifest.
 //! - `export` copy an artifact (archive + manifest + checksums + record) out
 //!   for CI handoff; the exported directory is re-importable.
+//! - `resolve` turn a remote reference (a mutable tag) into its immutable
+//!   digest — the pin CI and the lockfile require.
+//! - `pull` fetch a **digest-pinned** artifact from a remote (`oci://`) or
+//!   local (`file://`) source, run the full verification chain, and import it
+//!   atomically (remote-artifact-transport.md, Phase 1).
 //!
 //! Artifacts are addressed by digest (full `sha256:<hex>` or a unique prefix),
 //! never by mutable name — the registry is the source of truth CI pins.
@@ -15,7 +20,10 @@
 use camino::Utf8PathBuf;
 use clap::Subcommand;
 
-use ost_artifact::{ArtifactKind, ArtifactRecord, ArtifactSource, ArtifactStore, VerifyReport};
+use ost_artifact::{
+    ArtifactKind, ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport, FileTransport,
+    OciTransport, PullEvidence, PullPolicy, RemoteReference, VerifyReport,
+};
 use ost_core::{Error, Result};
 
 use crate::output::{self, Format};
@@ -58,6 +66,36 @@ pub enum ArtifactCmd {
         /// Destination directory (created if missing).
         dest: String,
     },
+    /// Resolve a remote reference (tag) to its immutable digest.
+    Resolve {
+        /// oci://<registry>/<repository>[:tag][@sha256:<digest>]
+        reference: String,
+        /// Use plain http:// instead of https:// (fixture registries and
+        /// air-gapped mirrors only).
+        #[arg(long)]
+        plain_http: bool,
+    },
+    /// Pull a digest-pinned artifact from a remote source, verify it, and
+    /// import it into the local registry.
+    Pull {
+        /// oci://…@sha256:<oci-manifest-digest> or file://<dist-dir>.
+        /// Mutable (tag-only) references are refused: resolve them first.
+        reference: String,
+        /// Require the pulled OpenStrata artifact digest to equal this pin
+        /// (the support line / lockfile contract).
+        #[arg(long, value_name = "sha256:<hex>")]
+        expect_artifact: Option<String>,
+        /// Require the artifact kind: runtime | plugin | package.
+        #[arg(long, value_name = "KIND")]
+        require_kind: Option<String>,
+        /// Require the artifact's target id to match exactly.
+        #[arg(long, value_name = "TARGET")]
+        require_target: Option<String>,
+        /// Use plain http:// instead of https:// (fixture registries and
+        /// air-gapped mirrors only).
+        #[arg(long)]
+        plain_http: bool,
+    },
 }
 
 pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
@@ -69,7 +107,138 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
         ArtifactCmd::Verify { digest } => verify(&store, &digest, fmt),
         ArtifactCmd::Export { digest, dest } => export(&store, &digest, &dest, fmt),
         ArtifactCmd::Extract { digest, dest } => extract(&store, &digest, &dest, fmt),
+        ArtifactCmd::Resolve {
+            reference,
+            plain_http,
+        } => resolve_remote(&reference, plain_http, fmt),
+        ArtifactCmd::Pull {
+            reference,
+            expect_artifact,
+            require_kind,
+            require_target,
+            plain_http,
+        } => {
+            let policy = PullPolicy {
+                expected_artifact_digest: expect_artifact,
+                require_kind: require_kind
+                    .as_deref()
+                    .map(|k| {
+                        ArtifactKind::from_tag(k).ok_or_else(|| {
+                            Error::usage(format!(
+                                "unknown artifact kind '{k}' (expected runtime, plugin, or package)"
+                            ))
+                        })
+                    })
+                    .transpose()?,
+                require_target,
+            };
+            pull_remote(&store, &reference, &policy, plain_http, fmt)
+        }
     }
+}
+
+/// The transport for a parsed reference: OCI for `oci://`, filesystem for
+/// `file://`. Both implement the same contract, so callers never branch again.
+fn transport_for(reference: &RemoteReference, plain_http: bool) -> Box<dyn ArtifactTransport> {
+    match reference {
+        RemoteReference::Oci(_) => Box::new(OciTransport::new(plain_http)),
+        RemoteReference::File(_) => Box::new(FileTransport::new()),
+    }
+}
+
+fn resolve_remote(reference: &str, plain_http: bool, fmt: Format) -> Result<()> {
+    let parsed = RemoteReference::parse(reference)?;
+    let transport = transport_for(&parsed, plain_http);
+    let resolved = transport.resolve(&parsed)?;
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "reference": reference,
+            "resolved": {
+                "locator": resolved.locator,
+                "registry": resolved.registry,
+                "repository": resolved.repository,
+                "oci_digest": resolved.oci_digest,
+                "auth_mode": resolved.auth_mode,
+            },
+        }));
+        return Ok(());
+    }
+    println!("Resolved {reference}");
+    println!("  locator:   {}", resolved.locator);
+    if let Some(dg) = &resolved.oci_digest {
+        println!("  digest:    {dg}");
+    }
+    println!("  registry:  {}", resolved.registry);
+    println!("  auth mode: {}", resolved.auth_mode);
+    println!();
+    println!("Pin this in CI / the lockfile and pull it with:");
+    println!("  ost artifact pull {}", resolved.locator);
+    Ok(())
+}
+
+fn pull_remote(
+    store: &ArtifactStore,
+    reference: &str,
+    policy: &PullPolicy,
+    plain_http: bool,
+    fmt: Format,
+) -> Result<()> {
+    let parsed = RemoteReference::parse(reference)?;
+    let transport = transport_for(&parsed, plain_http);
+    let evidence = ost_artifact::pull(transport.as_ref(), &parsed, store, policy)?;
+    if fmt.is_json() {
+        output::success(&pull_evidence_json(store, &evidence));
+        return Ok(());
+    }
+    let r = &evidence.record;
+    println!(
+        "Pulled {} ({} {} {}) from {}",
+        r.short_digest(),
+        r.kind.as_str(),
+        r.name,
+        r.version,
+        evidence.remote.registry
+    );
+    println!("  locator:    {}", evidence.remote.locator);
+    if let Some(dg) = &evidence.remote.oci_digest {
+        println!("  oci digest: {dg}");
+    }
+    println!("  artifact:   {}", r.digest);
+    for (step, status) in &evidence.verification {
+        println!("  {status:<7} {step}");
+    }
+    println!(
+        "  import:     {} ({})",
+        evidence.import_status, evidence.import_path
+    );
+    Ok(())
+}
+
+/// Pull evidence as JSON (transport plan, "Minimum JSON output").
+fn pull_evidence_json(store: &ArtifactStore, evidence: &PullEvidence) -> serde_json::Value {
+    let mut verification = serde_json::Map::new();
+    for (step, status) in &evidence.verification {
+        verification.insert((*step).to_string(), serde_json::json!(status));
+    }
+    serde_json::json!({
+        "status": "ok",
+        "artifact_digest": evidence.record.digest,
+        "reference": evidence.reference,
+        "remote": {
+            "locator": evidence.remote.locator,
+            "resolved_oci_digest": evidence.remote.oci_digest,
+            "registry": evidence.remote.registry,
+            "repository": evidence.remote.repository,
+            "auth_mode": evidence.remote.auth_mode,
+        },
+        "verification": verification,
+        "local_import": {
+            "status": evidence.import_status,
+            "path": evidence.import_path.to_string(),
+            "store": store.root().to_string(),
+        },
+        "artifact": record_json(&evidence.record),
+    })
 }
 
 fn import(store: &ArtifactStore, path: &str, fmt: Format) -> Result<()> {
