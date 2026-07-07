@@ -119,6 +119,44 @@ pub fn stage_files(stage: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
     Ok(paths)
 }
 
+/// Top-level directories of the **SDK layout**: the subtrees needed to *build*
+/// and *run* an OpenUSD plugin against a runtime. A runtime adopted from a full
+/// USD build tree also carries the source (`src/`) and build (`build/`) trees —
+/// gigabytes that no consumer of the runtime needs. A slim export keeps only
+/// this set (see [`is_sdk_path`]).
+///
+/// - `include`/`lib` — headers, import libs, shared libs, and the `pxr` Python
+///   bindings a build links and a session loads.
+/// - `bin` — the runtime tools (`usdcat`, `usdview`) and their DLLs.
+/// - `plugin` — USD plugins discovered via `PXR_PLUGINPATH_NAME`.
+/// - `cmake` — the exported `pxrTargets.cmake` etc. `find_package(pxr)` loads.
+/// - `libraries` — MaterialX's standard data libraries, loaded at runtime for
+///   shading (kept; distinct from `resources/`, which is sample geometry/images
+///   a plugin build/test never needs).
+const SDK_DIRS: &[&str] = &["include", "lib", "bin", "plugin", "cmake", "libraries"];
+
+/// Whether `rel` (a path relative to the runtime prefix, forward- or
+/// back-slashed) belongs in the SDK layout: under an [`SDK_DIRS`] subtree, or a
+/// top-level CMake package config (`*.cmake`) or attribution file
+/// (`LICENSE*`/`NOTICE*`/`THIRD*`). Everything else — notably `build/` and
+/// `src/` — is excluded from a slim export.
+pub fn is_sdk_path(rel: &Utf8Path) -> bool {
+    let mut comps = rel.as_str().split(['/', '\\']).filter(|c| !c.is_empty());
+    let Some(first) = comps.next() else {
+        return false;
+    };
+    // A nested path (has a second component) keeps only the SDK subtrees.
+    if comps.next().is_some() {
+        return SDK_DIRS.contains(&first);
+    }
+    // A top-level file: keep build-config and attribution, drop the rest.
+    let lower = first.to_ascii_lowercase();
+    lower.ends_with(".cmake")
+        || lower.starts_with("license")
+        || lower.starts_with("notice")
+        || lower.starts_with("third")
+}
+
 /// Recursively collect regular files under `dir`, rejecting any non-regular,
 /// non-directory entry.
 fn collect_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
@@ -167,6 +205,39 @@ mod tests {
         let mut d = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
         d.push(format!("ost-pack-{tag}-{}-{nanos}", std::process::id()));
         d
+    }
+
+    #[test]
+    fn is_sdk_path_keeps_layout_and_config_drops_build_tree() {
+        // SDK subtrees are kept.
+        for keep in [
+            "include/pxr/base/tf/tf.h",
+            "lib/usd_tf.dll",
+            "lib/site-packages/pxr/Tf/_tf.pyd",
+            "bin/usdcat.exe",
+            "plugin/usd/plugInfo.json",
+            "cmake/pxrTargets.cmake",
+            "libraries/stdlib/stdlib_defs.mtlx",
+        ] {
+            assert!(is_sdk_path(Utf8Path::new(keep)), "should keep {keep}");
+        }
+        // Top-level config/attribution files are kept.
+        for keep in ["pxrConfig.cmake", "LICENSE", "NOTICE", "THIRD-PARTY.md"] {
+            assert!(is_sdk_path(Utf8Path::new(keep)), "should keep {keep}");
+        }
+        // The build/source tree and other top-level junk are dropped.
+        for drop in [
+            "build/OpenUSD/pxr/base/tf/tf.obj",
+            "src/MaterialX-1.39.4/README.md",
+            "resources/Geometry/shaderball.usda",
+            "CHANGELOG.md",
+            "README.md",
+        ] {
+            assert!(!is_sdk_path(Utf8Path::new(drop)), "should drop {drop}");
+        }
+        // Backslash separators (Windows-staged relative paths) work too.
+        assert!(is_sdk_path(Utf8Path::new("lib\\usd_tf.dll")));
+        assert!(!is_sdk_path(Utf8Path::new("build\\x.obj")));
     }
 
     #[test]

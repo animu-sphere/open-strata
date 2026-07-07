@@ -89,6 +89,12 @@ pub enum RuntimeCmd {
         /// in this directory instead of a temporary staging dir.
         #[arg(long)]
         dist: Option<String>,
+        /// Export only the SDK layout (include, lib, bin, plugin, cmake,
+        /// libraries, and CMake config), dropping the source/build tree of a
+        /// runtime adopted from a full USD build. Much smaller archive and
+        /// faster per-PR pull.
+        #[arg(long)]
+        slim: bool,
     },
     /// List runtimes present in the local store.
     List,
@@ -157,7 +163,8 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             platform,
             profile,
             dist,
-        } => export(&platform, &profile, dist.as_deref(), fmt),
+            slim,
+        } => export(&platform, &profile, dist.as_deref(), slim, fmt),
         RuntimeCmd::List => list(fmt),
         RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
         RuntimeCmd::Validate { platform, profile } => validate(&platform, &profile, fmt),
@@ -857,7 +864,13 @@ fn runtime_artifact_manifest(
 
 /// `ost runtime export` — pack a pulled real runtime and register it in the
 /// local artifact registry, addressed by digest.
-fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Result<()> {
+fn export(
+    platform: &str,
+    profile: &str,
+    dist: Option<&str>,
+    slim: bool,
+    fmt: Format,
+) -> Result<()> {
     let (platform, profile) = platform_profile(platform, profile);
     let r = resolve(&platform, &profile)?;
     let manifest_path = r.prefix.join(MANIFEST_FILE);
@@ -883,7 +896,7 @@ fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Res
     // manifest travels in the producer manifest instead, so the archive is a
     // pure USD tree.
     let effective = Utf8PathBuf::from(manifest.effective_prefix(&r.prefix));
-    let files: Vec<Utf8PathBuf> = ost_build::stage_files(&effective)
+    let all_files: Vec<Utf8PathBuf> = ost_build::stage_files(&effective)
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::InvalidData {
                 Error::validation(e.to_string())
@@ -894,11 +907,52 @@ fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Res
         .into_iter()
         .filter(|p| p != &effective.join(MANIFEST_FILE))
         .collect();
-    if files.is_empty() {
+    if all_files.is_empty() {
         return Err(Error::validation(format!(
             "runtime '{}' has no files under '{effective}' — nothing to export",
             manifest.id
         )));
+    }
+    // A slim export keeps only the SDK layout, dropping the source/build tree an
+    // adopted build-tree runtime carries. Report the excluded top-level entries
+    // so the reduction is visible and auditable.
+    let total_count = all_files.len();
+    let (files, excluded_dirs): (Vec<Utf8PathBuf>, Vec<String>) = if slim {
+        let mut excluded: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let kept: Vec<Utf8PathBuf> = all_files
+            .into_iter()
+            .filter(|p| {
+                let rel = p.strip_prefix(&effective).unwrap_or(p);
+                let keep = ost_build::is_sdk_path(rel);
+                if !keep {
+                    if let Some(top) = rel.as_str().split(['/', '\\']).find(|c| !c.is_empty()) {
+                        excluded.insert(top.to_string());
+                    }
+                }
+                keep
+            })
+            .collect();
+        (kept, excluded.into_iter().collect())
+    } else {
+        (all_files, Vec::new())
+    };
+    if slim && files.is_empty() {
+        return Err(Error::validation(format!(
+            "runtime '{}' has no SDK-layout files under '{effective}' — nothing to export \
+             (is this an OpenUSD install/build prefix?)",
+            manifest.id
+        )));
+    }
+    if slim && !fmt.is_json() {
+        println!(
+            "Slim export: keeping {} of {total_count} files (SDK layout); dropping: {}",
+            files.len(),
+            if excluded_dirs.is_empty() {
+                "nothing".to_string()
+            } else {
+                excluded_dirs.join(", ")
+            }
+        );
     }
 
     let store = Store::discover();
@@ -943,7 +997,15 @@ fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Res
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
+    let mut producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
+    // Record which layout was shipped so a fetch/inspection can tell a slim SDK
+    // artifact from a full one (they are distinct digests of the same runtime).
+    if let Some(obj) = producer.as_object_mut() {
+        obj.insert(
+            "layout_profile".into(),
+            serde_json::json!(if slim { "sdk" } else { "full" }),
+        );
+    }
     let producer_json = serde_json::to_string_pretty(&producer)
         .map_err(|e| Error::parse("runtime artifact manifest", anyhow::Error::new(e)))?;
     let producer_path = dist_dir.join("manifest.json");
@@ -977,6 +1039,8 @@ fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Res
             "archive_size": out.record.archive_size,
             "files": out.record.file_count,
             "dist": dist.map(|d| d.to_string()),
+            "layout_profile": if slim { "sdk" } else { "full" },
+            "excluded_top_level": excluded_dirs,
         }));
         return Ok(());
     }
