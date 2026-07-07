@@ -134,8 +134,8 @@ them. Each release is a coherent slice, not a phase boundary.
   scanners or indexers still hold old files open. The fallback is visible as a
   structured `STAGE_FALLBACK` warning, so CI can keep moving without hiding the
   host condition.
-- 🚧 **v0.9.0 — remote artifact transport + hosted source-CI closure + macOS
-  plugin-build robustness.** Planned from dogfooding report #10 (2026-07-05),
+- ✅ **v0.9.0 — remote artifact transport + hosted source-CI closure + macOS
+  plugin-build robustness.** Released from dogfooding report #10 (2026-07-05),
   the remote-artifact-transport plan
   ([remote-artifact-transport.md](remote-artifact-transport.md)), and the
   macOS dogfooding report (2026-07-05, `ost 0.8.0` on macOS arm64). Report
@@ -885,8 +885,8 @@ Ranked:
   settled in [remote-artifact-transport.md](remote-artifact-transport.md)
   (integrity vs trust split, initial `local`/`verified`/`trusted` levels);
   implementation lands with the plan's Phase 4 (post-v0.9.0).
-- 🚧 OCI layout / registry / oras transport — **targeted for v0.9.0** (read-only
-  pull first). Direction:
+- ✅ OCI layout / registry / oras transport — the read-only pull slice shipped in
+  v0.9.0. Direction:
   [remote-artifact-transport.md](remote-artifact-transport.md); ranked backlog
   below. The read-only pull slice (transport contract + OCI backend +
   `ost artifact resolve|pull`) has landed; push and the publish policy stay
@@ -894,7 +894,7 @@ Ranked:
 
 ### Phase 6 — v0.9.0 backlog (from dogfooding report #10 + the remote-artifact-transport plan)
 
-**Targeted for v0.9.0.** Report #10 (2026-07-05) ran the v0.7.0 decision's
+**Released in v0.9.0.** Report #10 (2026-07-05) ran the v0.7.0 decision's
 next steps to completion on 0.8.0 — real runtime + plugin digests, a
 placeholder-free `openstrata.ci.yaml`, both workflows rendered, L5 golden
 gate green — and isolated the one remaining blocker: the generated
