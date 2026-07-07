@@ -62,6 +62,78 @@ fn parse_pxr_python_requirement(pxr_config: &str) -> Option<String> {
     Some(format!("{major}.{minor}"))
 }
 
+/// The Python include directory baked into `pxrConfig.cmake` at USD build
+/// time (`set(Python3_INCLUDE_DIR [[<path>]])`), in its original (native)
+/// separator form. This is the exact string USD also embeds into its exported
+/// targets' `INTERFACE_INCLUDE_DIRECTORIES` — the source path for relocation.
+fn baked_python_include(pxr_config: &str) -> Option<String> {
+    let idx = pxr_config.find("set(Python3_INCLUDE_DIR [[")?;
+    let rest = &pxr_config[idx + "set(Python3_INCLUDE_DIR [[".len()..];
+    let path = rest.split("]]").next()?.trim();
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// Relocate an adopted runtime's baked Python include path in its exported
+/// CMake files to `replacement`, but only when the baked path is **stale**
+/// (absent on this host). USD embeds the build machine's Python include into
+/// `pxrTargets.cmake`'s `INTERFACE_INCLUDE_DIRECTORIES` /
+/// `INTERFACE_SYSTEM_INCLUDE_DIRECTORIES`; CMake hard-errors at generate time
+/// if an imported target's include path does not exist ("Imported target …
+/// includes non-existent path"). Pinning `Python3_INCLUDE_DIR` in the
+/// toolchain does not help — the property is baked into the target itself.
+///
+/// Guard: if the baked path exists on this host (the export machine, or an
+/// identical layout), nothing is rewritten — so a developer's real USD tree
+/// is never mutated. Returns the number of files changed.
+pub fn relocate_baked_python(prefix: &Utf8Path, replacement: &str) -> std::io::Result<usize> {
+    let pxr_config_path = prefix.join("pxrConfig.cmake");
+    let Ok(config) = std::fs::read_to_string(pxr_config_path.as_std_path()) else {
+        return Ok(0);
+    };
+    let Some(baked) = baked_python_include(&config) else {
+        return Ok(0);
+    };
+    // Only relocate a path that is genuinely stale on this host.
+    if std::path::Path::new(&baked).is_dir() {
+        return Ok(0);
+    }
+    // The baked value can appear in either separator form: pxrConfig uses the
+    // native (backslash on Windows) form, pxrTargets normalizes to forward
+    // slashes. Replace both with the (forward-slash) host path CMake accepts.
+    let repl = replacement.replace('\\', "/");
+    let variants = [baked.replace('\\', "/"), baked.replace('/', "\\")];
+
+    // pxrConfig.cmake plus every exported CMake file under cmake/.
+    let mut files: Vec<Utf8PathBuf> = vec![pxr_config_path];
+    if let Ok(entries) = std::fs::read_dir(prefix.join("cmake").as_std_path()) {
+        for e in entries.flatten() {
+            if let Ok(p) = Utf8PathBuf::from_path_buf(e.path()) {
+                if p.extension() == Some("cmake") {
+                    files.push(p);
+                }
+            }
+        }
+    }
+
+    let mut changed = 0usize;
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(file.as_std_path()) else {
+            continue;
+        };
+        let mut out = text.clone();
+        for v in &variants {
+            if !v.is_empty() {
+                out = out.replace(v.as_str(), &repl);
+            }
+        }
+        if out != text {
+            std::fs::write(file.as_std_path(), out)?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 /// Reduce a declared runtime Python ("3.13.x", "3.13.0", "313") to
 /// `major.minor`, or `None` if it doesn't look like a version.
 pub fn major_minor(declared: &str) -> Option<String> {
@@ -269,5 +341,71 @@ mod tests {
             PythonSource::Host
         )
         .is_none());
+    }
+
+    #[test]
+    fn parses_baked_python_include_native_form() {
+        let config =
+            "set(Python3_INCLUDE_DIR [[C:\\Users\\bob\\Python310\\Include]] CACHE PATH \"\")";
+        assert_eq!(
+            baked_python_include(config),
+            Some("C:\\Users\\bob\\Python310\\Include".to_string())
+        );
+        assert_eq!(baked_python_include("find_package(pxr)"), None);
+    }
+
+    #[test]
+    fn relocate_rewrites_stale_include_in_both_separator_forms() {
+        let dir = std::env::temp_dir().join(format!("ost-reloc-{}", std::process::id()));
+        let prefix = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let cmake = prefix.join("cmake");
+        std::fs::create_dir_all(cmake.as_std_path()).unwrap();
+        // A stale (non-existent) export-machine include, in native form in
+        // pxrConfig and forward-slash form in pxrTargets.
+        let stale = "C:\\Users\\ghost\\Py310\\Include";
+        std::fs::write(
+            prefix.join("pxrConfig.cmake").as_std_path(),
+            format!("set(Python3_INCLUDE_DIR [[{stale}]] CACHE PATH \"\")\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            cmake.join("pxrTargets.cmake").as_std_path(),
+            "INTERFACE_INCLUDE_DIRECTORIES \"${_IMPORT_PREFIX}/include;C:/Users/ghost/Py310/Include\"\n",
+        )
+        .unwrap();
+
+        let changed = relocate_baked_python(&prefix, "D:/host/py/include").unwrap();
+        assert_eq!(changed, 2);
+        let targets =
+            std::fs::read_to_string(cmake.join("pxrTargets.cmake").as_std_path()).unwrap();
+        assert!(targets.contains("D:/host/py/include"));
+        assert!(!targets.contains("ghost"));
+
+        // Idempotent: a second pass (stale path now gone) changes nothing.
+        assert_eq!(
+            relocate_baked_python(&prefix, "D:/host/py/include").unwrap(),
+            0
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn relocate_leaves_existing_include_untouched() {
+        let dir = std::env::temp_dir().join(format!("ost-reloc-keep-{}", std::process::id()));
+        let prefix = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        std::fs::create_dir_all(prefix.as_std_path()).unwrap();
+        // Point the baked include at a real directory (this temp dir) — a
+        // developer's own tree must never be rewritten.
+        let real = prefix.as_str().replace('/', "\\");
+        std::fs::write(
+            prefix.join("pxrConfig.cmake").as_std_path(),
+            format!("set(Python3_INCLUDE_DIR [[{real}]] CACHE PATH \"\")\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            relocate_baked_python(&prefix, "D:/host/include").unwrap(),
+            0
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -158,6 +158,7 @@ pub(crate) fn generate(
     // an adopted runtime's pxrConfig (which bakes the export machine's Python
     // paths) configures on this host; `None` falls back to the runtime prefix.
     let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &target.python_version);
+    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
     write(
         &target_dir.join("toolchain.cmake"),
         &render_toolchain(&target, &r.artifact_prefix, compiler, python.as_ref()),

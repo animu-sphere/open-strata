@@ -473,6 +473,7 @@ fn build(
     // this host. `None` when none matches — the toolchain then falls back to
     // the runtime prefix, unchanged from before.
     let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &tgt.python_version);
+    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
     std::fs::write(
         toolchain.as_std_path(),
         format!(
