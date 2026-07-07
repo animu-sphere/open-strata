@@ -484,7 +484,7 @@ mod tests {
         std::fs::create_dir_all(prefix.as_std_path()).unwrap();
         // Point the baked include at a real directory (this temp dir) — a
         // developer's own tree must never be rewritten.
-        let real = prefix.as_str().replace('/', "\\");
+        let real = prefix.as_std_path().to_string_lossy();
         std::fs::write(
             prefix.join("pxrConfig.cmake").as_std_path(),
             format!("set(Python3_INCLUDE_DIR [[{real}]] CACHE PATH \"\")\n"),
