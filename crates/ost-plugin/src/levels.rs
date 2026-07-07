@@ -616,12 +616,28 @@ fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> 
     }
 }
 
-/// Normalize USDA text for comparison: trim trailing whitespace per line and
-/// ignore leading/trailing blank lines and line-ending differences.
+/// Normalize USDA text for comparison: trim trailing whitespace per line,
+/// ignore leading/trailing blank lines and line-ending differences, and
+/// canonicalize host-specific content so a golden is portable across machines.
+///
+/// `usdcat --flatten` stamps the *absolute* root-layer path into the flattened
+/// stage's `doc` ("Generated from Composed Stage of root layer <path>"). That
+/// path is the checkout location — `C:\dev\…` on one host, `D:\a\…` on a CI
+/// runner — so a committed golden would never match anywhere but the machine
+/// that produced it. Collapse that line to a path-free form on both sides.
 fn normalize(s: &str) -> String {
+    const FLATTEN_DOC: &str = "Generated from Composed Stage of root layer ";
     s.replace("\r\n", "\n")
         .lines()
-        .map(|l| l.trim_end())
+        .map(|l| {
+            let t = l.trim_end();
+            match t.find(FLATTEN_DOC) {
+                // Keep everything up to and including the marker (indentation and
+                // any opening `doc = """`); drop the host-specific path tail.
+                Some(i) => t[..i + FLATTEN_DOC.len()].to_string(),
+                None => t.to_string(),
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
@@ -967,6 +983,18 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         let diags = run_levels(&bundle, &session, 5);
         let golden = diags.iter().find(|d| d.id == "golden.roundtrip").unwrap();
         assert_eq!(golden.status, Status::Skip);
+    }
+
+    #[test]
+    fn normalize_makes_flatten_doc_host_independent() {
+        // Same flattened stage produced on two hosts differs only in the
+        // absolute root-layer path usdcat stamps into `doc`.
+        let on_windows = "#usda 1.0\n(\n    doc = \"\"\"Generated from Composed Stage of root layer C:\\dev\\_ost_runner_test\\plugins\\toy\\tests\\fixtures\\basic.toy\n\"\"\"\n)\n";
+        let on_runner = "#usda 1.0\n(\n    doc = \"\"\"Generated from Composed Stage of root layer D:\\a\\_ost_runner_test\\_ost_runner_test\\plugins\\toy\\tests\\fixtures\\basic.toy\n\"\"\"\n)\n";
+        assert_eq!(normalize(on_windows), normalize(on_runner));
+        // The path is dropped, but the surrounding structure is preserved.
+        assert!(normalize(on_windows).contains("Generated from Composed Stage of root layer"));
+        assert!(!normalize(on_windows).contains("basic.toy"));
     }
 
     #[test]
