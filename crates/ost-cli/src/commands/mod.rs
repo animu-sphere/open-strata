@@ -117,11 +117,15 @@ pub fn resolve(platform_id: &str, profile_id: &str) -> Result<Resolved> {
     })
 }
 
-/// Relocate an adopted runtime's baked Python include path (in USD's exported
-/// CMake targets) to the resolved host include when it is stale on this host.
-/// A no-op without a resolved host interpreter, or when the baked path exists
-/// (the export machine) — so a developer's own USD tree is never touched.
-/// Shared by `configure` and `plugin build`.
+/// Relocate an adopted runtime's baked absolute paths in USD's exported CMake
+/// files to this host, when stale. Two independent bakes are handled: the
+/// build machine's Python include (→ the resolved host include) and the
+/// runtime's own install prefix embedded in external-dependency imported
+/// targets (→ its current on-host location). Both are no-ops when the baked
+/// paths already exist (the export machine), so a developer's own USD tree is
+/// never touched. Python is relocated first so its now-valid host paths are
+/// not mistaken for the stale install prefix. Shared by `configure` and
+/// `plugin build`.
 pub(crate) fn relocate_baked_python_if_stale(
     artifact_prefix: &camino::Utf8Path,
     python: Option<&ost_build::PythonHints>,
@@ -131,6 +135,11 @@ pub(crate) fn relocate_baked_python_if_stale(
             if n > 0 {
                 println!("==> relocated baked Python include in {n} runtime CMake file(s)");
             }
+        }
+    }
+    if let Ok(n) = ost_build::relocate_baked_prefix(artifact_prefix) {
+        if n > 0 {
+            println!("==> relocated baked runtime install prefix in {n} CMake file(s)");
         }
     }
 }

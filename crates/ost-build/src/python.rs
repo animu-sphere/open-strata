@@ -73,6 +73,53 @@ fn baked_python_include(pxr_config: &str) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
+/// The CMake files a consumer actually loads via `find_package(pxr)`: the
+/// config package root plus its `cmake/` directory. USD's `build/` subtree
+/// (a full build tree, when the runtime was adopted from one) is never loaded
+/// by find_package, so it is deliberately excluded — rewriting it would be
+/// both pointless and slow (hundreds of files).
+fn loaded_cmake_files(prefix: &Utf8Path) -> Vec<Utf8PathBuf> {
+    let mut files = Vec::new();
+    let root = prefix.join("pxrConfig.cmake");
+    if root.as_std_path().is_file() {
+        files.push(root);
+    }
+    if let Ok(entries) = std::fs::read_dir(prefix.join("cmake").as_std_path()) {
+        for e in entries.flatten() {
+            if let Ok(p) = Utf8PathBuf::from_path_buf(e.path()) {
+                if p.extension() == Some("cmake") {
+                    files.push(p);
+                }
+            }
+        }
+    }
+    files
+}
+
+/// Replace every occurrence of `old` (in either separator form) with `new`
+/// (forward slashes) across `files`. Returns the number of files changed.
+fn replace_in_files(files: &[Utf8PathBuf], old: &str, new: &str) -> std::io::Result<usize> {
+    let variants = [old.replace('\\', "/"), old.replace('/', "\\")];
+    let new = new.replace('\\', "/");
+    let mut changed = 0usize;
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(file.as_std_path()) else {
+            continue;
+        };
+        let mut out = text.clone();
+        for v in &variants {
+            if !v.is_empty() {
+                out = out.replace(v.as_str(), &new);
+            }
+        }
+        if out != text {
+            std::fs::write(file.as_std_path(), out)?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 /// Relocate an adopted runtime's baked Python include path in its exported
 /// CMake files to `replacement`, but only when the baked path is **stale**
 /// (absent on this host). USD embeds the build machine's Python include into
@@ -86,8 +133,7 @@ fn baked_python_include(pxr_config: &str) -> Option<String> {
 /// identical layout), nothing is rewritten — so a developer's real USD tree
 /// is never mutated. Returns the number of files changed.
 pub fn relocate_baked_python(prefix: &Utf8Path, replacement: &str) -> std::io::Result<usize> {
-    let pxr_config_path = prefix.join("pxrConfig.cmake");
-    let Ok(config) = std::fs::read_to_string(pxr_config_path.as_std_path()) else {
+    let Ok(config) = std::fs::read_to_string(prefix.join("pxrConfig.cmake").as_std_path()) else {
         return Ok(0);
     };
     let Some(baked) = baked_python_include(&config) else {
@@ -97,41 +143,83 @@ pub fn relocate_baked_python(prefix: &Utf8Path, replacement: &str) -> std::io::R
     if std::path::Path::new(&baked).is_dir() {
         return Ok(0);
     }
-    // The baked value can appear in either separator form: pxrConfig uses the
-    // native (backslash on Windows) form, pxrTargets normalizes to forward
-    // slashes. Replace both with the (forward-slash) host path CMake accepts.
-    let repl = replacement.replace('\\', "/");
-    let variants = [baked.replace('\\', "/"), baked.replace('/', "\\")];
+    replace_in_files(&loaded_cmake_files(prefix), &baked, replacement)
+}
 
-    // pxrConfig.cmake plus every exported CMake file under cmake/.
-    let mut files: Vec<Utf8PathBuf> = vec![pxr_config_path];
-    if let Ok(entries) = std::fs::read_dir(prefix.join("cmake").as_std_path()) {
-        for e in entries.flatten() {
-            if let Ok(p) = Utf8PathBuf::from_path_buf(e.path()) {
-                if p.extension() == Some("cmake") {
-                    files.push(p);
-                }
-            }
-        }
-    }
+/// Relocate an adopted runtime's own baked install prefix to `prefix` (its
+/// current on-host location) in the exported CMake files.
+///
+/// A runtime adopted from a full USD **build tree** bakes that tree's absolute
+/// path into the external-dependency imported targets in `pxrConfig.cmake`
+/// (TBB / MaterialX `INTERFACE_INCLUDE_DIRECTORIES`, `IMPORTED_IMPLIB`,
+/// `IMPORTED_LOCATION`, `MaterialX_DIR`, …). The config package anchors *its
+/// own* targets relatively (`get_filename_component(PXR_CMAKE_DIR …)` /
+/// `_IMPORT_PREFIX`), but these dependency paths are absolute, so on a
+/// different host they point nowhere and CMake fails at generate/link time.
+///
+/// The old prefix is not recorded in metadata (an imported artifact is
+/// self-contained), so it is **discovered** from the baked files: an absolute
+/// directory `X`, absent on this host, whose `X/{include,lib,bin}` is
+/// referenced while the same subdir exists under the current `prefix` (the
+/// export bundled the layout). That guard makes the rewrite safe — it fires
+/// only for a genuinely relocated runtime, never a developer's in-place tree.
+/// Call *after* [`relocate_baked_python`] so host-relocated Python paths
+/// (which now exist) are not mistaken for the stale install prefix.
+pub fn relocate_baked_prefix(prefix: &Utf8Path) -> std::io::Result<usize> {
+    let current = prefix.as_str().trim_end_matches('/').replace('\\', "/");
+    let files = loaded_cmake_files(prefix);
+    let Some(old) = discover_stale_prefix(&files, &current) else {
+        return Ok(0);
+    };
+    replace_in_files(&files, &old, &current)
+}
 
-    let mut changed = 0usize;
+/// Discover a stale baked install prefix in `files`: an absolute directory
+/// that is absent on this host but whose `include`/`lib`/`bin` subdir exists
+/// under `current` (so replacing it yields real paths). Returns `None` when
+/// nothing qualifies. See [`relocate_baked_prefix`].
+fn discover_stale_prefix(files: &[Utf8PathBuf], current: &str) -> Option<String> {
+    const SUBDIRS: [&str; 3] = ["/include", "/lib", "/bin"];
     for file in files {
         let Ok(text) = std::fs::read_to_string(file.as_std_path()) else {
             continue;
         };
-        let mut out = text.clone();
-        for v in &variants {
-            if !v.is_empty() {
-                out = out.replace(v.as_str(), &repl);
+        for raw in text.split(|c: char| {
+            matches!(
+                c,
+                '"' | ';' | '<' | '>' | '$' | '(' | ')' | '\n' | '\r' | '\t' | ' ' | ','
+            )
+        }) {
+            let tok = raw.replace('\\', "/");
+            if !is_absolute_path(&tok) || tok.starts_with(current) {
+                continue;
+            }
+            for seg in SUBDIRS {
+                let Some(idx) = tok.find(seg) else { continue };
+                // Require a real path boundary after the segment.
+                let after = &tok[idx + seg.len()..];
+                if !after.is_empty() && !after.starts_with('/') {
+                    continue;
+                }
+                let base = &tok[..idx];
+                if base.is_empty() || std::path::Path::new(base).exists() {
+                    continue; // empty, or not actually stale
+                }
+                // The counterpart must exist under the current prefix.
+                if std::path::Path::new(&format!("{current}{seg}")).exists() {
+                    return Some(base.to_string());
+                }
             }
         }
-        if out != text {
-            std::fs::write(file.as_std_path(), out)?;
-            changed += 1;
-        }
     }
-    Ok(changed)
+    None
+}
+
+/// A drive-rooted (`C:/…`) or POSIX-absolute (`/…`) path with real content.
+fn is_absolute_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    (b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/')
+        || (b.len() > 1 && b[0] == b'/')
 }
 
 /// Reduce a declared runtime Python ("3.13.x", "3.13.0", "313") to
@@ -407,5 +495,70 @@ mod tests {
             0
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn temp_prefix(tag: &str) -> (std::path::PathBuf, Utf8PathBuf) {
+        let dir = std::env::temp_dir().join(format!("ost-{tag}-{}", std::process::id()));
+        let prefix = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        // A relocated runtime bundles its own include/lib layout.
+        std::fs::create_dir_all(prefix.join("include").as_std_path()).unwrap();
+        std::fs::create_dir_all(prefix.join("lib").as_std_path()).unwrap();
+        (dir, prefix)
+    }
+
+    #[test]
+    fn relocate_prefix_rewrites_stale_install_prefix() {
+        let (dir, prefix) = temp_prefix("reloc-prefix");
+        // pxrConfig bakes a stale build-tree prefix into dependency targets.
+        std::fs::write(
+            prefix.join("pxrConfig.cmake").as_std_path(),
+            "_add_property(INTERFACE_INCLUDE_DIRECTORIES \"C:/old/build/tree/include\")\n\
+             _add_property(IMPORTED_IMPLIB \"C:/old/build/tree/lib/tbb.lib\")\n\
+             set(MaterialX_DIR [[C:\\old\\build\\tree\\lib\\cmake\\MaterialX]])\n",
+        )
+        .unwrap();
+        let current = prefix.as_str().trim_end_matches('/').replace('\\', "/");
+
+        let changed = relocate_baked_prefix(&prefix).unwrap();
+        assert_eq!(changed, 1);
+        let cfg = std::fs::read_to_string(prefix.join("pxrConfig.cmake").as_std_path()).unwrap();
+        // Both separator forms of the stale prefix are gone; forward-slash
+        // paths get a clean host prefix, and the backslash MaterialX_DIR at
+        // least has its (stale) prefix replaced (a mixed-separator tail is
+        // CMake-tolerated).
+        assert!(!cfg.contains("C:/old/build/tree"));
+        assert!(!cfg.contains("C:\\old\\build\\tree"));
+        assert!(cfg.contains(&format!("{current}/include")));
+        assert!(cfg.contains(&format!("{current}/lib/tbb.lib")));
+        assert!(cfg.contains(current.as_str()));
+
+        // Idempotent once the stale prefix is gone.
+        assert_eq!(relocate_baked_prefix(&prefix).unwrap(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn relocate_prefix_noop_without_bundled_counterpart() {
+        // No include/lib created under the prefix → a discovered stale path has
+        // no counterpart to relocate to, so nothing is rewritten.
+        let dir = std::env::temp_dir().join(format!("ost-reloc-nocp-{}", std::process::id()));
+        let prefix = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        std::fs::create_dir_all(prefix.as_std_path()).unwrap();
+        std::fs::write(
+            prefix.join("pxrConfig.cmake").as_std_path(),
+            "_add_property(INTERFACE_INCLUDE_DIRECTORIES \"C:/old/build/tree/include\")\n",
+        )
+        .unwrap();
+        assert_eq!(relocate_baked_prefix(&prefix).unwrap(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn is_absolute_path_recognizes_windows_and_posix() {
+        assert!(is_absolute_path("C:/dev/build"));
+        assert!(is_absolute_path("/usr/local"));
+        assert!(!is_absolute_path("relative/path"));
+        assert!(!is_absolute_path("${_IMPORT_PREFIX}/include"));
+        assert!(!is_absolute_path(""));
     }
 }

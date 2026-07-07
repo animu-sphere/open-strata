@@ -25,8 +25,8 @@ pub use presets::{
     render_target_presets,
 };
 pub use python::{
-    relocate_baked_python, resolve_for_runtime, resolve_python_hints, usd_python_requirement,
-    PythonHints, PythonSource,
+    relocate_baked_prefix, relocate_baked_python, resolve_for_runtime, resolve_python_hints,
+    usd_python_requirement, PythonHints, PythonSource,
 };
 pub use target::Target;
 pub use toolchain::{render_toolchain, Compiler};
