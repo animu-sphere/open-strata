@@ -155,14 +155,14 @@ them. Each release is a coherent slice, not a phase boundary.
     `ost artifact resolve | pull` with digest-pin enforcement, the full
     verification chain before an atomic local import, JSON pull evidence, and
     stable `ARTIFACT_*` error codes. Landed (#86).
-  - 🚧 **CI contract + generated hosted bootstrap (plan Phase 2):**
+  - ✅ **CI contract + generated hosted bootstrap (plan Phase 2):**
     `openstrata.ci.yaml` support lines gain a `runtime_remote` reference
     (OCI uri + expected digest) beside the artifact digest; `ost ci generate
     github` renders a pinned, checksum-verified `ost` install step and the
     digest-pinned `ost artifact pull`, with `actions/cache` keyed by digest as
-    an optional optimization (cache is speed, never correctness) — landed; a
-    public E2E fixture repository proving fork-PR / push / cache-miss runs
-    green is the remaining piece.
+    an optional optimization (cache is speed, never correctness). The public
+    E2E fixture repository (`snkmcb/_ost_runner_test`) proves fork-PR / push /
+    cache-miss runs green end to end — see the Phase 6 P0 item below (#89/#90).
   - ✅ **Runtime export ergonomics (report #10):** a slim/SDK-profile export
     (`include/lib/bin/plugin`-only) cuts the 14.4 GB adopted-tree payload, and
     `export` now packs with multithreaded zstd by default (`--jobs`), takes a
@@ -1013,11 +1013,14 @@ asks. Ranked:
   instead of looking hung, and the finished archive is stream-hashed rather
   than read whole into memory. Small artifacts (`ost package`/`ost plugin`)
   keep the byte-stable single-threaded default via `pack_dir`.
-- ⬜ **P2 — L5 golden skip-message clarity (Phase 4 harness UX).** The
-  expected golden name is `<fixture-filename>.golden.usda` *including* the
-  fixture extension (`minimal.vrm.golden.usda`), and the golden must be the
-  flattened stage; the skip message should say both and ideally print the
-  generation recipe (`ost plugin run … usdcat --flatten … --out …`).
+- ✅ **P2 — L5 golden skip-message clarity (Phase 4 harness UX).** The L5
+  `golden.roundtrip` SKIP now names the concrete expected file
+  (`<fixture-filename>.golden.usda`, fixture extension retained — e.g.
+  `basic.toy.golden.usda`), states it must be the *flattened* stage, and
+  carries the generation recipe as a suggested action
+  (`ost plugin run <bundle> -- usdcat --flatten <fixture> --out <golden>`),
+  rendered under the diagnostic in human and `--json` output
+  ([levels.rs](../crates/ost-plugin/src/levels.rs) `level5_golden`).
 - **Deferred to v0.10.0+:** `ost artifact push` + plugin publish over OCI +
   protected publish policy + OIDC federation (plan Phase 3); trust levels in
   manifest/CI contract, publisher identity/provenance, SBOM attach, trusted

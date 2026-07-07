@@ -528,10 +528,28 @@ fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
     let Some(fixture) = smoke_fixture(bundle) else {
         return Diagnostic::skip(ID, 5, "no smoke fixture declared");
     };
-    // Golden convention: `<fixture>.golden.usda` sits next to the fixture.
+    // Golden convention: `<fixture>.golden.usda` sits next to the fixture — the
+    // fixture *filename* is retained, so a `minimal.vrm` fixture pairs with
+    // `minimal.vrm.golden.usda`, not `minimal.golden.usda`.
     let golden = Utf8PathBuf::from(format!("{fixture}.golden.usda"));
     if !golden.as_std_path().is_file() {
-        return Diagnostic::skip(ID, 5, "no golden file (expected <fixture>.golden.usda)");
+        // A bare "no golden file" leaves the author guessing the exact name, that
+        // it must be the *flattened* stage, and how to produce it. Name all three.
+        let golden_name = golden.file_name().unwrap_or(golden.as_str());
+        let fixture_name = fixture.file_name().unwrap_or(fixture.as_str());
+        let recipe = format!(
+            "generate it: ost plugin run {} -- usdcat --flatten {} --out {}",
+            bundle.root, fixture, golden,
+        );
+        return Diagnostic::skip_with_actions(
+            ID,
+            5,
+            format!(
+                "no golden file: expected '{golden_name}' next to the fixture — \
+                 the flattened stage of '{fixture_name}'"
+            ),
+            vec![recipe],
+        );
     }
     let Some(usdcat) = &session.usdcat else {
         return Diagnostic::fail(ID, 5, "usdcat not found in the runtime", vec![]);
@@ -983,6 +1001,23 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         let diags = run_levels(&bundle, &session, 5);
         let golden = diags.iter().find(|d| d.id == "golden.roundtrip").unwrap();
         assert_eq!(golden.status, Status::Skip);
+        // The skip must name the exact expected file (fixture filename retained),
+        // say it is the flattened stage, and carry the generation recipe.
+        assert!(
+            golden.observed.contains("basic.toy.golden.usda"),
+            "skip should name the concrete golden file: {}",
+            golden.observed
+        );
+        assert!(
+            golden.observed.contains("flattened"),
+            "skip should say the golden is the flattened stage: {}",
+            golden.observed
+        );
+        let recipe = golden.suggested_actions.join("\n");
+        assert!(
+            recipe.contains("usdcat --flatten") && recipe.contains("--out"),
+            "skip should print the generation recipe: {recipe}"
+        );
     }
 
     #[test]
