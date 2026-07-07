@@ -468,11 +468,16 @@ fn build(
     std::fs::create_dir_all(target_dir.as_std_path())
         .map_err(|e| Error::io(target_dir.to_string(), e))?;
     let toolchain = target_dir.join("toolchain.cmake");
+    // Pin a host interpreter's Development artifacts so an adopted runtime's
+    // pxrConfig (which bakes the export machine's Python paths) configures on
+    // this host. `None` when none matches — the toolchain then falls back to
+    // the runtime prefix, unchanged from before.
+    let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &tgt.python_version);
     std::fs::write(
         toolchain.as_std_path(),
         format!(
             "{}\n",
-            ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler)
+            ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref())
         ),
     )
     .map_err(|e| Error::io(toolchain.to_string(), e))?;
