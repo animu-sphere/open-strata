@@ -2178,16 +2178,16 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- ost-artifact 0.8.0
-- ost-build 0.8.0
-- ost-ci 0.8.0
-- ost-cli 0.8.0 — https://github.com/animu-sphere/open-strata
-- ost-core 0.8.0
-- ost-extension 0.8.0
-- ost-manifest 0.8.0
-- ost-platform 0.8.0
-- ost-plugin 0.8.0
-- ost-runtime 0.8.0
+- ost-artifact 0.9.0-rc.1
+- ost-build 0.9.0-rc.1
+- ost-ci 0.9.0-rc.1
+- ost-cli 0.9.0-rc.1 — https://github.com/animu-sphere/open-strata
+- ost-core 0.9.0-rc.1
+- ost-extension 0.9.0-rc.1
+- ost-manifest 0.9.0-rc.1
+- ost-platform 0.9.0-rc.1
+- ost-plugin 0.9.0-rc.1
+- ost-runtime 0.9.0-rc.1
 - anyhow 1.0.103 — https://github.com/dtolnay/anyhow
 - directories 6.0.0 — https://github.com/soc/directories-rs
 - dirs-sys 0.5.0 — https://github.com/dirs-dev/dirs-sys-rs
@@ -3186,4 +3186,5 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 
 ```
+
 
