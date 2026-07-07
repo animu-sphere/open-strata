@@ -163,10 +163,11 @@ them. Each release is a coherent slice, not a phase boundary.
     an optional optimization (cache is speed, never correctness) — landed; a
     public E2E fixture repository proving fork-PR / push / cache-miss runs
     green is the remaining piece.
-  - ⬜ **Runtime export ergonomics (report #10):** a slim/SDK-profile export
-    (`include/lib/bin/plugin`-only) to cut the 14.4 GB adopted-tree payload,
-    multithreaded zstd / a `--level` knob, and progress output for the
-    currently ~52-minute silent `ost runtime export`.
+  - ✅ **Runtime export ergonomics (report #10):** a slim/SDK-profile export
+    (`include/lib/bin/plugin`-only) cuts the 14.4 GB adopted-tree payload, and
+    `export` now packs with multithreaded zstd by default (`--jobs`), takes a
+    `--level` knob, and prints throttled progress — replacing the previously
+    ~52-minute silent `ost runtime export`.
   - ⬜ **macOS plugin-build robustness (macOS report):** resolve Python from
     the runtime interpreter (never a bare `python` on PATH), stop the schema
     regeneration phase from depending on a pre-existing plugin binary,
@@ -1004,10 +1005,14 @@ asks. Ranked:
   (12 pass / 0 fail / 3 skip). This is the clean-install answer to the adopted
   build-tree relocatability issues above (the `build/` tree that carried the
   stale absolute paths is simply gone).
-- ⬜ **P1 — `runtime export` performance + progress.** Multithreaded zstd
-  and/or a `--level` knob, plus progress output — today's export ran ~52
-  minutes single-threaded with zero output (the staged `tar.zst` reports 0
-  bytes until the handle closes, so it looks hung).
+- ✅ **P1 — `runtime export` performance + progress.** `export` now packs with
+  multithreaded zstd by default (`--jobs`, defaulting to the host's available
+  parallelism; `--jobs 1` forces the single-threaded encoder) and takes a
+  `--level` knob (1–22, default 19). Throttled in-place progress prints to
+  stderr (`N/M files, <bytes> in <secs>s`) so a long pack shows liveness
+  instead of looking hung, and the finished archive is stream-hashed rather
+  than read whole into memory. Small artifacts (`ost package`/`ost plugin`)
+  keep the byte-stable single-threaded default via `pack_dir`.
 - ⬜ **P2 — L5 golden skip-message clarity (Phase 4 harness UX).** The
   expected golden name is `<fixture-filename>.golden.usda` *including* the
   fixture extension (`minimal.vrm.golden.usda`), and the golden must be the

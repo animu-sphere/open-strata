@@ -95,6 +95,14 @@ pub enum RuntimeCmd {
         /// faster per-PR pull.
         #[arg(long)]
         slim: bool,
+        /// zstd compression level (1–22). Lower is faster; the default (19)
+        /// favors a small artifact, packed once and pulled many times.
+        #[arg(long, default_value_t = ost_build::ZSTD_LEVEL)]
+        level: i32,
+        /// zstd worker threads for compression. Defaults to the host's
+        /// available parallelism; `--jobs 1` forces the single-threaded encoder.
+        #[arg(long)]
+        jobs: Option<u32>,
     },
     /// List runtimes present in the local store.
     List,
@@ -164,7 +172,16 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             profile,
             dist,
             slim,
-        } => export(&platform, &profile, dist.as_deref(), slim, fmt),
+            level,
+            jobs,
+        } => export(
+            &platform,
+            &profile,
+            dist.as_deref(),
+            slim,
+            ExportPack { level, jobs },
+            fmt,
+        ),
         RuntimeCmd::List => list(fmt),
         RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
         RuntimeCmd::Validate { platform, profile } => validate(&platform, &profile, fmt),
@@ -862,6 +879,38 @@ fn runtime_artifact_manifest(
     })
 }
 
+/// Compression knobs for `ost runtime export` (`--level` / `--jobs`).
+struct ExportPack {
+    level: i32,
+    jobs: Option<u32>,
+}
+
+/// The zstd worker count to pack with: the requested `--jobs`, else the host's
+/// available parallelism (falling back to single-threaded). Multithreading is
+/// the default here because a full adopted runtime is ~14 GB and packs for
+/// tens of minutes single-threaded (report #10).
+fn default_pack_workers() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
+}
+
+/// Render a byte count as a compact human-readable size for progress output.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 /// `ost runtime export` — pack a pulled real runtime and register it in the
 /// local artifact registry, addressed by digest.
 fn export(
@@ -869,6 +918,7 @@ fn export(
     profile: &str,
     dist: Option<&str>,
     slim: bool,
+    pack: ExportPack,
     fmt: Format,
 ) -> Result<()> {
     let (platform, profile) = platform_profile(platform, profile);
@@ -989,8 +1039,53 @@ fn export(
 
     let archive_name = format!("{}.tar.zst", manifest.id);
     let archive_path = dist_dir.join(&archive_name);
-    let packed = ost_build::pack_dir(&effective, &archive_path, &files)
+
+    let workers = pack.jobs.unwrap_or_else(default_pack_workers);
+    let opts = ost_build::PackOptions {
+        level: pack.level,
+        workers,
+    };
+    // Progress to stderr (throttled, in-place) so a long single- or
+    // multi-threaded pack shows liveness; suppressed in JSON mode so the only
+    // stdout content stays the success object.
+    let show_progress = !fmt.is_json();
+    if show_progress {
+        println!(
+            "Packing {} file{} from {effective} (zstd level {}, {} worker{})",
+            files.len(),
+            if files.len() == 1 { "" } else { "s" },
+            opts.level,
+            workers,
+            if workers == 1 { "" } else { "s" },
+        );
+    }
+    let start = std::time::Instant::now();
+    let mut last = start;
+    let mut progress = |p: ost_build::PackProgress| {
+        if !show_progress {
+            return;
+        }
+        let now = std::time::Instant::now();
+        // ~4 Hz, but always render the final file so the line ends complete.
+        if p.files_done == p.files_total
+            || now.duration_since(last) >= std::time::Duration::from_millis(250)
+        {
+            last = now;
+            eprint!(
+                "\r  {}/{} files, {} in {}s   ",
+                p.files_done,
+                p.files_total,
+                human_bytes(p.bytes_done),
+                start.elapsed().as_secs(),
+            );
+            let _ = std::io::Write::flush(&mut std::io::stderr());
+        }
+    };
+    let packed = ost_build::pack_dir_with(&effective, &archive_path, &files, opts, &mut progress)
         .map_err(|e| Error::io(archive_path.to_string(), e))?;
+    if show_progress {
+        eprintln!(); // terminate the in-place progress line
+    }
 
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
