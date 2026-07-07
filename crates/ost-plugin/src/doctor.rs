@@ -937,17 +937,7 @@ fn find_shared_libraries(bundle: &Bundle) -> Vec<String> {
     libs
 }
 
-fn shared_library_suffix(os: Os) -> &'static str {
-    match os {
-        Os::Linux => ".so",
-        Os::Macos => ".dylib",
-        Os::Windows => ".dll",
-    }
-}
-
-fn contains_template_token(s: &str) -> bool {
-    s.contains('@') || s.contains("{{") || s.contains("}}")
-}
+use crate::plug_info::{contains_template_token, shared_library_suffix};
 
 fn check_portable_relative_path(path: &str) -> std::result::Result<(), &'static str> {
     let b = path.as_bytes();

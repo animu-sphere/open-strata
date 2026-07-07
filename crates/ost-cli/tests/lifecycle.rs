@@ -440,6 +440,58 @@ fn build_failure_names_the_phase_and_log() {
 }
 
 #[test]
+fn plugin_build_failure_carries_the_phase_in_json() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping plugin_build_failure phase test: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("plugin-build-phase");
+    init_and_pull(&sb);
+    let new = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "toy",
+        "--extension",
+        "toy",
+    ]);
+    assert!(
+        new.status.success(),
+        "plugin new failed:\n{}",
+        out_text(&new)
+    );
+
+    // A plugin build against the mock runtime deterministically fails at the
+    // configure phase: the mock provides no real pxrConfig for `find_package(pxr)`.
+    // That is enough to prove the failure is phase-attributed in the JSON envelope.
+    let out = sb.ost(&[
+        "--json",
+        "plugin",
+        "build",
+        "toy",
+        "--target",
+        "cy2026",
+        "--profile",
+        "usd",
+    ]);
+    assert!(
+        !out.status.success(),
+        "a plugin build on a mock runtime must fail"
+    );
+    // The child's build output shares stdout with the envelope, so scan for the
+    // phase-attributed error fields rather than parsing one JSON document.
+    let text = out_text(&out);
+    assert!(
+        text.contains("\"phase\": \"configure\""),
+        "the build failure should attribute the configure phase:\n{text}"
+    );
+    assert!(
+        text.contains("\"code\": \"EXTERNAL_TOOL_FAILED\""),
+        "a failed build tool is an external-tool failure:\n{text}"
+    );
+}
+
+#[test]
 fn generated_plugin_scaffolds_and_inspects() {
     let sb = Sandbox::new("plugin-scaffold");
     init_and_pull(&sb);

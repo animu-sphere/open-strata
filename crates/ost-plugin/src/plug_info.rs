@@ -9,6 +9,8 @@
 //! perfectly valid files, so we strip comments and trailing commas (respecting
 //! string literals) before parsing.
 
+use ost_core::host::Os;
+
 /// Parse a USD `plugInfo.json` (JSON-with-comments) into a JSON value.
 pub(crate) fn parse_plug_info(src: &str) -> serde_json::Result<serde_json::Value> {
     serde_json::from_str(&strip_jsonc(src))
@@ -92,6 +94,39 @@ pub fn library_plugin_names(src: &str) -> Result<Vec<String>, MergeError> {
         .filter_map(|plugin| plugin.get("Name").and_then(|n| n.as_str()))
         .map(str::to_string)
         .collect())
+}
+
+/// Return the `LibraryPath` of each `Type: library` plugin entry (skipping
+/// entries with no `LibraryPath`, e.g. resource-only codeless schema plugins).
+pub fn library_plugin_paths(src: &str) -> Result<Vec<String>, MergeError> {
+    let value = parse_plug_info(src).map_err(|_| MergeError::Parse("plugInfo"))?;
+    let plugins = value
+        .get("Plugins")
+        .and_then(|p| p.as_array())
+        .ok_or(MergeError::NoPlugins)?;
+    Ok(plugins
+        .iter()
+        .filter(|plugin| plugin.get("Type").and_then(|t| t.as_str()) == Some("library"))
+        .filter_map(|plugin| plugin.get("LibraryPath").and_then(|p| p.as_str()))
+        .map(str::to_string)
+        .collect())
+}
+
+/// The shared-library filename suffix a plugInfo `LibraryPath` must end with on
+/// an OS: `.so` (Linux), `.dylib` (macOS), `.dll` (Windows).
+pub fn shared_library_suffix(os: Os) -> &'static str {
+    match os {
+        Os::Linux => ".so",
+        Os::Macos => ".dylib",
+        Os::Windows => ".dll",
+    }
+}
+
+/// Whether a `LibraryPath` still carries an unresolved template token — a source
+/// bundle's `plugInfo.json.in` placeholder that CMake `configure_file` resolves
+/// per target. Such a path is not a concrete suffix to validate.
+pub fn contains_template_token(s: &str) -> bool {
+    s.contains('@') || s.contains("{{") || s.contains("}}")
 }
 
 /// Why a [`merge_schema_types`] call could not produce a merged plugInfo.
@@ -345,5 +380,31 @@ mod tests {
             library_plugin_names(src).expect("names"),
             vec!["ToyFileFormat"]
         );
+    }
+
+    #[test]
+    fn library_plugin_paths_reads_only_library_entries_with_a_path() {
+        let src = r#"# generated
+        {
+            "Plugins": [
+                { "Type": "resource", "Name": "SchemaResources" },
+                { "Type": "library", "Name": "NoPath" },
+                { "Type": "library", "Name": "Toy", "LibraryPath": "../../../lib/libToy.dll" },
+            ]
+        }"#;
+        assert_eq!(
+            library_plugin_paths(src).expect("paths"),
+            vec!["../../../lib/libToy.dll"]
+        );
+    }
+
+    #[test]
+    fn suffix_and_template_helpers() {
+        assert_eq!(shared_library_suffix(Os::Linux), ".so");
+        assert_eq!(shared_library_suffix(Os::Macos), ".dylib");
+        assert_eq!(shared_library_suffix(Os::Windows), ".dll");
+        assert!(contains_template_token("lib@CMAKE_SHARED_LIBRARY_SUFFIX@"));
+        assert!(contains_template_token("lib{{name}}.so"));
+        assert!(!contains_template_token("../../../lib/libToy.dylib"));
     }
 }

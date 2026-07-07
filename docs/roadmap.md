@@ -134,7 +134,7 @@ them. Each release is a coherent slice, not a phase boundary.
   scanners or indexers still hold old files open. The fallback is visible as a
   structured `STAGE_FALLBACK` warning, so CI can keep moving without hiding the
   host condition.
-- ⬜ **v0.9.0 — remote artifact transport + hosted source-CI closure + macOS
+- 🚧 **v0.9.0 — remote artifact transport + hosted source-CI closure + macOS
   plugin-build robustness.** Planned from dogfooding report #10 (2026-07-05),
   the remote-artifact-transport plan
   ([remote-artifact-transport.md](remote-artifact-transport.md)), and the
@@ -168,12 +168,16 @@ them. Each release is a coherent slice, not a phase boundary.
     `export` now packs with multithreaded zstd by default (`--jobs`), takes a
     `--level` knob, and prints throttled progress — replacing the previously
     ~52-minute silent `ost runtime export`.
-  - ⬜ **macOS plugin-build robustness (macOS report):** resolve Python from
-    the runtime interpreter (never a bare `python` on PATH), stop the schema
-    regeneration phase from depending on a pre-existing plugin binary,
-    platform-aware `LibraryPath` handling when a committed `plugInfo.json`
-    names another platform's extension, and phase-attributed build
-    diagnostics (schema vs loader vs compile/link).
+  - ✅ **macOS plugin-build robustness (macOS report):** the co-hosted schema
+    build now resolves Python from the runtime interpreter (never a bare
+    `python` on PATH — a precondition error names what was searched);
+    scopes the schema-regeneration env to the runtime's plugin registry so
+    `usdGenSchema` no longer discovers (and tries to dlopen) the bundle's
+    not-yet-built plugin library; fails early with the doctor fix when a
+    committed `plugInfo.json` carries another platform's `LibraryPath` suffix;
+    and attributes every build failure to a phase (`schema-generate` /
+    `configure` / `compile-link` / `schema-merge` / `plugin-discovery`) in
+    both human and `--json` output.
   - **Deferred (v0.10.0+):** OCI push + protected publish policy + OIDC
     (plan Phase 3), and trust levels / provenance / SBOM / allowlist
     hardening (plan Phase 4, tracks SEC-006 and the Phase 6 trust-policy
@@ -606,7 +610,7 @@ first, keep the compiled schema flow as stretch unless it stays small.
 
 ### Phase 4 — v0.9.0 macOS backlog (from the macOS dogfooding report, 2026-07-05)
 
-**Targeted for v0.9.0.** The macOS dogfooding report (2026-07-05, `ost 0.8.0`
+**Released in v0.9.0.** The macOS dogfooding report (2026-07-05, `ost 0.8.0`
 on macOS arm64, `plugins/usdVrm`, cy2026/usd) found `ost plugin build`
 reproducibly failing on a co-hosted schema workspace, with three stacked
 blockers — none of them C++ compilation itself: compile/link completes once
@@ -614,41 +618,45 @@ the early failures are forced past. The reliability gap is in
 toolchain/loader assumptions during schema regeneration and plugin
 discovery. Ranked:
 
-- ⬜ **P1 — resolve Python from the runtime, never a bare `python` on PATH.**
-  The co-hosted schema regeneration step dies with
+- ✅ **P1 — resolve Python from the runtime, never a bare `python` on PATH.**
+  The co-hosted schema regeneration step used to die with
   `error[IO_ERROR]: i/o error at run python: No such file or directory` on
   any host without a bare `python` executable (macOS ships `python3` only).
-  The build must invoke the composed runtime's interpreter by path (the same
-  one `PYTHONPATH`/env composition already targets), falling back to
-  `python3` before `python`, and the error must name what was searched and
-  how to fix it (a precondition code, not `IO_ERROR`). The report's
-  workaround — a manual `.ost-bin/python` shim symlink — is exactly the
-  "works only if you know the trick" UX the quality bar forbids.
-- ⬜ **P1 — schema regeneration must not require a pre-existing plugin
-  binary.** `usdGenSchema` runs with the bundle's own `plugin/resources/…/
-  plugInfo.json` discoverable, so USD tries to load the plugin library the
-  build has not produced yet (or an old one with the wrong platform suffix)
-  and fails: build success currently depends on artifacts a clean checkout
-  does not have. Isolate the schema-generation phase from the bundle's own
-  plugin discovery (scoped `PXR_PLUGINPATH_NAME`, staging plugInfo out of
-  the composed path, or an equivalent) so a fresh clone builds first try.
-  The report's diagnosis needed a temporary `plugInfo.json` move — that step
-  must become unnecessary.
-- ⬜ **P1 — platform-aware `LibraryPath` in the co-hosted build flow.** A
+  `ost_build::resolve_run_python` now resolves the interpreter argv from the
+  runtime — its bundled `bin/python3` first, then a version-matched host
+  `python{ver}` / Windows `py -<ver>` / tool-cache interpreter, then
+  `python3`, and only last a bare `python` — probed for runnability
+  (`--version`), and `prepare_cohosted_schema`
+  ([plugin.rs](../crates/ost-cli/src/commands/plugin.rs)) runs `usdGenSchema`
+  through it. When nothing runs, a `PRECONDITION_FAILED` error names every
+  candidate searched and the fix (unit-tested ordering; no more `IO_ERROR`).
+- ✅ **P1 — schema regeneration must not require a pre-existing plugin
+  binary.** `usdGenSchema` previously ran with the bundle's own
+  `plugin/resources/…/plugInfo.json` discoverable, so USD tried to load the
+  plugin library the build had not produced yet (or an old one with the
+  wrong platform suffix) and failed. The schema-generation env is now scoped
+  to the **runtime session alone** (`compose_build_env(&msvc_env, &r.env)`)
+  — the bundle's `PXR_PLUGINPATH_NAME`/lib entries are left out, so
+  `usdGenSchema` resolves the base USD schemas through the runtime registry
+  but never discovers the bundle's own not-yet-built plugin. The report's
+  temporary `plugInfo.json` move is no longer needed.
+- ✅ **P1 — platform-aware `LibraryPath` in the co-hosted build flow.** A
   committed `plugInfo.json` carrying another platform's library suffix
-  (`.dll` on a macOS host) fails plugin load mid-build. The v0.5.0 doctor
-  hint flags the mismatch, but `plugin build` should not depend on the
-  committed value during regeneration at all (per the phase-isolation item
-  above) — and where the file is consumed, `ost` should either generate the
-  per-target `plugInfo.json` (`plugInfo.json.in` flow) or fail early with
-  the doctor hint's exact fix, not with USD's opaque loader error.
-- ⬜ **P2 — phase-attributed build diagnostics.** The three blockers above
-  produced mixed signals (a Python exec error, a USD loader error, a missing
-  `plugInfo.json` at the end) with no indication of *which phase* failed.
-  `ost plugin build` already has a phase reporter; schema-generation, plugin
-  discovery/loader, compile/link, and post-build staging failures should
-  each carry their phase in human and `--json` output so triage does not
-  need the report's manual bisection.
+  (`.dll` on a macOS host) used to fail plugin load mid-build. The
+  regeneration phase no longer consumes that value (per the isolation item
+  above), and where the file *is* consumed `plugin build` now runs
+  `verify_target_library_suffix` after the build: a `plugInfo.json.in` source
+  bundle has already had the per-target suffix configured, and a committed
+  concrete path with the wrong suffix fails early as a `PRECONDITION_FAILED`
+  carrying the doctor hint's exact fix — never USD's opaque loader error.
+- ✅ **P2 — phase-attributed build diagnostics.** Every `ost plugin build`
+  subprocess step now carries a phase — `schema-generate`, `configure`,
+  `compile-link`, `schema-merge`, `plugin-discovery` — threaded onto the
+  failure via a new `phase` slot on `Error::Coded` (surfaced as `error[CODE]
+  (phase: …)` in human output and an `error.phase` field in the `--json`
+  envelope). Verified e2e: a failing configure/compile-link build reports its
+  phase in both modes; a wrong-suffix `plugInfo.json` reports
+  `plugin-discovery`.
 
 ## Phase 5 — CI / Jenkins 🚧
 

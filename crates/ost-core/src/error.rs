@@ -85,6 +85,10 @@ pub enum Error {
         category: Category,
         message: String,
         hint: Option<String>,
+        /// The build/work phase the failure is attributed to (e.g.
+        /// `schema-generate`, `compile-link`), surfaced in human + `--json`
+        /// output so triage does not need to bisect which step failed.
+        phase: Option<&'static str>,
     },
 
     #[error("a project already exists here: {0}")]
@@ -132,6 +136,7 @@ impl Error {
             category,
             message: message.into(),
             hint: None,
+            phase: None,
         }
     }
 
@@ -167,6 +172,23 @@ impl Error {
             *slot = Some(hint.into());
         }
         self
+    }
+
+    /// Attribute this error to a named work phase (design §14.4), kept separate
+    /// from the message for `--json`. A no-op on variants without a phase slot.
+    pub fn with_phase(mut self, phase: &'static str) -> Self {
+        if let Error::Coded { phase: slot, .. } = &mut self {
+            *slot = Some(phase);
+        }
+        self
+    }
+
+    /// The work phase this failure is attributed to, if any.
+    pub fn phase(&self) -> Option<&'static str> {
+        match self {
+            Error::Coded { phase, .. } => *phase,
+            _ => None,
+        }
     }
 
     /// The stable machine code for this error (design §14.4).
@@ -272,5 +294,20 @@ mod tests {
         );
         assert_eq!(e.code(), "REAL_RUNTIME_REQUIRED");
         assert_eq!(e.exit_code(), 4);
+    }
+
+    #[test]
+    fn with_phase_attributes_coded_errors_and_is_a_noop_elsewhere() {
+        let e = Error::external_tool("usdGenSchema failed").with_phase("schema-generate");
+        assert_eq!(e.phase(), Some("schema-generate"));
+        // Phase composes with a hint and preserves the code/category.
+        let e = e.with_hint("check the build log");
+        assert_eq!(e.phase(), Some("schema-generate"));
+        assert_eq!(e.hint(), Some("check the build log"));
+        assert_eq!(e.code(), "EXTERNAL_TOOL_FAILED");
+
+        // Variants without a phase slot ignore it rather than panicking.
+        let e = Error::Operation("legacy".into()).with_phase("configure");
+        assert_eq!(e.phase(), None);
     }
 }

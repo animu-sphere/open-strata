@@ -250,6 +250,85 @@ pub fn resolve_for_runtime(prefix: &Utf8Path, declared: &str) -> Option<PythonHi
     resolve_python_hints(prefix, required.as_deref())
 }
 
+/// Resolve an interpreter *to run a script with* (e.g. `usdGenSchema`), returned
+/// as an argv whose head is the program and whose tail is any leading args (the
+/// Windows `py -3.11` launcher form). Unlike [`resolve_for_runtime`], this does
+/// **not** require Development artifacts — running a script only needs a working
+/// interpreter — and it prefers the runtime's own bundled interpreter so the
+/// script's `import pxr` matches the runtime ABI. Falls back to a host
+/// `python{ver}`/`py`, then `python3`, then `python` (never a bare `python`
+/// first, which macOS/modern Linux lack). Host fallbacks must report the
+/// required `major.minor` when one is known, so `import pxr` is not attempted
+/// with a mismatched ABI. Returns `None` if nothing suitable is found — the
+/// caller reports a precondition naming what was searched.
+///
+/// The required `major.minor` (used to prefer a version-matched host
+/// interpreter) is taken from the runtime's `pxrConfig.cmake`, else `declared`.
+pub fn resolve_run_python(prefix: &Utf8Path, declared: &str) -> Option<Vec<String>> {
+    let required = usd_python_requirement(prefix).or_else(|| major_minor(declared));
+    for (argv, source) in candidates(prefix, required.as_deref()) {
+        if runnable_for_run(&argv, source, required.as_deref()) {
+            return Some(argv);
+        }
+    }
+    None
+}
+
+/// A human list of the interpreters [`resolve_run_python`] would try, for a
+/// precondition error message when none is runnable.
+pub fn run_python_search_paths(prefix: &Utf8Path, declared: &str) -> Vec<String> {
+    let required = usd_python_requirement(prefix).or_else(|| major_minor(declared));
+    candidates(prefix, required.as_deref())
+        .into_iter()
+        .map(|(argv, _)| argv.join(" "))
+        .collect()
+}
+
+/// Whether an interpreter argv responds to `--version` (a cheap runnable probe
+/// that does not need Development artifacts).
+fn runnable(argv: &[String]) -> bool {
+    let Some((head, rest)) = argv.split_first() else {
+        return false;
+    };
+    Command::new(head)
+        .args(rest)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Whether an interpreter argv is suitable for running USD scripts. Runtime
+/// bundled interpreters only need the cheap runnable probe; host interpreters
+/// must match USD's Python ABI when that `major.minor` is known.
+fn runnable_for_run(argv: &[String], source: PythonSource, required: Option<&str>) -> bool {
+    if source == PythonSource::Host {
+        if let Some(required) = required {
+            return run_python_major_minor(argv).as_deref() == Some(required);
+        }
+    }
+    runnable(argv)
+}
+
+fn run_python_major_minor(argv: &[String]) -> Option<String> {
+    let (head, rest) = argv.split_first()?;
+    let out = Command::new(head)
+        .args(rest)
+        .arg("-c")
+        .arg("import sys; print('%d.%d' % sys.version_info[:2])")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout)
+        .ok()
+        .and_then(|s| s.lines().next().map(str::trim).map(str::to_string))
+        .filter(|s| !s.is_empty())
+}
+
 /// Resolve a host CPython matching `required` (`major.minor`; `None` accepts
 /// any) with usable Development artifacts. Candidates, in order: an
 /// interpreter bundled in the runtime prefix, the Windows `py` launcher, a
@@ -420,6 +499,78 @@ mod tests {
         assert_eq!(major_minor("313"), Some("3.13".into()));
         assert_eq!(major_minor(""), None);
         assert_eq!(major_minor("python"), None);
+    }
+
+    #[test]
+    fn run_python_search_order_prefers_runtime_and_never_bare_python_first() {
+        // No bundled interpreter in an empty prefix: the ordered candidates must
+        // still end with `python3` before a bare `python` (the macOS/Linux
+        // reality that motivated the fix), never leading with `python`.
+        let prefix = Utf8PathBuf::from("/nonexistent/runtime/prefix");
+        let searched = run_python_search_paths(&prefix, "3.11");
+        let py3 = searched.iter().position(|p| p == "python3");
+        let py = searched.iter().position(|p| p == "python");
+        assert!(py3.is_some() && py.is_some(), "got {searched:?}");
+        assert!(py3 < py, "python3 must precede bare python: {searched:?}");
+        assert_ne!(searched.first().map(String::as_str), Some("python"));
+        // A version-matched host candidate is offered ahead of the bare fallbacks.
+        assert!(
+            searched.iter().any(|p| p == "python3.11"),
+            "expected a version-matched candidate: {searched:?}"
+        );
+    }
+
+    #[test]
+    fn run_python_prefers_bundled_runtime_interpreter() {
+        // A prefix that bundles bin/python3 is offered first, as an existing file.
+        let dir = std::env::temp_dir().join(format!("ost-runpy-{}", std::process::id()));
+        let prefix = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let bin = if cfg!(windows) {
+            prefix.join("python.exe")
+        } else {
+            prefix.join("bin/python3")
+        };
+        std::fs::create_dir_all(bin.parent().unwrap().as_std_path()).unwrap();
+        std::fs::write(bin.as_std_path(), b"#!/bin/sh\n").unwrap();
+        let searched = run_python_search_paths(&prefix, "3.11");
+        std::fs::remove_dir_all(dir).ok();
+        assert_eq!(
+            searched.first().map(String::as_str),
+            Some(bin.to_string().as_str()),
+            "bundled interpreter must be tried first: {searched:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_python_rejects_host_fallback_with_wrong_minor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("ost-runpy-version-{}-{nanos}", std::process::id()));
+        let fake = Utf8PathBuf::from_path_buf(dir.clone())
+            .unwrap()
+            .join("fake-python");
+        std::fs::create_dir_all(fake.parent().unwrap().as_std_path()).unwrap();
+        std::fs::write(
+            fake.as_std_path(),
+            b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"-c\" ]; then printf '3.10\\n'; exit 0; fi\nexit 1\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(fake.as_std_path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(fake.as_std_path(), perms).unwrap();
+
+        let argv = vec![fake.to_string()];
+        assert!(runnable_for_run(&argv, PythonSource::Host, Some("3.10")));
+        assert!(!runnable_for_run(&argv, PythonSource::Host, Some("3.11")));
+        assert!(runnable_for_run(&argv, PythonSource::Host, None));
+
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
