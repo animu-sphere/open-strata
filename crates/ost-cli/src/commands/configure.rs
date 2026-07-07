@@ -154,10 +154,13 @@ pub(crate) fn generate(
     // is clean. The toolchain/presets themselves are always regenerated below.
     invalidate_build_tree_if_compiler_changed(root, &id, &lock_compiler);
 
-    // 1. toolchain.cmake
+    // 1. toolchain.cmake — pin a host interpreter's Development artifacts so
+    // an adopted runtime's pxrConfig (which bakes the export machine's Python
+    // paths) configures on this host; `None` falls back to the runtime prefix.
+    let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &target.python_version);
     write(
         &target_dir.join("toolchain.cmake"),
-        &render_toolchain(&target, &r.artifact_prefix, compiler),
+        &render_toolchain(&target, &r.artifact_prefix, compiler, python.as_ref()),
     )?;
 
     // 2. env.json (resolved env for build steps to reuse)

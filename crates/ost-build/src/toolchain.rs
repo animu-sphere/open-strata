@@ -6,6 +6,7 @@ use camino::Utf8Path;
 use ost_core::host::Os;
 
 use crate::cmake_path;
+use crate::python::{PythonHints, PythonSource};
 use crate::target::Target;
 
 /// Which compiler the generated toolchain selects (§ runtime/compiler split).
@@ -65,7 +66,20 @@ impl Compiler {
 ///
 /// Compiler selection follows `compiler`. The runtime prefix is *prepended* to
 /// `CMAKE_PREFIX_PATH` (never overwritten), so a project's own prefixes survive.
-pub fn render_toolchain(target: &Target, prefix: &Utf8Path, compiler: &Compiler) -> String {
+///
+/// `python` pins a concrete host interpreter's Development artifacts when one
+/// was resolved (see [`crate::python`]). USD's `pxrConfig.cmake` bakes the
+/// build machine's Python paths behind `if (NOT DEFINED …)` guards, so pinning
+/// `Python3_EXECUTABLE`/`_LIBRARY`/`_INCLUDE_DIR` here is what lets an adopted
+/// runtime configure on a *different* host (a clean CI runner). When `None` —
+/// no matching interpreter found — the toolchain omits the pins and CMake
+/// falls back to whatever the config package baked, preserving prior behavior.
+pub fn render_toolchain(
+    target: &Target,
+    prefix: &Utf8Path,
+    compiler: &Compiler,
+    python: Option<&PythonHints>,
+) -> String {
     let root = cmake_path(prefix.as_str());
     let os = target.os();
     let mut out = String::new();
@@ -109,12 +123,42 @@ pub fn render_toolchain(target: &Target, prefix: &Utf8Path, compiler: &Compiler)
     // CMAKE_PREFIX_PATH entries are preserved.
     out.push_str(&format!("list(PREPEND CMAKE_PREFIX_PATH \"{root}\")\n"));
 
-    let python_exe = match os {
-        Os::Windows => format!("{root}/python.exe"),
-        _ => format!("{root}/bin/python"),
-    };
-    out.push_str(&format!("set(Python_EXECUTABLE \"{python_exe}\")\n"));
-    out.push_str(&format!("set(Python_ROOT_DIR \"{root}\")\n"));
+    match python {
+        // A resolved host interpreter: pin all three Development variables so
+        // USD's pxrConfig `if (NOT DEFINED …)` guards yield to them instead of
+        // the (build-machine, non-relocatable) paths it baked. Both the modern
+        // `Python3_*` and legacy `Python_*` names are set — pxrConfig uses
+        // `Python3`, while a plugin's own `find_package(Python …)` may use
+        // either.
+        Some(h) => {
+            let exe = cmake_path(&h.executable);
+            let lib = cmake_path(&h.library);
+            let inc = cmake_path(&h.include_dir);
+            out.push_str(&format!(
+                "# Python: pinned {} interpreter {} (Development artifacts).\n",
+                python_source_label(h.source),
+                h.version
+            ));
+            for prefix in ["Python3", "Python"] {
+                out.push_str(&format!("set({prefix}_EXECUTABLE \"{exe}\")\n"));
+                out.push_str(&format!("set({prefix}_LIBRARY \"{lib}\")\n"));
+                out.push_str(&format!("set({prefix}_INCLUDE_DIR \"{inc}\")\n"));
+            }
+            out.push_str(&format!("set(Python_ROOT_DIR \"{root}\")\n"));
+        }
+        // No matching host interpreter: fall back to the prior behavior — hint
+        // the runtime prefix and let CMake/pxrConfig resolve Development. On a
+        // self-contained runtime this still works; on an adopted one this is
+        // where a cross-host build fails, which is why resolution is attempted.
+        None => {
+            let python_exe = match os {
+                Os::Windows => format!("{root}/python.exe"),
+                _ => format!("{root}/bin/python"),
+            };
+            out.push_str(&format!("set(Python_EXECUTABLE \"{python_exe}\")\n"));
+            out.push_str(&format!("set(Python_ROOT_DIR \"{root}\")\n"));
+        }
+    }
 
     if target.has_usd() {
         out.push_str(&format!("\nset(OpenUSD_ROOT \"{root}\")\n"));
@@ -125,6 +169,13 @@ pub fn render_toolchain(target: &Target, prefix: &Utf8Path, compiler: &Compiler)
     }
 
     out
+}
+
+fn python_source_label(source: PythonSource) -> &'static str {
+    match source {
+        PythonSource::RuntimePrefix => "runtime-bundled",
+        PythonSource::Host => "host",
+    }
 }
 
 #[cfg(test)]
@@ -153,10 +204,20 @@ mod tests {
         }
     }
 
+    fn hints() -> PythonHints {
+        PythonHints {
+            executable: "C:\\hostpy\\python.exe".into(),
+            library: "C:\\hostpy\\libs\\python310.lib".into(),
+            include_dir: "C:\\hostpy\\Include".into(),
+            version: "3.10".into(),
+            source: PythonSource::Host,
+        }
+    }
+
     #[test]
     fn prefix_path_is_prepended_not_overwritten() {
         let t = target(Os::Linux);
-        let out = render_toolchain(&t, Utf8Path::new("/store/rt"), &Compiler::Host);
+        let out = render_toolchain(&t, Utf8Path::new("/store/rt"), &Compiler::Host, None);
         assert!(out.contains("list(PREPEND CMAKE_PREFIX_PATH \"/store/rt\")"));
         assert!(!out.contains("set(CMAKE_PREFIX_PATH"));
     }
@@ -164,7 +225,7 @@ mod tests {
     #[test]
     fn host_policy_sets_no_compiler() {
         let t = target(Os::Linux);
-        let out = render_toolchain(&t, Utf8Path::new("/store/rt"), &Compiler::Host);
+        let out = render_toolchain(&t, Utf8Path::new("/store/rt"), &Compiler::Host, None);
         assert!(!out.contains("set(CMAKE_C_COMPILER"));
         assert!(!out.contains("set(CMAKE_CXX_COMPILER"));
         assert!(out.contains("# compiler: host"));
@@ -176,6 +237,7 @@ mod tests {
             &target(Os::Linux),
             Utf8Path::new("/store/rt"),
             &Compiler::Runtime,
+            None,
         );
         assert!(out.contains("set(CMAKE_C_COMPILER \"/store/rt/bin/gcc\")"));
         assert!(out.contains("set(CMAKE_CXX_COMPILER \"/store/rt/bin/g++\")"));
@@ -187,8 +249,45 @@ mod tests {
             cc: "C:\\llvm\\clang.exe".into(),
             cxx: "C:\\llvm\\clang++.exe".into(),
         };
-        let out = render_toolchain(&target(Os::Windows), Utf8Path::new("/store/rt"), &c);
+        let out = render_toolchain(&target(Os::Windows), Utf8Path::new("/store/rt"), &c, None);
         assert!(out.contains("set(CMAKE_C_COMPILER \"C:/llvm/clang.exe\")"));
         assert!(out.contains("set(CMAKE_CXX_COMPILER \"C:/llvm/clang++.exe\")"));
+    }
+
+    #[test]
+    fn no_python_hints_falls_back_to_prefix() {
+        let out = render_toolchain(
+            &target(Os::Windows),
+            Utf8Path::new("/store/rt"),
+            &Compiler::Host,
+            None,
+        );
+        assert!(out.contains("set(Python_EXECUTABLE \"/store/rt/python.exe\")"));
+        assert!(!out.contains("Python3_LIBRARY"));
+    }
+
+    #[test]
+    fn python_hints_pin_all_development_variables_forward_slashed() {
+        let h = hints();
+        let out = render_toolchain(
+            &target(Os::Windows),
+            Utf8Path::new("/store/rt"),
+            &Compiler::Host,
+            Some(&h),
+        );
+        // pxrConfig reads Python3_*; a plugin's find_package(Python) reads Python_*.
+        for prefix in ["Python3", "Python"] {
+            assert!(out.contains(&format!(
+                "set({prefix}_EXECUTABLE \"C:/hostpy/python.exe\")"
+            )));
+            assert!(out.contains(&format!(
+                "set({prefix}_LIBRARY \"C:/hostpy/libs/python310.lib\")"
+            )));
+            assert!(out.contains(&format!("set({prefix}_INCLUDE_DIR \"C:/hostpy/Include\")")));
+        }
+        // The runtime-prefix python.exe guess must not survive when we have a
+        // concrete host interpreter.
+        assert!(!out.contains("set(Python_EXECUTABLE \"/store/rt/python.exe\")"));
+        assert!(out.contains("# Python: pinned host interpreter 3.10"));
     }
 }

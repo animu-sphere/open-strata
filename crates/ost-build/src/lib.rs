@@ -14,6 +14,7 @@ mod lock;
 pub mod msvc;
 pub mod package;
 mod presets;
+pub mod python;
 mod target;
 mod toolchain;
 
@@ -22,6 +23,9 @@ pub use package::{pack_dir, stage_files, FileEntry, PackResult};
 pub use presets::{
     ensure_includes, includes_of, is_managed_include, managed_include, remove_managed_includes,
     render_target_presets,
+};
+pub use python::{
+    resolve_for_runtime, resolve_python_hints, usd_python_requirement, PythonHints, PythonSource,
 };
 pub use target::Target;
 pub use toolchain::{render_toolchain, Compiler};
