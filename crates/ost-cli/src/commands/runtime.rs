@@ -896,56 +896,56 @@ fn export(
     // manifest travels in the producer manifest instead, so the archive is a
     // pure USD tree.
     let effective = Utf8PathBuf::from(manifest.effective_prefix(&r.prefix));
-    let all_files: Vec<Utf8PathBuf> = ost_build::stage_files(&effective)
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::InvalidData {
-                Error::validation(e.to_string())
-            } else {
-                Error::io(effective.to_string(), e)
-            }
-        })?
-        .into_iter()
-        .filter(|p| p != &effective.join(MANIFEST_FILE))
-        .collect();
-    if all_files.is_empty() {
-        return Err(Error::validation(format!(
-            "runtime '{}' has no files under '{effective}' — nothing to export",
-            manifest.id
-        )));
-    }
-    // A slim export keeps only the SDK layout, dropping the source/build tree an
-    // adopted build-tree runtime carries. Report the excluded top-level entries
-    // so the reduction is visible and auditable.
-    let total_count = all_files.len();
-    let (files, excluded_dirs): (Vec<Utf8PathBuf>, Vec<String>) = if slim {
-        let mut excluded: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let kept: Vec<Utf8PathBuf> = all_files
-            .into_iter()
-            .filter(|p| {
-                let rel = p.strip_prefix(&effective).unwrap_or(p);
-                let keep = ost_build::is_sdk_path(rel);
-                if !keep {
-                    if let Some(top) = rel.as_str().split(['/', '\\']).find(|c| !c.is_empty()) {
-                        excluded.insert(top.to_string());
-                    }
-                }
-                keep
-            })
-            .collect();
-        (kept, excluded.into_iter().collect())
-    } else {
-        (all_files, Vec::new())
+    let map_stage_error = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            Error::validation(e.to_string())
+        } else {
+            Error::io(effective.to_string(), e)
+        }
     };
-    if slim && files.is_empty() {
-        return Err(Error::validation(format!(
-            "runtime '{}' has no SDK-layout files under '{effective}' — nothing to export \
-             (is this an OpenUSD install/build prefix?)",
-            manifest.id
-        )));
+    // A slim export keeps only the SDK layout, dropping the source/build tree an
+    // adopted build-tree runtime carries. It prunes excluded top-level entries
+    // before walking them, so a build tree symlink or socket cannot veto an SDK
+    // artifact that would never include it.
+    let (files, excluded_dirs): (Vec<Utf8PathBuf>, Vec<String>) = if slim {
+        let sdk = ost_build::sdk_stage_files(&effective).map_err(map_stage_error)?;
+        let files = sdk
+            .files
+            .into_iter()
+            .filter(|p| p != &effective.join(MANIFEST_FILE))
+            .collect();
+        let excluded = sdk
+            .excluded_top_level
+            .into_iter()
+            .filter(|p| p != MANIFEST_FILE)
+            .collect();
+        (files, excluded)
+    } else {
+        let files: Vec<Utf8PathBuf> = ost_build::stage_files(&effective)
+            .map_err(map_stage_error)?
+            .into_iter()
+            .filter(|p| p != &effective.join(MANIFEST_FILE))
+            .collect();
+        (files, Vec::new())
+    };
+    if files.is_empty() {
+        let message = if slim {
+            format!(
+                "runtime '{}' has no SDK-layout files under '{effective}' — nothing to export \
+                 (is this an OpenUSD install/build prefix?)",
+                manifest.id
+            )
+        } else {
+            format!(
+                "runtime '{}' has no files under '{effective}' — nothing to export",
+                manifest.id
+            )
+        };
+        return Err(Error::validation(message));
     }
     if slim && !fmt.is_json() {
         println!(
-            "Slim export: keeping {} of {total_count} files (SDK layout); dropping: {}",
+            "Slim export: keeping {} files (SDK layout); dropping top-level: {}",
             files.len(),
             if excluded_dirs.is_empty() {
                 "nothing".to_string()
@@ -954,7 +954,6 @@ fn export(
             }
         );
     }
-
     let store = Store::discover();
     let staging_default = store.cache().join("runtime-export").join(&manifest.id);
     let dist_dir = if let Some(d) = dist {

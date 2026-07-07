@@ -19,7 +19,9 @@ mod target;
 mod toolchain;
 
 pub use lock::{LockCompiler, TargetLock};
-pub use package::{is_sdk_path, pack_dir, stage_files, FileEntry, PackResult};
+pub use package::{
+    is_sdk_path, pack_dir, sdk_stage_files, stage_files, FileEntry, PackResult, SdkStageFiles,
+};
 pub use presets::{
     ensure_includes, includes_of, is_managed_include, managed_include, remove_managed_includes,
     render_target_presets,
