@@ -33,7 +33,10 @@ pub use model::{
     CxxAbi, PluginIdentity, PluginKind, PluginManifest, Requires, RuntimeReq, SchemaSection, Tests,
     UsdSection, PLUGIN_MANIFEST,
 };
-pub use plug_info::{library_plugin_names, merge_schema_types, MergeError};
+pub use plug_info::{
+    contains_template_token, library_plugin_names, library_plugin_paths, merge_schema_types,
+    shared_library_suffix, MergeError,
+};
 pub use report::{
     ci_evidence_from_env, environment_json, report_json, summary_text, write_report, REPORT_SCHEMA,
 };

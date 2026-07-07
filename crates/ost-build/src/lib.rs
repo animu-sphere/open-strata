@@ -29,7 +29,7 @@ pub use presets::{
 };
 pub use python::{
     relocate_baked_prefix, relocate_baked_python, resolve_for_runtime, resolve_python_hints,
-    usd_python_requirement, PythonHints, PythonSource,
+    resolve_run_python, run_python_search_paths, usd_python_requirement, PythonHints, PythonSource,
 };
 pub use target::Target;
 pub use toolchain::{render_toolchain, Compiler};
