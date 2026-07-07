@@ -43,31 +43,90 @@ pub struct SdkStageFiles {
     pub excluded_top_level: Vec<String>,
 }
 
-/// Zstd compression level for artifacts (high ratio; artifacts are written once).
-const ZSTD_LEVEL: i32 = 19;
+/// Default zstd compression level for artifacts (high ratio; artifacts are
+/// written once and pulled many times).
+pub const ZSTD_LEVEL: i32 = 19;
+
+/// How [`pack_dir_with`] compresses the archive.
+#[derive(Debug, Clone, Copy)]
+pub struct PackOptions {
+    /// zstd compression level (1..=22). Higher trades speed for a smaller
+    /// archive.
+    pub level: i32,
+    /// zstd worker threads. `0` keeps the single-threaded encoder (byte-stable
+    /// output); `N > 0` spreads compression across `N` background workers, which
+    /// is much faster for a multi-GB runtime but produces a different — still
+    /// valid — archive whose bytes depend on the worker count.
+    pub workers: u32,
+}
+
+impl Default for PackOptions {
+    /// Level 19, single-threaded: the historical [`pack_dir`] behavior, so a
+    /// small artifact (`ost package`/`ost plugin`) keeps a byte-stable digest.
+    fn default() -> Self {
+        Self {
+            level: ZSTD_LEVEL,
+            workers: 0,
+        }
+    }
+}
+
+/// Progress emitted after each file is written into the archive. Lets a caller
+/// show liveness during a long pack (a `tar.zst` reports 0 bytes on disk until
+/// the encoder flushes, so an in-flight export otherwise looks hung).
+#[derive(Debug, Clone, Copy)]
+pub struct PackProgress<'a> {
+    pub files_done: usize,
+    pub files_total: usize,
+    /// Cumulative uncompressed bytes read so far.
+    pub bytes_done: u64,
+    /// The file just written (archive-relative, forward-slashed).
+    pub path: &'a str,
+}
 
 /// Pack the given `files` (absolute paths under `stage`) into a `tar.zst` at
-/// `archive`.
+/// `archive`, single-threaded at the default level.
 ///
 /// `files` is packed in the given order, each hashed as it is written; pass a
 /// sorted list (e.g. from [`stage_files`]) for a deterministic archive layout.
-/// Returns per-file entries and the archive digest.
+/// Returns per-file entries and the archive digest. See [`pack_dir_with`] for
+/// the compression level, worker count, and progress reporting.
 pub fn pack_dir(
     stage: &Utf8Path,
     archive: &Utf8Path,
     files: &[Utf8PathBuf],
+) -> io::Result<PackResult> {
+    pack_dir_with(stage, archive, files, PackOptions::default(), &mut |_| {})
+}
+
+/// [`pack_dir`] with an explicit [`PackOptions`] and a `progress` callback fired
+/// once per file written.
+pub fn pack_dir_with(
+    stage: &Utf8Path,
+    archive: &Utf8Path,
+    files: &[Utf8PathBuf],
+    opts: PackOptions,
+    progress: &mut dyn FnMut(PackProgress),
 ) -> io::Result<PackResult> {
     if let Some(parent) = archive.parent() {
         std::fs::create_dir_all(parent.as_std_path())?;
     }
 
     let out = File::create(archive.as_std_path())?;
-    let encoder = zstd::stream::write::Encoder::new(out, ZSTD_LEVEL)?.auto_finish();
+    let mut encoder = zstd::stream::write::Encoder::new(out, opts.level)?;
+    if opts.workers > 0 {
+        // Spread compression across worker threads. Requires the `zstdmt`
+        // feature (enabled in the workspace); the archive stays valid either
+        // way, only its exact bytes change with the worker count.
+        encoder.multithread(opts.workers)?;
+    }
+    let encoder = encoder.auto_finish();
     let mut builder = tar::Builder::new(encoder);
 
-    let mut entries = Vec::new();
+    let total = files.len();
+    let mut entries = Vec::with_capacity(total);
     let mut total_size = 0u64;
-    for abs in files {
+    for (i, abs) in files.iter().enumerate() {
         let rel = abs
             .strip_prefix(stage)
             .map(|p| p.as_str().replace('\\', "/"))
@@ -81,9 +140,16 @@ pub fn pack_dir(
         builder.append_data(&mut header, &rel, data.as_slice())?;
 
         total_size += data.len() as u64;
+        let sha256 = digest::sha256_hex(&data);
+        progress(PackProgress {
+            files_done: i + 1,
+            files_total: total,
+            bytes_done: total_size,
+            path: &rel,
+        });
         entries.push(FileEntry {
             path: rel,
-            sha256: digest::sha256_hex(&data),
+            sha256,
             size: data.len() as u64,
         });
     }
@@ -91,12 +157,16 @@ pub fn pack_dir(
     builder.finish()?;
     drop(builder); // flush and close the zstd encoder + file
 
-    let archive_bytes = std::fs::read(archive.as_std_path())?;
+    // Stream-hash the finished archive rather than `fs::read`-ing it whole: a
+    // real runtime archive is many GB, and holding it in memory right after the
+    // pack would spike RSS (and stall, looking hung).
+    let mut f = File::open(archive.as_std_path())?;
+    let (archive_digest, archive_size) = digest::sha256_hex_reader(&mut f)?;
     Ok(PackResult {
         files: entries,
-        archive_digest: digest::sha256_hex(&archive_bytes),
+        archive_digest,
         total_size,
-        archive_size: archive_bytes.len() as u64,
+        archive_size,
     })
 }
 
@@ -380,6 +450,55 @@ mod tests {
         let err = sdk_stage_files(&root).expect_err("kept SDK symlinks must be rejected");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("symlink"), "got: {err}");
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn pack_dir_with_workers_and_level_roundtrips_and_reports_progress() {
+        let root = tmp("pack-mt");
+        std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        std::fs::write(root.join("lib/a.bin").as_std_path(), vec![7u8; 4096]).unwrap();
+        std::fs::write(root.join("lib/b.bin").as_std_path(), vec![9u8; 8192]).unwrap();
+        std::fs::write(root.join("top.txt").as_std_path(), b"hello").unwrap();
+        let files = stage_files(&root).unwrap();
+
+        let archive = root.join("out.tar.zst");
+        let mut seen = Vec::new();
+        let packed = pack_dir_with(
+            &root,
+            &archive,
+            &files,
+            PackOptions {
+                level: 3,
+                workers: 2,
+            },
+            &mut |p| seen.push((p.files_done, p.files_total, p.bytes_done)),
+        )
+        .unwrap();
+
+        // Progress fired once per file, monotonically, ending at the total.
+        assert_eq!(seen.len(), files.len());
+        assert_eq!(seen.last().unwrap().0, files.len());
+        assert_eq!(seen.last().unwrap().2, packed.total_size);
+        assert_eq!(packed.total_size, 4096 + 8192 + 5);
+
+        // The digest re-hashes the bytes actually on disk.
+        let mut f = File::open(archive.as_std_path()).unwrap();
+        let (digest_on_disk, size_on_disk) = digest::sha256_hex_reader(&mut f).unwrap();
+        assert_eq!(digest_on_disk, packed.archive_digest);
+        assert_eq!(size_on_disk, packed.archive_size);
+
+        // The multithreaded archive unpacks back to the original contents.
+        let reader =
+            zstd::stream::read::Decoder::new(File::open(archive.as_std_path()).unwrap()).unwrap();
+        let mut names = Vec::new();
+        for entry in tar::Archive::new(reader).entries().unwrap() {
+            let entry = entry.unwrap();
+            names.push(entry.path().unwrap().to_string_lossy().replace('\\', "/"));
+        }
+        names.sort();
+        assert_eq!(names, vec!["lib/a.bin", "lib/b.bin", "top.txt"]);
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }

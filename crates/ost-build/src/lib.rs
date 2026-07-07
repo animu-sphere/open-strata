@@ -20,7 +20,8 @@ mod toolchain;
 
 pub use lock::{LockCompiler, TargetLock};
 pub use package::{
-    is_sdk_path, pack_dir, sdk_stage_files, stage_files, FileEntry, PackResult, SdkStageFiles,
+    is_sdk_path, pack_dir, pack_dir_with, sdk_stage_files, stage_files, FileEntry, PackOptions,
+    PackProgress, PackResult, SdkStageFiles, ZSTD_LEVEL,
 };
 pub use presets::{
     ensure_includes, includes_of, is_managed_include, managed_include, remove_managed_includes,

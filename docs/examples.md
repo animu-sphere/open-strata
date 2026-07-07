@@ -86,6 +86,9 @@ ost runtime export   cy2026 --profile usd --slim   # SDK layout only (much small
 # --slim keeps include/lib/bin/plugin/cmake/libraries + CMake config and drops
 # the source/build tree of a runtime adopted from a full USD build (e.g. 1.93
 # GiB -> ~27 MiB); the slim artifact still builds and runs plugins.
+# packing is multithreaded by default and prints progress to stderr; tune it with:
+ost runtime export   cy2026 --profile usd --jobs 8    # zstd worker threads (default: host CPUs)
+ost runtime export   cy2026 --profile usd --level 12  # faster pack, larger archive (default 19)
 # refused for: a mock runtime, external --deps prefixes (they would not travel),
 # or a runtime that has not passed validation
 ```
