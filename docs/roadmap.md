@@ -953,12 +953,42 @@ asks. Ranked:
   --version`" placeholder; the generated bootstrap was executed end to end
   against the real v0.8.0 release assets (download → checksum → extract →
   PATH → version assert) as part of verification.
-- ⬜ **P0 — public E2E fixture repository.** A tiny public OpenUSD plugin
-  repo with a pinned public runtime artifact and the committed generated
-  workflows: PR source CI, push source CI, and an explicit cache-disabled run
-  all green; fork PRs verified read-only (no publish credentials, no
-  self-hosted labels reachable). The fixture is a product-level contract in
-  continuous CI for renderer/transport changes.
+- ✅ **P0 — public E2E fixture repository.**
+  [`snkmcb/_ost_runner_test`](https://github.com/snkmcb/_ost_runner_test): a
+  tiny `usd-fileformat` plugin (`plugins/toy`) built from source on
+  GitHub-hosted `windows-2022`, with the runtime SDK pulled from a public
+  GHCR reference
+  (`oci://ghcr.io/snkmcb/openstrata-cy2026-windows-x86_64-py313-usd@sha256:39a588fde380…`,
+  archive digest `sha256:7b410d92…`) and `ost` bootstrapped from a pinned
+  release. **PR source CI, push (main) source CI, and an explicit
+  cache-disabled run (`OST_CI_DISABLE_CACHE=true`) all green**, full pyramid
+  L0–L5 passing on the runner; workflow verified read-only (no `secrets.`,
+  no publish command, no self-hosted labels, `permissions: contents: read`).
+  Standing this up end to end surfaced — and drove fixes for — six ways an
+  **adopted USD build-tree runtime is not relocatable** to a clean host
+  (landed v0.9.0, all with a stale-only guard so a developer's in-place tree
+  is never mutated):
+  1. `pxrConfig.cmake` bakes the export machine's Python behind
+     `if(NOT DEFINED)` guards → `ost` resolves a matching host interpreter
+     and pins `Python3_*` in the generated toolchain (required version read
+     from pxrConfig, not `runtime.json` — the runtime was labeled `py313`
+     but its USD linked Python 3.10).
+  2. `pxrTargets.cmake` bakes the Python include into imported targets'
+     `INTERFACE_INCLUDE_DIRECTORIES` → relocated to the host include.
+  3. `pxrConfig.cmake` bakes the build-tree's own absolute prefix into the
+     external-dependency imported targets (TBB/MaterialX) → relocated to the
+     runtime's on-host store prefix (old prefix discovered from the baked
+     files).
+  4. adopted build trees don't bundle `pythonXY.dll`, so `usdcat`/`usdview`
+     couldn't start → a matching host interpreter's dir is put on the
+     session loader path.
+  5. Windows Python 3.8+ doesn't search PATH for an extension's dependent
+     DLLs, so `import pxr` failed on `_tf` → `os.add_dll_directory` preamble
+     over the session PATH in the Python level scripts.
+  6. `usdcat --flatten` stamps the absolute root-layer path into the golden's
+     `doc`, so a committed golden never matched off its origin host → the L5
+     comparison normalizes that line. The fixture is now a product-level
+     contract in continuous CI for renderer/transport changes.
 - ⬜ **P1 — slim/SDK-profile `runtime export`.** Report #10's adopted runtime
   is a full USD build tree (14.4 GB / 18,029 files → a 1.93 GiB archive); an
   `include/lib/bin/plugin`-only SDK profile cuts both the export time and the
