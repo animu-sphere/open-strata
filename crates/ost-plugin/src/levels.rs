@@ -258,7 +258,9 @@ sys.exit(0 if not missing else 7)
 "#,
         names = py_name_list(&names)
     );
-    let out = session.probe.run(python, &["-c", &script]);
+    let out = session
+        .probe
+        .run(python, &["-c", &with_dll_preamble(&script)]);
     if out.unspawned() {
         return Diagnostic::fail(
             ID,
@@ -311,7 +313,9 @@ fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnost
     let script = SCHEMA_ROUNDTRIP_PY
         .replace("__NAMES__", &py_name_list(&names))
         .replace("__FIXTURE__", &format!("'{path}'"));
-    let out = session.probe.run(python, &["-c", &script]);
+    let out = session
+        .probe
+        .run(python, &["-c", &with_dll_preamble(&script)]);
     if out.unspawned() {
         return Diagnostic::fail(ID, 4, format!("could not run python ({python})"), vec![]);
     }
@@ -365,6 +369,32 @@ if before != after:
 sys.exit(0)
 "#;
 
+/// Prepend a Python preamble that makes USD's extension-module DLLs loadable
+/// on Windows before importing `pxr`.
+///
+/// Since Python 3.8 the interpreter no longer searches `PATH` for an extension
+/// module's dependent DLLs, so `import pxr` fails with "DLL load failed while
+/// importing _tf" even though the runtime's `lib/` (holding `usd_*.dll`) is on
+/// `PATH` — the exact failure a clean CI runner hits with an adopted runtime.
+/// Registering each session `PATH` directory via `os.add_dll_directory`
+/// restores discovery. A no-op off Windows (where `add_dll_directory` is
+/// absent and `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` already cover it).
+fn with_dll_preamble(script: &str) -> String {
+    let preamble = [
+        "import os",
+        "if hasattr(os, 'add_dll_directory'):",
+        "    for _ostdir in os.environ.get('PATH', '').split(os.pathsep):",
+        "        if _ostdir and os.path.isdir(_ostdir):",
+        "            try:",
+        "                os.add_dll_directory(_ostdir)",
+        "            except OSError:",
+        "                pass",
+        "",
+    ]
+    .join("\n");
+    format!("{preamble}{script}")
+}
+
 fn level2_discovery(bundle: &Bundle, session: &Session) -> Diagnostic {
     const ID: &str = "plugin.discovery";
     if bundle.manifest.kind() != PluginKind::UsdFileformat {
@@ -381,7 +411,9 @@ fn level2_discovery(bundle: &Bundle, session: &Session) -> Diagnostic {
     let script = format!(
         "import sys\nfrom pxr import Sdf\nsys.exit(0 if Sdf.FileFormat.FindByExtension('{ext}') else 7)"
     );
-    let out = session.probe.run(python, &["-c", &script]);
+    let out = session
+        .probe
+        .run(python, &["-c", &with_dll_preamble(&script)]);
     if out.unspawned() {
         return Diagnostic::fail(
             ID,
@@ -473,7 +505,9 @@ fn level4_stage_open(bundle: &Bundle, session: &Session) -> Diagnostic {
     let path = fixture.to_string().replace('\\', "/");
     let script =
         format!("import sys\nfrom pxr import Usd\nsys.exit(0 if Usd.Stage.Open('{path}') else 8)");
-    let out = session.probe.run(python, &["-c", &script]);
+    let out = session
+        .probe
+        .run(python, &["-c", &with_dll_preamble(&script)]);
     if out.unspawned() {
         return Diagnostic::fail(ID, 4, format!("could not run python ({python})"), vec![]);
     }

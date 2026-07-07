@@ -23,7 +23,9 @@ use camino::Utf8PathBuf;
 use ost_core::paths::Store;
 use ost_core::{Error, Host, Result};
 use ost_platform::Catalog;
-use ost_runtime::{python_minor, EnvSet, ProfileCatalog, Runtime, RuntimeManifest, MANIFEST_FILE};
+use ost_runtime::{
+    python_minor, EnvOp, EnvSet, EnvVar, ProfileCatalog, Runtime, RuntimeManifest, MANIFEST_FILE,
+};
 
 /// Everything needed to activate a runtime, shared by `env`, `devshell`, `runtime`.
 pub struct Resolved {
@@ -142,4 +144,49 @@ pub(crate) fn relocate_baked_python_if_stale(
             println!("==> relocated baked runtime install prefix in {n} CMake file(s)");
         }
     }
+}
+
+/// Put a matching host Python interpreter's directory on the session's
+/// dynamic-library path when the runtime does not bundle one.
+///
+/// An adopted USD runtime links its tools (`usdcat`, `usdview`) and its `pxr`
+/// bindings against `pythonXY.dll`, but a build-tree adoption does not ship the
+/// interpreter — so on a clean host those tools fail to start (`usdcat` exits
+/// silently; `import pxr` fails loading `_tf`). Prepending the resolved host
+/// interpreter's directory to the loader path (PATH on Windows) supplies
+/// `pythonXY.dll` and makes a version-matched `python` discoverable for the
+/// pyramid's Python levels. A no-op when nothing matching is found. Returns the
+/// augmented set unchanged otherwise.
+pub(crate) fn with_host_python_on_path(
+    mut env: EnvSet,
+    artifact_prefix: &camino::Utf8Path,
+    python_version: &str,
+    os: ost_core::host::Os,
+) -> EnvSet {
+    let Some(hints) = ost_build::resolve_for_runtime(artifact_prefix, python_version) else {
+        return env;
+    };
+    let Some(dir) = camino::Utf8Path::new(&hints.executable).parent() else {
+        return env;
+    };
+    let key = match os {
+        ost_core::host::Os::Windows => "PATH",
+        ost_core::host::Os::Macos => "DYLD_LIBRARY_PATH",
+        ost_core::host::Os::Linux => "LD_LIBRARY_PATH",
+    };
+    // Pushed last so it wins priority (front of the path): a version-matched
+    // interpreter and its DLLs are found ahead of any host default.
+    env.vars.push(EnvVar {
+        key: key.into(),
+        op: EnvOp::Prepend(dir.to_string().replace('\\', "/")),
+    });
+    // The interpreter directory itself also needs to be on PATH so a bare
+    // `python` resolves to the matched one (macOS/Linux route DLLs elsewhere).
+    if os != ost_core::host::Os::Windows {
+        env.vars.push(EnvVar {
+            key: "PATH".into(),
+            op: EnvOp::Prepend(dir.to_string().replace('\\', "/")),
+        });
+    }
+    env
 }

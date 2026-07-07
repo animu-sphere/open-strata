@@ -1057,7 +1057,18 @@ fn test_bundle(
 ) -> Result<(DoctorReport, Utf8PathBuf)> {
     let ctx = resolved.map(runtime_context).unwrap_or_default();
     let session = match resolved {
-        Some(r) => session_env_with(&r.env, bundle, with_bundles, host.os),
+        Some(r) => {
+            let env = session_env_with(&r.env, bundle, with_bundles, host.os);
+            // An adopted runtime may not bundle Python; put a matching host
+            // interpreter's dir on the loader path so usdcat/usdview and the
+            // pxr bindings can load pythonXY.dll and a matched `python` runs.
+            crate::commands::with_host_python_on_path(
+                env,
+                &r.artifact_prefix,
+                &r.python_version,
+                host.os,
+            )
+        }
         None => standalone_session_env(bundle, with_bundles, host.os),
     };
 
