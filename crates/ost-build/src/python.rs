@@ -257,16 +257,17 @@ pub fn resolve_for_runtime(prefix: &Utf8Path, declared: &str) -> Option<PythonHi
 /// interpreter — and it prefers the runtime's own bundled interpreter so the
 /// script's `import pxr` matches the runtime ABI. Falls back to a host
 /// `python{ver}`/`py`, then `python3`, then `python` (never a bare `python`
-/// first, which macOS/modern Linux lack). Returns the first candidate that
-/// responds to `--version`; `None` if nothing runnable is found — the caller
-/// reports a precondition naming what was searched.
+/// first, which macOS/modern Linux lack). Host fallbacks must report the
+/// required `major.minor` when one is known, so `import pxr` is not attempted
+/// with a mismatched ABI. Returns `None` if nothing suitable is found — the
+/// caller reports a precondition naming what was searched.
 ///
 /// The required `major.minor` (used to prefer a version-matched host
 /// interpreter) is taken from the runtime's `pxrConfig.cmake`, else `declared`.
 pub fn resolve_run_python(prefix: &Utf8Path, declared: &str) -> Option<Vec<String>> {
     let required = usd_python_requirement(prefix).or_else(|| major_minor(declared));
-    for (argv, _source) in candidates(prefix, required.as_deref()) {
-        if runnable(&argv) {
+    for (argv, source) in candidates(prefix, required.as_deref()) {
+        if runnable_for_run(&argv, source, required.as_deref()) {
             return Some(argv);
         }
     }
@@ -297,6 +298,35 @@ fn runnable(argv: &[String]) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Whether an interpreter argv is suitable for running USD scripts. Runtime
+/// bundled interpreters only need the cheap runnable probe; host interpreters
+/// must match USD's Python ABI when that `major.minor` is known.
+fn runnable_for_run(argv: &[String], source: PythonSource, required: Option<&str>) -> bool {
+    if source == PythonSource::Host {
+        if let Some(required) = required {
+            return run_python_major_minor(argv).as_deref() == Some(required);
+        }
+    }
+    runnable(argv)
+}
+
+fn run_python_major_minor(argv: &[String]) -> Option<String> {
+    let (head, rest) = argv.split_first()?;
+    let out = Command::new(head)
+        .args(rest)
+        .arg("-c")
+        .arg("import sys; print('%d.%d' % sys.version_info[:2])")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout)
+        .ok()
+        .and_then(|s| s.lines().next().map(str::trim).map(str::to_string))
+        .filter(|s| !s.is_empty())
 }
 
 /// Resolve a host CPython matching `required` (`major.minor`; `None` accepts
@@ -509,6 +539,38 @@ mod tests {
             Some(bin.to_string().as_str()),
             "bundled interpreter must be tried first: {searched:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_python_rejects_host_fallback_with_wrong_minor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("ost-runpy-version-{}-{nanos}", std::process::id()));
+        let fake = Utf8PathBuf::from_path_buf(dir.clone())
+            .unwrap()
+            .join("fake-python");
+        std::fs::create_dir_all(fake.parent().unwrap().as_std_path()).unwrap();
+        std::fs::write(
+            fake.as_std_path(),
+            b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"-c\" ]; then printf '3.10\\n'; exit 0; fi\nexit 1\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(fake.as_std_path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(fake.as_std_path(), perms).unwrap();
+
+        let argv = vec![fake.to_string()];
+        assert!(runnable_for_run(&argv, PythonSource::Host, Some("3.10")));
+        assert!(!runnable_for_run(&argv, PythonSource::Host, Some("3.11")));
+        assert!(runnable_for_run(&argv, PythonSource::Host, None));
+
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

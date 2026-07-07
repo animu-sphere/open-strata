@@ -597,7 +597,8 @@ fn build(
             &schema_sources_dir(&target_dir),
             &schema_sources_file,
             &schema_gen_env,
-        )?
+        )
+        .map_err(|e| in_phase(PHASE_SCHEMA_GENERATE, e))?
     } else {
         clear_cohosted_schema_compile_state(
             &schema_sources_dir(&target_dir),
@@ -2634,6 +2635,41 @@ mod tests {
         assert_eq!(counts.headers, 0);
         assert!(!compiled.as_std_path().exists());
         assert!(!fragment.as_std_path().exists());
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn cohosted_schema_errors_are_phase_attributed() {
+        let root = unique_tmp("schema-phase");
+        write_test_file(
+            &root.join("openstrata.plugin.yaml"),
+            "plugin:\n  name: toy\n  version: 0.1.0\n  kind: usd-fileformat\n\
+             runtime:\n  openusd: \">=25.05,<27.0\"\n\
+             provides:\n  - usd-fileformat:toy\n  - usd-schema:ToyAPI\n\
+             usd:\n  plug_info: plugin/resources/toy/plugInfo.json\n\
+             schema:\n  source: schema/missing.usda\n",
+        );
+        write_test_file(
+            &root.join("plugin/resources/toy/plugInfo.json"),
+            r#"{ "Plugins": [{ "Type": "library", "Name": "toy" }] }"#,
+        );
+        let bundle = Bundle::load(&root).expect("bundle loads");
+
+        let err = prepare_cohosted_schema(
+            &bundle,
+            Utf8Path::new("/missing/runtime"),
+            "3.11",
+            &root.join("schema-gen"),
+            &root.join("compiled"),
+            &root.join("schema-sources.cmake"),
+            &[],
+        )
+        .map_err(|e| in_phase(PHASE_SCHEMA_GENERATE, e))
+        .unwrap_err();
+
+        assert_eq!(err.code(), "INVALID_CONFIG");
+        assert_eq!(err.phase(), Some(PHASE_SCHEMA_GENERATE));
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
