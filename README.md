@@ -24,10 +24,12 @@ artifact registry, plugin publishing, artifact-backed runtime pulls, and GitHub
 support-matrix generation are in. The v0.7.0 CI contract adds runner profiles,
 lanes, source/support workflow rendering, `ost ci plan`, workspace-level plugin
 testing, and CI evidence in plugin reports. v0.8.0 hardens package staging so
-reruns survive transient Windows file locks; sessions, GPU/AI, remote registry
-transport, and broader DCC matrices are still ahead. Linux x86_64 is the first-class target;
-other OS targets are modeled and partially working — these examples were
-exercised on Windows. See the [roadmap](docs/roadmap.md).
+reruns survive transient Windows file locks; v0.9.0 adds read-only OCI artifact
+transport, GitHub-hosted source-CI bootstrap/runtime pulls, runtime export
+ergonomics, and macOS co-hosted schema build robustness. Sessions, GPU/AI, OCI
+push/trust policy, and broader DCC matrices are still ahead. Linux x86_64 is the
+first-class target; other OS targets are modeled and partially working — these
+examples were exercised on Windows. See the [roadmap](docs/roadmap.md).
 
 ## Install
 
