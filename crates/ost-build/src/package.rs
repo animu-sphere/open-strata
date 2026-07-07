@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use std::collections::BTreeSet;
 
 use ost_core::digest;
 
@@ -32,6 +33,14 @@ pub struct PackResult {
     pub total_size: u64,
     /// Size of the compressed archive on disk.
     pub archive_size: u64,
+}
+
+/// Files selected for a slim SDK export, plus top-level entries that were
+/// intentionally excluded without being walked.
+#[derive(Debug, Clone, Default)]
+pub struct SdkStageFiles {
+    pub files: Vec<Utf8PathBuf>,
+    pub excluded_top_level: Vec<String>,
 }
 
 /// Zstd compression level for artifacts (high ratio; artifacts are written once).
@@ -119,6 +128,70 @@ pub fn stage_files(stage: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
     Ok(paths)
 }
 
+/// Top-level directories of the **SDK layout**: the subtrees needed to *build*
+/// and *run* an OpenUSD plugin against a runtime. A runtime adopted from a full
+/// USD build tree also carries the source (`src/`) and build (`build/`) trees —
+/// gigabytes that no consumer of the runtime needs. A slim export keeps only
+/// this set (see [`is_sdk_path`]).
+///
+/// - `include`/`lib` — headers, import libs, shared libs, and the `pxr` Python
+///   bindings a build links and a session loads.
+/// - `bin` — the runtime tools (`usdcat`, `usdview`) and their DLLs.
+/// - `plugin` — USD plugins discovered via `PXR_PLUGINPATH_NAME`.
+/// - `cmake` — the exported `pxrTargets.cmake` etc. `find_package(pxr)` loads.
+/// - `libraries` — MaterialX's standard data libraries, loaded at runtime for
+///   shading (kept; distinct from `resources/`, which is sample geometry/images
+///   a plugin build/test never needs).
+const SDK_DIRS: &[&str] = &["include", "lib", "bin", "plugin", "cmake", "libraries"];
+
+/// Whether `rel` (a path relative to the runtime prefix, forward- or
+/// back-slashed) belongs in the SDK layout: under an [`SDK_DIRS`] subtree, or a
+/// top-level CMake package config (`*.cmake`) or attribution file
+/// (`LICENSE*`/`NOTICE*`/`THIRD*`). Everything else — notably `build/` and
+/// `src/` — is excluded from a slim export.
+pub fn is_sdk_path(rel: &Utf8Path) -> bool {
+    let mut comps = rel.as_str().split(['/', '\\']).filter(|c| !c.is_empty());
+    let Some(first) = comps.next() else {
+        return false;
+    };
+    // A nested path (has a second component) keeps only the SDK subtrees.
+    if comps.next().is_some() {
+        return SDK_DIRS.contains(&first);
+    }
+    // A top-level file: keep build-config and attribution, drop the rest.
+    let lower = first.to_ascii_lowercase();
+    lower.ends_with(".cmake")
+        || lower.starts_with("license")
+        || lower.starts_with("notice")
+        || lower.starts_with("third")
+}
+
+/// List regular files that belong to the SDK layout, pruning excluded
+/// top-level trees before validating their contents.
+///
+/// This is the slim-export counterpart to [`stage_files`]: kept SDK subtrees
+/// still reject symlinks and special files, but excluded build/source trees are
+/// not walked at all.
+pub fn sdk_stage_files(stage: &Utf8Path) -> io::Result<SdkStageFiles> {
+    match std::fs::symlink_metadata(stage.as_std_path()) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(unsupported_entry("symlink", stage));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(SdkStageFiles::default()),
+        Err(e) => return Err(e),
+    }
+
+    let mut files = Vec::new();
+    let mut excluded = BTreeSet::new();
+    collect_sdk_files(stage, stage, &mut files, &mut excluded)?;
+    files.sort();
+    Ok(SdkStageFiles {
+        files,
+        excluded_top_level: excluded.into_iter().collect(),
+    })
+}
+
 /// Recursively collect regular files under `dir`, rejecting any non-regular,
 /// non-directory entry.
 fn collect_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
@@ -147,6 +220,53 @@ fn collect_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
+fn collect_sdk_files(
+    stage: &Utf8Path,
+    dir: &Utf8Path,
+    out: &mut Vec<Utf8PathBuf>,
+    excluded: &mut BTreeSet<String>,
+) -> io::Result<()> {
+    for entry in std::fs::read_dir(dir.as_std_path())? {
+        let entry = entry?;
+        let path = Utf8PathBuf::from_path_buf(entry.path())
+            .map_err(|_| io::Error::other("non-UTF-8 path in stage tree"))?;
+        let rel = path.strip_prefix(stage).unwrap_or(&path);
+        let top = top_component(rel);
+        let in_sdk_subtree = top.is_some_and(|c| SDK_DIRS.contains(&c));
+        let ty = entry.file_type()?;
+
+        if ty.is_dir() {
+            if in_sdk_subtree {
+                collect_sdk_files(stage, &path, out, excluded)?;
+            } else if let Some(top) = top {
+                excluded.insert(top.to_string());
+            }
+        } else if ty.is_file() {
+            if is_sdk_path(rel) {
+                out.push(path);
+            } else if let Some(top) = top {
+                excluded.insert(top.to_string());
+            }
+        } else if in_sdk_subtree || is_sdk_path(rel) {
+            let kind = if ty.is_symlink() {
+                "symlink"
+            } else {
+                "special file (FIFO/socket/device)"
+            };
+            return Err(unsupported_entry(kind, &path));
+        } else if let Some(top) = top {
+            excluded.insert(top.to_string());
+        }
+    }
+    Ok(())
+}
+
+fn top_component(rel: &Utf8Path) -> Option<&str> {
+    rel.as_str()
+        .split(['/', '\\'])
+        .find(|component| !component.is_empty())
+}
+
 /// A uniform "this does not belong in a package" error.
 fn unsupported_entry(kind: &str, path: &Utf8Path) -> io::Error {
     io::Error::new(
@@ -167,6 +287,101 @@ mod tests {
         let mut d = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
         d.push(format!("ost-pack-{tag}-{}-{nanos}", std::process::id()));
         d
+    }
+
+    #[test]
+    fn is_sdk_path_keeps_layout_and_config_drops_build_tree() {
+        // SDK subtrees are kept.
+        for keep in [
+            "include/pxr/base/tf/tf.h",
+            "lib/usd_tf.dll",
+            "lib/site-packages/pxr/Tf/_tf.pyd",
+            "bin/usdcat.exe",
+            "plugin/usd/plugInfo.json",
+            "cmake/pxrTargets.cmake",
+            "libraries/stdlib/stdlib_defs.mtlx",
+        ] {
+            assert!(is_sdk_path(Utf8Path::new(keep)), "should keep {keep}");
+        }
+        // Top-level config/attribution files are kept.
+        for keep in ["pxrConfig.cmake", "LICENSE", "NOTICE", "THIRD-PARTY.md"] {
+            assert!(is_sdk_path(Utf8Path::new(keep)), "should keep {keep}");
+        }
+        // The build/source tree and other top-level junk are dropped.
+        for drop in [
+            "build/OpenUSD/pxr/base/tf/tf.obj",
+            "src/MaterialX-1.39.4/README.md",
+            "resources/Geometry/shaderball.usda",
+            "CHANGELOG.md",
+            "README.md",
+        ] {
+            assert!(!is_sdk_path(Utf8Path::new(drop)), "should drop {drop}");
+        }
+        // Backslash separators (Windows-staged relative paths) work too.
+        assert!(is_sdk_path(Utf8Path::new("lib\\usd_tf.dll")));
+        assert!(!is_sdk_path(Utf8Path::new("build\\x.obj")));
+    }
+
+    #[test]
+    fn sdk_stage_files_prunes_to_sdk_layout() {
+        let root = tmp("sdk-prune");
+        std::fs::create_dir_all(root.join("include/pxr").as_std_path()).unwrap();
+        std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        std::fs::create_dir_all(root.join("build/tmp").as_std_path()).unwrap();
+        std::fs::create_dir_all(root.join("src/OpenUSD").as_std_path()).unwrap();
+        std::fs::write(root.join("include/pxr/pxr.h").as_std_path(), b"h").unwrap();
+        std::fs::write(root.join("lib/usd_tf.dll").as_std_path(), b"dll").unwrap();
+        std::fs::write(root.join("pxrConfig.cmake").as_std_path(), b"cmake").unwrap();
+        std::fs::write(root.join("build/tmp/object.obj").as_std_path(), b"obj").unwrap();
+        std::fs::write(root.join("src/OpenUSD/README.md").as_std_path(), b"src").unwrap();
+        std::fs::write(root.join("README.md").as_std_path(), b"readme").unwrap();
+
+        let selected = sdk_stage_files(&root).unwrap();
+        let rels: Vec<String> = selected
+            .files
+            .iter()
+            .map(|p| p.strip_prefix(&root).unwrap().as_str().replace('\\', "/"))
+            .collect();
+        assert_eq!(
+            rels,
+            vec!["include/pxr/pxr.h", "lib/usd_tf.dll", "pxrConfig.cmake"]
+        );
+        assert_eq!(
+            selected.excluded_top_level,
+            vec!["README.md", "build", "src"]
+        );
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sdk_stage_files_prunes_excluded_symlinks() {
+        let root = tmp("sdk-prune-symlink");
+        std::fs::create_dir_all(root.join("include").as_std_path()).unwrap();
+        std::fs::create_dir_all(root.join("build").as_std_path()).unwrap();
+        std::fs::write(root.join("include/pxr.h").as_std_path(), b"h").unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", root.join("build/link").as_std_path()).unwrap();
+
+        let selected = sdk_stage_files(&root).expect("excluded build tree symlinks are not walked");
+        assert_eq!(selected.files.len(), 1);
+        assert_eq!(selected.excluded_top_level, vec!["build"]);
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sdk_stage_files_rejects_kept_symlinks() {
+        let root = tmp("sdk-kept-symlink");
+        std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", root.join("lib/link").as_std_path()).unwrap();
+
+        let err = sdk_stage_files(&root).expect_err("kept SDK symlinks must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("symlink"), "got: {err}");
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[test]

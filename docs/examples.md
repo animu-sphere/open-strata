@@ -82,6 +82,10 @@ so other machines fetch it by digest instead of rebuilding:
 ```bash
 ost runtime validate cy2026 --profile usd   # export requires a passed validation
 ost runtime export   cy2026 --profile usd   # pack + register; prints the digest
+ost runtime export   cy2026 --profile usd --slim   # SDK layout only (much smaller)
+# --slim keeps include/lib/bin/plugin/cmake/libraries + CMake config and drops
+# the source/build tree of a runtime adopted from a full USD build (e.g. 1.93
+# GiB -> ~27 MiB); the slim artifact still builds and runs plugins.
 # refused for: a mock runtime, external --deps prefixes (they would not travel),
 # or a runtime that has not passed validation
 ```

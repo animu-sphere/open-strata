@@ -89,6 +89,12 @@ pub enum RuntimeCmd {
         /// in this directory instead of a temporary staging dir.
         #[arg(long)]
         dist: Option<String>,
+        /// Export only the SDK layout (include, lib, bin, plugin, cmake,
+        /// libraries, and CMake config), dropping the source/build tree of a
+        /// runtime adopted from a full USD build. Much smaller archive and
+        /// faster per-PR pull.
+        #[arg(long)]
+        slim: bool,
     },
     /// List runtimes present in the local store.
     List,
@@ -157,7 +163,8 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             platform,
             profile,
             dist,
-        } => export(&platform, &profile, dist.as_deref(), fmt),
+            slim,
+        } => export(&platform, &profile, dist.as_deref(), slim, fmt),
         RuntimeCmd::List => list(fmt),
         RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
         RuntimeCmd::Validate { platform, profile } => validate(&platform, &profile, fmt),
@@ -857,7 +864,13 @@ fn runtime_artifact_manifest(
 
 /// `ost runtime export` — pack a pulled real runtime and register it in the
 /// local artifact registry, addressed by digest.
-fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Result<()> {
+fn export(
+    platform: &str,
+    profile: &str,
+    dist: Option<&str>,
+    slim: bool,
+    fmt: Format,
+) -> Result<()> {
     let (platform, profile) = platform_profile(platform, profile);
     let r = resolve(&platform, &profile)?;
     let manifest_path = r.prefix.join(MANIFEST_FILE);
@@ -883,24 +896,64 @@ fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Res
     // manifest travels in the producer manifest instead, so the archive is a
     // pure USD tree.
     let effective = Utf8PathBuf::from(manifest.effective_prefix(&r.prefix));
-    let files: Vec<Utf8PathBuf> = ost_build::stage_files(&effective)
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::InvalidData {
-                Error::validation(e.to_string())
-            } else {
-                Error::io(effective.to_string(), e)
-            }
-        })?
-        .into_iter()
-        .filter(|p| p != &effective.join(MANIFEST_FILE))
-        .collect();
+    let map_stage_error = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            Error::validation(e.to_string())
+        } else {
+            Error::io(effective.to_string(), e)
+        }
+    };
+    // A slim export keeps only the SDK layout, dropping the source/build tree an
+    // adopted build-tree runtime carries. It prunes excluded top-level entries
+    // before walking them, so a build tree symlink or socket cannot veto an SDK
+    // artifact that would never include it.
+    let (files, excluded_dirs): (Vec<Utf8PathBuf>, Vec<String>) = if slim {
+        let sdk = ost_build::sdk_stage_files(&effective).map_err(map_stage_error)?;
+        let files = sdk
+            .files
+            .into_iter()
+            .filter(|p| p != &effective.join(MANIFEST_FILE))
+            .collect();
+        let excluded = sdk
+            .excluded_top_level
+            .into_iter()
+            .filter(|p| p != MANIFEST_FILE)
+            .collect();
+        (files, excluded)
+    } else {
+        let files: Vec<Utf8PathBuf> = ost_build::stage_files(&effective)
+            .map_err(map_stage_error)?
+            .into_iter()
+            .filter(|p| p != &effective.join(MANIFEST_FILE))
+            .collect();
+        (files, Vec::new())
+    };
     if files.is_empty() {
-        return Err(Error::validation(format!(
-            "runtime '{}' has no files under '{effective}' — nothing to export",
-            manifest.id
-        )));
+        let message = if slim {
+            format!(
+                "runtime '{}' has no SDK-layout files under '{effective}' — nothing to export \
+                 (is this an OpenUSD install/build prefix?)",
+                manifest.id
+            )
+        } else {
+            format!(
+                "runtime '{}' has no files under '{effective}' — nothing to export",
+                manifest.id
+            )
+        };
+        return Err(Error::validation(message));
     }
-
+    if slim && !fmt.is_json() {
+        println!(
+            "Slim export: keeping {} files (SDK layout); dropping top-level: {}",
+            files.len(),
+            if excluded_dirs.is_empty() {
+                "nothing".to_string()
+            } else {
+                excluded_dirs.join(", ")
+            }
+        );
+    }
     let store = Store::discover();
     let staging_default = store.cache().join("runtime-export").join(&manifest.id);
     let dist_dir = if let Some(d) = dist {
@@ -943,7 +996,15 @@ fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Res
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
+    let mut producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
+    // Record which layout was shipped so a fetch/inspection can tell a slim SDK
+    // artifact from a full one (they are distinct digests of the same runtime).
+    if let Some(obj) = producer.as_object_mut() {
+        obj.insert(
+            "layout_profile".into(),
+            serde_json::json!(if slim { "sdk" } else { "full" }),
+        );
+    }
     let producer_json = serde_json::to_string_pretty(&producer)
         .map_err(|e| Error::parse("runtime artifact manifest", anyhow::Error::new(e)))?;
     let producer_path = dist_dir.join("manifest.json");
@@ -977,6 +1038,8 @@ fn export(platform: &str, profile: &str, dist: Option<&str>, fmt: Format) -> Res
             "archive_size": out.record.archive_size,
             "files": out.record.file_count,
             "dist": dist.map(|d| d.to_string()),
+            "layout_profile": if slim { "sdk" } else { "full" },
+            "excluded_top_level": excluded_dirs,
         }));
         return Ok(());
     }

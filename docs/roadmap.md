@@ -989,10 +989,21 @@ asks. Ranked:
      `doc`, so a committed golden never matched off its origin host → the L5
      comparison normalizes that line. The fixture is now a product-level
      contract in continuous CI for renderer/transport changes.
-- ⬜ **P1 — slim/SDK-profile `runtime export`.** Report #10's adopted runtime
-  is a full USD build tree (14.4 GB / 18,029 files → a 1.93 GiB archive); an
-  `include/lib/bin/plugin`-only SDK profile cuts both the export time and the
-  per-PR download that the hosted lane now pays.
+- ✅ **P1 — slim/SDK-profile `runtime export`.** `ost runtime export --slim`
+  ships only the SDK layout — `include`, `lib`, `bin`, `plugin`, `cmake`,
+  `libraries` (MaterialX standard defs), plus the top-level CMake package
+  config and attribution files — dropping the source/`build` tree and sample
+  `resources/` a runtime adopted from a full USD build carries. The predicate
+  (`ost_build::is_sdk_path`) is pure and unit-tested; the excluded top-level
+  entries are reported in the human and `--json` output, and the producer
+  manifest records `layout_profile: sdk|full` so a fetch can tell a slim
+  artifact from a full one (distinct digests of the same runtime). Measured on
+  report #10's runtime: **1.93 GiB → 27 MiB archive (~73×), 18,029 → 3,818
+  files, ~30 s vs ~52 min**, and the slim artifact — materialized into a clean
+  `OST_HOME` — builds and runs the toy fixture's full L0–L5 pyramid green
+  (12 pass / 0 fail / 3 skip). This is the clean-install answer to the adopted
+  build-tree relocatability issues above (the `build/` tree that carried the
+  stale absolute paths is simply gone).
 - ⬜ **P1 — `runtime export` performance + progress.** Multithreaded zstd
   and/or a `--level` knob, plus progress output — today's export ran ~52
   minutes single-threaded with zero output (the staged `tar.zst` reports 0
