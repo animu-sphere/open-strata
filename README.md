@@ -26,10 +26,13 @@ lanes, source/support workflow rendering, `ost ci plan`, workspace-level plugin
 testing, and CI evidence in plugin reports. v0.8.0 hardens package staging so
 reruns survive transient Windows file locks; v0.9.0 adds read-only OCI artifact
 transport, GitHub-hosted source-CI bootstrap/runtime pulls, runtime export
-ergonomics, and macOS co-hosted schema build robustness. Sessions, GPU/AI, OCI
-push/trust policy, and broader DCC matrices are still ahead. Linux x86_64 is the
-first-class target; other OS targets are modeled and partially working — these
-examples were exercised on Windows. See the [roadmap](docs/roadmap.md).
+ergonomics, and macOS co-hosted schema build robustness; v0.10.0 adds OCI
+artifact push, publishable runtime-completeness fixes, build-dependency
+preflight warnings, publish-flow docs, and `ost uv` shadow-dependency diagnosis.
+Sessions, GPU/AI, trust policy, and broader DCC matrices are still ahead. Linux
+x86_64 is the first-class target; other OS targets are modeled and partially
+working — these examples were exercised on Windows. See the
+[roadmap](docs/roadmap.md).
 
 ## Install
 

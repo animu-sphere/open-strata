@@ -194,15 +194,15 @@ them. Each release is a coherent slice, not a phase boundary.
     runtime, `--slim` dropping `resources/`) that block the export→publish arc;
     those land as the **v0.10.0 P0** slice ahead of `ost artifact push`.
 
-- 🚧 **v0.10.0 — OCI publish foundation + runtime-completeness closure.** The
+- ✅ **v0.10.0 — OCI publish foundation + runtime-completeness closure.** The
   first *produce*-side slice of remote transport, planned from the 2026-07-09
   publish dogfooding report and the future-policy note (`openstrata_future_policy`
   §3.1/§11). v0.9.0 made *pulling* an OCI runtime first-class and enforced it in
-  the CI contract, but the image the `runtime_remote` contract demands still has
+  the CI contract, but the image the `runtime_remote` contract demands still had
   to be pushed by hand with `oras`, and standing up that first real publish
-  exposed three ways a from-source runtime is not yet publishable. v0.10.0 closes
-  both. **Implemented (pending release cut + dogfood):** all P0/P1/P2 items below,
-  plus the remaining Python/uv shadow-dep diagnosis; fmt/clippy/test green. See the
+  exposed three ways a from-source runtime was not yet publishable. v0.10.0 closes
+  both. **Delivered:** all P0/P1/P2 items below, plus the remaining Python/uv
+  shadow-dep diagnosis. See the
   [Phase 6 — v0.10.0 backlog](#phase-6--v0100-backlog-from-the-2026-07-09-publish-dogfooding--the-future-policy-note).
   Scope:
   - **P0 — runtime completeness (the publish arc must be usable first):**
@@ -1131,14 +1131,14 @@ asks. Ranked:
 
 ### Phase 6 — v0.10.0 backlog (from the 2026-07-09 publish dogfooding + the future-policy note)
 
-**Targeted for v0.10.0.** The 2026-07-09 report re-verified every v0.8.0→v0.9.0
+**Released in v0.10.0.** The 2026-07-09 report re-verified every v0.8.0→v0.9.0
 ask as landed and *enforced* (the old matrix now fails `ost ci validate`), then
 did the first real end-to-end OpenUSD-from-source build → export → GHCR publish →
 anonymous CI pull. The consume side is mechanically complete; the two remaining
 rough edges are both on the *produce* side, and three runtime-completeness bugs
 sit between "build a runtime" and "publish a usable one." The future-policy note
 (`openstrata_future_policy.md`) is the forward design contract; this backlog is
-its v0.10.0 slice. Ranked:
+its v0.10.0 slice. Delivered:
 
 - ✅ **P0 — `--build` OpenUSD version detection + recoverable drift (report
   Finding A).** `runtime pull --build` used to stamp the manifest's `openusd`
