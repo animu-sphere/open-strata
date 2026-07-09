@@ -10,6 +10,7 @@
 //!
 //! This crate renders those artifacts as strings/values; the CLI owns the I/O.
 
+pub mod glibc;
 mod lock;
 pub mod msvc;
 pub mod package;
@@ -18,6 +19,7 @@ pub mod python;
 mod target;
 mod toolchain;
 
+pub use glibc::{max_glibc_floor, GlibcVersion};
 pub use lock::{LockCompiler, TargetLock};
 pub use package::{
     is_sdk_path, pack_dir, pack_dir_with, sdk_stage_files, stage_files, FileEntry, PackOptions,
