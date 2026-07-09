@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Read-only OCI registry transport (transport plan, Phase 1).
+//! OCI registry transport (transport plan, Phase 1 pull + v0.10.0 push).
 //!
-//! Speaks the OCI Distribution Spec pull surface against GHCR-class registries
-//! (GHCR, Harbor, ECR, GAR, ACR, `registry:2`), consuming the ORAS-style
+//! Speaks the OCI Distribution Spec pull *and* push surface against GHCR-class
+//! registries (GHCR, Harbor, ECR, GAR, ACR, `registry:2`), moving the ORAS-style
 //! artifact bundle this crate defines: an OCI image manifest whose layers are
 //! the canonical `tar.zst` archive and the producer `manifest.json`
 //! (identified by media type, with the `org.opencontainers.image.title`
-//! annotation as a fallback for bundles pushed by a stock `oras` CLI).
+//! annotation as a fallback for bundles pushed by a stock `oras` CLI). Push
+//! emits exactly that shape, so a pushed bundle round-trips cleanly back through
+//! the pull path.
 //!
 //! Every transferred byte is digest-checked against the OCI descriptor chain
 //! before the artifact core sees it; the pull verification chain
@@ -40,6 +42,17 @@ pub const MEDIA_TYPE_PRODUCER_MANIFEST: &str =
     "application/vnd.openstrata.artifact.manifest.v1+json";
 /// Config media type: the OpenStrata artifact descriptor (unused on pull).
 pub const MEDIA_TYPE_DESCRIPTOR: &str = "application/vnd.openstrata.artifact.descriptor.v1+json";
+
+/// The OCI image-manifest media type the push writes and registries index by.
+pub const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+
+/// The OCI "empty" config blob media type. An artifact bundle carries no
+/// runnable config, so push references the 2-byte `{}` empty descriptor — the
+/// same shape a stock `oras push` emits, and one the pull path ignores.
+const MEDIA_TYPE_EMPTY_CONFIG: &str = "application/vnd.oci.empty.v1+json";
+
+/// The canonical empty-config blob bytes (`{}`), uploaded as the manifest config.
+const EMPTY_CONFIG_BYTES: &[u8] = b"{}";
 
 /// OCI annotation carrying a layer's original filename.
 const TITLE_ANNOTATION: &str = "org.opencontainers.image.title";
@@ -114,7 +127,8 @@ impl OciTransport {
         match self.raw_get(url, accept, auth.as_deref()) {
             Err(RequestFailure::Status(401, resp)) => {
                 let challenge = resp.header("www-authenticate").unwrap_or("").to_string();
-                let token = self.exchange_token(reference, &challenge)?;
+                let scope = format!("repository:{}:pull", reference.repository);
+                let token = self.exchange_token(reference, &challenge, &scope)?;
                 let bearer = format!("Bearer {token}");
                 match self.raw_get(url, accept, Some(&bearer)) {
                     Ok(resp) => Ok(resp),
@@ -252,7 +266,14 @@ impl OciTransport {
     }
 
     /// Run the registry token exchange named by a 401's `WWW-Authenticate`.
-    fn exchange_token(&self, reference: &OciReference, challenge: &str) -> Result<String> {
+    /// `default_scope` is requested only when the challenge names none (push
+    /// endpoints always name a `pull,push` scope, pull endpoints a `pull` one).
+    fn exchange_token(
+        &self,
+        reference: &OciReference,
+        challenge: &str,
+        default_scope: &str,
+    ) -> Result<String> {
         let auth_denied = |detail: String| {
             Error::coded(
                 "ARTIFACT_AUTH_DENIED",
@@ -290,7 +311,7 @@ impl OciTransport {
         let scope = params
             .get("scope")
             .cloned()
-            .unwrap_or_else(|| format!("repository:{}:pull", reference.repository));
+            .unwrap_or_else(|| default_scope.to_string());
         url.push_str(&format!("scope={}", url_encode(&scope)));
 
         // Basic credentials, when the environment provides them; GHCR-class
@@ -407,6 +428,201 @@ impl OciTransport {
         }
         Ok(())
     }
+
+    /// Build a request with headers and an optional Authorization.
+    fn build_write(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(String, String)],
+        auth: Option<&str>,
+    ) -> ureq::Request {
+        let mut req = self.agent.request(method, url);
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        if let Some(a) = auth {
+            req = req.set("Authorization", a);
+        }
+        req
+    }
+
+    /// Send a request body, mapping ureq outcomes onto [`RequestFailure`]. The
+    /// body is re-materialized per call (a file is re-opened) so a 401 retry can
+    /// resend it.
+    fn dispatch(
+        &self,
+        req: ureq::Request,
+        body: &WriteBody,
+    ) -> std::result::Result<ureq::Response, RequestFailure> {
+        let sent = match body {
+            WriteBody::Empty => req.call(),
+            WriteBody::Bytes(b) => req.send_bytes(b),
+            WriteBody::File(path) => match std::fs::File::open(path.as_std_path()) {
+                Ok(f) => req.send(f),
+                Err(e) => return Err(RequestFailure::Transport(format!("open {path}: {e}"))),
+            },
+        };
+        match sent {
+            Ok(resp) => Ok(resp),
+            Err(ureq::Error::Status(code, resp)) => {
+                Err(RequestFailure::Status(code, Box::new(resp)))
+            }
+            Err(ureq::Error::Transport(t)) => Err(RequestFailure::Transport(t.to_string())),
+        }
+    }
+
+    /// A write request (`POST`/`PUT`/`HEAD`) with one token-exchange retry on
+    /// 401, requesting `pull,push` scope. Any returned response (including a 3xx,
+    /// which the caller inspects) comes back `Ok`; 4xx/5xx map to `ARTIFACT_*`.
+    fn send_write(
+        &self,
+        method: &str,
+        url: &str,
+        reference: &OciReference,
+        headers: Vec<(String, String)>,
+        body: WriteBody,
+    ) -> Result<ureq::Response> {
+        let auth = self.auth_header(reference)?;
+        let first = self.dispatch(
+            self.build_write(method, url, &headers, auth.as_deref()),
+            &body,
+        );
+        match first {
+            Err(RequestFailure::Status(401, resp)) => {
+                let challenge = resp.header("www-authenticate").unwrap_or("").to_string();
+                let scope = format!("repository:{}:pull,push", reference.repository);
+                let token = self.exchange_token(reference, &challenge, &scope)?;
+                let bearer = format!("Bearer {token}");
+                self.dispatch(
+                    self.build_write(method, url, &headers, Some(&bearer)),
+                    &body,
+                )
+                .map_err(|f| self.classify(reference, url, f))
+            }
+            Ok(resp) => Ok(resp),
+            Err(f) => Err(self.classify(reference, url, f)),
+        }
+    }
+
+    /// Whether the registry already stores a blob (`HEAD /blobs/<digest>`). A
+    /// 404 classifies as `ARTIFACT_REMOTE_NOT_FOUND`, which here simply means
+    /// "not present" — the content-addressed idempotency check.
+    fn blob_exists(&self, reference: &OciReference, digest: &str) -> Result<bool> {
+        let url = format!(
+            "{}/v2/{}/blobs/{digest}",
+            self.base_url(&reference.registry),
+            reference.repository
+        );
+        match self.send_write("HEAD", &url, reference, Vec::new(), WriteBody::Empty) {
+            Ok(resp) => Ok((200..300).contains(&resp.status())),
+            Err(e) if e.code() == "ARTIFACT_REMOTE_NOT_FOUND" => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether the registry already stores this OCI manifest by digest.
+    fn manifest_exists(&self, reference: &OciReference, oci_digest: &str) -> Result<bool> {
+        let url = format!(
+            "{}/v2/{}/manifests/{oci_digest}",
+            self.base_url(&reference.registry),
+            reference.repository
+        );
+        let headers = vec![("Accept".to_string(), MANIFEST_ACCEPT.to_string())];
+        match self.send_write("HEAD", &url, reference, headers, WriteBody::Empty) {
+            Ok(resp) => Ok((200..300).contains(&resp.status())),
+            Err(e) if e.code() == "ARTIFACT_REMOTE_NOT_FOUND" => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Upload one blob if the registry does not already have it: start an upload
+    /// session (`POST /blobs/uploads/`), then a monolithic `PUT` with the digest
+    /// query. Idempotent — an existing blob is left untouched.
+    fn upload_blob(
+        &self,
+        reference: &OciReference,
+        digest: &str,
+        size: u64,
+        body: WriteBody,
+    ) -> Result<()> {
+        if self.blob_exists(reference, digest)? {
+            return Ok(());
+        }
+        let start = format!(
+            "{}/v2/{}/blobs/uploads/",
+            self.base_url(&reference.registry),
+            reference.repository
+        );
+        let resp = self.send_write(
+            "POST",
+            &start,
+            reference,
+            vec![("Content-Length".to_string(), "0".to_string())],
+            WriteBody::Empty,
+        )?;
+        if !(200..300).contains(&resp.status()) {
+            return Err(write_unexpected(
+                &start,
+                resp.status(),
+                "start a blob upload",
+            ));
+        }
+        let location = resp.header("location").ok_or_else(|| {
+            Error::coded(
+                "ARTIFACT_TRANSPORT_FAILED",
+                Category::ExternalTool,
+                format!("{start} accepted an upload but returned no Location header"),
+            )
+        })?;
+        let put_url = append_digest_query(&absolutize(&start, location), digest);
+
+        let headers = vec![
+            (
+                "Content-Type".to_string(),
+                "application/octet-stream".to_string(),
+            ),
+            ("Content-Length".to_string(), size.to_string()),
+        ];
+        let resp = self.send_write("PUT", &put_url, reference, headers, body)?;
+        if !(200..300).contains(&resp.status()) {
+            return Err(write_unexpected(
+                &put_url,
+                resp.status(),
+                "complete a blob upload",
+            ));
+        }
+        Ok(())
+    }
+
+    /// `PUT` an OCI manifest under a tag or digest reference.
+    fn put_manifest(
+        &self,
+        reference: &OciReference,
+        manifest_ref: &str,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let url = format!(
+            "{}/v2/{}/manifests/{manifest_ref}",
+            self.base_url(&reference.registry),
+            reference.repository
+        );
+        let headers = vec![(
+            "Content-Type".to_string(),
+            OCI_IMAGE_MANIFEST_MEDIA_TYPE.to_string(),
+        )];
+        let resp = self.send_write(
+            "PUT",
+            &url,
+            reference,
+            headers,
+            WriteBody::Bytes(bytes.to_vec()),
+        )?;
+        if !(200..300).contains(&resp.status()) {
+            return Err(write_unexpected(&url, resp.status(), "put the manifest"));
+        }
+        Ok(())
+    }
 }
 
 impl ArtifactTransport for OciTransport {
@@ -514,6 +730,112 @@ impl ArtifactTransport for OciTransport {
 
         Ok(scratch.to_owned())
     }
+
+    fn push(
+        &self,
+        source: &crate::transport::PushSource,
+        destination: &RemoteReference,
+    ) -> Result<crate::transport::PushOutcome> {
+        let r = self.oci(destination)?;
+
+        // The producer manifest.json travels as a layer, byte-for-byte.
+        let manifest_bytes = std::fs::read(source.manifest_path.as_std_path())
+            .map_err(|e| Error::io(source.manifest_path.to_string(), e))?;
+        let manifest_digest = format!("sha256:{}", digest::sha256_hex(&manifest_bytes));
+        let manifest_size = manifest_bytes.len() as u64;
+
+        let archive_digest = source.record.digest.clone();
+        let archive_size = source.record.archive_size;
+        let archive_title = source.record.archive.clone();
+        let config_digest = format!("sha256:{}", digest::sha256_hex(EMPTY_CONFIG_BYTES));
+
+        // Build the exact bytes the registry will store and hash them: the OCI
+        // digest is content-addressed over precisely these bytes, so what we PUT
+        // and what we advertise cannot diverge.
+        let oci_manifest = build_oci_manifest(
+            &LayerDescriptor {
+                media_type: MEDIA_TYPE_ARCHIVE,
+                digest: &archive_digest,
+                size: archive_size,
+                title: Some(&archive_title),
+            },
+            &LayerDescriptor {
+                media_type: MEDIA_TYPE_PRODUCER_MANIFEST,
+                digest: &manifest_digest,
+                size: manifest_size,
+                title: Some(MANIFEST_FILE),
+            },
+            &config_digest,
+            EMPTY_CONFIG_BYTES.len() as u64,
+        );
+        let oci_digest = format!("sha256:{}", digest::sha256_hex(&oci_manifest));
+
+        // A digest-pinned destination asserts the resulting OCI digest; refuse
+        // to publish bytes that would not satisfy the pin.
+        if let Some(pin) = &r.digest {
+            if pin != &oci_digest {
+                return Err(Error::coded(
+                    "ARTIFACT_OCI_DIGEST_MISMATCH",
+                    Category::Validation,
+                    format!(
+                        "destination pins {pin} but the artifact's OCI manifest hashes to \
+                         {oci_digest}"
+                    ),
+                )
+                .with_hint("push to the tag (or an unpinned repo) and pin the digest it prints"));
+            }
+        }
+
+        // Idempotent: an identical manifest already at the destination means the
+        // whole bundle (config + layers) is already there — transfer nothing.
+        let already_present = self.manifest_exists(r, &oci_digest)?;
+        if !already_present {
+            self.upload_blob(
+                r,
+                &config_digest,
+                EMPTY_CONFIG_BYTES.len() as u64,
+                WriteBody::Bytes(EMPTY_CONFIG_BYTES.to_vec()),
+            )?;
+            self.upload_blob(
+                r,
+                &archive_digest,
+                archive_size,
+                WriteBody::File(source.archive_path.clone()),
+            )?;
+            self.upload_blob(
+                r,
+                &manifest_digest,
+                manifest_size,
+                WriteBody::Bytes(manifest_bytes.clone()),
+            )?;
+            // The immutable digest manifest — the contract a support line pins.
+            self.put_manifest(r, &oci_digest, &oci_manifest)?;
+        }
+        // (Re)point the tag even on an idempotent re-push: the blobs and digest
+        // manifest already exist, but the human-facing tag may need to move onto
+        // this digest. Cheap (a tiny manifest PUT referencing present blobs).
+        if let Some(tag) = &r.tag {
+            self.put_manifest(r, tag, &oci_manifest)?;
+        }
+
+        let mut locator = format!("oci://{}/{}", r.registry, r.repository);
+        if let Some(tag) = &r.tag {
+            locator.push(':');
+            locator.push_str(tag);
+        }
+        locator.push('@');
+        locator.push_str(&oci_digest);
+
+        Ok(crate::transport::PushOutcome {
+            oci_digest,
+            artifact_digest: archive_digest,
+            locator,
+            registry: r.registry.clone(),
+            repository: r.repository.clone(),
+            already_present,
+            auth_mode: self.auth_mode.borrow().to_string(),
+        })
+    }
 }
 
 /// A request that did not return 2xx/3xx. The response is boxed so the happy
@@ -521,6 +843,79 @@ impl ArtifactTransport for OciTransport {
 enum RequestFailure {
     Status(u16, Box<ureq::Response>),
     Transport(String),
+}
+
+/// A push request body, held owned so a 401 retry can resend it.
+enum WriteBody {
+    /// No body (a `HEAD`, or a `POST` that only opens an upload session).
+    Empty,
+    /// An in-memory body (the manifest / producer manifest / config blob).
+    Bytes(Vec<u8>),
+    /// A file streamed with an explicit `Content-Length` (the archive).
+    File(Utf8PathBuf),
+}
+
+/// One OCI layer descriptor for [`build_oci_manifest`].
+struct LayerDescriptor<'a> {
+    media_type: &'a str,
+    digest: &'a str,
+    size: u64,
+    title: Option<&'a str>,
+}
+
+/// Serialize the OCI image manifest for an OpenStrata bundle: an empty config,
+/// the archive layer, and the producer-manifest layer, each tagged with its
+/// media type and original filename. The bytes are deterministic (fixed field
+/// order), so hashing them yields the digest the registry stores and the pull
+/// path re-derives.
+fn build_oci_manifest(
+    archive: &LayerDescriptor,
+    producer_manifest: &LayerDescriptor,
+    config_digest: &str,
+    config_size: u64,
+) -> Vec<u8> {
+    let layer_json = |l: &LayerDescriptor| {
+        let mut obj = serde_json::Map::new();
+        obj.insert("mediaType".into(), l.media_type.into());
+        obj.insert("digest".into(), l.digest.into());
+        obj.insert("size".into(), l.size.into());
+        if let Some(title) = l.title {
+            obj.insert(
+                "annotations".into(),
+                serde_json::json!({ TITLE_ANNOTATION: title }),
+            );
+        }
+        serde_json::Value::Object(obj)
+    };
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+        "artifactType": OCI_ARTIFACT_TYPE,
+        "config": {
+            "mediaType": MEDIA_TYPE_EMPTY_CONFIG,
+            "digest": config_digest,
+            "size": config_size,
+        },
+        "layers": [layer_json(archive), layer_json(producer_manifest)],
+    });
+    // Compact, deterministic bytes (serde_json orders object keys stably), so
+    // the digest we compute equals the one the registry stores and pull re-derives.
+    serde_json::to_vec(&manifest).expect("OCI manifest value serializes")
+}
+
+/// Append a `digest=<digest>` query parameter to a blob-upload PUT URL.
+fn append_digest_query(url: &str, digest: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}digest={}", url_encode(digest))
+}
+
+/// A write step that returned an unexpected (non-2xx, typically 3xx) status.
+fn write_unexpected(url: &str, status: u16, what: &str) -> Error {
+    Error::coded(
+        "ARTIFACT_TRANSPORT_FAILED",
+        Category::ExternalTool,
+        format!("failed to {what}: {url} answered HTTP {status}"),
+    )
 }
 
 /// The slice of an OCI image manifest the pull path needs.
@@ -826,6 +1221,83 @@ mod tests {
     }
 
     #[test]
+    fn built_manifest_round_trips_through_the_pull_parser() {
+        // The push builder and the pull parser must agree: a manifest push emits
+        // has to expose exactly the archive + producer-manifest layers pull looks
+        // for, by media type and by title annotation.
+        let archive_digest = format!("sha256:{}", "aa".repeat(32));
+        let manifest_digest = format!("sha256:{}", "bb".repeat(32));
+        let config_digest = format!("sha256:{}", digest::sha256_hex(EMPTY_CONFIG_BYTES));
+        let bytes = build_oci_manifest(
+            &LayerDescriptor {
+                media_type: MEDIA_TYPE_ARCHIVE,
+                digest: &archive_digest,
+                size: 4096,
+                title: Some("rt-26.05-linux-x86_64.tar.zst"),
+            },
+            &LayerDescriptor {
+                media_type: MEDIA_TYPE_PRODUCER_MANIFEST,
+                digest: &manifest_digest,
+                size: 512,
+                title: Some(MANIFEST_FILE),
+            },
+            &config_digest,
+            EMPTY_CONFIG_BYTES.len() as u64,
+        );
+
+        // Deterministic: same inputs, same bytes (so the OCI digest is stable).
+        let again = build_oci_manifest(
+            &LayerDescriptor {
+                media_type: MEDIA_TYPE_ARCHIVE,
+                digest: &archive_digest,
+                size: 4096,
+                title: Some("rt-26.05-linux-x86_64.tar.zst"),
+            },
+            &LayerDescriptor {
+                media_type: MEDIA_TYPE_PRODUCER_MANIFEST,
+                digest: &manifest_digest,
+                size: 512,
+                title: Some(MANIFEST_FILE),
+            },
+            &config_digest,
+            EMPTY_CONFIG_BYTES.len() as u64,
+        );
+        assert_eq!(bytes, again, "manifest serialization must be deterministic");
+
+        let parsed = parse_oci_manifest(&bytes, "oci://x/y").unwrap();
+        let producer = parsed
+            .find_layer(MEDIA_TYPE_PRODUCER_MANIFEST, |t| t == MANIFEST_FILE)
+            .expect("producer layer");
+        assert_eq!(producer.digest, manifest_digest);
+        assert_eq!(producer.size, 512);
+        assert_eq!(producer.title.as_deref(), Some(MANIFEST_FILE));
+
+        let archive = parsed
+            .find_layer(MEDIA_TYPE_ARCHIVE, |t| t == "rt-26.05-linux-x86_64.tar.zst")
+            .expect("archive layer");
+        assert_eq!(archive.digest, archive_digest);
+        assert_eq!(archive.size, 4096);
+
+        // The top-level artifactType marks it as an OpenStrata bundle.
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["artifactType"], OCI_ARTIFACT_TYPE);
+        assert_eq!(json["config"]["mediaType"], MEDIA_TYPE_EMPTY_CONFIG);
+    }
+
+    #[test]
+    fn digest_query_appends_with_the_right_separator() {
+        let dg = format!("sha256:{}", "cd".repeat(32));
+        assert_eq!(
+            append_digest_query("https://reg/v2/o/r/blobs/uploads/abc", &dg),
+            format!("https://reg/v2/o/r/blobs/uploads/abc?digest={dg}")
+        );
+        assert_eq!(
+            append_digest_query("https://reg/v2/o/r/blobs/uploads/abc?_state=xyz", &dg),
+            format!("https://reg/v2/o/r/blobs/uploads/abc?_state=xyz&digest={dg}")
+        );
+    }
+
+    #[test]
     fn index_without_layers_is_rejected() {
         let bytes = serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 2,
@@ -834,5 +1306,209 @@ mod tests {
         .unwrap();
         let err = parse_oci_manifest(&bytes, "oci://x/y").unwrap_err();
         assert_eq!(err.code(), "ARTIFACT_MANIFEST_INVALID");
+    }
+
+    // --- Push integration against an in-process mock OCI registry ---
+
+    use std::collections::HashSet;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct MockState {
+        blobs: HashSet<String>,
+        manifests: HashSet<String>,
+        put_manifests: usize,
+    }
+
+    /// A minimal anonymous OCI registry: enough of the push surface (HEAD blob /
+    /// manifest, POST upload session, monolithic PUT, PUT manifest) to drive the
+    /// real network path end to end. One request per connection (`Connection:
+    /// close`), so ureq opens a fresh socket each time.
+    fn spawn_mock_registry() -> (String, Arc<Mutex<MockState>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = Arc::new(Mutex::new(MockState::default()));
+        let st = state.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).is_err() || request_line.is_empty() {
+                    continue;
+                }
+                let mut parts = request_line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("").to_string();
+
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if line == "\r\n" || line == "\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                if content_length > 0 {
+                    let mut body = vec![0u8; content_length];
+                    let _ = reader.read_exact(&mut body);
+                }
+
+                let addr_str = format!("{addr}");
+                let response = handle_mock(&method, &path, &addr_str, &st);
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (format!("{addr}"), state)
+    }
+
+    fn handle_mock(method: &str, path: &str, addr: &str, state: &Arc<Mutex<MockState>>) -> String {
+        let ok = |code: &str, extra: &str| {
+            format!("HTTP/1.1 {code}\r\nContent-Length: 0\r\nConnection: close\r\n{extra}\r\n")
+        };
+        let mut st = state.lock().unwrap();
+        // /v2/<repo>/{blobs|manifests}/<ref>  (ref is the last path segment,
+        // minus any query string).
+        let reference = path
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .split('?')
+            .next()
+            .unwrap_or("");
+        if method == "HEAD" && path.contains("/blobs/") {
+            return if st.blobs.contains(reference) {
+                ok("200 OK", "")
+            } else {
+                ok("404 Not Found", "")
+            };
+        }
+        if method == "HEAD" && path.contains("/manifests/") {
+            return if st.manifests.contains(reference) {
+                ok("200 OK", "")
+            } else {
+                ok("404 Not Found", "")
+            };
+        }
+        if method == "POST" && path.contains("/blobs/uploads/") {
+            let loc = format!("Location: http://{addr}/v2/owner/rt/blobs/uploads/session\r\n");
+            return ok("202 Accepted", &loc);
+        }
+        if method == "PUT" && path.contains("/blobs/uploads/") {
+            // The digest travels in the query: ...?digest=sha256:<hex>
+            if let Some(dg) = path.split("digest=").nth(1) {
+                st.blobs.insert(dg.to_string());
+            }
+            return ok("201 Created", "");
+        }
+        if method == "PUT" && path.contains("/manifests/") {
+            st.manifests.insert(reference.to_string());
+            st.put_manifests += 1;
+            return ok("201 Created", "");
+        }
+        ok("400 Bad Request", "")
+    }
+
+    fn push_fixture(dir: &Utf8Path) -> (Utf8PathBuf, Utf8PathBuf, crate::record::ArtifactRecord) {
+        std::fs::create_dir_all(dir.as_std_path()).unwrap();
+        let archive = dir.join("rt-26.05-linux-x86_64.tar.zst");
+        let archive_bytes = b"a small fake runtime archive";
+        std::fs::write(archive.as_std_path(), archive_bytes).unwrap();
+        let manifest = dir.join(MANIFEST_FILE);
+        std::fs::write(manifest.as_std_path(), b"{\"kind\":\"openstrata.runtime\"}").unwrap();
+
+        let record = crate::record::ArtifactRecord {
+            schema: 1,
+            kind: crate::record::ArtifactKind::Runtime,
+            name: "rt".into(),
+            version: "26.05".into(),
+            target: "cy2026-linux-x86_64-gcc11-py313-usd".into(),
+            profile: Some("usd".into()),
+            digest: format!("sha256:{}", digest::sha256_hex(archive_bytes)),
+            archive: "rt-26.05-linux-x86_64.tar.zst".into(),
+            archive_size: archive_bytes.len() as u64,
+            total_size: 100,
+            file_count: 1,
+            created_unix: 1_750_000_000,
+            producer: "ost test".into(),
+            source: crate::record::ArtifactSource::Published,
+            validation: "passed".into(),
+            licenses: vec!["Apache-2.0".into()],
+            sbom: None,
+            runtime_id: Some("rt".into()),
+            runtime_digest: Some("sha256:beef".into()),
+        };
+        (archive, manifest, record)
+    }
+
+    #[test]
+    fn push_uploads_bundle_and_is_idempotent() {
+        let (addr, state) = spawn_mock_registry();
+        let dir = std::env::temp_dir().join(format!("ost-push-{}", std::process::id()));
+        let dir = Utf8PathBuf::from_path_buf(dir).unwrap();
+        let (archive_path, manifest_path, record) = push_fixture(&dir);
+        let source = crate::transport::PushSource {
+            archive_path,
+            manifest_path,
+            record: &record,
+        };
+        let dest = RemoteReference::parse(&format!("oci://{addr}/owner/rt")).unwrap();
+        let transport = OciTransport::new(true);
+
+        let outcome = transport.push(&source, &dest).unwrap();
+        assert!(!outcome.already_present, "first push transfers the bundle");
+        assert!(outcome.oci_digest.starts_with("sha256:"));
+        assert_eq!(outcome.artifact_digest, record.digest);
+        assert!(outcome
+            .locator
+            .ends_with(&format!("@{}", outcome.oci_digest)));
+        {
+            let st = state.lock().unwrap();
+            // config + archive + producer-manifest blobs, and the manifest PUT.
+            assert_eq!(st.blobs.len(), 3, "three blobs uploaded");
+            assert!(st.manifests.contains(outcome.oci_digest.as_str()));
+            assert_eq!(st.put_manifests, 1);
+        }
+
+        // Re-push: the manifest already exists, so nothing is uploaded again.
+        let transport2 = OciTransport::new(true);
+        let again = transport2.push(&source, &dest).unwrap();
+        assert!(again.already_present, "re-push is idempotent");
+        assert_eq!(again.oci_digest, outcome.oci_digest);
+        {
+            let st = state.lock().unwrap();
+            assert_eq!(st.put_manifests, 1, "no second manifest PUT");
+        }
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn push_refuses_a_mismatched_pinned_destination() {
+        let dir = std::env::temp_dir().join(format!("ost-push-pin-{}", std::process::id()));
+        let dir = Utf8PathBuf::from_path_buf(dir).unwrap();
+        let (archive_path, manifest_path, record) = push_fixture(&dir);
+        let source = crate::transport::PushSource {
+            archive_path,
+            manifest_path,
+            record: &record,
+        };
+        // A destination pinning the wrong OCI digest is refused (no network).
+        let wrong = format!("sha256:{}", "00".repeat(32));
+        let dest = RemoteReference::parse(&format!("oci://127.0.0.1:1/owner/rt@{wrong}")).unwrap();
+        let err = OciTransport::new(true)
+            .push(&source, &dest)
+            .expect_err("mismatched pin must be refused");
+        assert_eq!(err.code(), "ARTIFACT_OCI_DIGEST_MISMATCH");
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
 }

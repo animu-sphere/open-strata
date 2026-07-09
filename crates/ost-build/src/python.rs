@@ -19,6 +19,101 @@ use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+/// Packages `usdGenSchema` imports at *runtime* but that `build_usd.py` never
+/// installs into the USD tree — it needs them only on the build host. Without
+/// them on the runtime's `PYTHONPATH`, a published image dies with a bare
+/// `ModuleNotFoundError: No module named 'jinja2'` in `ost plugin build`'s
+/// schema-generate phase (report Finding D).
+pub const SCHEMA_GEN_PACKAGES: &[&str] = &["jinja2", "MarkupSafe"];
+
+/// Top-level imports the schema generator needs at runtime.
+pub const SCHEMA_GEN_MODULES: &[&str] = &["jinja2", "markupsafe"];
+
+/// Whether a runtime bundles the `usdGenSchema` schema tool in `bin/`. When it
+/// does, the runtime is expected to be able to generate schemas standalone, so
+/// its schema-gen Python deps must travel with it.
+pub fn bundles_usdgenschema(prefix: &Utf8Path) -> bool {
+    let bin = prefix.join("bin");
+    [
+        "usdGenSchema",
+        "usdGenSchema.cmd",
+        "usdGenSchema.exe",
+        "usdGenSchema.bat",
+        "usdGenSchema.py",
+    ]
+    .iter()
+    .any(|n| bin.join(n).as_std_path().is_file())
+}
+
+/// Whether an importable top-level `module` is present in `python_lib_dir`
+/// (a package directory, a single-file module, or a namespace/`dist-info`).
+pub fn module_present(python_lib_dir: &Utf8Path, module: &str) -> bool {
+    python_lib_dir.join(module).as_std_path().is_dir()
+        || python_lib_dir
+            .join(format!("{module}.py"))
+            .as_std_path()
+            .is_file()
+}
+
+/// Outcome of provisioning the schema-gen Python deps into a runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaDepsOutcome {
+    /// `usdGenSchema` is not bundled — the runtime never generates schemas, so
+    /// nothing is provisioned.
+    NotNeeded,
+    /// The deps were already importable on the runtime's `PYTHONPATH`.
+    AlreadyPresent,
+    /// The named packages were installed into the runtime's `PYTHONPATH` dir.
+    Installed(Vec<String>),
+}
+
+/// Ensure the schema-gen Python deps ([`SCHEMA_GEN_PACKAGES`]) live in
+/// `python_lib_dir` — exactly the dir `ost` puts on `PYTHONPATH` for the
+/// runtime — when the runtime bundles `usdGenSchema` (report Finding D).
+///
+/// Runs `pip install --target <python_lib_dir>` with `python_argv` (the resolved
+/// run-interpreter). A no-op when `usdGenSchema` is absent or all required imports
+/// are already present, so re-pulls and export-time calls stay idempotent. `pip`
+/// failure is surfaced as an `Err` for the caller to downgrade to a warning: the
+/// runtime is otherwise built and the manual remediation is a single
+/// `pip install --target`.
+pub fn provision_schema_gen_deps(
+    prefix: &Utf8Path,
+    python_lib_dir: &Utf8Path,
+    python_argv: &[String],
+) -> std::io::Result<SchemaDepsOutcome> {
+    if !bundles_usdgenschema(prefix) {
+        return Ok(SchemaDepsOutcome::NotNeeded);
+    }
+    if SCHEMA_GEN_MODULES
+        .iter()
+        .all(|module| module_present(python_lib_dir, module))
+    {
+        return Ok(SchemaDepsOutcome::AlreadyPresent);
+    }
+    std::fs::create_dir_all(python_lib_dir.as_std_path())?;
+    let (head, rest) = python_argv.split_first().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no interpreter to run pip with",
+        )
+    })?;
+    let status = Command::new(head)
+        .args(rest)
+        .args(["-m", "pip", "install", "--no-input", "--target"])
+        .arg(python_lib_dir.as_str())
+        .args(SCHEMA_GEN_PACKAGES)
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::other(format!(
+            "pip install of schema-gen deps failed ({status})"
+        )));
+    }
+    Ok(SchemaDepsOutcome::Installed(
+        SCHEMA_GEN_PACKAGES.iter().map(|s| s.to_string()).collect(),
+    ))
+}
+
 /// Where the resolved interpreter came from (recorded as a toolchain comment).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PythonSource {
@@ -513,10 +608,16 @@ mod tests {
         assert!(py3.is_some() && py.is_some(), "got {searched:?}");
         assert!(py3 < py, "python3 must precede bare python: {searched:?}");
         assert_ne!(searched.first().map(String::as_str), Some("python"));
-        // A version-matched host candidate is offered ahead of the bare fallbacks.
+        // A version-matched host candidate is offered ahead of the bare
+        // fallbacks — `py -3.11` on Windows, `python3.11` elsewhere.
+        let version_matched = if cfg!(windows) {
+            "py -3.11"
+        } else {
+            "python3.11"
+        };
         assert!(
-            searched.iter().any(|p| p == "python3.11"),
-            "expected a version-matched candidate: {searched:?}"
+            searched.iter().any(|p| p == version_matched),
+            "expected a version-matched candidate ({version_matched}): {searched:?}"
         );
     }
 
@@ -570,6 +671,55 @@ mod tests {
         assert!(!runnable_for_run(&argv, PythonSource::Host, Some("3.11")));
         assert!(runnable_for_run(&argv, PythonSource::Host, None));
 
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn detects_bundled_usdgenschema_and_module_presence() {
+        let dir = std::env::temp_dir().join(format!("ost-schemadeps-{}", std::process::id()));
+        let prefix = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let bin = prefix.join("bin");
+        let pylib = prefix.join("lib/python");
+        std::fs::create_dir_all(bin.as_std_path()).unwrap();
+        std::fs::create_dir_all(pylib.as_std_path()).unwrap();
+
+        assert!(!bundles_usdgenschema(&prefix));
+        std::fs::write(bin.join("usdGenSchema").as_std_path(), b"").unwrap();
+        assert!(bundles_usdgenschema(&prefix));
+
+        // jinja2/markupsafe as package dirs; a single-file module also counts.
+        assert!(!module_present(&pylib, "jinja2"));
+        std::fs::create_dir_all(pylib.join("jinja2").as_std_path()).unwrap();
+        assert!(module_present(&pylib, "jinja2"));
+        assert!(!SCHEMA_GEN_MODULES
+            .iter()
+            .all(|module| module_present(&pylib, module)));
+        std::fs::write(pylib.join("markupsafe.py").as_std_path(), b"").unwrap();
+        assert!(module_present(&pylib, "markupsafe"));
+        assert!(SCHEMA_GEN_MODULES
+            .iter()
+            .all(|module| module_present(&pylib, module)));
+
+        // Already-present deps are a no-op even though the interpreter argv is
+        // bogus — the pip subprocess must never be reached.
+        assert_eq!(
+            provision_schema_gen_deps(&prefix, &pylib, &["definitely-not-python".into()]).unwrap(),
+            SchemaDepsOutcome::AlreadyPresent
+        );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn provision_is_not_needed_without_usdgenschema() {
+        let dir = std::env::temp_dir().join(format!("ost-noschemadeps-{}", std::process::id()));
+        let prefix = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pylib = prefix.join("lib/python");
+        std::fs::create_dir_all(pylib.as_std_path()).unwrap();
+        assert_eq!(
+            provision_schema_gen_deps(&prefix, &pylib, &["definitely-not-python".into()]).unwrap(),
+            SchemaDepsOutcome::NotNeeded
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

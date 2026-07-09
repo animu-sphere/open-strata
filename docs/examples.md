@@ -83,9 +83,11 @@ so other machines fetch it by digest instead of rebuilding:
 ost runtime validate cy2026 --profile usd   # export requires a passed validation
 ost runtime export   cy2026 --profile usd   # pack + register; prints the digest
 ost runtime export   cy2026 --profile usd --slim   # SDK layout only (much smaller)
-# --slim keeps include/lib/bin/plugin/cmake/libraries + CMake config and drops
-# the source/build tree of a runtime adopted from a full USD build (e.g. 1.93
-# GiB -> ~27 MiB); the slim artifact still builds and runs plugins.
+# --slim keeps include/lib/bin/plugin/cmake/libraries/resources + CMake config
+# and drops the source/build tree of a runtime adopted from a full USD build
+# (e.g. 1.93 GiB -> ~27 MiB); the slim artifact still builds and runs plugins.
+# (resources/ is retained because MaterialXConfig.cmake set_and_checks it at
+# find_package(pxr) time — dropping it broke slim MaterialX runtimes.)
 # packing is multithreaded by default and prints progress to stderr; tune it with:
 ost runtime export   cy2026 --profile usd --jobs 8    # zstd worker threads (default: host CPUs)
 ost runtime export   cy2026 --profile usd --level 12  # faster pack, larger archive (default 19)
@@ -262,6 +264,40 @@ ost artifact export 3fa9c1 ./handoff/
 # bundle under test in a CI matrix cell
 ost artifact extract 3fa9c1 ./plugin-under-test/
 ```
+
+### Publishing to and pulling from a remote OCI registry
+
+A stored artifact publishes to any OCI registry (GHCR, Harbor, ECR, GAR, ACR,
+`registry:2`). `push` emits the exact layout `pull` consumes, prints the
+**immutable OCI manifest digest**, and is content-addressed + idempotent
+(re-pushing the same bytes transfers nothing):
+
+```bash
+# publish a stored runtime by digest; the OCI digest it prints is what a
+# support line's runtime_remote.expected_oci_digest pins
+ost artifact push 3fa9c1 oci://ghcr.io/<owner>/openstrata-runtime:usd-26.05-linux-x86_64
+ost artifact push 3fa9c1 oci://ghcr.io/<owner>/openstrata-runtime --json   # every digest as data
+
+# pull one back anywhere: resolve the tag to a digest, then pull the pin
+ost artifact resolve oci://ghcr.io/<owner>/openstrata-runtime:usd-26.05-linux-x86_64
+ost artifact pull    oci://ghcr.io/<owner>/openstrata-runtime@sha256:<oci-digest>
+```
+
+Credentials and visibility (the two footguns standing up a first publish):
+
+- **`ost` does not read the `oras`/docker credential store.** For a private
+  registry — including pushing to a *new* GHCR package, which is private until
+  you flip it — set `OST_REGISTRY_USER` + `OST_REGISTRY_PASSWORD` (a GitHub PAT
+  with `write:packages` for GHCR), or a pre-minted bearer via
+  `OST_REGISTRY_TOKEN`. Without them a private pull/resolve returns
+  `ARTIFACT_AUTH_DENIED` even after `oras login`.
+- **GHCR package visibility is a WebUI-only flip.** A freshly pushed package is
+  private; make it public under the package's *Package settings → Change
+  visibility* (not settable via the packages API, and gated by the org's
+  "Package creation" policy). Once public, the CI pull path works **fully
+  anonymously** — no token on the runner.
+- Fixture registries / air-gapped mirrors that speak plain HTTP take
+  `--plain-http` on `push`/`pull`/`resolve`.
 
 ## ci — the runtime×plugin support matrix
 

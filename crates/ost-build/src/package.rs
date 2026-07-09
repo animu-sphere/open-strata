@@ -210,9 +210,24 @@ pub fn stage_files(stage: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
 /// - `plugin` — USD plugins discovered via `PXR_PLUGINPATH_NAME`.
 /// - `cmake` — the exported `pxrTargets.cmake` etc. `find_package(pxr)` loads.
 /// - `libraries` — MaterialX's standard data libraries, loaded at runtime for
-///   shading (kept; distinct from `resources/`, which is sample geometry/images
-///   a plugin build/test never needs).
-const SDK_DIRS: &[&str] = &["include", "lib", "bin", "plugin", "cmake", "libraries"];
+///   shading.
+/// - `resources` — MaterialX's resource tree. Kept even though a plugin never
+///   opens its sample geometry/images, because `pxrConfig.cmake` chains into
+///   `MaterialXConfig.cmake`, which `set_and_check`s
+///   `MATERIALX_RESOURCES_DIR = <prefix>/resources` — a hard existence check at
+///   `find_package(pxr)` time. Dropping it made a slim MaterialX runtime
+///   unconsumable by any plugin that does `find_package(pxr)` (report Finding E).
+///   The check only fires for a MaterialX-enabled runtime; a runtime without a
+///   `resources/` tree keeps this a no-op.
+const SDK_DIRS: &[&str] = &[
+    "include",
+    "lib",
+    "bin",
+    "plugin",
+    "cmake",
+    "libraries",
+    "resources",
+];
 
 /// Whether `rel` (a path relative to the runtime prefix, forward- or
 /// back-slashed) belongs in the SDK layout: under an [`SDK_DIRS`] subtree, or a
@@ -370,6 +385,11 @@ mod tests {
             "plugin/usd/plugInfo.json",
             "cmake/pxrTargets.cmake",
             "libraries/stdlib/stdlib_defs.mtlx",
+            // MaterialXConfig.cmake set_and_checks <prefix>/resources at
+            // find_package(pxr) time, so the resources tree must survive a slim
+            // export (report Finding E).
+            "resources/Geometry/shaderball.usda",
+            "resources/Materials/Examples/standard_surface.mtlx",
         ] {
             assert!(is_sdk_path(Utf8Path::new(keep)), "should keep {keep}");
         }
@@ -381,7 +401,6 @@ mod tests {
         for drop in [
             "build/OpenUSD/pxr/base/tf/tf.obj",
             "src/MaterialX-1.39.4/README.md",
-            "resources/Geometry/shaderball.usda",
             "CHANGELOG.md",
             "README.md",
         ] {

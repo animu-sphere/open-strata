@@ -841,6 +841,36 @@ mod tests {
     }
 
     #[test]
+    fn push_guards_store_corruption_before_reaching_the_transport() {
+        use crate::reference::RemoteReference;
+        use crate::transport::file::FileTransport;
+
+        let root = tmp_root("push-guard");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+        let out = store.import(&dist, ArtifactSource::Published).unwrap();
+        let dest = RemoteReference::parse("file:///tmp/whatever").unwrap();
+
+        // A clean store passes the re-hash guard and reaches the transport, which
+        // (read-only) refuses — proving the guard let it through.
+        let err = crate::transport::push(&FileTransport::new(), &store, &out.record.digest, &dest)
+            .expect_err("file backend cannot push");
+        assert_eq!(err.code(), "ARTIFACT_PUSH_UNSUPPORTED");
+
+        // Corrupt the stored archive; push must refuse before any transport call.
+        let stored = store.archive_path(&out.record);
+        let mut bytes = std::fs::read(stored.as_std_path()).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        std::fs::write(stored.as_std_path(), &bytes).unwrap();
+        let err = crate::transport::push(&FileTransport::new(), &store, &out.record.digest, &dest)
+            .expect_err("corrupted store must not publish");
+        assert_eq!(err.code(), "ARTIFACT_DIGEST_MISMATCH");
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
     fn export_roundtrips_and_refuses_overwrite() {
         let root = tmp_root("export");
         let store = ArtifactStore::at(root.join("store"));
