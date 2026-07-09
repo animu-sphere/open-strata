@@ -8,12 +8,14 @@
 //! registries ([`oci::OciTransport`]) — are adapters behind
 //! [`ArtifactTransport`].
 //!
-//! The one public workflow is [`pull`]: resolve a **digest-pinned** reference,
-//! fetch the producer files, run the full verification chain (archive digest →
+//! Two public workflows. [`pull`]: resolve a **digest-pinned** reference, fetch
+//! the producer files, run the full verification chain (archive digest →
 //! manifest schema → pre-extraction safety → per-file digests → kind / target /
 //! pinned-digest match → trust policy), then import atomically into the local
 //! registry. Transport success alone is never success, and a failed step never
-//! leaves a usable artifact behind.
+//! leaves a usable artifact behind. [`push`]: re-hash a stored artifact, then
+//! publish it to a write-capable backend (OCI) in the exact layout the pull path
+//! consumes — content-addressed and idempotent.
 
 pub mod file;
 pub mod oci;
@@ -46,10 +48,40 @@ pub struct ResolvedRemote {
     pub auth_mode: String,
 }
 
-/// The transport contract: resolve a reference, fetch producer files.
-///
-/// `push` completes the contract in the publish phase (plan Phase 3); until
-/// then every backend reports it as unsupported rather than pretending.
+/// The store-resolved local files a push publishes. Built by [`push`] from an
+/// artifact's object directory; a backend never touches the store itself.
+#[derive(Debug, Clone)]
+pub struct PushSource<'a> {
+    /// Absolute path of the canonical `tar.zst` archive.
+    pub archive_path: Utf8PathBuf,
+    /// Absolute path of the producer `manifest.json`.
+    pub manifest_path: Utf8PathBuf,
+    /// The artifact's registry record (identity + archive digest/size).
+    pub record: &'a ArtifactRecord,
+}
+
+/// The immutable result of a completed push.
+#[derive(Debug, Clone)]
+pub struct PushOutcome {
+    /// `sha256:<hex>` of the pushed OCI image manifest — the value that pins
+    /// `runtime_remote.expected_oci_digest` in a support line.
+    pub oci_digest: String,
+    /// `sha256:<hex>` of the OpenStrata artifact archive (its identity).
+    pub artifact_digest: String,
+    /// Canonical pushed locator (`oci://reg/repo[:tag]@sha256:<oci-digest>`).
+    pub locator: String,
+    /// Registry identity: `host[:port]` for OCI, `local-filesystem` for file.
+    pub registry: String,
+    /// Repository path within the registry (empty for the file backend).
+    pub repository: String,
+    /// The identical OCI manifest already existed at the destination — an
+    /// idempotent re-push transferred nothing new.
+    pub already_present: bool,
+    /// How the transport authenticated.
+    pub auth_mode: String,
+}
+
+/// The transport contract: resolve a reference, fetch producer files, publish.
 pub trait ArtifactTransport {
     /// Turn a reference into an immutable identity. A tag may resolve to a
     /// digest here, but [`pull`] enforces that CI-facing references arrive
@@ -68,13 +100,15 @@ pub trait ArtifactTransport {
         scratch: &Utf8Path,
     ) -> Result<Utf8PathBuf>;
 
-    /// Publish a local artifact to the destination. Lands with the publish
-    /// phase (plan Phase 3); read-only backends refuse.
-    fn push(&self, _artifact: &ArtifactRecord, _destination: &RemoteReference) -> Result<()> {
+    /// Publish a store-resolved artifact to `destination`, emitting the exact
+    /// OCI layout / media types [`crate::transport::oci::OciTransport::fetch`]
+    /// consumes. Content-addressed and idempotent: pushing bytes already at the
+    /// destination transfers nothing. Read-only backends refuse.
+    fn push(&self, _source: &PushSource, _destination: &RemoteReference) -> Result<PushOutcome> {
         Err(Error::coded(
             "ARTIFACT_PUSH_UNSUPPORTED",
             Category::Usage,
-            "artifact push is not supported yet (publish lands with the v0.10.0 publish phase)",
+            "this transport is read-only — only the OCI backend (oci://) can push",
         ))
     }
 }
@@ -196,4 +230,48 @@ pub fn pull(
     // leaves a partially fetched artifact where something could trust it.
     let _ = std::fs::remove_dir_all(scratch.as_std_path());
     result
+}
+
+/// Publish a stored artifact (by digest reference) to a remote destination.
+///
+/// Resolves the artifact in the local registry, **re-hashes its archive** and
+/// refuses to publish if the store has drifted (never propagate corruption at
+/// rest), then hands the store-resolved files to the transport's `push`. The
+/// returned [`PushOutcome`] carries the immutable OCI manifest digest to pin.
+pub fn push(
+    transport: &dyn ArtifactTransport,
+    store: &ArtifactStore,
+    digest_ref: &str,
+    destination: &RemoteReference,
+) -> Result<PushOutcome> {
+    let record = store.resolve(digest_ref)?;
+    let object_dir = store.object_dir(record.digest_hex());
+    let archive_path = object_dir.join(&record.archive);
+    let manifest_path = object_dir.join(crate::record::MANIFEST_FILE);
+
+    // Never publish store corruption: the recorded digest is a claim, the bytes
+    // are the truth. Prove they still agree before a single byte leaves the host.
+    let mut f = std::fs::File::open(archive_path.as_std_path())
+        .map_err(|e| Error::io(archive_path.to_string(), e))?;
+    let (actual, actual_size) = ost_core::digest::sha256_hex_reader(&mut f)
+        .map_err(|e| Error::io(archive_path.to_string(), e))?;
+    if actual != record.digest || actual_size != record.archive_size {
+        return Err(Error::coded(
+            "ARTIFACT_DIGEST_MISMATCH",
+            Category::Validation,
+            format!(
+                "stored archive for {} hashes to {actual} ({actual_size} bytes) — \
+                 the local store is corrupted",
+                record.short_digest()
+            ),
+        )
+        .with_hint("re-import the artifact from its original producer output"));
+    }
+
+    let source = PushSource {
+        archive_path,
+        manifest_path,
+        record: &record,
+    };
+    transport.push(&source, destination)
 }

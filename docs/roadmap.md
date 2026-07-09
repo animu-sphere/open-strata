@@ -194,14 +194,15 @@ them. Each release is a coherent slice, not a phase boundary.
     runtime, `--slim` dropping `resources/`) that block the export→publish arc;
     those land as the **v0.10.0 P0** slice ahead of `ost artifact push`.
 
-- ⬜ **v0.10.0 — OCI publish foundation + runtime-completeness closure.** The
+- 🚧 **v0.10.0 — OCI publish foundation + runtime-completeness closure.** The
   first *produce*-side slice of remote transport, planned from the 2026-07-09
   publish dogfooding report and the future-policy note (`openstrata_future_policy`
   §3.1/§11). v0.9.0 made *pulling* an OCI runtime first-class and enforced it in
   the CI contract, but the image the `runtime_remote` contract demands still has
   to be pushed by hand with `oras`, and standing up that first real publish
   exposed three ways a from-source runtime is not yet publishable. v0.10.0 closes
-  both; see the
+  both. **Implemented (pending release cut + dogfood):** all P0/P1/P2 items below,
+  plus the remaining Python/uv shadow-dep diagnosis; fmt/clippy/test green. See the
   [Phase 6 — v0.10.0 backlog](#phase-6--v0100-backlog-from-the-2026-07-09-publish-dogfooding--the-future-policy-note).
   Scope:
   - **P0 — runtime completeness (the publish arc must be usable first):**
@@ -1139,70 +1140,58 @@ sit between "build a runtime" and "publish a usable one." The future-policy note
 (`openstrata_future_policy.md`) is the forward design contract; this backlog is
 its v0.10.0 slice. Ranked:
 
-- ⬜ **P0 — `--build` OpenUSD version detection + recoverable drift (report
-  Finding A).** `runtime pull --build` stamps the manifest's `openusd` extension
-  from the **catalog default** (e.g. `25.05.01`) even though the freshly built
-  `include/pxr/pxr.h` reports the real version (e.g. `26.05`); `runtime validate`
-  *correctly* fails with `openusd-version-drift`, but both documented recoveries
-  are dead ends — the validator's own suggested `--build … --force` reproduces the
-  same wrong digest (no-op), and `runtime repair` refuses with
-  `REPAIR_UNSUPPORTED_SOURCE` (repair re-adopts a `local` runtime only). Because
-  `export` refuses an unvalidated runtime (`EXPORT_VALIDATION_REQUIRED`), a
-  from-source build **cannot be exported at all** until the version is corrected,
-  and the only correction is to throw away `build` provenance via a `--from-usd`
-  re-adopt. Fix: the `--build` path reads the real version from the built `pxr.h`
-  (as adopt already does) and stamps it; and `runtime repair` (or a `runtime pull
-  --redetect`) works for `build` source so the validator's advice recovers the
-  runtime. Fix the suggested-fix text so it is not a no-op.
-- ⬜ **P0 — ship schema-gen Python deps inside the runtime (report Finding D).**
-  A from-source runtime bundles `usdGenSchema` in `bin/` but **not** its runtime
-  imports (`jinja2` + `MarkupSafe`) — `build_scripts/build_usd.py` needs `jinja2`
-  only on the *building* host and never installs it into the USD tree. So a
-  published image is silently incomplete for schema generation: it "worked
-  locally" only because the build host's Python happened to have `jinja2`, and the
-  first real hosted CI run died deep inside `ost plugin build`'s schema-generate
-  phase with a bare `ModuleNotFoundError: No module named 'jinja2'`. Provision
-  `jinja2` + `MarkupSafe` into `lib/python` (exactly what `ost` puts on
-  `PYTHONPATH`) at `runtime pull --build` time (or vendor them during `runtime
-  export`) whenever `usdGenSchema` is bundled. **Highest-impact single fix for
-  green CI** — the workaround was a manual `pip install --target <runtime>/lib/python`.
-- ⬜ **P0 — `--slim` must retain `resources/` (report Finding E).** `runtime
-  export --slim` keeps `include/lib/bin/plugin/cmake/libraries` but drops the SDK's
-  top-level `resources/` (~132 MB, mostly MaterialX data). Yet `pxrConfig.cmake`
-  chains into `MaterialXConfig.cmake`, which `set_and_check`s
-  `MATERIALX_RESOURCES_DIR = <prefix>/resources` — a hard existence check at
-  `find_package(pxr)` time — so a slim runtime built with MaterialX (the default)
-  is **not consumable** by any plugin that does `find_package(pxr)`. Retain
-  `resources/` (or at least the MaterialX resources the shipped `cmake/MaterialX`
-  config references); the slim profile is advertised for CI and must stay usable.
-  (The report worked around it by exporting full — still only ~104 MB with no
-  build/src tree.)
-- ⬜ **P1 — `ost artifact push` (report Finding B; future-policy §3.1).** OCI
-  transport is consume-only: `ost artifact` has
-  `import/list/show/verify/export/extract/resolve/pull` and **no `push`**, so the
-  very image the `runtime_remote` contract requires is produced out-of-band with
-  `oras`. Add a write-capable OCI backend behind the existing `ArtifactTransport`
-  contract (filesystem backend unchanged) that emits the exact pull-compatible OCI
-  layout / media-types (`application/vnd.openstrata.runtime.v1`; default layer
-  titles = filenames, which round-trip cleanly today), pushes archive + manifest +
-  validation report as layers, prints the immutable OCI digest, and is atomic /
-  content-addressed / idempotent (identical-digest re-push succeeds;
-  `ARTIFACT_*` codes for mismatch). `--json` carries manifest / archive / registry
-  digests. May be fronted as `ost runtime publish --to oci://…`. Add JSON-output
-  snapshot tests + negative digest-mismatch tests.
-- ⬜ **P2 — optional build-dep preflight (report §Dogfood).** A clean Python 3.13
-  lacks the packages `build_usd.py` needs (`Jinja2` for schema tooling, `PyOpenGL`
-  + `PySide6` for usdview), and `build_usd.py` aborts deep in its invocation. When
-  the resolved profile implies usdview + schema tooling, `ost` should preflight /
-  warn on the missing interpreter deps before invoking `build_usd.py` rather than
-  letting it fail late.
-- ⬜ **P2 — publish-flow documentation (report Finding B/§Findings).** `ost` does
-  not use the `oras`/docker credential store — even after `oras login`,
-  `artifact resolve/pull` on a private package returns `ARTIFACT_AUTH_DENIED`
-  until `OST_REGISTRY_USER`/`OST_REGISTRY_PASSWORD` are set (document, or adopt the
-  store); and GHCR visibility is a WebUI-only flip (not settable via the packages
-  API, and gated by org "Package creation" policy) — call it out in whatever docs
-  describe the publish flow. Once public, the fully anonymous CI pull path works.
+- ✅ **P0 — `--build` OpenUSD version detection + recoverable drift (report
+  Finding A).** `runtime pull --build` used to stamp the manifest's `openusd`
+  extension from the **catalog default** (e.g. `25.05.01`) even though the freshly
+  built `include/pxr/pxr.h` reported the real version; `runtime validate` failed
+  with `openusd-version-drift` and both documented recoveries were dead ends.
+  Landed: the `--build` path now reads the real version from the built `pxr.h`
+  (shared `stamp_openusd_version`, as adopt already did) and stamps it; `runtime
+  repair` re-derives a `build`-source runtime **in place** from the store tree
+  (no rebuild — the built bits are correct, only the version field drifted), and
+  the drift/repair suggested-fix text points at `ost runtime repair` instead of
+  the no-op `--build … --force`. Unit-tested (stamp correction, per-source repair
+  command).
+- ✅ **P0 — ship schema-gen Python deps inside the runtime (report Finding D).**
+  A from-source runtime bundled `usdGenSchema` in `bin/` but not its runtime
+  imports (`jinja2` + `MarkupSafe`), so a published image died deep in `ost plugin
+  build`'s schema-generate phase with a bare `ModuleNotFoundError`. Landed: after
+  a `--build`, when `usdGenSchema` is bundled, `ost` provisions `jinja2` (+
+  transitive `MarkupSafe`) into the runtime's `lib/python` via `pip install
+  --target` (best effort, warns with the manual fix on failure); and `runtime
+  validate` now **gates on** a `schema-gen-deps` check, so `export` (which requires
+  a passing validation) refuses to publish a schema runtime missing `jinja2`.
+  Unit-tested in `ost-build` (detection/idempotency) and `ost-runtime` (the gate).
+- ✅ **P0 — `--slim` retains `resources/` (report Finding E).** `runtime export
+  --slim` dropped the SDK's top-level `resources/`, but `pxrConfig.cmake` chains
+  into `MaterialXConfig.cmake`, which `set_and_check`s `MATERIALX_RESOURCES_DIR =
+  <prefix>/resources` at `find_package(pxr)` time — so a slim MaterialX runtime
+  was unconsumable. Landed: `resources` is now an SDK-layout dir kept by the slim
+  export (a no-op for a runtime without one). Test + `--slim` help/docs updated.
+- ✅ **P1 — `ost artifact push` (report Finding B; future-policy §3.1).** OCI
+  transport was consume-only. Landed: a write-capable OCI backend behind the
+  existing `ArtifactTransport` contract (filesystem backend unchanged) that emits
+  the exact pull-compatible OCI layout / media-types (archive + producer
+  `manifest.json` layers with title annotations, empty config), uploads blobs
+  content-addressed (HEAD-then-PUT, monolithic), prints the immutable OCI digest
+  to pin into `runtime_remote.expected_oci_digest`, and is idempotent (identical
+  re-push transfers nothing) with a pinned-digest mismatch a hard `ARTIFACT_OCI_
+  DIGEST_MISMATCH`. `--json` carries oci/artifact digests. `push` re-hashes the
+  stored archive first so store corruption is never published. Tested end to end
+  against an in-process mock registry (upload sequence + idempotency) plus the
+  build/round-trip/mismatch pure checks.
+- ✅ **P2 — build-dep preflight (report §Dogfood).** Before invoking
+  `build_usd.py`, `ost` probes the host interpreter for the Python deps the
+  resolved profile implies (Jinja2 for schema tooling; PySide6 + PyOpenGL for a
+  Hydra/usdview profile; PySide6 for a Qt profile) and warns (never fails) on the
+  missing ones with the `pip install` line, rather than letting the build abort
+  late. Pure capability→requirements mapping unit-tested.
+- ✅ **P2 — publish-flow documentation.** `docs/examples.md` gained a "Publishing
+  to and pulling from a remote OCI registry" section covering `ost artifact push`
+  / `resolve` / `pull`, the credential env vars (`ost` does **not** read the
+  `oras`/docker credential store — set `OST_REGISTRY_USER`/`_PASSWORD` or
+  `OST_REGISTRY_TOKEN`), the WebUI-only GHCR visibility flip, and the anonymous CI
+  pull path once public.
 
 ## Phase 7 — Sessions / sandbox ⬜
 
@@ -1263,8 +1252,17 @@ abstraction, install, license, or GUI-required path (§2.2).
   never silently substitutes a different Python (§9.3, §20.3). No-args prints the
   pinning; `uv` is located via `OST_UV` or PATH. `uv.lock` is already hashed into
   `strata.lock`.
-- ⬜ Diagnose/refuse app-local `uv` deps that shadow ABI-sensitive runtime
-  packages (USD/Qt/OpenEXR bindings), recommending the matching extension.
+- ✅ **(v0.10.0)** Diagnose/refuse app-local `uv` deps that shadow ABI-sensitive
+  runtime packages. `ost uv` reads the project's resolved packages (`uv.lock`, else
+  the declared `pyproject.toml` deps), normalizes them (PEP 503), and flags any that
+  duplicate a native family the runtime provides — OpenUSD (`usd-core`/`openusd`/
+  `pxr`), Qt (`PySide6`/`shiboken`/`PyQt`), OpenColorIO, OpenEXR/OpenImageIO,
+  MaterialX — since a duplicated binding sits ahead of the runtime's ABI-matched
+  build on `sys.path` and crashes at import. It **warns** on every command and
+  **refuses** an install-shaped subcommand (`sync`/`add`/`install`/`pip`/`lock`)
+  that would materialize them, with `OST_UV_ALLOW_SHADOWED` as the escape hatch;
+  the diagnosis is surfaced in the no-arg human + `--json` output too. Pure
+  parse/normalize/shadow-match logic unit-tested.
 
 ## Distribution — `ost` binary releases 🚧
 

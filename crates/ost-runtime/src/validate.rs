@@ -131,7 +131,41 @@ fn real_runtime_checks(prefix: &Utf8Path) -> Vec<Check> {
         ));
     }
 
+    // A runtime that bundles `usdGenSchema` must also carry its schema-gen Python
+    // deps (`jinja2`, and `MarkupSafe` transitively). `build_usd.py` installs
+    // them only on the build host, so a published image is otherwise silently
+    // incomplete for `ost plugin build`'s schema-generate phase — the first
+    // hosted CI run dies with a bare `ModuleNotFoundError: No module named
+    // 'jinja2'` (report Finding D). Gate it here so `export` (which requires a
+    // passing validation) refuses to publish such a runtime.
+    if bundles_usdgenschema(&bin) {
+        if py_dir.join("jinja2").as_std_path().is_dir() {
+            checks.push(Check::pass("schema-gen-deps"));
+        } else {
+            checks.push(Check::fail(
+                "schema-gen-deps",
+                format!(
+                    "runtime bundles usdGenSchema but jinja2 is missing under {py_dir}; \
+                     provision it with `pip install --target {py_dir} jinja2`"
+                ),
+            ));
+        }
+    }
+
     checks
+}
+
+/// Whether `bin` holds the `usdGenSchema` schema tool under any common name.
+fn bundles_usdgenschema(bin: &Utf8Path) -> bool {
+    [
+        "usdGenSchema",
+        "usdGenSchema.cmd",
+        "usdGenSchema.exe",
+        "usdGenSchema.bat",
+        "usdGenSchema.py",
+    ]
+    .iter()
+    .any(|n| bin.join(n).as_std_path().is_file())
 }
 
 #[cfg(test)]
@@ -211,6 +245,50 @@ mod tests {
         let report = validate(&prefix, &m);
         assert_eq!(named(&report, "usdcat-present"), Some(true));
         assert_eq!(named(&report, "pxr-package"), Some(true));
+
+        std::fs::remove_dir_all(prefix.as_std_path()).ok();
+    }
+
+    #[test]
+    fn usdgenschema_without_jinja2_fails_schema_gen_deps() {
+        let prefix = tmp_dir("schema-deps");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(bin.as_std_path()).unwrap();
+        std::fs::create_dir_all(prefix.join("lib").as_std_path()).unwrap();
+        std::fs::create_dir_all(prefix.join("lib/python/pxr").as_std_path()).unwrap();
+        std::fs::write(bin.join("usdcat").as_std_path(), b"").unwrap();
+        // Bundles usdGenSchema but no jinja2 on the runtime PYTHONPATH.
+        std::fs::write(bin.join("usdGenSchema").as_std_path(), b"").unwrap();
+        let m = manifest(RuntimeSource::Build, vec!["bin".into(), "lib".into()]);
+
+        let report = validate(&prefix, &m);
+        assert_eq!(named(&report, "schema-gen-deps"), Some(false));
+        assert!(
+            !report.passed(),
+            "a schema runtime missing jinja2 must not validate"
+        );
+
+        // Provision jinja2 and it passes — the export gate is now satisfiable.
+        std::fs::create_dir_all(prefix.join("lib/python/jinja2").as_std_path()).unwrap();
+        let report = validate(&prefix, &m);
+        assert_eq!(named(&report, "schema-gen-deps"), Some(true));
+
+        std::fs::remove_dir_all(prefix.as_std_path()).ok();
+    }
+
+    #[test]
+    fn no_usdgenschema_skips_schema_gen_deps_check() {
+        let prefix = tmp_dir("no-schema");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(bin.as_std_path()).unwrap();
+        std::fs::create_dir_all(prefix.join("lib/python/pxr").as_std_path()).unwrap();
+        std::fs::write(bin.join("usdcat").as_std_path(), b"").unwrap();
+        let m = manifest(RuntimeSource::Local, vec!["bin".into()]);
+
+        // A runtime that does not bundle usdGenSchema never needs the deps, so
+        // the check is not emitted at all (no false failure).
+        let report = validate(&prefix, &m);
+        assert_eq!(named(&report, "schema-gen-deps"), None);
 
         std::fs::remove_dir_all(prefix.as_std_path()).ok();
     }

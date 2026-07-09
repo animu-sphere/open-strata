@@ -28,8 +28,10 @@ pub use presets::{
     render_target_presets,
 };
 pub use python::{
-    relocate_baked_prefix, relocate_baked_python, resolve_for_runtime, resolve_python_hints,
-    resolve_run_python, run_python_search_paths, usd_python_requirement, PythonHints, PythonSource,
+    bundles_usdgenschema, module_present, provision_schema_gen_deps, relocate_baked_prefix,
+    relocate_baked_python, resolve_for_runtime, resolve_python_hints, resolve_run_python,
+    run_python_search_paths, usd_python_requirement, PythonHints, PythonSource, SchemaDepsOutcome,
+    SCHEMA_GEN_PACKAGES,
 };
 pub use target::Target;
 pub use toolchain::{render_toolchain, Compiler};

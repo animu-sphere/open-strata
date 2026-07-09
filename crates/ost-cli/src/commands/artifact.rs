@@ -10,6 +10,8 @@
 //!   for CI handoff; the exported directory is re-importable.
 //! - `resolve` turn a remote reference (a mutable tag) into its immutable
 //!   digest — the pin CI and the lockfile require.
+//! - `push` publish a stored artifact to a remote OCI registry, emitting the
+//!   pull-compatible OCI layout and printing the immutable OCI digest to pin.
 //! - `pull` fetch a **digest-pinned** artifact from a remote (`oci://`) or
 //!   local (`file://`) source, run the full verification chain, and import it
 //!   atomically (remote-artifact-transport.md, Phase 1).
@@ -22,7 +24,7 @@ use clap::Subcommand;
 
 use ost_artifact::{
     ArtifactKind, ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport, FileTransport,
-    OciTransport, PullEvidence, PullPolicy, RemoteReference, VerifyReport,
+    OciTransport, PullEvidence, PullPolicy, PushOutcome, RemoteReference, VerifyReport,
 };
 use ost_core::{Error, Result};
 
@@ -75,6 +77,19 @@ pub enum ArtifactCmd {
         #[arg(long)]
         plain_http: bool,
     },
+    /// Push a stored artifact to a remote OCI registry (the producer verb).
+    Push {
+        /// Digest reference of a stored artifact: sha256:<hex> or a unique hex
+        /// prefix (>= 6 chars).
+        digest: String,
+        /// Destination: oci://<registry>/<repository>[:tag][@sha256:<oci-digest>].
+        /// A pinned digest is verified against the computed manifest digest.
+        destination: String,
+        /// Use plain http:// instead of https:// (fixture registries and
+        /// air-gapped mirrors only).
+        #[arg(long)]
+        plain_http: bool,
+    },
     /// Pull a digest-pinned artifact from a remote source, verify it, and
     /// import it into the local registry.
     Pull {
@@ -111,6 +126,11 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
             reference,
             plain_http,
         } => resolve_remote(&reference, plain_http, fmt),
+        ArtifactCmd::Push {
+            digest,
+            destination,
+            plain_http,
+        } => push_remote(&store, &digest, &destination, plain_http, fmt),
         ArtifactCmd::Pull {
             reference,
             expect_artifact,
@@ -174,6 +194,60 @@ fn resolve_remote(reference: &str, plain_http: bool, fmt: Format) -> Result<()> 
     println!("Pin this in CI / the lockfile and pull it with:");
     println!("  ost artifact pull {}", resolved.locator);
     Ok(())
+}
+
+fn push_remote(
+    store: &ArtifactStore,
+    digest: &str,
+    destination: &str,
+    plain_http: bool,
+    fmt: Format,
+) -> Result<()> {
+    let parsed = RemoteReference::parse(destination)?;
+    if let RemoteReference::File(_) = parsed {
+        return Err(Error::usage(
+            "push targets an OCI registry (oci://…); to write a local dist directory \
+             use `ost artifact export <digest> <dir>`",
+        ));
+    }
+    let transport = transport_for(&parsed, plain_http);
+    let outcome = ost_artifact::push(transport.as_ref(), store, digest, &parsed)?;
+    if fmt.is_json() {
+        output::success(&push_outcome_json(&outcome));
+        return Ok(());
+    }
+    let verb = if outcome.already_present {
+        "Already present"
+    } else {
+        "Pushed"
+    };
+    println!("{verb} on {}", outcome.registry);
+    println!("  locator:      {}", outcome.locator);
+    println!("  oci digest:   {}", outcome.oci_digest);
+    println!("  artifact:     {}", outcome.artifact_digest);
+    println!("  auth mode:    {}", outcome.auth_mode);
+    println!();
+    println!("Pin this in a support line's runtime_remote:");
+    println!(
+        "  uri:                 oci://{}/{}",
+        outcome.registry, outcome.repository
+    );
+    println!("  expected_oci_digest: {}", outcome.oci_digest);
+    Ok(())
+}
+
+/// Push outcome as JSON, carrying every digest a caller might pin.
+fn push_outcome_json(outcome: &PushOutcome) -> serde_json::Value {
+    serde_json::json!({
+        "status": if outcome.already_present { "already-present" } else { "pushed" },
+        "oci_digest": outcome.oci_digest,
+        "artifact_digest": outcome.artifact_digest,
+        "locator": outcome.locator,
+        "registry": outcome.registry,
+        "repository": outcome.repository,
+        "already_present": outcome.already_present,
+        "auth_mode": outcome.auth_mode,
+    })
 }
 
 fn pull_remote(

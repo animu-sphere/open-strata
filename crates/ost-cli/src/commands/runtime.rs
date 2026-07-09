@@ -90,9 +90,9 @@ pub enum RuntimeCmd {
         #[arg(long)]
         dist: Option<String>,
         /// Export only the SDK layout (include, lib, bin, plugin, cmake,
-        /// libraries, and CMake config), dropping the source/build tree of a
-        /// runtime adopted from a full USD build. Much smaller archive and
-        /// faster per-PR pull.
+        /// libraries, resources, and CMake config), dropping the source/build
+        /// tree of a runtime adopted from a full USD build. Much smaller archive
+        /// and faster per-PR pull.
         #[arg(long)]
         slim: bool,
         /// zstd compression level (1–22). Lower is faster; the default (19)
@@ -404,29 +404,7 @@ fn adopt_local(
     // catalog's placeholder. Otherwise a 26.08 install is recorded as the
     // catalog default (25.05) and silently "satisfies" version ranges it should
     // fail — the gate ends up enforcing nothing.
-    //
-    // Only correct (and note) it when the install is a genuinely *different*
-    // release. The catalog default carries a certification-revision component
-    // (`25.05.01`) that `pxr.h` doesn't expose, so adopting a real 25.05 install
-    // would otherwise overwrite the richer `25.05.01` with the bare `25.05` and
-    // print a "discrepancy" note for what is the same release.
-    match detect_openusd_version(&root) {
-        Some(real) => {
-            if let Some(ext) = extensions.iter_mut().find(|e| e.id == "openusd") {
-                if !same_openusd_release(&real, &ext.version) {
-                    eprintln!(
-                        "note: adopted OpenUSD reports version {real} (catalog default was {})",
-                        ext.version
-                    );
-                    ext.version = real;
-                }
-            }
-        }
-        None => eprintln!(
-            "warning: could not read the OpenUSD version from '{root}/include/pxr/pxr.h'; \
-             recording the catalog default (the version gate may not reflect the real install)"
-        ),
-    }
+    stamp_openusd_version(&mut extensions, &root, "adopted");
 
     // The store dir holds only the manifest (a pointer to the external root).
     std::fs::create_dir_all(r.prefix.as_std_path())
@@ -443,6 +421,39 @@ fn adopt_local(
     );
     manifest.external_prefix = Some(root.to_string().replace('\\', "/"));
     Ok(manifest)
+}
+
+/// Correct the recorded `openusd` extension version to the real one read from
+/// the install's `pxr.h`, when the two name genuinely different releases.
+///
+/// Both the adopt and `--build` paths use this: a freshly built or adopted tree
+/// reports its true version in `include/pxr/pxr.h`, while `extensions` still
+/// carries the catalog default (e.g. `25.05.01`). Stamping the real version
+/// keeps the L1 range gate honest — otherwise a 26.x install silently satisfies
+/// ranges it should fail.
+///
+/// Only corrects (and notes) a genuinely *different* release: the catalog
+/// default carries a certification-revision component (`25.05.01`) that `pxr.h`
+/// doesn't expose, so a real 25.05 install must not overwrite `25.05.01` with a
+/// bare `25.05`. `context` labels the source in the note (`adopted` / `built`).
+fn stamp_openusd_version(extensions: &mut [ExtensionRecord], root: &Utf8Path, context: &str) {
+    match detect_openusd_version(root) {
+        Some(real) => {
+            if let Some(ext) = extensions.iter_mut().find(|e| e.id == "openusd") {
+                if !same_openusd_release(&real, &ext.version) {
+                    eprintln!(
+                        "note: {context} OpenUSD reports version {real} (catalog default was {})",
+                        ext.version
+                    );
+                    ext.version = real;
+                }
+            }
+        }
+        None => eprintln!(
+            "warning: could not read the OpenUSD version from '{root}/include/pxr/pxr.h'; \
+             recording the catalog default (the version gate may not reflect the real install)"
+        ),
+    }
 }
 
 /// Read the real OpenUSD version from an adopted install's `include/pxr/pxr.h`.
@@ -670,6 +681,10 @@ fn build_from_source(
         )));
     }
     emit_macos_build_notes(opts);
+    // Warn now on missing build-interpreter deps rather than letting build_usd.py
+    // abort deep in its run (report §Dogfood): a clean Python 3.13 lacks Jinja2
+    // (schema tooling) and PySide6/PyOpenGL (usdview) that the profile implies.
+    preflight_build_deps(&r.capabilities);
     std::fs::create_dir_all(r.prefix.as_std_path())
         .map_err(|e| Error::io(r.prefix.to_string(), e))?;
 
@@ -685,6 +700,20 @@ fn build_from_source(
             r.prefix
         )));
     }
+    // Stamp the version the freshly built tree actually reports (from its
+    // `pxr.h`), not the catalog default — otherwise the manifest records e.g.
+    // `25.05.01` for a `26.05` build, `runtime validate` fails with
+    // `openusd-version-drift`, and `export` is hard-blocked with no non-destructive
+    // recovery (report Finding A).
+    let mut extensions = extensions;
+    stamp_openusd_version(&mut extensions, &r.prefix, "built");
+
+    // A from-source runtime that bundles `usdGenSchema` must also carry its
+    // schema-gen Python deps (`jinja2` + `MarkupSafe`); `build_usd.py` needs
+    // them only on the build host and never installs them into the tree, so a
+    // published image would otherwise die with a bare `ModuleNotFoundError` in
+    // `ost plugin build`'s schema-generate phase (report Finding D).
+    provision_schema_gen_deps(r);
     let mut manifest = RuntimeManifest::build(
         &r.runtime,
         &r.python_version,
@@ -698,6 +727,88 @@ fn build_from_source(
     // session env can expose their runtime libraries. build_usd.py is
     // self-contained (deps installed into the prefix), so this stays empty.
     manifest.runtime_deps = opts.deps.iter().map(|d| d.replace('\\', "/")).collect();
+    Ok(manifest)
+}
+
+/// Provision the schema-gen Python deps into a freshly built runtime that
+/// bundles `usdGenSchema` (report Finding D). Resolves an interpreter to run
+/// `pip` and installs into the exact `lib/python` dir `ost` puts on
+/// `PYTHONPATH`. Best-effort: a failure warns with the one-line manual fix
+/// rather than discarding an otherwise-good (and expensive) build.
+fn provision_schema_gen_deps(r: &crate::commands::Resolved) {
+    if !ost_build::bundles_usdgenschema(&r.prefix) {
+        return;
+    }
+    let python_lib_dir = ost_runtime::usd_python_dir(&r.prefix);
+    let manual_fix = |argv: &str| {
+        format!(
+            "provision them manually with: {argv} -m pip install --target {python_lib_dir} {}",
+            ost_build::SCHEMA_GEN_PACKAGES.join(" ")
+        )
+    };
+    let Some(argv) = ost_build::resolve_run_python(&r.prefix, &r.python_version) else {
+        eprintln!(
+            "warning: this runtime bundles usdGenSchema but no Python interpreter was found to \
+             provision its schema-gen deps ({}); {}",
+            ost_build::SCHEMA_GEN_PACKAGES.join(" "),
+            manual_fix("<python>")
+        );
+        return;
+    };
+    match ost_build::provision_schema_gen_deps(&r.prefix, &python_lib_dir, &argv) {
+        Ok(ost_build::SchemaDepsOutcome::Installed(pkgs)) => {
+            println!(
+                "==> provisioned schema-gen deps into {python_lib_dir}: {}",
+                pkgs.join(", ")
+            );
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!(
+            "warning: could not provision schema-gen deps ({e}); {}",
+            manual_fix(&argv.join(" "))
+        ),
+    }
+}
+
+/// Re-derive a `build`-source runtime manifest from the tree already in the
+/// store, without rebuilding (report Finding A). Re-probes the layout, re-reads
+/// the real OpenUSD version from the built `pxr.h`, preserves the recorded
+/// external dependency prefixes, and resets validation to pending. This is the
+/// non-destructive recovery for a from-source runtime whose recorded version
+/// drifted from the tree it built: the built bits are correct — only the
+/// manifest's version field was stale — so `repair` corrects it in place instead
+/// of forcing a `--from-usd` re-adopt that would throw away `build` provenance.
+fn redetect_build(
+    r: &crate::commands::Resolved,
+    extensions: Vec<ExtensionRecord>,
+    previous: &RuntimeManifest,
+    created: u64,
+) -> Result<RuntimeManifest> {
+    if !looks_like_usd(&r.prefix) {
+        return Err(Error::coded(
+            "REPAIR_NO_BUILD_TREE",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' is `build`-sourced but no OpenUSD install is present under \
+                 '{}'; rebuild it with `--build <usd-src> --force`",
+                previous.id, r.prefix
+            ),
+        ));
+    }
+    let mut extensions = extensions;
+    stamp_openusd_version(&mut extensions, &r.prefix, "built");
+    let mut manifest = RuntimeManifest::build(
+        &r.runtime,
+        &r.python_version,
+        r.capabilities.clone(),
+        probe_usd_layout(&r.prefix),
+        extensions,
+        created,
+        RuntimeSource::Build,
+    );
+    // A CMake-direct build linked against external dep prefixes; carry them
+    // forward so the session env still exposes their runtime libraries.
+    manifest.runtime_deps = previous.runtime_deps.clone();
     Ok(manifest)
 }
 
@@ -1155,6 +1266,84 @@ fn export(
     Ok(())
 }
 
+/// The Python packages `build_usd.py` needs on the *build host* for a given
+/// profile's capabilities, as `(import_name, pip_name)` pairs. usdGenSchema
+/// needs Jinja2; a Hydra/usdview build needs PySide6 + PyOpenGL; a Qt profile
+/// needs PySide6. Pure, so the mapping is unit-testable.
+fn build_dep_requirements(capabilities: &[String]) -> Vec<(&'static str, &'static str)> {
+    let has = |c: &str| capabilities.iter().any(|x| x == c);
+    let wants_usd = capabilities.iter().any(|c| c.starts_with("usd-"));
+    let wants_view = has("hydra-preview");
+    let wants_qt = has("qt-ui") || wants_view;
+
+    let mut needed: Vec<(&str, &str)> = Vec::new();
+    if wants_usd {
+        needed.push(("jinja2", "Jinja2"));
+    }
+    if wants_qt {
+        needed.push(("PySide6", "PySide6"));
+    }
+    if wants_view {
+        needed.push(("OpenGL", "PyOpenGL"));
+    }
+    needed
+}
+
+/// Probe the host interpreter for the build-time Python deps the profile implies
+/// and warn (never fail) on the missing ones before `build_usd.py` runs. Best
+/// effort: if no interpreter or the probe itself fails, stay silent — the build
+/// step surfaces the real error, and a preflight must not cry wolf.
+fn preflight_build_deps(capabilities: &[String]) {
+    let needed = build_dep_requirements(capabilities);
+    if needed.is_empty() {
+        return;
+    }
+    let Some(python) = tools::which("python").or_else(|| tools::which("python3")) else {
+        return;
+    };
+    let imports: Vec<&str> = needed.iter().map(|(i, _)| *i).collect();
+    let list = imports
+        .iter()
+        .map(|m| format!("'{m}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let script = format!(
+        "import importlib.util as u;print(','.join(m for m in [{list}] if u.find_spec(m) is None))"
+    );
+    let out = std::process::Command::new(&python)
+        .arg("-c")
+        .arg(&script)
+        .output();
+    let missing: Vec<String> = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => return,
+    };
+    if missing.is_empty() {
+        return;
+    }
+    let pip: Vec<&str> = needed
+        .iter()
+        .filter(|(i, _)| missing.iter().any(|m| m == i))
+        .map(|(_, p)| *p)
+        .collect();
+    eprintln!(
+        "warning: build_usd.py needs Python packages not importable by {}: {}",
+        python.display(),
+        missing.join(", ")
+    );
+    eprintln!(
+        "  install them first: {} -m pip install {}",
+        python.display(),
+        pip.join(" ")
+    );
+    eprintln!("  (schema generation needs Jinja2; usdview needs PySide6 + PyOpenGL)");
+}
+
 fn emit_macos_build_notes(opts: &BuildOpts) {
     if Host::detect().os != Os::Macos {
         return;
@@ -1603,9 +1792,11 @@ fn drift_repair_command(manifest: &RuntimeManifest, platform: &str, profile: &st
         (RuntimeSource::Local, Some(_)) => {
             format!("ost runtime repair {platform} --profile {profile}")
         }
-        // A build runtime is refreshed by rebuilding into the store.
+        // A build runtime is re-detected in place from its store tree (no rebuild):
+        // `repair` re-reads the built pxr.h and restamps the version. Rebuilding
+        // (`--build … --force`) would only reproduce the same drifted manifest.
         (RuntimeSource::Build, _) => {
-            format!("ost runtime pull {platform} --profile {profile} --build <usd-src> --force")
+            format!("ost runtime repair {platform} --profile {profile}")
         }
         // An artifact runtime is re-materialized from its pinned digest.
         (RuntimeSource::Artifact, _) => format!(
@@ -1640,25 +1831,32 @@ fn repair(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     let manifest = RuntimeManifest::from_json(&src)
         .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
 
-    let usd_root = match (manifest.source, &manifest.external_prefix) {
-        (RuntimeSource::Local, Some(root)) => root.clone(),
-        _ => {
-            return Err(Error::coded(
-                "REPAIR_UNSUPPORTED_SOURCE",
-                ost_core::Category::Precondition,
-                format!(
-                    "repair re-adopts a `local` runtime from its recorded USD root; \
-                     runtime '{}' has source '{}'",
-                    manifest.id,
-                    manifest.source.as_str()
-                ),
-            )
-            .with_hint(format!(
-                "refresh it with: {}",
-                drift_repair_command(&manifest, &platform, &profile)
-            )));
-        }
-    };
+    // repair re-derives the manifest from the tree the runtime already points at,
+    // without discarding provenance. Two non-destructive recoveries:
+    //   - `local`: re-adopt from the recorded external USD root.
+    //   - `build`: re-detect from the built tree in the store (report Finding A) —
+    //     the built bits are correct, only the recorded version drifted.
+    // Anything else (mock, artifact) has no in-place re-derivation and is pointed
+    // at its own refresh command.
+    if !matches!(
+        (manifest.source, &manifest.external_prefix),
+        (RuntimeSource::Local, Some(_)) | (RuntimeSource::Build, _)
+    ) {
+        return Err(Error::coded(
+            "REPAIR_UNSUPPORTED_SOURCE",
+            ost_core::Category::Precondition,
+            format!(
+                "repair re-derives a `local` or `build` runtime in place; \
+                 runtime '{}' has source '{}'",
+                manifest.id,
+                manifest.source.as_str()
+            ),
+        )
+        .with_hint(format!(
+            "refresh it with: {}",
+            drift_repair_command(&manifest, &platform, &profile)
+        )));
+    }
 
     let recorded_before = manifest
         .extensions
@@ -1671,9 +1869,15 @@ fn repair(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // Re-adopt deliberately: re-probes the layout, re-reads pxr.h, and resets
+    // Re-derive deliberately: re-probes the layout, re-reads pxr.h, and resets
     // validation to pending — a repaired manifest still has to prove itself.
-    let repaired = adopt_local(&r, &usd_root, extensions, created)?;
+    let (repaired, readopted_from) = match (manifest.source, &manifest.external_prefix) {
+        (RuntimeSource::Local, Some(root)) => {
+            let root = root.clone();
+            (adopt_local(&r, &root, extensions, created)?, Some(root))
+        }
+        _ => (redetect_build(&r, extensions, &manifest, created)?, None),
+    };
     let json = repaired
         .to_json()
         .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
@@ -1690,7 +1894,8 @@ fn repair(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         output::success(&serde_json::json!({
             "repaired": true,
             "runtime": repaired.id,
-            "usd_root": usd_root,
+            "source": repaired.source.as_str(),
+            "usd_root": readopted_from,
             "openusd_before": recorded_before,
             "openusd_after": recorded_after,
             "digest": repaired.digest,
@@ -1698,7 +1903,13 @@ fn repair(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         }));
         return Ok(());
     }
-    println!("Repaired runtime {} (re-adopted {usd_root})", repaired.id);
+    match &readopted_from {
+        Some(root) => println!("Repaired runtime {} (re-adopted {root})", repaired.id),
+        None => println!(
+            "Repaired runtime {} (re-detected the built tree in the store)",
+            repaired.id
+        ),
+    }
     match (&recorded_before, &recorded_after) {
         (Some(b), Some(a)) if b != a => println!("  openusd: {b} -> {a}"),
         (_, Some(a)) => println!("  openusd: {a} (unchanged)"),
@@ -1929,9 +2140,13 @@ mod tests {
         assert!(cmd.contains("--from-artifact sha256:"), "{cmd}");
         assert!(cmd.ends_with("--force"));
 
-        // Build: rebuild into the store (source tree is the one blank).
+        // Build: re-detect the built tree in place (no rebuild, no blanks) — a
+        // rebuild would only reproduce the same drifted manifest (Finding A).
         let build = exportable_manifest();
-        assert!(drift_repair_command(&build, "cy2026", "usd").contains("--build <usd-src>"));
+        assert_eq!(
+            drift_repair_command(&build, "cy2026", "usd"),
+            "ost runtime repair cy2026 --profile usd"
+        );
     }
 
     #[test]
@@ -2037,6 +2252,69 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("ost runtime pull cy2026 --profile usd"));
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn build_dep_requirements_track_the_profile_capabilities() {
+        // A minimal core profile implies no USD build deps.
+        assert!(build_dep_requirements(&["python-tooling".into(), "image-io".into()]).is_empty());
+
+        // A USD profile needs Jinja2 for schema generation, nothing UI.
+        let usd = build_dep_requirements(&["usd-stage-read".into(), "usd-shading".into()]);
+        assert_eq!(usd, vec![("jinja2", "Jinja2")]);
+
+        // A dev profile with qt-ui needs PySide6 but not PyOpenGL.
+        let dev = build_dep_requirements(&["qt-ui".into(), "cmake-build".into()]);
+        assert_eq!(dev, vec![("PySide6", "PySide6")]);
+
+        // A lookdev profile (hydra-preview) needs all three.
+        let lookdev = build_dep_requirements(&[
+            "usd-stage-read".into(),
+            "usd-materialx".into(),
+            "hydra-preview".into(),
+        ]);
+        assert_eq!(
+            lookdev,
+            vec![
+                ("jinja2", "Jinja2"),
+                ("PySide6", "PySide6"),
+                ("OpenGL", "PyOpenGL")
+            ]
+        );
+    }
+
+    #[test]
+    fn stamp_corrects_catalog_default_to_built_version() {
+        // A freshly built tree reports its real version in pxr.h; stamping must
+        // overwrite the catalog default so the L1 gate reflects the real build
+        // (report Finding A: the `--build` path used to record the default).
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut root = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
+        root.push(format!("ost-stamp-{}-{nanos}", std::process::id()));
+        let pxr_dir = root.join("include/pxr");
+        std::fs::create_dir_all(pxr_dir.as_std_path()).unwrap();
+        std::fs::write(
+            pxr_dir.join("pxr.h").as_std_path(),
+            "#define PXR_MINOR_VERSION 26\n#define PXR_PATCH_VERSION 5\n",
+        )
+        .unwrap();
+
+        let mut exts = vec![ExtensionRecord {
+            id: "openusd".into(),
+            version: "25.05.01".into(),
+            features: vec!["core".into()],
+        }];
+        stamp_openusd_version(&mut exts, &root, "built");
+        assert_eq!(exts[0].version, "26.05");
+
+        // Same release (bare 26.05 vs 26.05) is left untouched — no spurious note.
+        stamp_openusd_version(&mut exts, &root, "built");
+        assert_eq!(exts[0].version, "26.05");
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
