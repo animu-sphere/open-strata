@@ -135,7 +135,13 @@ them. Each release is a coherent slice, not a phase boundary.
   structured `STAGE_FALLBACK` warning, so CI can keep moving without hiding the
   host condition.
 - ✅ **v0.9.0 — remote artifact transport + hosted source-CI closure + macOS
-  plugin-build robustness.** Released from dogfooding report #10 (2026-07-05),
+  plugin-build robustness.** *Shipped and demonstrated on real CI* (dogfooding
+  report 2026-07-09): the migrated hosted `windows-2022` PR lane goes green end
+  to end (~1m51s) — pinned-`ost` bootstrap → anonymous GHCR runtime pull →
+  schema-generate → configure → compile/link → verification pyramid → package —
+  and the first real OCI runtime publish round-tripped cleanly through
+  `ost artifact pull` (produced out-of-band with `oras`, since there is no
+  producer verb yet). Planned from dogfooding report #10 (2026-07-05),
   the remote-artifact-transport plan
   ([remote-artifact-transport.md](remote-artifact-transport.md)), and the
   macOS dogfooding report (2026-07-05, `ost 0.8.0` on macOS arm64). Report
@@ -178,10 +184,97 @@ them. Each release is a coherent slice, not a phase boundary.
     and attributes every build failure to a phase (`schema-generate` /
     `configure` / `compile-link` / `schema-merge` / `plugin-discovery`) in
     both human and `--json` output.
-  - **Deferred (v0.10.0+):** OCI push + protected publish policy + OIDC
-    (plan Phase 3), and trust levels / provenance / SBOM / allowlist
-    hardening (plan Phase 4, tracks SEC-006 and the Phase 6 trust-policy
-    hooks).
+  - **Deferred (now sequenced as v0.10.0–v0.14.0 below):** OCI push (v0.10.0),
+    protected publish policy + OIDC allowed-publisher (v0.11.0), provenance /
+    SBOM bundle (v0.12.0), generated trusted CI + trust levels in the support
+    matrix (v0.13.0), and DCC host integration (v0.14.0) — tracking plan
+    Phase 3/4, SEC-006, and the Phase 6 trust-policy hooks. The 2026-07-09
+    publish dogfooding additionally surfaced three runtime-completeness bugs
+    (from-source `--build` version drift, missing `jinja2` in a published
+    runtime, `--slim` dropping `resources/`) that block the export→publish arc;
+    those land as the **v0.10.0 P0** slice ahead of `ost artifact push`.
+
+- ⬜ **v0.10.0 — OCI publish foundation + runtime-completeness closure.** The
+  first *produce*-side slice of remote transport, planned from the 2026-07-09
+  publish dogfooding report and the future-policy note (`openstrata_future_policy`
+  §3.1/§11). v0.9.0 made *pulling* an OCI runtime first-class and enforced it in
+  the CI contract, but the image the `runtime_remote` contract demands still has
+  to be pushed by hand with `oras`, and standing up that first real publish
+  exposed three ways a from-source runtime is not yet publishable. v0.10.0 closes
+  both; see the
+  [Phase 6 — v0.10.0 backlog](#phase-6--v0100-backlog-from-the-2026-07-09-publish-dogfooding--the-future-policy-note).
+  Scope:
+  - **P0 — runtime completeness (the publish arc must be usable first):**
+    (1) `runtime pull --build` stamps the OpenUSD version read from the built
+    `pxr.h` (as the adopt path already does), not the extension catalog default,
+    and the drift validator's suggested recovery actually recovers a `build`-source
+    runtime (a working `runtime repair`/`--redetect`) instead of being a no-op —
+    today the only fix is discarding build provenance via a `--from-usd` re-adopt,
+    and `export` is hard-blocked (`EXPORT_VALIDATION_REQUIRED`) until then;
+    (2) a runtime that bundles schema tooling (`usdGenSchema` in `bin/`) ships its
+    Python deps (`jinja2` + `MarkupSafe`) in `lib/python`, so a published image is
+    not silently incomplete for `ost plugin build`'s schema-generate phase on a
+    clean runner; (3) `runtime export --slim` retains the top-level `resources/`
+    (or at least the MaterialX resources the shipped `cmake/MaterialX` config
+    `set_and_check`s), so a slim runtime stays consumable by any `find_package(pxr)`
+    plugin; plus an optional build-dep preflight (warn on missing
+    `Jinja2`/`PyOpenGL`/`PySide6` before invoking `build_usd.py` when the profile
+    implies usdview + schema tooling).
+  - **P1 — `ost artifact push` (the producer verb):** a write-capable OCI backend
+    behind the existing `ArtifactTransport` contract (filesystem backend
+    unchanged) that emits the exact OCI layout / media-types `ost artifact pull`
+    already expects, pushes archive + manifest + validation report as layers,
+    prints the immutable OCI digest (for pasting straight into
+    `runtime_remote.expected_oci_digest`), and is atomic / content-addressed /
+    idempotent (re-push of an identical digest succeeds, digest mismatch is a hard
+    error). `--json` output carries every digest (manifest / archive / registry).
+    Also: use the `oras`/docker credential store (or clearly document
+    `OST_REGISTRY_USER`/`_PASSWORD`), and document the WebUI-only GHCR
+    visibility-flip step. Spelled `ost runtime publish --to oci://…` may front it.
+  - **Deferred (v0.11.0+):** protected-namespace / allowed-publisher policy, OIDC
+    publisher verification, provenance / SBOM bundle, trust levels in the support
+    matrix, and generated trusted-publish CI — sequenced below.
+- ⬜ **v0.11.0 — trust policy foundation.** With a producer verb in place, close
+  the publish-side trust boundary (future-policy §3.2/§7/§11). An
+  `openstrata-artifact-policy.toml` with protected-namespace + allowed-publisher
+  schema and a `local`/`unsigned`/`attested`/`verified`/`trusted` trust-level
+  enum; a policy parser with stable `ARTIFACT_POLICY_*` codes; OIDC publisher
+  verification (match repository / workflow path / git ref / actor / event against
+  the allowed-publisher list, reject protected-namespace publish from an untrusted
+  identity, `--allow-untrusted-publisher` as the explicit escape hatch); and
+  `ost artifact verify --policy`. Tracks SEC-006 and the Phase 6 trust-policy
+  hooks.
+- ⬜ **v0.12.0 — provenance / SBOM bundle.** Make the artifact an *evidence
+  bundle*, not just an archive (future-policy §5/§6/§11): optional SBOM
+  (`sbom.spdx.json`) and SLSA/in-toto provenance (`provenance.intoto.jsonl`)
+  layers, `ost artifact push` attaching them and `ost artifact verify
+  --require-sbom` / `--require-provenance` checking that the provenance subject
+  digest matches the OpenStrata artifact digest, the builder identity matches the
+  allowed-publisher policy, and source repo/revision match build metadata. Closes
+  the Licensing & attribution "per-artifact SBOM" and Phase 6 "content attribution"
+  gaps for published artifacts.
+- ⬜ **v0.13.0 — generated trusted CI.** Push the trust chain up into the CI
+  contract (future-policy §7/§8/§13): a `trust` field on support-matrix targets, a
+  minimum-trust requirement per lane (`pr_min_trust` / `main_min_trust` /
+  `release_min_trust`), and lane-specific generated workflows — the PR / source-CI
+  lanes stay publish-free, and a separate **trusted runtime-publish lane**
+  (protected branch/tag, OIDC, SBOM + provenance + validation report required,
+  protected-namespace policy enforced) is generated distinctly from the release
+  lane. Release workflows refuse untrusted artifacts.
+- ⬜ **v0.14.0 — DCC host integration.** Extend the support matrix beyond
+  runtime-native apps to external DCC hosts (future-policy §9/§11; Phase 10
+  [dcc-hosts.md](dcc-hosts.md)). Read-only host discovery + fingerprint
+  (`ost dcc discover`, host record schema, Maya/Houdini detectors first), headless
+  plugin compatibility test, and DCC support-matrix + CI-annotation integration —
+  *without* a DCC API abstraction or SDK redistribution (future-policy §13
+  non-goals).
+- ⬜ **v1.0.0 (after v0.14.0).** The downstream 2026-07-09 report framed its asks
+  as "v1.0.0-rc1"; that framing is **superseded** by the finer v0.10.0–v0.14.0
+  ladder above (the report's runtime-completeness asks are v0.10.0 P0, its
+  `ost artifact push` ask is v0.10.0 P1). 1.0 is cut once the produce→trust→
+  provenance→trusted-CI arc and the initial DCC host matrix are shipped and
+  dogfooded — i.e. "build it, publish it, verify its provenance, pull it in trusted
+  CI, run it against a DCC host" is a single supported, digest-addressed arc.
 
 ## Phase 0 — Foundation ✅
 
@@ -1034,6 +1127,82 @@ asks. Ranked:
   manifest/CI contract, publisher identity/provenance, SBOM attach, trusted
   runtime allowlist (plan Phase 4 — tracks SEC-006 and the trust-policy hooks
   above); registry mirroring / air-gapped sync / multi-registry failover.
+
+### Phase 6 — v0.10.0 backlog (from the 2026-07-09 publish dogfooding + the future-policy note)
+
+**Targeted for v0.10.0.** The 2026-07-09 report re-verified every v0.8.0→v0.9.0
+ask as landed and *enforced* (the old matrix now fails `ost ci validate`), then
+did the first real end-to-end OpenUSD-from-source build → export → GHCR publish →
+anonymous CI pull. The consume side is mechanically complete; the two remaining
+rough edges are both on the *produce* side, and three runtime-completeness bugs
+sit between "build a runtime" and "publish a usable one." The future-policy note
+(`openstrata_future_policy.md`) is the forward design contract; this backlog is
+its v0.10.0 slice. Ranked:
+
+- ⬜ **P0 — `--build` OpenUSD version detection + recoverable drift (report
+  Finding A).** `runtime pull --build` stamps the manifest's `openusd` extension
+  from the **catalog default** (e.g. `25.05.01`) even though the freshly built
+  `include/pxr/pxr.h` reports the real version (e.g. `26.05`); `runtime validate`
+  *correctly* fails with `openusd-version-drift`, but both documented recoveries
+  are dead ends — the validator's own suggested `--build … --force` reproduces the
+  same wrong digest (no-op), and `runtime repair` refuses with
+  `REPAIR_UNSUPPORTED_SOURCE` (repair re-adopts a `local` runtime only). Because
+  `export` refuses an unvalidated runtime (`EXPORT_VALIDATION_REQUIRED`), a
+  from-source build **cannot be exported at all** until the version is corrected,
+  and the only correction is to throw away `build` provenance via a `--from-usd`
+  re-adopt. Fix: the `--build` path reads the real version from the built `pxr.h`
+  (as adopt already does) and stamps it; and `runtime repair` (or a `runtime pull
+  --redetect`) works for `build` source so the validator's advice recovers the
+  runtime. Fix the suggested-fix text so it is not a no-op.
+- ⬜ **P0 — ship schema-gen Python deps inside the runtime (report Finding D).**
+  A from-source runtime bundles `usdGenSchema` in `bin/` but **not** its runtime
+  imports (`jinja2` + `MarkupSafe`) — `build_scripts/build_usd.py` needs `jinja2`
+  only on the *building* host and never installs it into the USD tree. So a
+  published image is silently incomplete for schema generation: it "worked
+  locally" only because the build host's Python happened to have `jinja2`, and the
+  first real hosted CI run died deep inside `ost plugin build`'s schema-generate
+  phase with a bare `ModuleNotFoundError: No module named 'jinja2'`. Provision
+  `jinja2` + `MarkupSafe` into `lib/python` (exactly what `ost` puts on
+  `PYTHONPATH`) at `runtime pull --build` time (or vendor them during `runtime
+  export`) whenever `usdGenSchema` is bundled. **Highest-impact single fix for
+  green CI** — the workaround was a manual `pip install --target <runtime>/lib/python`.
+- ⬜ **P0 — `--slim` must retain `resources/` (report Finding E).** `runtime
+  export --slim` keeps `include/lib/bin/plugin/cmake/libraries` but drops the SDK's
+  top-level `resources/` (~132 MB, mostly MaterialX data). Yet `pxrConfig.cmake`
+  chains into `MaterialXConfig.cmake`, which `set_and_check`s
+  `MATERIALX_RESOURCES_DIR = <prefix>/resources` — a hard existence check at
+  `find_package(pxr)` time — so a slim runtime built with MaterialX (the default)
+  is **not consumable** by any plugin that does `find_package(pxr)`. Retain
+  `resources/` (or at least the MaterialX resources the shipped `cmake/MaterialX`
+  config references); the slim profile is advertised for CI and must stay usable.
+  (The report worked around it by exporting full — still only ~104 MB with no
+  build/src tree.)
+- ⬜ **P1 — `ost artifact push` (report Finding B; future-policy §3.1).** OCI
+  transport is consume-only: `ost artifact` has
+  `import/list/show/verify/export/extract/resolve/pull` and **no `push`**, so the
+  very image the `runtime_remote` contract requires is produced out-of-band with
+  `oras`. Add a write-capable OCI backend behind the existing `ArtifactTransport`
+  contract (filesystem backend unchanged) that emits the exact pull-compatible OCI
+  layout / media-types (`application/vnd.openstrata.runtime.v1`; default layer
+  titles = filenames, which round-trip cleanly today), pushes archive + manifest +
+  validation report as layers, prints the immutable OCI digest, and is atomic /
+  content-addressed / idempotent (identical-digest re-push succeeds;
+  `ARTIFACT_*` codes for mismatch). `--json` carries manifest / archive / registry
+  digests. May be fronted as `ost runtime publish --to oci://…`. Add JSON-output
+  snapshot tests + negative digest-mismatch tests.
+- ⬜ **P2 — optional build-dep preflight (report §Dogfood).** A clean Python 3.13
+  lacks the packages `build_usd.py` needs (`Jinja2` for schema tooling, `PyOpenGL`
+  + `PySide6` for usdview), and `build_usd.py` aborts deep in its invocation. When
+  the resolved profile implies usdview + schema tooling, `ost` should preflight /
+  warn on the missing interpreter deps before invoking `build_usd.py` rather than
+  letting it fail late.
+- ⬜ **P2 — publish-flow documentation (report Finding B/§Findings).** `ost` does
+  not use the `oras`/docker credential store — even after `oras login`,
+  `artifact resolve/pull` on a private package returns `ARTIFACT_AUTH_DENIED`
+  until `OST_REGISTRY_USER`/`OST_REGISTRY_PASSWORD` are set (document, or adopt the
+  store); and GHCR visibility is a WebUI-only flip (not settable via the packages
+  API, and gated by org "Package creation" policy) — call it out in whatever docs
+  describe the publish flow. Once public, the fully anonymous CI pull path works.
 
 ## Phase 7 — Sessions / sandbox ⬜
 
