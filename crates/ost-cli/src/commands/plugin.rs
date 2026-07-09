@@ -564,14 +564,22 @@ fn build(
     // runtime *session* env (`PXR_PLUGINPATH_NAME`, `PYTHONPATH`, the USD bin on
     // the loader path) — not just the MSVC delta a compile needs. Compose both for
     // a schema or schema-co-hosting build; a plain file-format build is unchanged.
-    let build_env = if bundle.manifest.kind() == PluginKind::UsdSchema
-        || !bundle.manifest.schema_provides().is_empty()
-    {
+    let is_schema_build = bundle.manifest.kind() == PluginKind::UsdSchema
+        || !bundle.manifest.schema_provides().is_empty();
+    let build_env = if is_schema_build {
         let session = session_env_with(&r.env, &bundle, &[], tgt.os());
         compose_build_env(&msvc_env, &session)
     } else {
-        msvc_env
+        msvc_env.clone()
     };
+
+    // The schema-generation step (`usdGenSchema`) must resolve the *base* USD
+    // schemas through the runtime's plugin registry but must NOT discover the
+    // bundle's own plugInfo — that would make USD try to load the plugin library
+    // this build has not produced yet (or an old one with the wrong platform
+    // suffix) and fail. So compose its env from the runtime session alone, with
+    // the bundle's `PXR_PLUGINPATH_NAME`/lib entries scoped out.
+    let schema_gen_env = compose_build_env(&msvc_env, &r.env);
 
     // A non-schema bundle can co-host a schema by declaring `usd-schema:*` and
     // shipping schema.usda. Generate it before configure so any compiled C++ API
@@ -584,11 +592,13 @@ fn build(
         prepare_cohosted_schema(
             &bundle,
             &r.artifact_prefix,
+            &tgt.python_version,
             &target_dir.join("schema-gen"),
             &schema_sources_dir(&target_dir),
             &schema_sources_file,
-            &build_env,
-        )?
+            &schema_gen_env,
+        )
+        .map_err(|e| in_phase(PHASE_SCHEMA_GENERATE, e))?
     } else {
         clear_cohosted_schema_compile_state(
             &schema_sources_dir(&target_dir),
@@ -597,12 +607,21 @@ fn build(
         None
     };
 
-    run_step(&cmake, &configure_args, &build_env)?;
-    run_step(&cmake, &build_args, &build_env)?;
+    run_step(PHASE_CONFIGURE, &cmake, &configure_args, &build_env)?;
+    run_step(PHASE_COMPILE_LINK, &cmake, &build_args, &build_env)?;
 
     if let Some(schema) = &cohosted_schema {
-        merge_cohosted_schema_resources(&bundle, schema)?;
+        merge_cohosted_schema_resources(&bundle, schema)
+            .map_err(|e| in_phase(PHASE_SCHEMA_MERGE, e))?;
     }
+
+    // The plugInfo the runtime will dlopen at registration/test time must name a
+    // library with *this* platform's suffix. A committed plugInfo carrying
+    // another platform's suffix (a `.dll` on macOS) would otherwise fail later
+    // with USD's opaque loader error; fail here with the exact fix instead. A
+    // source bundle shipping `plugInfo.json.in` has already had this regenerated
+    // per target by configure, so its concrete path is correct by construction.
+    verify_target_library_suffix(&bundle, tgt.os())?;
 
     // Record the compiler so the next build can detect a change. The plugin
     // build writes no full target lock, so this lives beside the toolchain.
@@ -1415,6 +1434,7 @@ struct CohostedSchemaGeneration {
 fn prepare_cohosted_schema(
     bundle: &Bundle,
     artifact_prefix: &Utf8Path,
+    python_version: &str,
     staging: &Utf8Path,
     compiled_dir: &Utf8Path,
     cmake_fragment: &Utf8Path,
@@ -1434,8 +1454,8 @@ fn prepare_cohosted_schema(
         clear_cohosted_schema_compile_state(compiled_dir, cmake_fragment)?;
         return Ok(None); // no schema source to regenerate from
     }
-    // The usdGenSchema *script* in the runtime bin, run via `python` so we need no
-    // bare-name/`.cmd` resolution and stay cross-platform.
+    // The usdGenSchema *script* in the runtime bin is a Python script with no
+    // executable bit / `.cmd` wrapper, so it must be run *through* an interpreter.
     let gen_script = artifact_prefix.join("bin/usdGenSchema");
     if !gen_script.as_std_path().is_file() {
         clear_cohosted_schema_compile_state(compiled_dir, cmake_fragment)?;
@@ -1445,15 +1465,36 @@ fn prepare_cohosted_schema(
         return Ok(None);
     }
 
+    // Resolve the interpreter from the runtime (its bundled `python3`, else a
+    // version-matched host one), never a bare `python` on PATH — macOS and modern
+    // Linux ship only `python3`, so a bare `python` dies with a bewildering
+    // `IO_ERROR: run python: No such file or directory` mid-build.
+    let interpreter =
+        ost_build::resolve_run_python(artifact_prefix, python_version).ok_or_else(|| {
+            let searched = ost_build::run_python_search_paths(artifact_prefix, python_version);
+            Error::precondition(format!(
+                "no Python interpreter found to run usdGenSchema (searched: {})",
+                searched.join(", ")
+            ))
+            .with_hint("install python3, or pull a runtime that bundles an interpreter under bin/")
+            .with_phase(PHASE_SCHEMA_GENERATE)
+        })?;
+    let (program, leading) = interpreter
+        .split_first()
+        .expect("resolve_run_python never returns an empty argv");
+    let mut args: Vec<String> = leading.to_vec();
+    args.extend([
+        gen_script.to_string(),
+        schema_src.to_string(),
+        staging.to_string(),
+    ]);
+
     reset_dir(staging)?; // also (re)creates the dir
     println!("==> regenerating co-hosted schema with usdGenSchema");
     run_step(
-        std::path::Path::new("python"),
-        &[
-            gen_script.to_string(),
-            schema_src.to_string(),
-            staging.to_string(),
-        ],
+        PHASE_SCHEMA_GENERATE,
+        std::path::Path::new(program),
+        &args,
         build_env,
     )?;
 
@@ -1514,6 +1555,41 @@ fn merge_cohosted_schema_resources(
     }
     if test_plug_infos > 0 {
         println!("    merged schema Types into {test_plug_infos} test plugInfo.json file(s)");
+    }
+    Ok(())
+}
+
+/// Fail early (with the doctor hint's exact fix) if the bundle's committed
+/// `plugInfo.json` names a library with the wrong platform suffix for the target
+/// being built — so a cross-platform-committed `.dll` on macOS surfaces here as
+/// a clear precondition rather than later as USD's opaque dlopen failure. A
+/// missing/unparseable/library-less plugInfo (e.g. a resource-only codeless
+/// schema) is left to the doctor's structural checks; unresolved template tokens
+/// mean a `plugInfo.json.in` configure step owns the concrete suffix.
+fn verify_target_library_suffix(bundle: &Bundle, os: Os) -> Result<()> {
+    let plug_info = bundle.plug_info();
+    let Ok(src) = std::fs::read_to_string(plug_info.as_std_path()) else {
+        return Ok(());
+    };
+    let Ok(paths) = ost_plugin::library_plugin_paths(&src) else {
+        return Ok(());
+    };
+    let expected = ost_plugin::shared_library_suffix(os);
+    for path in paths {
+        if ost_plugin::contains_template_token(&path) {
+            continue; // a plugInfo.json.in placeholder configure resolves per target
+        }
+        if !path.ends_with(expected) {
+            return Err(Error::precondition(format!(
+                "plugInfo.json LibraryPath '{path}' is not a {expected} library for {}",
+                os.as_str()
+            ))
+            .with_hint(format!(
+                "regenerate plugInfo.json for the {} target (ship a `plugInfo.json.in` configured with @CMAKE_SHARED_LIBRARY_SUFFIX@), so `LibraryPath` ends in {expected}",
+                os.as_str()
+            ))
+            .with_phase(PHASE_PLUGIN_DISCOVERY));
+        }
     }
     Ok(())
 }
@@ -2171,18 +2247,57 @@ fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
     }
 }
 
-fn run_step(program: &std::path::Path, args: &[String], env: &[(String, String)]) -> Result<()> {
-    println!("==> {} {}", program.display(), args.join(" "));
+/// The named phases of a plugin build, attributed onto any failure so `--json`
+/// and human output name *which* step failed (design §14.4) instead of leaving
+/// triage to bisect a mix of Python-exec, USD-loader and staging errors.
+const PHASE_SCHEMA_GENERATE: &str = "schema-generate";
+const PHASE_CONFIGURE: &str = "configure";
+const PHASE_COMPILE_LINK: &str = "compile-link";
+const PHASE_SCHEMA_MERGE: &str = "schema-merge";
+const PHASE_PLUGIN_DISCOVERY: &str = "plugin-discovery";
+
+/// Re-tag an error with the build phase it occurred in. Coded errors gain the
+/// phase slot directly; other variants are re-wrapped so the phase still
+/// surfaces while their stable code/category are preserved.
+fn in_phase(phase: &'static str, e: Error) -> Error {
+    match e {
+        Error::Coded { .. } => e.with_phase(phase),
+        other => {
+            let (code, category, message) = (other.code(), other.category(), other.to_string());
+            Error::coded(code, category, message).with_phase(phase)
+        }
+    }
+}
+
+fn run_step(
+    phase: &'static str,
+    program: &std::path::Path,
+    args: &[String],
+    env: &[(String, String)],
+) -> Result<()> {
+    println!("==> [{phase}] {} {}", program.display(), args.join(" "));
     let mut cmd = Command::new(program);
     cmd.args(args);
     for (k, v) in env {
         cmd.env(k, v); // overlay the MSVC delta, no global mutation
     }
-    let status = cmd
-        .status()
-        .map_err(|e| Error::io(format!("run {}", program.display()), e))?;
+    let status = cmd.status().map_err(|e| {
+        Error::external_tool(format!(
+            "failed to launch {} for the {phase} phase: {e}",
+            program.display()
+        ))
+        .with_phase(phase)
+    })?;
     if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+        let code = status
+            .code()
+            .map(|c| format!(" (exit {c})"))
+            .unwrap_or_default();
+        return Err(Error::external_tool(format!(
+            "the {phase} phase failed{code}: {}",
+            program.display()
+        ))
+        .with_phase(phase));
     }
     Ok(())
 }
@@ -2520,6 +2635,41 @@ mod tests {
         assert_eq!(counts.headers, 0);
         assert!(!compiled.as_std_path().exists());
         assert!(!fragment.as_std_path().exists());
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn cohosted_schema_errors_are_phase_attributed() {
+        let root = unique_tmp("schema-phase");
+        write_test_file(
+            &root.join("openstrata.plugin.yaml"),
+            "plugin:\n  name: toy\n  version: 0.1.0\n  kind: usd-fileformat\n\
+             runtime:\n  openusd: \">=25.05,<27.0\"\n\
+             provides:\n  - usd-fileformat:toy\n  - usd-schema:ToyAPI\n\
+             usd:\n  plug_info: plugin/resources/toy/plugInfo.json\n\
+             schema:\n  source: schema/missing.usda\n",
+        );
+        write_test_file(
+            &root.join("plugin/resources/toy/plugInfo.json"),
+            r#"{ "Plugins": [{ "Type": "library", "Name": "toy" }] }"#,
+        );
+        let bundle = Bundle::load(&root).expect("bundle loads");
+
+        let err = prepare_cohosted_schema(
+            &bundle,
+            Utf8Path::new("/missing/runtime"),
+            "3.11",
+            &root.join("schema-gen"),
+            &root.join("compiled"),
+            &root.join("schema-sources.cmake"),
+            &[],
+        )
+        .map_err(|e| in_phase(PHASE_SCHEMA_GENERATE, e))
+        .unwrap_err();
+
+        assert_eq!(err.code(), "INVALID_CONFIG");
+        assert_eq!(err.phase(), Some(PHASE_SCHEMA_GENERATE));
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }

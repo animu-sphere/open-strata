@@ -1,9 +1,9 @@
 # Remote Artifact Transport and GitHub-hosted Source CI
 
 Direction document for closing the hosted-lane bootstrap gap surfaced by
-dogfooding report #10 (2026-07-05, v0.8.0). Targeted at v0.9.0 (P0) with the
-publish/trust phases following. The roadmap tracks the ranked backlog; this
-document is the design contract.
+dogfooding report #10 (2026-07-05, v0.8.0). The P0 pull/bootstrap slice shipped
+in v0.9.0, with the publish/trust phases following. The roadmap tracks the
+ranked backlog; this document is the design contract.
 
 ## Goal
 

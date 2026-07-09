@@ -45,6 +45,9 @@ pub fn error(err: &ost_core::Error, fmt: Format) {
             if let Some(hint) = err.hint() {
                 error["hint"] = serde_json::Value::String(hint.to_string());
             }
+            if let Some(phase) = err.phase() {
+                error["phase"] = serde_json::Value::String(phase.to_string());
+            }
             json(&serde_json::json!({
                 "ok": false,
                 "schema": SCHEMA_VERSION,
@@ -54,10 +57,14 @@ pub fn error(err: &ost_core::Error, fmt: Format) {
         }
         Format::Human => {
             // The generic migration code adds no signal for a human reader.
+            let phase = err
+                .phase()
+                .map(|p| format!(" (phase: {p})"))
+                .unwrap_or_default();
             if err.code() == "OPERATION_FAILED" {
-                eprintln!("error: {err}");
+                eprintln!("error{phase}: {err}");
             } else {
-                eprintln!("error[{}]: {err}", err.code());
+                eprintln!("error[{}]{phase}: {err}", err.code());
             }
             if let Some(hint) = err.hint() {
                 eprintln!("  hint: {hint}");
