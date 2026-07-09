@@ -739,15 +739,18 @@ impl ArtifactTransport for OciTransport {
         let r = self.oci(destination)?;
 
         // The producer manifest.json travels as a layer, byte-for-byte.
+        // `digest::sha256_hex` already renders the `sha256:<hex>` OCI descriptor
+        // form (as does `record.digest`), so it is used verbatim — never
+        // re-prefixed, or the registry sees a malformed `sha256:sha256:<hex>`.
         let manifest_bytes = std::fs::read(source.manifest_path.as_std_path())
             .map_err(|e| Error::io(source.manifest_path.to_string(), e))?;
-        let manifest_digest = format!("sha256:{}", digest::sha256_hex(&manifest_bytes));
+        let manifest_digest = digest::sha256_hex(&manifest_bytes);
         let manifest_size = manifest_bytes.len() as u64;
 
         let archive_digest = source.record.digest.clone();
         let archive_size = source.record.archive_size;
         let archive_title = source.record.archive.clone();
-        let config_digest = format!("sha256:{}", digest::sha256_hex(EMPTY_CONFIG_BYTES));
+        let config_digest = digest::sha256_hex(EMPTY_CONFIG_BYTES);
 
         // Build the exact bytes the registry will store and hash them: the OCI
         // digest is content-addressed over precisely these bytes, so what we PUT
@@ -768,7 +771,7 @@ impl ArtifactTransport for OciTransport {
             &config_digest,
             EMPTY_CONFIG_BYTES.len() as u64,
         );
-        let oci_digest = format!("sha256:{}", digest::sha256_hex(&oci_manifest));
+        let oci_digest = digest::sha256_hex(&oci_manifest);
 
         // A digest-pinned destination asserts the resulting OCI digest; refuse
         // to publish bytes that would not satisfy the pin.
@@ -1227,7 +1230,7 @@ mod tests {
         // for, by media type and by title annotation.
         let archive_digest = format!("sha256:{}", "aa".repeat(32));
         let manifest_digest = format!("sha256:{}", "bb".repeat(32));
-        let config_digest = format!("sha256:{}", digest::sha256_hex(EMPTY_CONFIG_BYTES));
+        let config_digest = digest::sha256_hex(EMPTY_CONFIG_BYTES);
         let bytes = build_oci_manifest(
             &LayerDescriptor {
                 media_type: MEDIA_TYPE_ARCHIVE,
@@ -1432,7 +1435,9 @@ mod tests {
             version: "26.05".into(),
             target: "cy2026-linux-x86_64-gcc11-py313-usd".into(),
             profile: Some("usd".into()),
-            digest: format!("sha256:{}", digest::sha256_hex(archive_bytes)),
+            // `sha256_hex` already renders `sha256:<hex>`, matching how the store
+            // records a real artifact digest — do not re-prefix.
+            digest: digest::sha256_hex(archive_bytes),
             archive: "rt-26.05-linux-x86_64.tar.zst".into(),
             archive_size: archive_bytes.len() as u64,
             total_size: 100,
@@ -1465,7 +1470,11 @@ mod tests {
 
         let outcome = transport.push(&source, &dest).unwrap();
         assert!(!outcome.already_present, "first push transfers the bundle");
-        assert!(outcome.oci_digest.starts_with("sha256:"));
+        assert!(
+            is_sha256_ref(&outcome.oci_digest),
+            "OCI digest must be a well-formed sha256:<hex>, not double-prefixed: {}",
+            outcome.oci_digest
+        );
         assert_eq!(outcome.artifact_digest, record.digest);
         assert!(outcome
             .locator
@@ -1474,6 +1483,16 @@ mod tests {
             let st = state.lock().unwrap();
             // config + archive + producer-manifest blobs, and the manifest PUT.
             assert_eq!(st.blobs.len(), 3, "three blobs uploaded");
+            // Every blob digest sent in the `?digest=` query must be a single,
+            // well-formed `sha256:<hex>` — a `sha256:sha256:<hex>` double prefix
+            // (re-wrapping `digest::sha256_hex` output) is exactly what GHCR
+            // rejected with HTTP 400.
+            for dg in st.blobs.iter() {
+                assert!(
+                    is_sha256_ref(dg),
+                    "uploaded blob digest is malformed (double sha256 prefix?): {dg}"
+                );
+            }
             assert!(st.manifests.contains(outcome.oci_digest.as_str()));
             assert_eq!(st.put_manifests, 1);
         }
