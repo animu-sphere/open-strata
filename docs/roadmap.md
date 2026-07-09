@@ -237,7 +237,7 @@ them. Each release is a coherent slice, not a phase boundary.
     publisher verification, provenance / SBOM bundle, trust levels in the support
     matrix, and generated trusted-publish CI — sequenced below (after the v0.11.0
     producer-correctness slice).
-- ⬜ **v0.11.0 — producer-side correctness + Linux runtime portability.** The
+- 🚧 **v0.11.0 — producer-side correctness + Linux runtime portability.** The
   first *produce*-side hardening pass, from the 2026-07-10 recheck dogfooding
   report (`2026-07-10-v0.10.0-recheck-v0.11.0-asks.md`). That report re-verified
   every v0.10.0 P0/P1 ask as landed (from-source version stamp, runtime
@@ -249,27 +249,32 @@ them. Each release is a coherent slice, not a phase boundary.
   ladder shift down one release (v0.12.0–v0.15.0). Details in the
   [Phase 6 — v0.11.0 backlog](#phase-6--v0110-backlog-from-the-2026-07-10-recheck-dogfooding-report).
   Scope:
-  - **P0 — real glibc floor for Linux runtimes (BLOCKER; report ask #7).** The
+  - ✅ **P0 — real glibc floor for Linux runtimes (BLOCKER; report ask #7).** The
     WSL/Ubuntu-26.04-built Linux runtime was exported with the ABI label
     `linux-x86_64-glibc228-py313`, but its binaries reference `GLIBC_2.43`, so it
     fails to load on the GitHub-hosted `ubuntu-24.04` runner (glibc 2.39) during
     `usdGenSchema` (`version GLIBC_2.43 not found`, exit 6) — and
     `--require-target` string-matched the *fabricated* label and passed, giving
-    false ABI confidence. `ost runtime export` must compute the maximum referenced
-    `GLIBC_x.y` symbol version from the exported ELF binaries (`readelf -V` /
-    dynamic version needs) and stamp *that* real floor, and `ost artifact pull
-    --require-target` must fail an ABI match whose recorded floor exceeds the host.
-    Correspondingly document that portable Linux runtimes are built against an old
-    glibc base (manylinux_2_28 / older-Ubuntu / container), not a bleeding-edge
-    host.
-  - **P0 — fix `ost artifact push` against GHCR (report ask #1).** The producer
+    false ABI confidence. **Landed:** a streaming ELF scanner (`ost_build::glibc`)
+    computes the maximum referenced `GLIBC_x.y` symbol version from the packed
+    binaries (no binutils dependency), and `ost runtime export` stamps *that* real
+    floor onto the artifact `target`, overriding the fabricated nominal and
+    recording the drift as `glibc_floor` evidence. With a truthful label the
+    existing `--require-target` string match now rejects a stale `glibc228` pin, so
+    the false-pass is closed at its source. Still ⬜ (a P2 doc): a note that portable
+    Linux runtimes are built against an old glibc base (manylinux_2_28 /
+    older-Ubuntu / container).
+  - 🚧 **P0 — fix `ost artifact push` against GHCR (report ask #1).** The producer
     verb shipped in v0.10.0 could not actually push to GHCR: `OST_REGISTRY_TOKEN`
     returned 403, and `OST_REGISTRY_USER`/`_PASSWORD` advanced to upload but sent an
     invalid `digest=sha256:sha256:<hex>` request (a double-`sha256:` producer bug)
     and failed with HTTP 400 — while `oras` with the same credentials worked
-    immediately. The producer path must match the already-solid pull path: correct
-    upload-digest formatting, a credential story that works against GHCR, and a
-    real round-trip test.
+    immediately. **Landed:** the double-`sha256:` bug is fixed — `push` used
+    `digest::sha256_hex` output (already `sha256:<hex>`) verbatim, and a regression
+    test asserts every uploaded blob digest is well-formed, closing the upload
+    blocker. Still ⬜: the credential story (a static `OST_REGISTRY_TOKEN` 403 vs the
+    working user/password token exchange) needs a clearer hint + docs, and a real
+    GHCR round-trip.
   - **P1 — Linux symlinks in runtime export (report ask #2).** Linux SDKs contain
     normal shared-library symlink chains (`libFoo.so → libFoo.so.1 →
     libFoo.so.1.39.4`; the built runtime had 48). `runtime export --slim` rejects
@@ -1277,7 +1282,7 @@ dogfood plus a public GHCR round-trip proving Windows **and** Linux runtime
 excellent; every remaining edge is on the *produce* side, and one is a hard
 blocker. Ranked:
 
-- ⬜ **P0 (BLOCKER) — measure and record the real glibc floor for Linux runtimes
+- ✅ **P0 (BLOCKER) — measure and record the real glibc floor for Linux runtimes
   (report ask #7).** The Linux runtime was built in WSL on Ubuntu 26.04 (glibc
   2.43), so its binaries (`libusd_gf.so`, …) carry `GLIBC_2.43` versioned symbols,
   but `ost runtime export` stamped the catalog-default ABI label
@@ -1285,27 +1290,39 @@ blocker. Ranked:
   `ubuntu-24.04` (glibc 2.39) then died in `ost plugin build` → `schema-generate`:
   `ImportError: /lib/x86_64-linux-gnu/libm.so.6: version 'GLIBC_2.43' not found
   (required by …/lib/libusd_gf.so)`, exit 6. Two compounding defects: (1) the
-  `glibc228` variant label is **fabricated, not measured** — `export` must compute
-  the maximum referenced `GLIBC_x.y` symbol version across the exported ELF
-  binaries (`readelf -V` / dynamic version needs) and stamp *that* floor; a runtime
-  built on glibc 2.43 must be labeled `glibc243`, never `glibc228`. (2)
-  `--require-target` gave **false confidence** — the consumer only string-matched
-  the recorded label, so a digest-pinned pull "passed" its ABI check on a runtime
-  that could never load; a pull whose real floor exceeds the host must be a failed
-  ABI match. Correspondingly, document that portable Linux runtimes are built
-  against an old glibc base (manylinux_2_28 / older-Ubuntu / container), not a
-  bleeding-edge host, so the recorded floor is genuinely low. Until fixed, the
-  hosted Linux PR lane cannot be green and must not gate PRs.
-- ⬜ **P0 — fix `ost artifact push` against GHCR (report ask #1).** The producer
+  `glibc228` variant label was **fabricated, not measured**; (2) `--require-target`
+  gave **false confidence** by string-matching the fabricated label. **Landed:**
+  `ost_build::glibc` streams each ELF binary and computes the maximum referenced
+  `GLIBC_x.y` symbol version (the value `readelf -V | grep GLIBC_` surfaces,
+  without a binutils dependency; non-ELF and non-Linux inputs are a no-op). `ost
+  runtime export` measures the floor from the packed binaries and stamps it onto
+  the artifact `target` — a runtime referencing `GLIBC_2.43` is now labeled
+  `glibc243`, never `glibc228` — overriding the fabricated nominal and recording
+  the measured-vs-recorded drift as a `glibc_floor` evidence field (producer
+  manifest + `--json`). The embedded build provenance is left faithful. Because the
+  label is now truthful, the existing `--require-target` string match rejects a
+  stale `glibc228` pin instead of false-passing, so the consumer defect is closed
+  at its source without a separate floor-comparison path. Unit-tested (scanner:
+  cross-file max, chunk-boundary matches, non-ELF exclusion, numeric ordering;
+  relabel: higher/lower floor wins, non-glibc untouched) + a Linux-gated e2e export
+  test. Still ⬜ (folded into the P2 Linux-build docs below): document that portable
+  Linux runtimes are built against an old glibc base so the measured floor is
+  genuinely low.
+- 🚧 **P0 — fix `ost artifact push` against GHCR (report ask #1).** The producer
   verb's CLI surface is right, but the actual upload failed two ways: with
   `OST_REGISTRY_TOKEN`, GHCR returned `403`; with `OST_REGISTRY_USER=snkmcb` +
   `OST_REGISTRY_PASSWORD=<PAT>`, auth advanced but the upload sent
   `digest=sha256:sha256:44136fa355… → HTTP 400` — a real double-`sha256:` producer
-  bug in the upload URL. The report published both public runtimes with `oras
-  login` + `oras push` using the same local token, so the credential is valid and
-  the fault is on `ost`'s side. Fix the digest formatting, make the GHCR
-  credential story work (token vs user/password), and add a real round-trip test
-  so the producer path matches the already-solid pull path.
+  bug in the upload URL. **Landed:** the double-`sha256:` bug is fixed. `push`
+  wrapped `digest::sha256_hex` output (already `sha256:<hex>`) in another
+  `sha256:` for the config, producer-manifest, and OCI-manifest digests; the config
+  blob (uploaded first) hit GHCR as `sha256:sha256:44136…` → HTTP 400. The values
+  are now used verbatim, and the push idempotency test asserts every uploaded blob
+  digest is a single well-formed `sha256:<hex>` (via `is_sha256_ref`) — the mock
+  registry had masked the bug by matching the same double-prefixed string. Still ⬜:
+  the credential story (a static `OST_REGISTRY_TOKEN` 403 vs the working
+  user/password token exchange) needs a clearer 403-on-write hint + docs, and a real
+  GHCR round-trip to confirm the user/password path end to end.
 - ⬜ **P1 — support Linux symlinks in runtime export (report ask #2).** Direct
   `runtime export --slim` of the build-source Linux runtime failed with `symlink
   is not allowed in the package staging area:
