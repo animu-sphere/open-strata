@@ -64,7 +64,7 @@ pub fn run(args: UvArgs, fmt: Format) -> Result<()> {
     let uv_python = runtime_python(&r.artifact_prefix, r.runtime.variant.os);
 
     // App-local uv deps that duplicate ABI-sensitive runtime packages.
-    let shadows = shadowing_deps(&project_uv_packages(&root));
+    let shadows = shadowing_deps(&project_uv_packages(&root), &r.capabilities);
 
     // No args: show how uv would be pinned, without invoking it.
     if args.args.is_empty() {
@@ -278,9 +278,38 @@ fn normalize_dist(name: &str) -> String {
     out
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct RuntimeNativeFamilies {
+    usd: bool,
+    qt: bool,
+    ocio: bool,
+    exr: bool,
+    materialx: bool,
+}
+
+/// The native package families the selected runtime already provides. Keep this
+/// capability-aware so a base/dev runtime does not forbid app-local USD/MaterialX
+/// deps it does not actually carry.
+fn runtime_native_families(capabilities: &[String]) -> RuntimeNativeFamilies {
+    let has = |c: &str| capabilities.iter().any(|x| x == c);
+    let wants_usd = capabilities
+        .iter()
+        .any(|c| c.starts_with("usd-") || c == "hydra-preview");
+    RuntimeNativeFamilies {
+        usd: wants_usd,
+        qt: has("qt-ui") || has("hydra-preview"),
+        ocio: has("color-management") || has("ocio-display"),
+        exr: has("image-io") || has("hydra-preview"),
+        materialx: has("usd-materialx") || capabilities.iter().any(|c| c.starts_with("materialx-")),
+    }
+}
+
 /// The runtime-provided native family a normalized dist name shadows, if any,
 /// as `(category, recommendation)`.
-fn shadow_of(normalized: &str) -> Option<(&'static str, &'static str)> {
+fn shadow_of(
+    normalized: &str,
+    families: RuntimeNativeFamilies,
+) -> Option<(&'static str, &'static str)> {
     let usd = (
         "OpenUSD",
         "the runtime provides ABI-matched pxr/OpenUSD — drop it and use a usd/lookdev profile",
@@ -302,22 +331,25 @@ fn shadow_of(normalized: &str) -> Option<(&'static str, &'static str)> {
         "the runtime provides MaterialX via the usd-materialx capability — drop it",
     );
     match normalized {
-        "usd-core" | "openusd" | "usd" | "pxr" => Some(usd),
-        "pyside6" | "pyside2" | "shiboken6" | "shiboken2" | "pyqt5" | "pyqt6" => Some(qt),
-        "opencolorio" | "pyopencolorio" => Some(ocio),
-        "openexr" | "openimageio" | "oiio" => Some(exr),
-        "materialx" => Some(mtlx),
+        "usd-core" | "openusd" | "usd" | "pxr" if families.usd => Some(usd),
+        "pyside6" | "pyside2" | "shiboken6" | "shiboken2" | "pyqt5" | "pyqt6" if families.qt => {
+            Some(qt)
+        }
+        "opencolorio" | "pyopencolorio" if families.ocio => Some(ocio),
+        "openexr" | "openimageio" | "oiio" if families.exr => Some(exr),
+        "materialx" if families.materialx => Some(mtlx),
         _ => None,
     }
 }
 
 /// The shadowing dependencies among `names` (deduplicated by normalized name).
-fn shadowing_deps(names: &[String]) -> Vec<Shadow> {
+fn shadowing_deps(names: &[String], capabilities: &[String]) -> Vec<Shadow> {
+    let families = runtime_native_families(capabilities);
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for name in names {
         let norm = normalize_dist(name);
-        if let Some((category, recommendation)) = shadow_of(&norm) {
+        if let Some((category, recommendation)) = shadow_of(&norm, families) {
             if seen.insert(norm) {
                 out.push(Shadow {
                     dep: name.clone(),
@@ -358,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn shadowing_deps_flags_abi_sensitive_families_and_dedupes() {
+    fn shadowing_deps_flags_runtime_provided_families_and_dedupes() {
         // Bare names, as the uv.lock path yields them.
         let names = vec![
             "usd-core".to_string(),
@@ -368,10 +400,57 @@ mod tests {
             "requests".to_string(),
             "OpenEXR".to_string(),
         ];
-        let shadows = shadowing_deps(&names);
+        let caps = vec![
+            "usd-stage-read".to_string(),
+            "qt-ui".to_string(),
+            "image-io".to_string(),
+        ];
+        let shadows = shadowing_deps(&names, &caps);
         let cats: Vec<_> = shadows.iter().map(|s| s.category).collect();
         assert_eq!(cats, vec!["OpenUSD", "Qt", "OpenEXR/OpenImageIO"]);
         assert_eq!(shadows.len(), 3, "usd-core is counted once");
+    }
+
+    #[test]
+    fn shadowing_deps_respect_the_selected_runtime_capabilities() {
+        let names = vec![
+            "usd-core".to_string(),
+            "PySide6".to_string(),
+            "OpenEXR".to_string(),
+            "PyOpenColorIO".to_string(),
+            "MaterialX".to_string(),
+        ];
+
+        // Core carries image/color native libs, but not USD, Qt, or MaterialX.
+        let core_caps = vec![
+            "python-tooling".to_string(),
+            "image-io".to_string(),
+            "color-management".to_string(),
+        ];
+        let core = shadowing_deps(&names, &core_caps);
+        let cats: Vec<_> = core.iter().map(|s| s.category).collect();
+        assert_eq!(cats, vec!["OpenEXR/OpenImageIO", "OpenColorIO"]);
+
+        // Lookdev pulls in USD, MaterialX, image/color, and Qt via hydra-preview.
+        let lookdev_caps = vec![
+            "image-io".to_string(),
+            "color-management".to_string(),
+            "usd-stage-read".to_string(),
+            "usd-materialx".to_string(),
+            "hydra-preview".to_string(),
+        ];
+        let lookdev = shadowing_deps(&names, &lookdev_caps);
+        let cats: Vec<_> = lookdev.iter().map(|s| s.category).collect();
+        assert_eq!(
+            cats,
+            vec![
+                "OpenUSD",
+                "Qt",
+                "OpenEXR/OpenImageIO",
+                "OpenColorIO",
+                "MaterialX"
+            ]
+        );
     }
 
     #[test]
@@ -394,7 +473,12 @@ mod tests {
         let pkgs = project_uv_packages(&root);
         assert!(pkgs.iter().any(|p| p == "usd-core"));
         assert!(pkgs.iter().any(|p| p == "PySide6"));
-        assert_eq!(shadowing_deps(&pkgs).len(), 2);
+        let caps = vec![
+            "usd-stage-read".to_string(),
+            "qt-ui".to_string(),
+            "image-io".to_string(),
+        ];
+        assert_eq!(shadowing_deps(&pkgs, &caps).len(), 2);
 
         // uv.lock wins when present (authoritative resolved set).
         std::fs::write(
@@ -405,7 +489,7 @@ mod tests {
         .unwrap();
         let pkgs = project_uv_packages(&root);
         assert_eq!(pkgs, vec!["openimageio", "click"]);
-        assert_eq!(shadowing_deps(&pkgs).len(), 1);
+        assert_eq!(shadowing_deps(&pkgs, &caps).len(), 1);
 
         std::fs::remove_dir_all(dir).ok();
     }
@@ -413,6 +497,6 @@ mod tests {
     #[test]
     fn non_shadowing_project_is_clean() {
         let names = vec!["numpy".to_string(), "rich".to_string(), "click".to_string()];
-        assert!(shadowing_deps(&names).is_empty());
+        assert!(shadowing_deps(&names, &["usd-stage-read".to_string()]).is_empty());
     }
 }

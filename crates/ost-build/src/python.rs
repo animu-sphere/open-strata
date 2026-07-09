@@ -23,9 +23,11 @@ use camino::{Utf8Path, Utf8PathBuf};
 /// installs into the USD tree — it needs them only on the build host. Without
 /// them on the runtime's `PYTHONPATH`, a published image dies with a bare
 /// `ModuleNotFoundError: No module named 'jinja2'` in `ost plugin build`'s
-/// schema-generate phase (report Finding D). `jinja2` pulls `MarkupSafe`
-/// transitively, so installing it covers both.
-pub const SCHEMA_GEN_PACKAGES: &[&str] = &["jinja2"];
+/// schema-generate phase (report Finding D).
+pub const SCHEMA_GEN_PACKAGES: &[&str] = &["jinja2", "MarkupSafe"];
+
+/// Top-level imports the schema generator needs at runtime.
+pub const SCHEMA_GEN_MODULES: &[&str] = &["jinja2", "markupsafe"];
 
 /// Whether a runtime bundles the `usdGenSchema` schema tool in `bin/`. When it
 /// does, the runtime is expected to be able to generate schemas standalone, so
@@ -70,10 +72,11 @@ pub enum SchemaDepsOutcome {
 /// runtime — when the runtime bundles `usdGenSchema` (report Finding D).
 ///
 /// Runs `pip install --target <python_lib_dir>` with `python_argv` (the resolved
-/// run-interpreter). A no-op when `usdGenSchema` is absent or `jinja2` is already
-/// present, so re-pulls and export-time calls stay idempotent. `pip` failure is
-/// surfaced as an `Err` for the caller to downgrade to a warning: the runtime is
-/// otherwise built and the manual remediation is a single `pip install --target`.
+/// run-interpreter). A no-op when `usdGenSchema` is absent or all required imports
+/// are already present, so re-pulls and export-time calls stay idempotent. `pip`
+/// failure is surfaced as an `Err` for the caller to downgrade to a warning: the
+/// runtime is otherwise built and the manual remediation is a single
+/// `pip install --target`.
 pub fn provision_schema_gen_deps(
     prefix: &Utf8Path,
     python_lib_dir: &Utf8Path,
@@ -82,7 +85,10 @@ pub fn provision_schema_gen_deps(
     if !bundles_usdgenschema(prefix) {
         return Ok(SchemaDepsOutcome::NotNeeded);
     }
-    if module_present(python_lib_dir, "jinja2") {
+    if SCHEMA_GEN_MODULES
+        .iter()
+        .all(|module| module_present(python_lib_dir, module))
+    {
         return Ok(SchemaDepsOutcome::AlreadyPresent);
     }
     std::fs::create_dir_all(python_lib_dir.as_std_path())?;
@@ -681,12 +687,18 @@ mod tests {
         std::fs::write(bin.join("usdGenSchema").as_std_path(), b"").unwrap();
         assert!(bundles_usdgenschema(&prefix));
 
-        // jinja2 as a package dir; a single-file module also counts.
+        // jinja2/markupsafe as package dirs; a single-file module also counts.
         assert!(!module_present(&pylib, "jinja2"));
         std::fs::create_dir_all(pylib.join("jinja2").as_std_path()).unwrap();
         assert!(module_present(&pylib, "jinja2"));
+        assert!(!SCHEMA_GEN_MODULES
+            .iter()
+            .all(|module| module_present(&pylib, module)));
         std::fs::write(pylib.join("markupsafe.py").as_std_path(), b"").unwrap();
         assert!(module_present(&pylib, "markupsafe"));
+        assert!(SCHEMA_GEN_MODULES
+            .iter()
+            .all(|module| module_present(&pylib, module)));
 
         // Already-present deps are a no-op even though the interpreter argv is
         // bogus — the pip subprocess must never be reached.

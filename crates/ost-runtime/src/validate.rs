@@ -11,6 +11,9 @@ use camino::Utf8Path;
 
 use crate::manifest::RuntimeManifest;
 
+const SCHEMA_GEN_MODULES: &[&str] = &["jinja2", "markupsafe"];
+const SCHEMA_GEN_PACKAGES: &[&str] = &["jinja2", "MarkupSafe"];
+
 /// One named validation check and its outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
@@ -139,14 +142,21 @@ fn real_runtime_checks(prefix: &Utf8Path) -> Vec<Check> {
     // 'jinja2'` (report Finding D). Gate it here so `export` (which requires a
     // passing validation) refuses to publish such a runtime.
     if bundles_usdgenschema(&bin) {
-        if py_dir.join("jinja2").as_std_path().is_dir() {
+        let missing: Vec<&str> = SCHEMA_GEN_MODULES
+            .iter()
+            .copied()
+            .filter(|module| !module_present(&py_dir, module))
+            .collect();
+        if missing.is_empty() {
             checks.push(Check::pass("schema-gen-deps"));
         } else {
             checks.push(Check::fail(
                 "schema-gen-deps",
                 format!(
-                    "runtime bundles usdGenSchema but jinja2 is missing under {py_dir}; \
-                     provision it with `pip install --target {py_dir} jinja2`"
+                    "runtime bundles usdGenSchema but schema-gen Python module(s) are missing \
+                     under {py_dir}: {}; provision them with `pip install --target {py_dir} {}`",
+                    missing.join(", "),
+                    SCHEMA_GEN_PACKAGES.join(" ")
                 ),
             ));
         }
@@ -166,6 +176,14 @@ fn bundles_usdgenschema(bin: &Utf8Path) -> bool {
     ]
     .iter()
     .any(|n| bin.join(n).as_std_path().is_file())
+}
+
+fn module_present(python_lib_dir: &Utf8Path, module: &str) -> bool {
+    python_lib_dir.join(module).as_std_path().is_dir()
+        || python_lib_dir
+            .join(format!("{module}.py"))
+            .as_std_path()
+            .is_file()
 }
 
 #[cfg(test)]
@@ -268,8 +286,14 @@ mod tests {
             "a schema runtime missing jinja2 must not validate"
         );
 
-        // Provision jinja2 and it passes — the export gate is now satisfiable.
+        // jinja2 alone is not enough: Jinja imports MarkupSafe at runtime.
         std::fs::create_dir_all(prefix.join("lib/python/jinja2").as_std_path()).unwrap();
+        let report = validate(&prefix, &m);
+        assert_eq!(named(&report, "schema-gen-deps"), Some(false));
+
+        // Provision the full import set and it passes — the export gate is now
+        // satisfiable.
+        std::fs::create_dir_all(prefix.join("lib/python/markupsafe").as_std_path()).unwrap();
         let report = validate(&prefix, &m);
         assert_eq!(named(&report, "schema-gen-deps"), Some(true));
 
