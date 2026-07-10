@@ -1407,7 +1407,7 @@ blocker. Ranked:
   (keeps the pyramid's contract fixed; a repo's smoke command stays the repo's).
   Both fields are validated as injection/fork-PR hardening — `name` to a plain
   step-title charset (no `:`/`#`/newline breakout), `run` rejects control chars
-  and (like the rest of source CI) any `secrets.` reference. The `run` renders as
+  and (like the rest of source CI) the GitHub Actions `secrets` context. The `run` renders as
   a literal block scalar with every line re-indented, so a multi-line script
   cannot escape its step. Support lanes (which re-verify pinned artifacts and
   never build from source) are unaffected. Unit-tested: parse + default-empty,

@@ -378,8 +378,8 @@ fn runtime_fetch_steps(bootstrap: Option<&Bootstrap>) -> String {
 }
 
 /// Render the matrix's repo-specific `source_checks` as workflow steps,
-/// spliced in after the verification pyramid. Each check is a `- name:` line
-/// plus a literal block scalar (`run: |`) whose every line is re-indented to
+/// spliced in after the verification pyramid. Each check is a quoted `- name:`
+/// line plus a literal block scalar (`run: |`) whose every line is re-indented to
 /// 10 spaces, so a multi-line script stays inside its own step (the validator
 /// already rejected control chars and structural breakouts). Empty when the
 /// matrix declares no checks, so it renders nothing.
@@ -387,7 +387,7 @@ fn source_check_steps(checks: &[SourceCheck]) -> String {
     let mut out = String::new();
     for check in checks {
         out.push_str(&format!(
-            "      - name: {name}\n        shell: bash\n        run: |\n",
+            "      - name: \"{name}\"\n        shell: bash\n        run: |\n",
             name = check.name,
         ));
         for line in check.run.lines() {
@@ -887,7 +887,7 @@ mod tests {
                 run: "set -euo pipefail\nctest --test-dir build/corpus --output-on-failure".into(),
             },
             SourceCheck {
-                name: "Assert schema round-trips".into(),
+                name: "- Assert schema round-trips".into(),
                 run: "python tools/check_corpus.py".into(),
             },
         ];
@@ -905,7 +905,7 @@ mod tests {
             .expect("corpus check present");
         let schema = names
             .iter()
-            .position(|n| *n == "Assert schema round-trips")
+            .position(|n| *n == "- Assert schema round-trips")
             .expect("schema check present");
         assert!(smoke < schema, "checks keep declared order");
 

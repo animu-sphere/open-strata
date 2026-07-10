@@ -682,15 +682,15 @@ fn validate_bootstrap(bootstrap: &Bootstrap) -> Result<()> {
 }
 
 /// Validate one source-CI check. Both fields are spliced into generated
-/// workflow YAML — the `name` into a `- name:` line and the `run` into a
-/// literal block scalar — so the charset rules double as injection hardening
-/// and preserve source CI's fork-PR safety invariant (no secrets, no
-/// structural breakout).
+/// workflow YAML — the `name` into a quoted `- name:` scalar and the `run` into
+/// a literal block scalar — so the charset rules double as injection hardening
+/// and preserve source CI's fork-PR safety invariant (no secrets, no structural
+/// breakout).
 fn validate_source_check(index: usize, check: &SourceCheck) -> Result<()> {
     let at = format!("source_checks[{index}]");
-    // The name renders as a bare (unquoted) YAML scalar on the `- name:` line:
-    // reject anything that could break out of it (newlines, YAML `:`/`#`
-    // indicators) or read as a control char. Keep it to a readable step title.
+    // Keep names to a readable, printable step-title subset. They render quoted
+    // in generated YAML, but a narrow charset avoids surprising control or
+    // expression syntax in a field humans scan in the Actions UI.
     if check.name.trim().is_empty() {
         return Err(Error::InvalidManifest(format!(
             "{at}.name must not be empty"
@@ -703,15 +703,16 @@ fn validate_source_check(index: usize, check: &SourceCheck) -> Result<()> {
     if !name_ok {
         return Err(Error::InvalidManifest(format!(
             "{at}.name '{}' must be a plain step title (characters [A-Za-z0-9 -_()./,+]) — \
-             no ':', '#', or newlines that could break the workflow YAML",
+             no ':', '#', quotes, or newlines",
             check.name
         )));
     }
     // The run script becomes a literal block scalar; every line is re-indented
     // under `run:` at render time, so a script cannot escape its step. Still
     // reject control characters other than tab/newline (a stray CR corrupts the
-    // block) and forbid `secrets` so a check cannot smuggle a credential
-    // reference into a workflow the fork-PR contract guarantees uses none.
+    // block) and forbid the GitHub Actions `secrets` context so a check cannot
+    // smuggle a credential reference into a workflow the fork-PR contract
+    // guarantees uses none.
     if check.run.trim().is_empty() {
         return Err(Error::InvalidManifest(format!(
             "{at}.run must not be empty"
@@ -727,13 +728,57 @@ fn validate_source_check(index: usize, check: &SourceCheck) -> Result<()> {
              use LF line endings"
         )));
     }
-    if check.run.contains("secrets.") || check.name.contains("secrets.") {
+    if references_github_secrets_context(&check.run)
+        || references_github_secrets_context(&check.name)
+    {
         return Err(Error::InvalidManifest(format!(
-            "{at} references 'secrets.' — source CI never uses secrets (fork-PR safety); \
+            "{at} references the GitHub Actions 'secrets' context — source CI never uses secrets (fork-PR safety); \
              a smoke check must run without them"
         )));
     }
     Ok(())
+}
+
+fn references_github_secrets_context(value: &str) -> bool {
+    let mut tail = value;
+    while let Some(start) = tail.find("${{") {
+        let after_start = &tail[start + 3..];
+        if let Some(end) = after_start.find("}}") {
+            if contains_standalone_ascii_word(&after_start[..end], "secrets") {
+                return true;
+            }
+            tail = &after_start[end + 2..];
+        } else {
+            return contains_standalone_ascii_word(after_start, "secrets");
+        }
+    }
+    false
+}
+
+fn contains_standalone_ascii_word(value: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let value = value.as_bytes();
+    let needle = needle.as_bytes();
+    if value.len() < needle.len() {
+        return false;
+    }
+    value.windows(needle.len()).enumerate().any(|(i, window)| {
+        window
+            .iter()
+            .zip(needle.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+            && i.checked_sub(1)
+                .map_or(true, |before| !is_expression_ident_byte(value[before]))
+            && value
+                .get(i + needle.len())
+                .map_or(true, |after| !is_expression_ident_byte(*after))
+    })
+}
+
+fn is_expression_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// Whether a digest is the scaffold's all-zero placeholder. Structurally a
@@ -961,6 +1006,16 @@ cells:
             "{base}source_checks:\n  - name: leak\n    run: echo ${{{{ secrets.TOKEN }}}}\n"
         );
         let err = SupportMatrix::from_yaml(&secret).unwrap_err().to_string();
+        assert!(err.contains("secrets"), "got: {err}");
+
+        // Bracket syntax is the same GitHub Actions secrets context and must
+        // not sneak through a string check for only `secrets.`.
+        let bracket_secret = format!(
+            "{base}source_checks:\n  - name: leak\n    run: echo ${{{{ secrets['TOKEN'] }}}}\n"
+        );
+        let err = SupportMatrix::from_yaml(&bracket_secret)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("secrets"), "got: {err}");
 
         // Empty run is rejected.

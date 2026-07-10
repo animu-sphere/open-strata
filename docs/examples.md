@@ -376,6 +376,20 @@ the plugin (`artifact extract`), runs `ost plugin test --up-to <level>`, and
 uploads the report. Runners need `ost` on PATH and the pinned artifacts in
 their `OST_HOME` registry — self-hosted labels are the expected case.
 
+Cells can also opt into source CI with `lane: pull_request` or `lane: main`.
+Those jobs render to `.github/workflows/ost-source-ci.yml`, check out the repo,
+materialize the pinned runtime SDK, build/test/package the bundle from source,
+and never publish or use secrets. Keep repo-specific post-build smoke coverage
+in the generated workflow with matrix-level `source_checks`:
+
+```yaml
+source_checks:
+  - name: Run corpus CTest smoke
+    run: |
+      set -euo pipefail
+      ctest --test-dir build/corpus --output-on-failure
+```
+
 ## lock — reproducibility
 
 ```bash
