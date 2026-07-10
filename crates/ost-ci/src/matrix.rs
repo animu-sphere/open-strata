@@ -770,10 +770,10 @@ fn contains_standalone_ascii_word(value: &str, needle: &str) -> bool {
             .zip(needle.iter())
             .all(|(a, b)| a.eq_ignore_ascii_case(b))
             && i.checked_sub(1)
-                .map_or(true, |before| !is_expression_ident_byte(value[before]))
+                .is_none_or(|before| !is_expression_ident_byte(value[before]))
             && value
                 .get(i + needle.len())
-                .map_or(true, |after| !is_expression_ident_byte(*after))
+                .is_none_or(|after| !is_expression_ident_byte(*after))
     })
 }
 
