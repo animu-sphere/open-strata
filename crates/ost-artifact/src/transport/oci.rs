@@ -280,7 +280,8 @@ impl OciTransport {
         match *self.auth_mode.borrow() {
             "static-token" => format!(
                 "{ENV_TOKEN} authenticated but the registry refused the write: a bearer token \
-                 presented verbatim cannot obtain 'push' scope. Set {ENV_USER} + {ENV_PASSWORD} \
+                 presented verbatim cannot obtain 'push' scope. Unset {ENV_TOKEN} (while it is set \
+                 ost prefers it and never runs the exchange) and set {ENV_USER} + {ENV_PASSWORD} \
                  (a token with write:packages) so ost runs the credential token exchange for \
                  pull,push, and confirm the credential can publish to '{repo}'"
             ),
@@ -1595,6 +1596,11 @@ mod tests {
             "points at the credential exchange: {hint}"
         );
         assert!(hint.contains("push"), "explains the missing scope: {hint}");
+        assert!(
+            hint.contains("Unset"),
+            "tells the user to unset the token so the exchange can run \
+             (while it is set ost prefers it): {hint}"
+        );
 
         // Credentials were exchanged but the write was still refused — a scope /
         // permission problem, not a credential-plumbing one.

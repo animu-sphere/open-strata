@@ -304,8 +304,10 @@ Credentials and visibility (the two footguns standing up a first publish):
   bearer presented verbatim is accepted for reads but cannot carry push scope on
   GHCR-class registries, so a push with it authenticates and then fails with a
   403 → `ARTIFACT_AUTH_DENIED`. If a push is refused, the hint names which fix
-  applies: `static-token` → switch to user/password; a rejected credential →
-  confirm the PAT has `write:packages` and may publish to that package.
+  applies: `static-token` → **unset `OST_REGISTRY_TOKEN`** (while it is set `ost`
+  prefers it and never runs the exchange) and set user/password; a rejected
+  credential → confirm the PAT has `write:packages` and may publish to that
+  package.
 - **GHCR package visibility is a WebUI-only flip.** A freshly pushed package is
   private; make it public under the package's *Package settings → Change
   visibility* (not settable via the packages API, and gated by the org's
