@@ -261,6 +261,11 @@ pub struct ManifestFile {
     pub path: String,
     pub sha256: String,
     pub size: u64,
+    /// For a symlink entry, its (in-tree, relative) target; `sha256`/`size` then
+    /// describe the target string, not file contents. Absent for a regular file,
+    /// so a pre-symlink manifest still round-trips unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_target: Option<String>,
 }
 
 /// Extract the per-file integrity list from a producer manifest.

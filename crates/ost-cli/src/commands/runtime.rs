@@ -959,11 +959,9 @@ fn runtime_artifact_manifest(
         .find(|e| e.id == "openusd")
         .map(|e| e.version.clone())
         .unwrap_or_else(|| manifest.platform.clone());
-    let files: Vec<_> = packed
-        .files
-        .iter()
-        .map(|f| serde_json::json!({ "path": f.path, "sha256": f.sha256, "size": f.size }))
-        .collect();
+    // A symlink records its in-tree target so a verifier can distinguish it from a
+    // regular file whose bytes happen to equal that target.
+    let files: Vec<_> = packed.files.iter().map(|f| f.manifest_json()).collect();
     serde_json::json!({
         "schema": 1,
         "kind": ost_artifact::RUNTIME_KIND,
