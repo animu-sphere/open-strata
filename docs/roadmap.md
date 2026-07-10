@@ -184,10 +184,11 @@ them. Each release is a coherent slice, not a phase boundary.
     and attributes every build failure to a phase (`schema-generate` /
     `configure` / `compile-link` / `schema-merge` / `plugin-discovery`) in
     both human and `--json` output.
-  - **Deferred (now sequenced as v0.10.0–v0.14.0 below):** OCI push (v0.10.0),
-    protected publish policy + OIDC allowed-publisher (v0.11.0), provenance /
-    SBOM bundle (v0.12.0), generated trusted CI + trust levels in the support
-    matrix (v0.13.0), and DCC host integration (v0.14.0) — tracking plan
+  - **Deferred (now sequenced as v0.10.0–v0.15.0 below):** OCI push (v0.10.0),
+    producer-side correctness + Linux runtime portability (v0.11.0), protected
+    publish policy + OIDC allowed-publisher (v0.12.0), provenance / SBOM bundle
+    (v0.13.0), generated trusted CI + trust levels in the support matrix
+    (v0.14.0), and DCC host integration (v0.15.0) — tracking plan
     Phase 3/4, SEC-006, and the Phase 6 trust-policy hooks. The 2026-07-09
     publish dogfooding additionally surfaced three runtime-completeness bugs
     (from-source `--build` version drift, missing `jinja2` in a published
@@ -232,10 +233,81 @@ them. Each release is a coherent slice, not a phase boundary.
     Also: use the `oras`/docker credential store (or clearly document
     `OST_REGISTRY_USER`/`_PASSWORD`), and document the WebUI-only GHCR
     visibility-flip step. Spelled `ost runtime publish --to oci://…` may front it.
-  - **Deferred (v0.11.0+):** protected-namespace / allowed-publisher policy, OIDC
+  - **Deferred (v0.12.0+):** protected-namespace / allowed-publisher policy, OIDC
     publisher verification, provenance / SBOM bundle, trust levels in the support
-    matrix, and generated trusted-publish CI — sequenced below.
-- ⬜ **v0.11.0 — trust policy foundation.** With a producer verb in place, close
+    matrix, and generated trusted-publish CI — sequenced below (after the v0.11.0
+    producer-correctness slice).
+- 🚧 **v0.11.0 — producer-side correctness + Linux runtime portability.** The
+  first *produce*-side hardening pass, from the 2026-07-10 recheck dogfooding
+  report (`2026-07-10-v0.10.0-recheck-v0.11.0-asks.md`). That report re-verified
+  every v0.10.0 P0/P1 ask as landed (from-source version stamp, runtime
+  schema-gen deps, `--slim` keeps `resources/`, the `ost artifact push` CLI
+  surface) and proved public Windows **and** Linux runtime *consumption* by
+  digest — but standing up the producer side exposed one hard ABI-labeling
+  blocker plus a cluster of producer rough edges that must be boring before the
+  trust-policy ladder layers on top. Trust-policy foundation and the rest of the
+  ladder shift down one release (v0.12.0–v0.15.0). Details in the
+  [Phase 6 — v0.11.0 backlog](#phase-6--v0110-backlog-from-the-2026-07-10-recheck-dogfooding-report).
+  Scope:
+  - ✅ **P0 — real glibc floor for Linux runtimes (BLOCKER; report ask #7).** The
+    WSL/Ubuntu-26.04-built Linux runtime was exported with the ABI label
+    `linux-x86_64-glibc228-py313`, but its binaries reference `GLIBC_2.43`, so it
+    fails to load on the GitHub-hosted `ubuntu-24.04` runner (glibc 2.39) during
+    `usdGenSchema` (`version GLIBC_2.43 not found`, exit 6) — and
+    `--require-target` string-matched the *fabricated* label and passed, giving
+    false ABI confidence. **Landed:** a streaming ELF scanner (`ost_build::glibc`)
+    computes the maximum referenced `GLIBC_x.y` symbol version from the packed
+    binaries (no binutils dependency), and `ost runtime export` stamps *that* real
+    floor onto the artifact `target`, overriding the fabricated nominal and
+    recording the drift as `glibc_floor` evidence. With a truthful label the
+    existing `--require-target` string match now rejects a stale `glibc228` pin, so
+    the false-pass is closed at its source. Still ⬜ (a P2 doc): a note that portable
+    Linux runtimes are built against an old glibc base (manylinux_2_28 /
+    older-Ubuntu / container).
+  - 🚧 **P0 — fix `ost artifact push` against GHCR (report ask #1).** The producer
+    verb shipped in v0.10.0 could not actually push to GHCR: `OST_REGISTRY_TOKEN`
+    returned 403, and `OST_REGISTRY_USER`/`_PASSWORD` advanced to upload but sent an
+    invalid `digest=sha256:sha256:<hex>` request (a double-`sha256:` producer bug)
+    and failed with HTTP 400 — while `oras` with the same credentials worked
+    immediately. **Landed:** the double-`sha256:` bug is fixed — `push` used
+    `digest::sha256_hex` output (already `sha256:<hex>`) verbatim, and a regression
+    test asserts every uploaded blob digest is well-formed, closing the upload
+    blocker. Still ⬜: the credential story (a static `OST_REGISTRY_TOKEN` 403 vs the
+    working user/password token exchange) needs a clearer hint + docs, and a real
+    GHCR round-trip.
+  - **P1 — Linux symlinks in runtime export (report ask #2).** Linux SDKs contain
+    normal shared-library symlink chains (`libFoo.so → libFoo.so.1 →
+    libFoo.so.1.39.4`; the built runtime had 48). `runtime export --slim` rejects
+    them via the package-staging safety model (`symlink is not allowed in the
+    package staging area`), blocking direct export of a build-source Linux runtime
+    (the report worked around it with a `cp -aL` dereference + re-adopt). Preserve
+    safe *relative in-tree* symlinks, dereference them intentionally, or expose an
+    explicit policy switch — without weakening SEC-001's escape protection.
+  - **P1 — quieter / actionable package-stage fallback (report ask #4).** Repeated
+    `ost plugin package` runs still emit `STAGE_FALLBACK` (previous `package-stage`
+    held open by another process, so `ost` staged into `package-stage-<id>`). The
+    fallback beats the old hard failure, but v0.11.0 should identify the locking
+    process, deterministically sweep stale fallback stages, and/or expose a
+    `--clean-stage` operator escape hatch.
+  - **P2 — first-class repo-specific smoke tests in generated source CI (report
+    ask #5).** Regenerating with v0.10.0 silently dropped the repo's custom `Run
+    corpus CTest smoke` step, so the hosted PR workflow lost corpus coverage. Give
+    the CI contract a first-class way to keep repo-specific post-build checks —
+    declarative post-build commands in `openstrata.ci.yaml`, or make `ost plugin
+    test` cover the corpus assets directly — so renderer output never drops
+    coverage the repo relies on.
+  - **P2 — document Linux build prerequisites (report ask #3).** The WSL/Ubuntu
+    26.04 `--build` needed a source-built Python 3.13.14 (`python3.13` is not an
+    apt package even on a very new Ubuntu), `unzip`, `libxt-dev`, and the usual
+    compiler/CMake/Ninja/X11/OpenGL dev packages; the oneTBB GitHub archive URL
+    also 504'd as HTML (`codeload.github.com` worked as a cache seed). Document
+    these, and harden the downloader against a 504-HTML-as-archive failure.
+  - **P2 — re-test build-host dep preflight on a clean Python (report ask #6).**
+    v0.10.0's runtime-side `jinja2` provisioning is confirmed; the remaining
+    unknown is whether the host-side preflight (warn on missing
+    `Jinja2`/`PyOpenGL`/`PySide6` before `build_usd.py`) gives a clear message on a
+    pristine Python. Verify on a clean interpreter.
+- ⬜ **v0.12.0 — trust policy foundation.** With a producer verb in place, close
   the publish-side trust boundary (future-policy §3.2/§7/§11). An
   `openstrata-artifact-policy.toml` with protected-namespace + allowed-publisher
   schema and a `local`/`unsigned`/`attested`/`verified`/`trusted` trust-level
@@ -245,7 +317,7 @@ them. Each release is a coherent slice, not a phase boundary.
   identity, `--allow-untrusted-publisher` as the explicit escape hatch); and
   `ost artifact verify --policy`. Tracks SEC-006 and the Phase 6 trust-policy
   hooks.
-- ⬜ **v0.12.0 — provenance / SBOM bundle.** Make the artifact an *evidence
+- ⬜ **v0.13.0 — provenance / SBOM bundle.** Make the artifact an *evidence
   bundle*, not just an archive (future-policy §5/§6/§11): optional SBOM
   (`sbom.spdx.json`) and SLSA/in-toto provenance (`provenance.intoto.jsonl`)
   layers, `ost artifact push` attaching them and `ost artifact verify
@@ -254,7 +326,7 @@ them. Each release is a coherent slice, not a phase boundary.
   allowed-publisher policy, and source repo/revision match build metadata. Closes
   the Licensing & attribution "per-artifact SBOM" and Phase 6 "content attribution"
   gaps for published artifacts.
-- ⬜ **v0.13.0 — generated trusted CI.** Push the trust chain up into the CI
+- ⬜ **v0.14.0 — generated trusted CI.** Push the trust chain up into the CI
   contract (future-policy §7/§8/§13): a `trust` field on support-matrix targets, a
   minimum-trust requirement per lane (`pr_min_trust` / `main_min_trust` /
   `release_min_trust`), and lane-specific generated workflows — the PR / source-CI
@@ -262,17 +334,19 @@ them. Each release is a coherent slice, not a phase boundary.
   (protected branch/tag, OIDC, SBOM + provenance + validation report required,
   protected-namespace policy enforced) is generated distinctly from the release
   lane. Release workflows refuse untrusted artifacts.
-- ⬜ **v0.14.0 — DCC host integration.** Extend the support matrix beyond
+- ⬜ **v0.15.0 — DCC host integration.** Extend the support matrix beyond
   runtime-native apps to external DCC hosts (future-policy §9/§11; Phase 10
   [dcc-hosts.md](dcc-hosts.md)). Read-only host discovery + fingerprint
   (`ost dcc discover`, host record schema, Maya/Houdini detectors first), headless
   plugin compatibility test, and DCC support-matrix + CI-annotation integration —
   *without* a DCC API abstraction or SDK redistribution (future-policy §13
   non-goals).
-- ⬜ **v1.0.0 (after v0.14.0).** The downstream 2026-07-09 report framed its asks
-  as "v1.0.0-rc1"; that framing is **superseded** by the finer v0.10.0–v0.14.0
-  ladder above (the report's runtime-completeness asks are v0.10.0 P0, its
-  `ost artifact push` ask is v0.10.0 P1). 1.0 is cut once the produce→trust→
+- ⬜ **v1.0.0 (after v0.15.0).** The downstream 2026-07-09 report framed its asks
+  as "v1.0.0-rc1"; that framing is **superseded** by the finer v0.10.0–v0.15.0
+  ladder above (the report's runtime-completeness asks landed as v0.10.0 P0, its
+  `ost artifact push` ask as v0.10.0 P1, and the 2026-07-10 recheck's producer
+  correctness/portability asks are the v0.11.0 slice). 1.0 is cut once the
+  produce→trust→
   provenance→trusted-CI arc and the initial DCC host matrix are shipped and
   dogfooded — i.e. "build it, publish it, verify its provenance, pull it in trusted
   CI, run it against a DCC host" is a single supported, digest-addressed arc.
@@ -1192,6 +1266,103 @@ its v0.10.0 slice. Delivered:
   `oras`/docker credential store — set `OST_REGISTRY_USER`/`_PASSWORD` or
   `OST_REGISTRY_TOKEN`), the WebUI-only GHCR visibility flip, and the anonymous CI
   pull path once public.
+
+### Phase 6 — v0.11.0 backlog (from the 2026-07-10 recheck dogfooding report)
+
+**Targeted for v0.11.0.** The 2026-07-10 recheck report
+(`2026-07-10-v0.10.0-recheck-v0.11.0-asks.md`, `ost 0.10.0`) re-verified every
+v0.10.0 P0/P1 ask as landed — `--build` stamps the built OpenUSD version
+(`26.05`) and validates without re-adopting, the runtime ships `jinja2` +
+`MarkupSafe` in `lib/python` and `runtime validate` gates on `schema-gen-deps`,
+`--slim` keeps top-level `resources/` (MaterialX config consumable again), and
+`ost artifact push` exists as the producer verb — and drove the full local
+dogfood plus a public GHCR round-trip proving Windows **and** Linux runtime
+*consumption* by digest (anonymous `resolve` + digest-pinned `pull` with
+`--expect-artifact` / `--require-kind` / `--require-target`). The consume side is
+excellent; every remaining edge is on the *produce* side, and one is a hard
+blocker. Ranked:
+
+- ✅ **P0 (BLOCKER) — measure and record the real glibc floor for Linux runtimes
+  (report ask #7).** The Linux runtime was built in WSL on Ubuntu 26.04 (glibc
+  2.43), so its binaries (`libusd_gf.so`, …) carry `GLIBC_2.43` versioned symbols,
+  but `ost runtime export` stamped the catalog-default ABI label
+  `linux-x86_64-glibc228-py313`. The hosted `usdvrm-pr-linux` lane on
+  `ubuntu-24.04` (glibc 2.39) then died in `ost plugin build` → `schema-generate`:
+  `ImportError: /lib/x86_64-linux-gnu/libm.so.6: version 'GLIBC_2.43' not found
+  (required by …/lib/libusd_gf.so)`, exit 6. Two compounding defects: (1) the
+  `glibc228` variant label was **fabricated, not measured**; (2) `--require-target`
+  gave **false confidence** by string-matching the fabricated label. **Landed:**
+  `ost_build::glibc` streams each ELF binary and computes the maximum referenced
+  `GLIBC_x.y` symbol version (the value `readelf -V | grep GLIBC_` surfaces,
+  without a binutils dependency; non-ELF and non-Linux inputs are a no-op). `ost
+  runtime export` measures the floor from the packed binaries and stamps it onto
+  the artifact `target` — a runtime referencing `GLIBC_2.43` is now labeled
+  `glibc243`, never `glibc228` — overriding the fabricated nominal and recording
+  the measured-vs-recorded drift as a `glibc_floor` evidence field (producer
+  manifest + `--json`). The embedded build provenance is left faithful. Because the
+  label is now truthful, the existing `--require-target` string match rejects a
+  stale `glibc228` pin instead of false-passing, so the consumer defect is closed
+  at its source without a separate floor-comparison path. Unit-tested (scanner:
+  cross-file max, chunk-boundary matches, non-ELF exclusion, numeric ordering;
+  relabel: higher/lower floor wins, non-glibc untouched) + a Linux-gated e2e export
+  test. Still ⬜ (folded into the P2 Linux-build docs below): document that portable
+  Linux runtimes are built against an old glibc base so the measured floor is
+  genuinely low.
+- 🚧 **P0 — fix `ost artifact push` against GHCR (report ask #1).** The producer
+  verb's CLI surface is right, but the actual upload failed two ways: with
+  `OST_REGISTRY_TOKEN`, GHCR returned `403`; with `OST_REGISTRY_USER=snkmcb` +
+  `OST_REGISTRY_PASSWORD=<PAT>`, auth advanced but the upload sent
+  `digest=sha256:sha256:44136fa355… → HTTP 400` — a real double-`sha256:` producer
+  bug in the upload URL. **Landed:** the double-`sha256:` bug is fixed. `push`
+  wrapped `digest::sha256_hex` output (already `sha256:<hex>`) in another
+  `sha256:` for the config, producer-manifest, and OCI-manifest digests; the config
+  blob (uploaded first) hit GHCR as `sha256:sha256:44136…` → HTTP 400. The values
+  are now used verbatim, and the push idempotency test asserts every uploaded blob
+  digest is a single well-formed `sha256:<hex>` (via `is_sha256_ref`) — the mock
+  registry had masked the bug by matching the same double-prefixed string. Still ⬜:
+  the credential story (a static `OST_REGISTRY_TOKEN` 403 vs the working
+  user/password token exchange) needs a clearer 403-on-write hint + docs, and a real
+  GHCR round-trip to confirm the user/password path end to end.
+- ⬜ **P1 — support Linux symlinks in runtime export (report ask #2).** Direct
+  `runtime export --slim` of the build-source Linux runtime failed with `symlink
+  is not allowed in the package staging area:
+  …/lib/libMaterialXGenMsl.so`. The built Linux SDK carries routine shared-library
+  symlink chains (`libFoo.so → libFoo.so.1 → libFoo.so.1.39.4`; 48 counted); the
+  report shipped only via a `cp -aL` dereference-and-re-adopt workaround. Preserve
+  safe *relative in-tree* symlinks, dereference them intentionally at pack time, or
+  expose an explicit policy switch — without weakening SEC-001's link-escape
+  protection (an out-of-tree or absolute link target must still be rejected).
+- ⬜ **P1 — quieter / more actionable package-stage fallback (report ask #4).**
+  `ost plugin package` succeeds, but repeated runs emit `STAGE_FALLBACK`: the prior
+  `package-stage` was "held open by another process", so `ost` staged into
+  `package-stage-<id>`. The v0.8.0 fallback beats the old hard failure, but v0.11.0
+  should identify the locking process, deterministically sweep stale fallback
+  stages, and/or expose a `--clean-stage` operator escape hatch so the warning is
+  actionable rather than recurring noise.
+- ⬜ **P2 — first-class way to keep repo-specific smoke tests in generated source
+  CI (report ask #5).** Regenerating the workflow with `ost 0.10.0` silently
+  removed the repo's custom `Run corpus CTest smoke` step, so the hosted PR
+  workflow now runs the `ost plugin test` pyramid + package but lost standalone
+  corpus coverage the roadmap still wants in CI. Either support declarative
+  post-build commands in `openstrata.ci.yaml` (rendered into the generated
+  workflow) or make `ost plugin test` cover the corpus assets directly — so
+  renderer output never drops coverage the repo depends on.
+- ⬜ **P2 — document Linux build prerequisites + harden the downloader (report ask
+  #3).** The WSL/Ubuntu-26.04 `--build` needed a source-built Python 3.13.14
+  (`--enable-shared`; `python3.13` is not an apt package even on a very new
+  Ubuntu), `unzip`, `libxt-dev` (MaterialX: `Error in building
+  MaterialXRenderGlsl: Xt was not found`), and the usual compiler/CMake/Ninja/
+  X11/OpenGL dev packages. `build_usd.py` also fetched the oneTBB
+  `github.com/.../v2020.3.1.zip` as a 504 HTML page and failed with "unrecognized
+  archive file type" — `codeload.github.com` for the same tag worked as a cache
+  seed. Document the Linux prerequisites and make the downloader detect a
+  504-HTML-body-as-archive rather than surfacing an opaque unpack error.
+- ⬜ **P2 — re-test build-host dependency preflight on a clean Python (report ask
+  #6).** v0.10.0's runtime-side `jinja2`/`MarkupSafe` provisioning is confirmed
+  landed. The remaining unknown, untested because the host already had the deps, is
+  whether the host-side preflight warns clearly on a pristine Python missing
+  `Jinja2`/`PyOpenGL`/`PySide6` *before* invoking `build_usd.py`. Verify on a clean
+  interpreter that the warning (and its `pip install` fix line) actually fires.
 
 ## Phase 7 — Sessions / sandbox ⬜
 

@@ -229,6 +229,53 @@ fn export_handoff_and_pull_from_artifact_roundtrip() {
     error_json(&out, 2);
 }
 
+/// On Linux the runtime variant defaults to the nominal `glibc228`. Export must
+/// override that with the real floor measured from the packed ELF binaries, so a
+/// runtime that references `GLIBC_2.43` is labeled `glibc243` — the truthful
+/// target a support line pins (and which a stale `glibc228` pin no longer
+/// string-matches, closing the ask #7 false-pass at its source).
+///
+/// The runtime variant is host-derived, so the glibc default only appears on
+/// Linux; the assertions run there. The test still compiles everywhere (a runtime
+/// guard, not `#[cfg]`) so field/API drift is caught on every platform's build.
+#[test]
+fn export_relabels_target_with_measured_glibc_floor() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let sb = Sandbox::new("glibc-floor");
+    stdout_json(&sb.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
+    let prefix = sb.promote_mock_to_build();
+
+    // The runtime's nominal (defaulted) ABI before measurement is glibc 2.28.
+    let v = stdout_json(&sb.ost(&["--json", "runtime", "show", "cy2026", "--profile", "usd"]));
+    assert_eq!(v["data"]["variant"]["abi"]["glibc"]["version"], "2.28");
+
+    // Drop a fake ELF shared library that references GLIBC_2.43 (newer than the
+    // nominal floor) plus a lower reference, so the max wins.
+    let lib = prefix.join("lib/libfake.so");
+    let mut elf = vec![0x7f, b'E', b'L', b'F'];
+    elf.extend_from_slice(b"\0\0 needs GLIBC_2.17 and GLIBC_2.43 \0");
+    std::fs::write(&lib, elf).unwrap();
+
+    let v = stdout_json(&sb.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
+    assert_eq!(v["data"]["exported"], true);
+    assert_eq!(v["data"]["glibc_floor"], "2.43");
+    // The runtime artifact's `target` is the variant slug (no cycle prefix / profile
+    // suffix), as `runtime_artifact_manifest` records it — the measured floor moves
+    // the ABI token from `glibc228` to `glibc243`.
+    assert_eq!(v["data"]["target"], "linux-x86_64-glibc243-py313");
+    let digest = v["data"]["digest"].as_str().unwrap().to_string();
+
+    // The registry record carries the corrected, truthful target, and records the
+    // measured-vs-recorded drift as evidence.
+    let v = stdout_json(&sb.ost(&["--json", "artifact", "show", &digest]));
+    assert_eq!(
+        v["data"]["artifact"]["target"],
+        "linux-x86_64-glibc243-py313"
+    );
+}
+
 #[test]
 fn pull_from_artifact_refuses_non_runtime_kinds() {
     let sb = Sandbox::new("kind");

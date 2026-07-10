@@ -18,9 +18,11 @@ use clap::Subcommand;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use ost_artifact::{ArtifactKind, ArtifactSource, ArtifactStore};
+use ost_build::GlibcVersion;
 use ost_core::host::Os;
 use ost_core::paths::Store;
-use ost_core::{tools, Error, Host, Result};
+use ost_core::variant::Abi;
+use ost_core::{tools, Error, Host, Result, Variant};
 use ost_runtime::{
     python_minor, ExtensionRecord, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
 };
@@ -990,6 +992,26 @@ fn runtime_artifact_manifest(
     })
 }
 
+/// The variant a Linux/glibc runtime should be labeled with, given the glibc
+/// floor measured from its ELF binaries. Returns `None` when there is nothing to
+/// correct — a non-glibc variant (Windows/macOS), or a runtime whose floor could
+/// not be measured (no ELF glibc references at all). The measured floor is
+/// authoritative even when it is *lower* than the recorded nominal: the artifact
+/// label must describe the symbol versions the binaries actually impose, so that
+/// `--require-target` cannot pass on a runtime the host cannot load (ask #7).
+fn variant_for_measured_floor(variant: &Variant, floor: Option<GlibcVersion>) -> Option<Variant> {
+    match (&variant.abi, floor) {
+        (Abi::Glibc { .. }, Some(floor)) => {
+            let mut corrected = variant.clone();
+            corrected.abi = Abi::Glibc {
+                version: floor.token(),
+            };
+            Some(corrected)
+        }
+        _ => None,
+    }
+}
+
 /// Compression knobs for `ost runtime export` (`--level` / `--jobs`).
 struct ExportPack {
     level: i32,
@@ -1203,6 +1225,43 @@ fn export(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let mut producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
+
+    // Measure the real glibc floor from the packed ELF binaries and label the
+    // artifact with it, overriding a fabricated/defaulted `glibc228` nominal. The
+    // `target` a support line pins with `--require-target` must describe the
+    // symbol versions the binaries actually impose, or a runtime built on a newer
+    // glibc silently "passes" its ABI check and then fails to load on the runner
+    // (v0.11.0 report, ask #7). The embedded build provenance is left faithful:
+    // `glibc_floor` records both the measured floor and the recorded nominal so
+    // the drift is visible.
+    let glibc_floor = if matches!(manifest.variant.abi, Abi::Glibc { .. }) {
+        ost_build::max_glibc_floor(files.iter().map(Utf8PathBuf::as_path))
+            .map_err(|e| Error::io(effective.to_string(), e))?
+    } else {
+        None
+    };
+    let measured_target = variant_for_measured_floor(&manifest.variant, glibc_floor)
+        .map(|corrected| corrected.slug());
+    if let (Some(floor), Some(target)) = (glibc_floor, &measured_target) {
+        if let Some(obj) = producer.as_object_mut() {
+            obj.insert("target".into(), serde_json::json!(target));
+            obj.insert(
+                "glibc_floor".into(),
+                serde_json::json!({
+                    "measured": floor.to_string(),
+                    "recorded": manifest.variant.abi.describe(),
+                    "source": "elf-symbol-versions",
+                }),
+            );
+        }
+        if !fmt.is_json() && target != &manifest.variant.slug() {
+            println!(
+                "Measured glibc floor {floor} (recorded {}); labeling the artifact target {target}",
+                manifest.variant.abi.describe(),
+            );
+        }
+    }
+
     // Record which layout was shipped so a fetch/inspection can tell a slim SDK
     // artifact from a full one (they are distinct digests of the same runtime).
     if let Some(obj) = producer.as_object_mut() {
@@ -1241,6 +1300,8 @@ fn export(
             "already_present": out.already_present,
             "runtime": manifest.id,
             "digest": out.record.digest,
+            "target": out.record.target,
+            "glibc_floor": glibc_floor.map(|f| f.to_string()),
             "archive_size": out.record.archive_size,
             "files": out.record.file_count,
             "dist": dist.map(|d| d.to_string()),
@@ -2083,6 +2144,68 @@ mod tests {
         pending.set_validation(Validation::Pending);
         let err = check_exportable(&pending).unwrap_err();
         assert_eq!(err.code(), "EXPORT_VALIDATION_REQUIRED");
+    }
+
+    #[test]
+    fn measured_glibc_floor_relabels_a_linux_runtime() {
+        let m = exportable_manifest();
+        // The recorded nominal is the defaulted glibc228.
+        assert_eq!(m.variant.slug(), "linux-x86_64-glibc228-py313");
+
+        // A higher measured floor (built on a newer host) overrides the nominal.
+        let corrected = variant_for_measured_floor(
+            &m.variant,
+            Some(GlibcVersion {
+                major: 2,
+                minor: 43,
+            }),
+        )
+        .expect("a glibc variant with a measured floor is relabeled");
+        assert_eq!(corrected.slug(), "linux-x86_64-glibc243-py313");
+
+        // A *lower* real floor is also authoritative — the label must describe
+        // the binaries, not flatter them.
+        let lower = variant_for_measured_floor(
+            &m.variant,
+            Some(GlibcVersion {
+                major: 2,
+                minor: 17,
+            }),
+        )
+        .unwrap();
+        assert_eq!(lower.slug(), "linux-x86_64-glibc217-py313");
+
+        // No measurement (no ELF glibc references) leaves the nominal untouched.
+        assert!(variant_for_measured_floor(&m.variant, None).is_none());
+    }
+
+    #[test]
+    fn measured_glibc_floor_ignores_non_glibc_variants() {
+        // A Windows/MSVC runtime carries no glibc ABI to correct, even if a stray
+        // floor were somehow measured.
+        let host = ost_core::Host {
+            os: Os::Windows,
+            arch: Arch::X86_64,
+        };
+        let rt = Runtime::resolve("cy2026", "usd", &host, "3.13.x");
+        let win = RuntimeManifest::build(
+            &rt,
+            "3.13.x",
+            vec![],
+            vec![],
+            vec![],
+            1_750_000_000,
+            RuntimeSource::Build,
+        );
+        assert!(matches!(win.variant.abi, Abi::Msvc { .. }));
+        assert!(variant_for_measured_floor(
+            &win.variant,
+            Some(GlibcVersion {
+                major: 2,
+                minor: 43
+            })
+        )
+        .is_none());
     }
 
     #[test]
