@@ -16,7 +16,7 @@
 //! is pinned to a full commit SHA (SEC-004), reusing the SHAs this repository
 //! itself pins.
 
-use crate::matrix::{Bootstrap, Lane, SupportCell, SupportMatrix};
+use crate::matrix::{Bootstrap, Lane, SourceCheck, SupportCell, SupportMatrix};
 
 /// Default path of the generated support-matrix workflow.
 pub const WORKFLOW_PATH: &str = ".github/workflows/ost-support-matrix.yml";
@@ -377,6 +377,30 @@ fn runtime_fetch_steps(bootstrap: Option<&Bootstrap>) -> String {
     out
 }
 
+/// Render the matrix's repo-specific `source_checks` as workflow steps,
+/// spliced in after the verification pyramid. Each check is a `- name:` line
+/// plus a literal block scalar (`run: |`) whose every line is re-indented to
+/// 10 spaces, so a multi-line script stays inside its own step (the validator
+/// already rejected control chars and structural breakouts). Empty when the
+/// matrix declares no checks, so it renders nothing.
+fn source_check_steps(checks: &[SourceCheck]) -> String {
+    let mut out = String::new();
+    for check in checks {
+        out.push_str(&format!(
+            "      - name: {name}\n        shell: bash\n        run: |\n",
+            name = check.name,
+        ));
+        for line in check.run.lines() {
+            if line.is_empty() {
+                out.push('\n');
+            } else {
+                out.push_str(&format!("          {line}\n"));
+            }
+        }
+    }
+    out
+}
+
 /// The shared step list of a source-CI job.
 fn source_steps(matrix: &SupportMatrix) -> String {
     let bootstrap = matrix
@@ -410,7 +434,8 @@ fn source_steps(matrix: &SupportMatrix) -> String {
       - name: Run the verification pyramid
         shell: bash
         run: ost plugin test ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --up-to ${{{{ matrix.up_to }}}} --json
-      - name: Package the plugin (never published from this workflow)
+{checks}\
+\x20     - name: Package the plugin (never published from this workflow)
         shell: bash
         run: ost plugin package ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
       - name: Upload the verification report and CI evidence
@@ -424,6 +449,7 @@ fn source_steps(matrix: &SupportMatrix) -> String {
 ",
         version_check = ost_version_step(matrix.bootstrap.as_ref()),
         fetch = runtime_fetch_steps(matrix.bootstrap.as_ref()),
+        checks = source_check_steps(&matrix.source_checks),
     )
 }
 
@@ -539,7 +565,7 @@ mod tests {
     use super::*;
     use crate::matrix::{
         HostOs, HostSpec, Lane, OstBootstrap, Publish, RunnerKind, RunnerProfile, RuntimeRemote,
-        SupportCell, MATRIX_SCHEMA,
+        SourceCheck, SupportCell, MATRIX_SCHEMA,
     };
     use std::collections::BTreeMap;
 
@@ -565,6 +591,7 @@ mod tests {
             schema: MATRIX_SCHEMA,
             bootstrap: None,
             runners: BTreeMap::new(),
+            source_checks: vec![],
             cells: vec![
                 SupportCell {
                     up_to: 4,
@@ -610,6 +637,7 @@ mod tests {
                 },
             }),
             runners,
+            source_checks: vec![],
             cells: vec![
                 SupportCell {
                     lane: Lane::PullRequest,
@@ -848,6 +876,75 @@ mod tests {
         assert!(!a.contains("secrets."), "source CI uses no secrets");
         assert!(!a.contains("plugin publish"), "source CI never publishes");
         assert!(names.iter().any(|n| n.contains("Validate the CI manifest")));
+    }
+
+    #[test]
+    fn source_checks_render_as_steps_after_the_pyramid() {
+        let mut m = lanes_matrix();
+        m.source_checks = vec![
+            SourceCheck {
+                name: "Run corpus CTest smoke".into(),
+                run: "set -euo pipefail\nctest --test-dir build/corpus --output-on-failure".into(),
+            },
+            SourceCheck {
+                name: "Assert schema round-trips".into(),
+                run: "python tools/check_corpus.py".into(),
+            },
+        ];
+        let a = generate_source(&m).unwrap();
+        assert_eq!(a, generate_source(&m).unwrap(), "deterministic");
+
+        let doc: serde_yaml::Value = serde_yaml::from_str(&a).unwrap();
+        let steps = doc["jobs"]["pr"]["steps"].as_sequence().unwrap();
+        let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+
+        // Both checks render, in declared order.
+        let smoke = names
+            .iter()
+            .position(|n| *n == "Run corpus CTest smoke")
+            .expect("corpus check present");
+        let schema = names
+            .iter()
+            .position(|n| *n == "Assert schema round-trips")
+            .expect("schema check present");
+        assert!(smoke < schema, "checks keep declared order");
+
+        // Placed after the verification pyramid and before packaging — the
+        // built plugin is present, the package step still runs last.
+        let pyramid = names
+            .iter()
+            .position(|n| n.contains("verification pyramid"))
+            .unwrap();
+        let package = names
+            .iter()
+            .position(|n| n.contains("Package the plugin"))
+            .unwrap();
+        assert!(
+            pyramid < smoke && schema < package,
+            "checks sit post-build, pre-package"
+        );
+
+        // The multi-line run is preserved verbatim as a block scalar.
+        let step = &steps[smoke];
+        assert_eq!(step["shell"], "bash");
+        let run = step["run"].as_str().unwrap();
+        assert!(run.contains("set -euo pipefail"));
+        assert!(run.contains("ctest --test-dir build/corpus"));
+
+        // Still fork-PR safe.
+        assert!(!a.contains("secrets."), "source CI uses no secrets");
+        assert!(!a.contains("plugin publish"), "source CI never publishes");
+
+        // No checks -> no extra steps (the baseline lanes matrix).
+        let plain = generate_source(&lanes_matrix()).unwrap();
+        let pdoc: serde_yaml::Value = serde_yaml::from_str(&plain).unwrap();
+        let pnames: Vec<&str> = pdoc["jobs"]["pr"]["steps"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert!(!pnames.iter().any(|n| n.contains("corpus")));
     }
 
     #[test]

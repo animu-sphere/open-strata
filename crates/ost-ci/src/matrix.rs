@@ -294,6 +294,22 @@ fn default_up_to() -> u8 {
     5
 }
 
+/// A repo-specific extra step spliced into the **source-CI** job after the
+/// verification pyramid, before packaging. This is how a project keeps its own
+/// smoke coverage (e.g. a standalone corpus CTest run) in the generated
+/// workflow: regenerating the workflow no longer silently drops a hand-added
+/// step, because the step is declared here and re-rendered every time
+/// (report ask #5). Support-lane jobs re-verify pinned artifacts and never
+/// build from source, so checks do not apply to them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceCheck {
+    /// Step name, rendered verbatim as the `- name:` of a workflow step.
+    pub name: String,
+    /// Bash run script, rendered as a literal block scalar (`run: |`). Executes
+    /// with the built plugin present, after `ost plugin test`.
+    pub run: String,
+}
+
 fn is_kebab(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -313,6 +329,10 @@ pub struct SupportMatrix {
     /// order for rendering).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub runners: BTreeMap<String, RunnerProfile>,
+    /// Repo-specific extra steps rendered into the source-CI job(s) after the
+    /// verification pyramid. Empty by default; see [`SourceCheck`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_checks: Vec<SourceCheck>,
     pub cells: Vec<SupportCell>,
 }
 
@@ -342,6 +362,9 @@ impl SupportMatrix {
         }
         if let Some(bootstrap) = &self.bootstrap {
             validate_bootstrap(bootstrap)?;
+        }
+        for (i, check) in self.source_checks.iter().enumerate() {
+            validate_source_check(i, check)?;
         }
         for (name, profile) in &self.runners {
             if !is_kebab(name) {
@@ -658,6 +681,61 @@ fn validate_bootstrap(bootstrap: &Bootstrap) -> Result<()> {
     Ok(())
 }
 
+/// Validate one source-CI check. Both fields are spliced into generated
+/// workflow YAML — the `name` into a `- name:` line and the `run` into a
+/// literal block scalar — so the charset rules double as injection hardening
+/// and preserve source CI's fork-PR safety invariant (no secrets, no
+/// structural breakout).
+fn validate_source_check(index: usize, check: &SourceCheck) -> Result<()> {
+    let at = format!("source_checks[{index}]");
+    // The name renders as a bare (unquoted) YAML scalar on the `- name:` line:
+    // reject anything that could break out of it (newlines, YAML `:`/`#`
+    // indicators) or read as a control char. Keep it to a readable step title.
+    if check.name.trim().is_empty() {
+        return Err(Error::InvalidManifest(format!(
+            "{at}.name must not be empty"
+        )));
+    }
+    let name_ok = check
+        .name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || " -_()./,+".contains(c));
+    if !name_ok {
+        return Err(Error::InvalidManifest(format!(
+            "{at}.name '{}' must be a plain step title (characters [A-Za-z0-9 -_()./,+]) — \
+             no ':', '#', or newlines that could break the workflow YAML",
+            check.name
+        )));
+    }
+    // The run script becomes a literal block scalar; every line is re-indented
+    // under `run:` at render time, so a script cannot escape its step. Still
+    // reject control characters other than tab/newline (a stray CR corrupts the
+    // block) and forbid `secrets` so a check cannot smuggle a credential
+    // reference into a workflow the fork-PR contract guarantees uses none.
+    if check.run.trim().is_empty() {
+        return Err(Error::InvalidManifest(format!(
+            "{at}.run must not be empty"
+        )));
+    }
+    if check
+        .run
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err(Error::InvalidManifest(format!(
+            "{at}.run contains a control character (only newline and tab are allowed) — \
+             use LF line endings"
+        )));
+    }
+    if check.run.contains("secrets.") || check.name.contains("secrets.") {
+        return Err(Error::InvalidManifest(format!(
+            "{at} references 'secrets.' — source CI never uses secrets (fork-PR safety); \
+             a smoke check must run without them"
+        )));
+    }
+    Ok(())
+}
+
 /// Whether a digest is the scaffold's all-zero placeholder. Structurally a
 /// valid `sha256:<64-hex>` reference, but never the digest of real bytes worth
 /// standing behind — cells still carrying it are not usable support claims.
@@ -742,6 +820,17 @@ pub fn starter_matrix() -> String {
 # Self-hosted cells may omit runtime_remote and keep air-gapped local
 # import (`ost artifact import` on the runner); CI evidence records the
 # runtime's source either way.
+#
+# Keep repo-specific smoke coverage in the generated source-CI workflow
+# with `source_checks` -- each renders as an extra step after the
+# verification pyramid (with the built plugin present), so regenerating
+# the workflow never silently drops it. Source lanes only; no secrets.
+#
+#   source_checks:
+#     - name: Run corpus CTest smoke
+#       run: |
+#         set -euo pipefail
+#         ctest --test-dir build/corpus --output-on-failure
 #
 # Generate GitHub Actions workflows from this file:
 #   ost ci generate github
@@ -840,6 +929,43 @@ cells:
         assert!(!is_placeholder_digest("0000"));
         let m = SupportMatrix::from_yaml(&valid_yaml()).unwrap();
         assert!(m.placeholder_digests().is_empty());
+    }
+
+    #[test]
+    fn source_checks_parse_default_empty_and_accept_a_smoke_step() {
+        // Absent by default.
+        let m = SupportMatrix::from_yaml(&valid_yaml()).unwrap();
+        assert!(m.source_checks.is_empty());
+
+        // A repo can declare a post-build smoke step (report ask #5).
+        let with = format!(
+            "{}source_checks:\n  - name: Run corpus CTest smoke\n    run: |\n      ctest --test-dir build/corpus --output-on-failure\n",
+            valid_yaml()
+        );
+        let m = SupportMatrix::from_yaml(&with).unwrap();
+        assert_eq!(m.source_checks.len(), 1);
+        assert_eq!(m.source_checks[0].name, "Run corpus CTest smoke");
+        assert!(m.source_checks[0].run.contains("ctest --test-dir"));
+    }
+
+    #[test]
+    fn source_checks_reject_injection_and_secrets() {
+        let base = valid_yaml();
+        // A name that could break the `- name:` YAML line.
+        let bad_name = format!("{base}source_checks:\n  - name: \"oops: run\"\n    run: echo hi\n");
+        let err = SupportMatrix::from_yaml(&bad_name).unwrap_err().to_string();
+        assert!(err.contains("name"), "got: {err}");
+
+        // A run referencing secrets violates fork-PR safety.
+        let secret = format!(
+            "{base}source_checks:\n  - name: leak\n    run: echo ${{{{ secrets.TOKEN }}}}\n"
+        );
+        let err = SupportMatrix::from_yaml(&secret).unwrap_err().to_string();
+        assert!(err.contains("secrets"), "got: {err}");
+
+        // Empty run is rejected.
+        let empty = format!("{base}source_checks:\n  - name: nop\n    run: \"  \"\n");
+        assert!(SupportMatrix::from_yaml(&empty).is_err());
     }
 
     fn lanes_yaml() -> String {

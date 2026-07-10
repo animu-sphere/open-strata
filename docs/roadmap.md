@@ -302,24 +302,28 @@ them. Each release is a coherent slice, not a phase boundary.
     leftovers deterministically once the holder exits (reported as
     `STAGE_CLEANED`). The sweep returns a real swept/leftover accounting instead
     of being silent best-effort. Unit-tested.
-  - **P2 — first-class repo-specific smoke tests in generated source CI (report
-    ask #5).** Regenerating with v0.10.0 silently dropped the repo's custom `Run
-    corpus CTest smoke` step, so the hosted PR workflow lost corpus coverage. Give
-    the CI contract a first-class way to keep repo-specific post-build checks —
-    declarative post-build commands in `openstrata.ci.yaml`, or make `ost plugin
-    test` cover the corpus assets directly — so renderer output never drops
-    coverage the repo relies on.
-  - **P2 — document Linux build prerequisites (report ask #3).** The WSL/Ubuntu
-    26.04 `--build` needed a source-built Python 3.13.14 (`python3.13` is not an
-    apt package even on a very new Ubuntu), `unzip`, `libxt-dev`, and the usual
-    compiler/CMake/Ninja/X11/OpenGL dev packages; the oneTBB GitHub archive URL
-    also 504'd as HTML (`codeload.github.com` worked as a cache seed). Document
-    these, and harden the downloader against a 504-HTML-as-archive failure.
-  - **P2 — re-test build-host dep preflight on a clean Python (report ask #6).**
-    v0.10.0's runtime-side `jinja2` provisioning is confirmed; the remaining
-    unknown is whether the host-side preflight (warn on missing
-    `Jinja2`/`PyOpenGL`/`PySide6` before `build_usd.py`) gives a clear message on a
-    pristine Python. Verify on a clean interpreter.
+  - ✅ **P2 — first-class repo-specific smoke tests in generated source CI (report
+    ask #5).** The support matrix now takes a declarative `source_checks:` list;
+    each entry (`name` + bash `run`) renders as a step in the generated source-CI
+    workflow after the verification pyramid and before packaging, so regenerating
+    never silently drops repo coverage like the `Run corpus CTest smoke` step.
+    Both fields are validated (charset-hardened name, control-char-free run, no
+    `secrets.` — preserving fork-PR safety). Unit-tested (parse/validate + render
+    placement/order).
+  - ✅ **P2 — document Linux build prerequisites (report ask #3).** `docs/examples.md`
+    now documents the Linux `--build` prerequisites (dev packages incl.
+    `libxt-dev`/`unzip`, the source-built `--enable-shared` Python 3.13, the
+    Python-package preflight, and the portable-runtime glibc-floor caveat). The
+    504-HTML-as-archive flake is documented as an **upstream** `build_usd.py`
+    downloader issue with a `codeload.github.com` pre-seed workaround — it lives
+    in the script `ost` shells out to, not `ost`'s own digest-verified transport,
+    so `ost` cannot repair it.
+  - ✅ **P2 — re-test build-host dep preflight on a clean Python (report ask #6).**
+    Verified: the preflight probe (`importlib.util.find_spec` over the
+    profile-implied imports) correctly reports absent modules, and the warning —
+    including the exact `pip install` fix line — was extracted into a pure,
+    unit-tested `missing_dep_warning` so the previously-untestable message path is
+    now covered without needing a pristine interpreter.
 - ⬜ **v0.12.0 — trust policy foundation.** With a producer verb in place, close
   the publish-side trust boundary (future-policy §3.2/§7/§11). An
   `openstrata-artifact-policy.toml` with protected-namespace + allowed-publisher
@@ -1389,30 +1393,54 @@ blocker. Ranked:
   (fragile, non-portable; the ask's "and/or"). Unit-tested: `fs` sweep counts +
   clean reclaim, the Windows-gated locked-stage fallback→reclaim, and the CLI
   helper's warning shape. Documented in `docs/examples.md`.
-- ⬜ **P2 — first-class way to keep repo-specific smoke tests in generated source
+- ✅ **P2 — first-class way to keep repo-specific smoke tests in generated source
   CI (report ask #5).** Regenerating the workflow with `ost 0.10.0` silently
   removed the repo's custom `Run corpus CTest smoke` step, so the hosted PR
-  workflow now runs the `ost plugin test` pyramid + package but lost standalone
-  corpus coverage the roadmap still wants in CI. Either support declarative
-  post-build commands in `openstrata.ci.yaml` (rendered into the generated
-  workflow) or make `ost plugin test` cover the corpus assets directly — so
-  renderer output never drops coverage the repo depends on.
-- ⬜ **P2 — document Linux build prerequisites + harden the downloader (report ask
-  #3).** The WSL/Ubuntu-26.04 `--build` needed a source-built Python 3.13.14
-  (`--enable-shared`; `python3.13` is not an apt package even on a very new
-  Ubuntu), `unzip`, `libxt-dev` (MaterialX: `Error in building
-  MaterialXRenderGlsl: Xt was not found`), and the usual compiler/CMake/Ninja/
-  X11/OpenGL dev packages. `build_usd.py` also fetched the oneTBB
-  `github.com/.../v2020.3.1.zip` as a 504 HTML page and failed with "unrecognized
-  archive file type" — `codeload.github.com` for the same tag worked as a cache
-  seed. Document the Linux prerequisites and make the downloader detect a
-  504-HTML-body-as-archive rather than surfacing an opaque unpack error.
-- ⬜ **P2 — re-test build-host dependency preflight on a clean Python (report ask
-  #6).** v0.10.0's runtime-side `jinja2`/`MarkupSafe` provisioning is confirmed
-  landed. The remaining unknown, untested because the host already had the deps, is
-  whether the host-side preflight warns clearly on a pristine Python missing
-  `Jinja2`/`PyOpenGL`/`PySide6` *before* invoking `build_usd.py`. Verify on a clean
-  interpreter that the warning (and its `pip install` fix line) actually fires.
+  workflow ran the `ost plugin test` pyramid + package but lost standalone corpus
+  coverage. **Landed:** the declarative route. `openstrata.ci.yaml` takes an
+  optional matrix-level `source_checks:` list; each entry (`name` + bash `run`)
+  renders as a workflow step in the generated **source-CI** job(s), spliced in
+  after the verification pyramid and before packaging (so the built plugin is
+  present and the package step still runs last). Regeneration re-emits the checks
+  every time, so renderer output no longer drops repo-declared coverage. Chose
+  declarative post-build steps over teaching `ost plugin test` about corpus assets
+  (keeps the pyramid's contract fixed; a repo's smoke command stays the repo's).
+  Both fields are validated as injection/fork-PR hardening — `name` to a plain
+  step-title charset (no `:`/`#`/newline breakout), `run` rejects control chars
+  and (like the rest of source CI) any `secrets.` reference. The `run` renders as
+  a literal block scalar with every line re-indented, so a multi-line script
+  cannot escape its step. Support lanes (which re-verify pinned artifacts and
+  never build from source) are unaffected. Unit-tested: parse + default-empty,
+  name/secrets/empty-run rejection, and render placement/order + determinism +
+  fork-PR safety. Documented in the `ost ci init` scaffold comment and
+  `docs/examples.md`.
+- ✅ **P2 — document Linux build prerequisites (report ask #3).** **Landed:**
+  `docs/examples.md` gains a "Linux `--build` prerequisites" section — the dev
+  packages `build_usd.py`'s deps link against (incl. `libxt-dev` for MaterialX's
+  `MaterialXRenderGlsl`/`Xt` and `unzip`), why the interpreter must be a
+  source-built `--enable-shared` Python 3.13 (`python3.13` is not an apt package),
+  a pointer to `ost`'s Python-package preflight (Jinja2 for schema gen, PySide6 +
+  PyOpenGL for usdview), and the portable-runtime glibc-floor caveat (build
+  against an old glibc base; `ost` measures and stamps the floor and
+  `--require-target` enforces it). The 504-HTML-body-as-archive flake is
+  documented honestly as an **upstream `build_usd.py` downloader** issue with a
+  `codeload.github.com` pre-seed workaround: `build_usd.py`'s fetch is a
+  third-party script `ost` shells out to, not `ost`'s own (digest-verified)
+  transport, so `ost` has no seam to detect the bad body there. (The
+  hardening-the-downloader half of the original ask is therefore out of `ost`'s
+  reach; recorded as documented rather than fixed.)
+- ✅ **P2 — re-test build-host dependency preflight on a clean Python (report ask
+  #6).** v0.10.0's runtime-side `jinja2`/`MarkupSafe` provisioning was already
+  confirmed; the open question was whether the *host-side* preflight warns clearly
+  on a pristine Python missing `Jinja2`/`PyOpenGL`/`PySide6` before invoking
+  `build_usd.py`. **Verified:** the probe — `python -c "import importlib.util as
+  u; …find_spec(m) is None"` over the profile-implied imports — was exercised
+  directly and correctly reports absent modules (a present host reports only the
+  genuinely-missing one). The warning body (including the `-m pip install <pip
+  names>` fix line, mapped from import name → pip name) was extracted into a pure
+  `missing_dep_warning` and unit-tested, so the message path is covered without
+  needing a clean interpreter on the CI host. The `build_dep_requirements`
+  capability→dep mapping was already unit-tested.
 
 ## Phase 7 — Sessions / sandbox ⬜
 

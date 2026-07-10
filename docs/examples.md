@@ -76,6 +76,40 @@ ost runtime pull cy2026 --profile usd \
 ost runtime pull cy2026 --profile usd --from-artifact sha256:3fa9c1d2…
 ```
 
+### Linux `--build` prerequisites
+
+`--build` runs OpenUSD's own `build_scripts/build_usd.py`, which fetches and
+compiles the dependency tree itself. On a fresh Linux host (this list is from a
+WSL/Ubuntu-26.04 dogfood) it needs, beyond a C/C++ toolchain, CMake and Ninja:
+
+```bash
+# Debian/Ubuntu — dev packages build_usd.py's deps link against
+sudo apt install -y build-essential cmake ninja-build git unzip \
+  libx11-dev libxt-dev libgl1-mesa-dev libglu1-mesa-dev   # libxt-dev: MaterialX GLSL render
+```
+
+- **A shared-library Python 3.13.** `build_usd.py` links usdview/schema tooling
+  against `libpython`, so the interpreter must be built `--enable-shared`. On
+  Ubuntu there is no `python3.13` apt package even on very new releases; build
+  CPython from source with `./configure --enable-shared` (and put its `lib` on
+  `LD_LIBRARY_PATH`). `ost` preflights the *Python packages* the profile implies
+  (Jinja2 for schema generation; PySide6 + PyOpenGL for usdview) and prints the
+  exact `pip install` fix before `build_usd.py` runs — install them into that
+  interpreter first.
+- **Portable-runtime note (glibc floor).** A Linux runtime you intend to
+  `ost runtime export` and ship should be built against an *old* glibc base:
+  `ost` measures the real glibc floor from the packed ELF binaries and stamps it
+  onto the artifact target (e.g. `glibc243`), and `--require-target` rejects a
+  consumer whose host glibc is older. Building on a bleeding-edge distro bakes in
+  a high floor that narrows where the artifact can run.
+- **Known upstream downloader flake.** `build_usd.py`'s fetch is upstream code
+  `ost` shells out to, not `ost`'s own (digest-verified) transport — so `ost`
+  cannot repair it. If a dependency download returns an HTML error page (a
+  `github.com/.../vX.Y.Z.zip` 504 has been seen) `build_usd.py` fails with an
+  opaque *"unrecognized archive file type"*. Work around it by pre-seeding that
+  archive from `codeload.github.com/<owner>/<repo>/zip/refs/tags/<tag>` (or a
+  mirror) into build_usd.py's dependency source/download directory and retrying.
+
 A pulled **real, validated** runtime can go the other way — into the registry —
 so other machines fetch it by digest instead of rebuilding:
 
