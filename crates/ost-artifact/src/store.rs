@@ -390,7 +390,11 @@ impl ArtifactStore {
                     "stored archive for {} contains {} entr{} unsafe to extract: {}",
                     record.short_digest(),
                     unsafe_entries.len(),
-                    if unsafe_entries.len() == 1 { "y" } else { "ies" },
+                    if unsafe_entries.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    },
                     unsafe_entries.join("; "),
                 ),
             ));

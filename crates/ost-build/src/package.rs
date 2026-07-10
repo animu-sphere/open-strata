@@ -469,9 +469,9 @@ fn validate_symlink(stage: &Utf8Path, link: &Utf8Path) -> io::Result<String> {
     // `strip_prefix` is a caller bug — treat it as unsafe rather than fall back
     // to the absolute path, which would silently widen the `..`-pop budget and
     // let a target resolve outside the stage while still passing.
-    let link_rel = link.strip_prefix(stage).map_err(|_| {
-        unsupported_entry("symlink resolved outside the staging area", link)
-    })?;
+    let link_rel = link
+        .strip_prefix(stage)
+        .map_err(|_| unsupported_entry("symlink resolved outside the staging area", link))?;
     let mut stack: Vec<&str> = link_rel
         .as_str()
         .split(['/', '\\'])
