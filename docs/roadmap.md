@@ -272,9 +272,11 @@ them. Each release is a coherent slice, not a phase boundary.
     immediately. **Landed:** the double-`sha256:` bug is fixed — `push` used
     `digest::sha256_hex` output (already `sha256:<hex>`) verbatim, and a regression
     test asserts every uploaded blob digest is well-formed, closing the upload
-    blocker. Still ⬜: the credential story (a static `OST_REGISTRY_TOKEN` 403 vs the
-    working user/password token exchange) needs a clearer hint + docs, and a real
-    GHCR round-trip.
+    blocker. A write that is denied now gets a push-specific, auth-mode-keyed hint
+    (a `static-token` 403 steers to the user/password token exchange for `pull,push`
+    scope; a rejected credential points at `write:packages`), and the docs mark
+    `OST_REGISTRY_TOKEN` pull-only. Still ⬜: a real GHCR round-trip to confirm the
+    user/password path end to end (needs live credentials).
   - ✅ **P1 — Linux symlinks in runtime export (report ask #2).** Linux SDKs
     contain normal shared-library symlink chains (`libFoo.so → libFoo.so.1 →
     libFoo.so.1.39.4`; the built runtime had 48). `runtime export --slim` rejected
@@ -293,12 +295,13 @@ them. Each release is a coherent slice, not a phase boundary.
     on both the produce and consume sides plus a full CLI `export → artifact
     handoff → pull --from-artifact` round-trip that proves a soname chain survives
     as symlinks.
-  - **P1 — quieter / actionable package-stage fallback (report ask #4).** Repeated
-    `ost plugin package` runs still emit `STAGE_FALLBACK` (previous `package-stage`
-    held open by another process, so `ost` staged into `package-stage-<id>`). The
-    fallback beats the old hard failure, but v0.11.0 should identify the locking
-    process, deterministically sweep stale fallback stages, and/or expose a
-    `--clean-stage` operator escape hatch.
+  - ✅ **P1 — quieter / actionable package-stage fallback (report ask #4).**
+    `STAGE_FALLBACK` now names how many stale fallback siblings are still locked
+    and points at the `--clean-stage` escape hatch (on both `ost package` and
+    `ost plugin package`), which reclaims the stable stage name harder and sweeps
+    leftovers deterministically once the holder exits (reported as
+    `STAGE_CLEANED`). The sweep returns a real swept/leftover accounting instead
+    of being silent best-effort. Unit-tested.
   - **P2 — first-class repo-specific smoke tests in generated source CI (report
     ask #5).** Regenerating with v0.10.0 silently dropped the repo's custom `Run
     corpus CTest smoke` step, so the hosted PR workflow lost corpus coverage. Give
@@ -1329,10 +1332,19 @@ blocker. Ranked:
   blob (uploaded first) hit GHCR as `sha256:sha256:44136…` → HTTP 400. The values
   are now used verbatim, and the push idempotency test asserts every uploaded blob
   digest is a single well-formed `sha256:<hex>` (via `is_sha256_ref`) — the mock
-  registry had masked the bug by matching the same double-prefixed string. Still ⬜:
-  the credential story (a static `OST_REGISTRY_TOKEN` 403 vs the working
-  user/password token exchange) needs a clearer 403-on-write hint + docs, and a real
-  GHCR round-trip to confirm the user/password path end to end.
+  registry had masked the bug by matching the same double-prefixed string. **Also
+  landed:** the credential story is now honest about push. A write that the
+  registry answers 401/403 gets a push-specific, auth-mode-keyed hint (via
+  `write_auth_hint`) instead of the generic pull hint: a `static-token` 403 (the
+  report's `OST_REGISTRY_TOKEN` case — a bearer presented verbatim is accepted for
+  reads but cannot carry `push` scope, and a 403 triggers no exchange retry) steers
+  to `OST_REGISTRY_USER` + `OST_REGISTRY_PASSWORD` so `ost` runs the token exchange
+  for `pull,push`; a rejected credential (`token-exchange-basic`) points at the
+  `write:packages` scope and package write permission; an anonymous write says a push
+  cannot be anonymous. `docs/examples.md` now documents `OST_REGISTRY_TOKEN` as
+  pull-only and the credential path as the push requirement, and the module doc
+  records the same. Unit-tested per auth mode. Still ⬜: a real GHCR round-trip to
+  confirm the user/password path end to end (needs live credentials).
 - ✅ **P1 — support Linux symlinks in runtime export (report ask #2).** Direct
   `runtime export --slim` of the build-source Linux runtime failed with `symlink
   is not allowed in the package staging area:
@@ -1360,13 +1372,23 @@ blocker. Ranked:
   `runtime export → artifact export/import → runtime pull --from-artifact`
   round-trip asserting the chain materializes as symlinks pointing at the one real
   object.
-- ⬜ **P1 — quieter / more actionable package-stage fallback (report ask #4).**
-  `ost plugin package` succeeds, but repeated runs emit `STAGE_FALLBACK`: the prior
-  `package-stage` was "held open by another process", so `ost` staged into
-  `package-stage-<id>`. The v0.8.0 fallback beats the old hard failure, but v0.11.0
-  should identify the locking process, deterministically sweep stale fallback
-  stages, and/or expose a `--clean-stage` operator escape hatch so the warning is
-  actionable rather than recurring noise.
+- ✅ **P1 — quieter / more actionable package-stage fallback (report ask #4).**
+  `ost plugin package` (and `ost package`) succeeded but repeated runs emitted an
+  opaque, recurring `STAGE_FALLBACK`: the prior `package-stage` was "held open by
+  another process", so `ost` staged into `package-stage-<id>` and said only that a
+  later run would sweep it. **Landed:** `prepare_staging_dir` now returns a
+  `StagingOutcome` with a real swept/leftover accounting (the sweep was previously
+  silent best-effort), and the shared `prepare_package_stage` CLI helper turns that
+  into an *actionable* warning — `STAGE_FALLBACK` names how many stale fallback
+  siblings are still locked and points at the new `--clean-stage` escape hatch.
+  `--clean-stage` (on both commands) reclaims the stable stage name with extra
+  bounded retry rounds so it deterministically recovers once the holding process
+  exits (rather than accumulating another sibling), and reports what it swept as
+  `STAGE_CLEANED`. The JSON warnings carry `leftover`/`swept` for tooling. Chose the
+  `--clean-stage` + accounting route over OS-specific locking-process identification
+  (fragile, non-portable; the ask's "and/or"). Unit-tested: `fs` sweep counts +
+  clean reclaim, the Windows-gated locked-stage fallback→reclaim, and the CLI
+  helper's warning shape. Documented in `docs/examples.md`.
 - ⬜ **P2 — first-class way to keep repo-specific smoke tests in generated source
   CI (report ask #5).** Regenerating the workflow with `ost 0.10.0` silently
   removed the repo's custom `Run corpus CTest smoke` step, so the hosted PR

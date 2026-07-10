@@ -190,3 +190,102 @@ pub(crate) fn with_host_python_on_path(
     }
     env
 }
+
+/// Prepare a package staging directory and translate the outcome into
+/// warning/note JSON shared by `ost package` and `ost plugin package`.
+///
+/// A rerun must not fail on a stage a previous run left temporarily undeletable
+/// (scanner-held handles, dogfooding report #9): [`prepare_staging_dir`] stages
+/// into a fresh sibling instead. This surfaces that as an actionable
+/// `STAGE_FALLBACK` warning — naming any stale siblings still locked and the
+/// `--clean-stage` escape hatch — rather than the previous recurring, opaque
+/// note (dogfooding report 2026-07-10 ask #4). `clean` is `--clean-stage`: it
+/// reclaims the stable name harder and, even on success, reports what it swept.
+pub(crate) fn prepare_package_stage(
+    preferred: &camino::Utf8Path,
+    clean: bool,
+) -> Result<(Utf8PathBuf, Vec<serde_json::Value>)> {
+    let outcome = ost_core::fs::prepare_staging_dir(preferred.as_std_path(), clean)?;
+    let stage = Utf8PathBuf::from_path_buf(outcome.path.clone())
+        .map_err(|p| Error::Operation(format!("non-UTF-8 staging path: {}", p.display())))?;
+
+    let mut warnings = Vec::new();
+    if outcome.fell_back(preferred.as_std_path()) {
+        let leftover_note = if outcome.leftover > 0 {
+            format!(
+                "; {} stale fallback stage(s) are still locked — rerun with --clean-stage \
+                 once the holding process exits to reclaim them",
+                outcome.leftover
+            )
+        } else {
+            "; a later run (or --clean-stage) sweeps it".to_string()
+        };
+        warnings.push(serde_json::json!({
+            "code": "STAGE_FALLBACK",
+            "message": format!(
+                "previous package stage '{preferred}' is held open by another process; \
+                 staged into '{stage}' instead{leftover_note}"
+            ),
+            "fallback_stage": stage.to_string(),
+            "leftover": outcome.leftover,
+        }));
+    } else if clean && (outcome.swept > 0 || outcome.leftover > 0) {
+        // The operator asked to clean and something was there to clean: report
+        // the accounting even though staging itself did not fall back.
+        warnings.push(serde_json::json!({
+            "code": "STAGE_CLEANED",
+            "message": format!(
+                "reclaimed the package stage '{preferred}'; swept {} stale fallback stage(s), \
+                 {} still locked",
+                outcome.swept, outcome.leftover
+            ),
+            "swept": outcome.swept,
+            "leftover": outcome.leftover,
+        }));
+    }
+    Ok((stage, warnings))
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> Utf8PathBuf {
+        let dir = std::env::temp_dir().join(format!("ost-stage-{tag}-{}", std::process::id()));
+        Utf8PathBuf::from_path_buf(dir).unwrap()
+    }
+
+    #[test]
+    fn ordinary_run_reclaims_the_stable_name_with_no_warnings() {
+        let dir = scratch("plain");
+        let preferred = dir.join("package-stage");
+        std::fs::create_dir_all(preferred.join("lib").as_std_path()).unwrap();
+
+        let (stage, warnings) = prepare_package_stage(&preferred, false).unwrap();
+        assert_eq!(stage, preferred, "an unlocked stage is reused in place");
+        assert!(warnings.is_empty(), "no fallback, no warning: {warnings:?}");
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn clean_stage_reports_what_it_swept() {
+        // `--clean-stage` reclaims the stable name and, because a stale fallback
+        // sibling was present, reports the sweep as an actionable note.
+        let dir = scratch("clean");
+        let preferred = dir.join("package-stage");
+        std::fs::create_dir_all(preferred.as_std_path()).unwrap();
+        let stale = dir.join("package-stage-0123456789abcdef");
+        std::fs::create_dir_all(stale.as_std_path()).unwrap();
+
+        let (stage, warnings) = prepare_package_stage(&preferred, true).unwrap();
+        assert_eq!(stage, preferred);
+        assert!(!stale.as_std_path().exists(), "stale fallback was swept");
+        assert_eq!(warnings.len(), 1, "the sweep is reported");
+        assert_eq!(warnings[0]["code"], "STAGE_CLEANED");
+        assert_eq!(warnings[0]["swept"], 1);
+        assert_eq!(warnings[0]["leftover"], 0);
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+}

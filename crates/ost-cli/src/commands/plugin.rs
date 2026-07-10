@@ -89,6 +89,11 @@ pub enum PluginCmd {
         /// Profile to package against. Defaults to the enclosing project's.
         #[arg(long)]
         profile: Option<String>,
+        /// Reclaim the stable package stage harder and sweep stale fallback
+        /// stages a previous locked run left behind, instead of quietly staging
+        /// into another sibling. Use once the holding process has exited.
+        #[arg(long)]
+        clean_stage: bool,
     },
     /// Publish a packaged plugin artifact into the local registry (by digest).
     Publish {
@@ -211,7 +216,8 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             bundle,
             target,
             profile,
-        } => package(&bundle, target, profile, fmt),
+            clean_stage,
+        } => package(&bundle, target, profile, clean_stage, fmt),
         PluginCmd::Publish {
             bundle,
             target,
@@ -656,6 +662,7 @@ fn package(
     bundle_path: &str,
     target: Option<String>,
     profile: Option<String>,
+    clean_stage: bool,
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
@@ -705,22 +712,10 @@ fn package(
     let session = session_env_with(&r.env, &packaged_bundle, &[], host.os);
     // Reruns must not fail on a stage the previous run left temporarily
     // undeletable (scanner-held handles, dogfooding report #9): stage into a
-    // fresh sibling instead, and surface that as a warning.
+    // fresh sibling instead, and surface that as an actionable warning
+    // (`--clean-stage` reclaims the stable name).
     let preferred_stage = target_state_dir(&bundle.root, &id).join("package-stage");
-    let stage = ost_core::fs::prepare_staging_dir(preferred_stage.as_std_path())?;
-    let stage = Utf8PathBuf::from_path_buf(stage)
-        .map_err(|p| Error::Operation(format!("non-UTF-8 staging path: {}", p.display())))?;
-    let stage_warnings = if stage == preferred_stage {
-        Vec::new()
-    } else {
-        vec![serde_json::json!({
-            "code": "STAGE_FALLBACK",
-            "message": format!(
-                "previous package stage '{preferred_stage}' is held open by another \
-                 process; staged into '{stage}' instead (a later run sweeps it)"
-            ),
-        })]
-    };
+    let (stage, stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
     stage_plugin_bundle(&packaged_bundle, &stage)?;
     write_packaged_manifest(&stage.join(ost_plugin::PLUGIN_MANIFEST), &packaged_manifest)?;
     write_validation_files(&packaged_bundle, &report, &session, &stage)?;
