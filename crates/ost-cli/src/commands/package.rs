@@ -35,6 +35,12 @@ pub struct PackageArgs {
     /// empty tree is an error.
     #[arg(long)]
     allow_empty: bool,
+
+    /// Reclaim the stable package stage harder and sweep stale fallback stages a
+    /// previous locked run left behind, instead of quietly staging into yet
+    /// another sibling. Use once the process holding the old stage has exited.
+    #[arg(long)]
+    clean_stage: bool,
 }
 
 pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
@@ -61,22 +67,9 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     // Install into a clean stage tree. Reruns must not fail on a stage the
     // previous run left temporarily undeletable (scanner-held handles,
     // dogfooding report #9): stage into a fresh sibling instead, and surface
-    // that as a warning.
+    // that as an actionable warning (`--clean-stage` reclaims the stable name).
     let preferred_stage = root.join(STATE_DIR).join("targets").join(&id).join("stage");
-    let stage = ost_core::fs::prepare_staging_dir(preferred_stage.as_std_path())?;
-    let stage = Utf8PathBuf::from_path_buf(stage)
-        .map_err(|p| Error::Operation(format!("non-UTF-8 staging path: {}", p.display())))?;
-    let stage_warnings = if stage == preferred_stage {
-        Vec::new()
-    } else {
-        vec![serde_json::json!({
-            "code": "STAGE_FALLBACK",
-            "message": format!(
-                "previous package stage '{preferred_stage}' is held open by another \
-                 process; staged into '{stage}' instead (a later run sweeps it)"
-            ),
-        })]
-    };
+    let (stage, stage_warnings) = super::prepare_package_stage(&preferred_stage, args.clean_stage)?;
 
     // Apply the runtime environment to `cmake --install` for the same reason
     // `ost build` and `ost run` do: install rules may invoke USD/Python tooling

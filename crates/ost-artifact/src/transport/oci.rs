@@ -15,7 +15,11 @@
 //! ([`crate::transport::verify`]) then re-proves the producer manifest's own
 //! claims. Auth follows the registry token flow: anonymous → `WWW-Authenticate`
 //! bearer exchange (optionally with basic credentials from the environment) →
-//! retry; or a static token via `OST_REGISTRY_TOKEN`.
+//! retry; or a static token via `OST_REGISTRY_TOKEN`. A **push** needs the
+//! credential path (`OST_REGISTRY_USER` + `OST_REGISTRY_PASSWORD`): the token
+//! exchange requests `pull,push` scope, whereas a bearer presented verbatim
+//! (`OST_REGISTRY_TOKEN`) is accepted for reads but cannot carry push scope on
+//! GHCR-class registries, so a write with it answers 403.
 //!
 //! Redirects are followed manually (blob GETs redirect to CDNs) so the
 //! `Authorization` header is never replayed to a different host.
@@ -132,11 +136,11 @@ impl OciTransport {
                 let bearer = format!("Bearer {token}");
                 match self.raw_get(url, accept, Some(&bearer)) {
                     Ok(resp) => Ok(resp),
-                    Err(f) => Err(self.classify(reference, url, f)),
+                    Err(f) => Err(self.classify(reference, url, false, f)),
                 }
             }
             Ok(resp) => Ok(resp),
-            Err(f) => Err(self.classify(reference, url, f)),
+            Err(f) => Err(self.classify(reference, url, false, f)),
         }
     }
 
@@ -178,7 +182,7 @@ impl OciTransport {
             };
             resp = self
                 .raw_get(&next, accept, auth.as_deref())
-                .map_err(|f| self.classify(reference, &next, f))?;
+                .map_err(|f| self.classify(reference, &next, false, f))?;
             current_url = next;
         }
 
@@ -186,6 +190,7 @@ impl OciTransport {
             return Err(self.classify(
                 reference,
                 &current_url,
+                false,
                 RequestFailure::Status(resp.status(), Box::new(resp)),
             ));
         }
@@ -211,8 +216,15 @@ impl OciTransport {
         }
     }
 
-    /// Map a request failure onto the stable `ARTIFACT_*` codes.
-    fn classify(&self, reference: &OciReference, url: &str, failure: RequestFailure) -> Error {
+    /// Map a request failure onto the stable `ARTIFACT_*` codes. `write` selects
+    /// the push-aware hint for a 401/403 (a read gets the pull-side hint).
+    fn classify(
+        &self,
+        reference: &OciReference,
+        url: &str,
+        write: bool,
+        failure: RequestFailure,
+    ) -> Error {
         match failure {
             RequestFailure::Status(404, _) => Error::coded(
                 "ARTIFACT_REMOTE_NOT_FOUND",
@@ -224,19 +236,26 @@ impl OciTransport {
                 ),
             )
             .with_hint("check the repository path and that the artifact was published"),
-            RequestFailure::Status(code @ (401 | 403), _) => Error::coded(
-                "ARTIFACT_AUTH_DENIED",
-                Category::Precondition,
-                format!(
-                    "{} denied access to '{}' ({code})",
-                    reference.registry,
-                    reference.locator()
-                ),
-            )
-            .with_hint(format!(
-                "for a private registry set {ENV_TOKEN}, or {ENV_USER} + {ENV_PASSWORD} \
-                 for the token exchange"
-            )),
+            RequestFailure::Status(code @ (401 | 403), _) => {
+                let hint = if write {
+                    self.write_auth_hint(reference)
+                } else {
+                    format!(
+                        "for a private registry set {ENV_TOKEN}, or {ENV_USER} + {ENV_PASSWORD} \
+                         for the token exchange"
+                    )
+                };
+                Error::coded(
+                    "ARTIFACT_AUTH_DENIED",
+                    Category::Precondition,
+                    format!(
+                        "{} denied access to '{}' ({code})",
+                        reference.registry,
+                        reference.locator()
+                    ),
+                )
+                .with_hint(hint)
+            }
             RequestFailure::Status(code, _) => Error::coded(
                 "ARTIFACT_TRANSPORT_FAILED",
                 Category::ExternalTool,
@@ -246,6 +265,36 @@ impl OciTransport {
                 "ARTIFACT_TRANSPORT_FAILED",
                 Category::ExternalTool,
                 format!("request to {url} failed: {msg}"),
+            ),
+        }
+    }
+
+    /// The hint for a write (`push`) that the registry answered 401/403, keyed on
+    /// how this request authenticated. The common GHCR footgun: a raw
+    /// `OST_REGISTRY_TOKEN` is accepted for reads but can never carry `push` scope
+    /// — a bearer presented verbatim is not exchanged, so the registry answers 403
+    /// (not 401, so there is no exchange retry). The fix is the credential path,
+    /// which runs the token exchange requesting `pull,push`.
+    fn write_auth_hint(&self, reference: &OciReference) -> String {
+        let repo = &reference.repository;
+        match *self.auth_mode.borrow() {
+            "static-token" => format!(
+                "{ENV_TOKEN} authenticated but the registry refused the write: a bearer token \
+                 presented verbatim cannot obtain 'push' scope. Unset {ENV_TOKEN} (while it is set \
+                 ost prefers it and never runs the exchange) and set {ENV_USER} + {ENV_PASSWORD} \
+                 (a token with write:packages) so ost runs the credential token exchange for \
+                 pull,push, and confirm the credential can publish to '{repo}'"
+            ),
+            "token-exchange-basic" => format!(
+                "credentials were accepted but the registry still refused the write to '{repo}': \
+                 confirm the token has write:packages scope and your account may publish there \
+                 (on GHCR the package must grant you write, or the org must allow package creation)"
+            ),
+            // No credentials reached the exchange (anonymous, or an empty-scope
+            // exchange): a push cannot be anonymous.
+            _ => format!(
+                "a push cannot be anonymous — set {ENV_USER} + {ENV_PASSWORD} (a token with \
+                 write:packages that may publish to '{repo}') so ost runs the token exchange"
             ),
         }
     }
@@ -498,10 +547,10 @@ impl OciTransport {
                     self.build_write(method, url, &headers, Some(&bearer)),
                     &body,
                 )
-                .map_err(|f| self.classify(reference, url, f))
+                .map_err(|f| self.classify(reference, url, true, f))
             }
             Ok(resp) => Ok(resp),
-            Err(f) => Err(self.classify(reference, url, f)),
+            Err(f) => Err(self.classify(reference, url, true, f)),
         }
     }
 
@@ -1529,5 +1578,50 @@ mod tests {
         assert_eq!(err.code(), "ARTIFACT_OCI_DIGEST_MISMATCH");
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn write_auth_hint_is_keyed_on_how_the_request_authenticated() {
+        let dest = RemoteReference::parse("oci://ghcr.io/owner/rt").unwrap();
+        let transport = OciTransport::new(false);
+        let r = transport.oci(&dest).unwrap();
+
+        // The report's failure: OST_REGISTRY_TOKEN authenticated (so no 401
+        // retry) but the write was refused — steer to the credential path.
+        *transport.auth_mode.borrow_mut() = "static-token";
+        let hint = transport.write_auth_hint(r);
+        assert!(hint.contains(ENV_TOKEN), "names the token that was tried");
+        assert!(
+            hint.contains(ENV_USER) && hint.contains(ENV_PASSWORD),
+            "points at the credential exchange: {hint}"
+        );
+        assert!(hint.contains("push"), "explains the missing scope: {hint}");
+        assert!(
+            hint.contains("Unset"),
+            "tells the user to unset the token so the exchange can run \
+             (while it is set ost prefers it): {hint}"
+        );
+
+        // Credentials were exchanged but the write was still refused — a scope /
+        // permission problem, not a credential-plumbing one.
+        *transport.auth_mode.borrow_mut() = "token-exchange-basic";
+        let hint = transport.write_auth_hint(r);
+        assert!(
+            hint.contains("write:packages"),
+            "names the scope to check: {hint}"
+        );
+        assert!(hint.contains("owner/rt"), "names the repository: {hint}");
+
+        // No credentials reached the exchange — a push cannot be anonymous.
+        for mode in ["anonymous", "token-exchange"] {
+            *transport.auth_mode.borrow_mut() = mode;
+            let hint = transport.write_auth_hint(r);
+            assert!(
+                hint.contains("anonymous")
+                    && hint.contains(ENV_USER)
+                    && hint.contains(ENV_PASSWORD),
+                "{mode} hint must ask for credentials: {hint}"
+            );
+        }
     }
 }

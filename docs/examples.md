@@ -148,8 +148,16 @@ ost build --quiet                      # silence progress; output to .strata/tar
 ost build --notify                     # desktop toast on finish (no-op over SSH / in CI)
 ost package                            # install + dist/<name>/<ver>/<target>/*.tar.zst
 ost package --allow-empty              # permit a metadata-only artifact (empty install tree)
+ost package --clean-stage              # reclaim a stuck stage + sweep stale fallback stages
 ost validate                           # configured / built / runtime / artifact checks
 ```
+
+If a previous run's stage tree is briefly held open (a scanner, or another
+`ost`), packaging stages into a fresh `stage-<hex>` sibling and warns
+(`STAGE_FALLBACK`) instead of failing. The warning names how many stale
+siblings are still locked; once the holding process exits, rerun with
+`--clean-stage` to reclaim the stable stage name and sweep the leftovers
+(reported as `STAGE_CLEANED`). Same flag on `ost plugin package`.
 
 On Windows, `ost build` auto-loads the MSVC developer environment
 (`vcvars64.bat`) unless `--no-vcvars` is given.
@@ -288,9 +296,18 @@ Credentials and visibility (the two footguns standing up a first publish):
 - **`ost` does not read the `oras`/docker credential store.** For a private
   registry — including pushing to a *new* GHCR package, which is private until
   you flip it — set `OST_REGISTRY_USER` + `OST_REGISTRY_PASSWORD` (a GitHub PAT
-  with `write:packages` for GHCR), or a pre-minted bearer via
-  `OST_REGISTRY_TOKEN`. Without them a private pull/resolve returns
-  `ARTIFACT_AUTH_DENIED` even after `oras login`.
+  with `write:packages` for GHCR). Without credentials a private pull/resolve
+  returns `ARTIFACT_AUTH_DENIED` even after `oras login`.
+- **Push needs the credential path, not `OST_REGISTRY_TOKEN`.** `push` runs the
+  registry token exchange (`OST_REGISTRY_USER` + `OST_REGISTRY_PASSWORD`) to
+  request `pull,push` scope. `OST_REGISTRY_TOKEN` is a pull-only convenience: a
+  bearer presented verbatim is accepted for reads but cannot carry push scope on
+  GHCR-class registries, so a push with it authenticates and then fails with a
+  403 → `ARTIFACT_AUTH_DENIED`. If a push is refused, the hint names which fix
+  applies: `static-token` → **unset `OST_REGISTRY_TOKEN`** (while it is set `ost`
+  prefers it and never runs the exchange) and set user/password; a rejected
+  credential → confirm the PAT has `write:packages` and may publish to that
+  package.
 - **GHCR package visibility is a WebUI-only flip.** A freshly pushed package is
   private; make it public under the package's *Package settings → Change
   visibility* (not settable via the packages API, and gated by the org's

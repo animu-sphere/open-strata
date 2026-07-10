@@ -89,17 +89,51 @@ fn clear_readonly_recursive(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Extra remove+recreate rounds `--clean-stage` spends trying to reclaim the
+/// *preferred* stage name (a normal run makes one robust attempt, then falls
+/// back). Interleaved with [`CLEAN_RECLAIM_DELAY`] so a holder that has just
+/// released — a finished scanner or a prior run — is reclaimed deterministically
+/// instead of leaving the fallback name to recur.
+const CLEAN_RECLAIM_ROUNDS: u32 = 3;
+const CLEAN_RECLAIM_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The result of [`prepare_staging_dir`]: where to stage, plus the accounting of
+/// fallback siblings it swept.
+pub struct StagingOutcome {
+    /// Directory the caller must stage into. Equals the preferred path only when
+    /// that tree was reset cleanly; otherwise a fresh fallback sibling.
+    pub path: PathBuf,
+    /// Stale fallback siblings removed during this call.
+    pub swept: usize,
+    /// Stale fallback siblings that resisted removal (still locked). A later run,
+    /// or `--clean-stage` once the holder exits, reclaims them.
+    pub leftover: usize,
+}
+
+impl StagingOutcome {
+    /// Whether staging fell back to a sibling because the preferred tree could
+    /// not be reset.
+    pub fn fell_back(&self, preferred: &Path) -> bool {
+        self.path != preferred
+    }
+}
+
 /// Prepare an empty staging directory, preferring `preferred`.
 ///
 /// A rerun must not fail just because the previous run's stage is temporarily
 /// undeletable — on Windows a scanner can still hold the last run's files open,
 /// so the reset hits `access denied (os error 5)` (dogfooding report #9). After
 /// [`remove_dir_all_robust`]'s bounded retries this falls back to a fresh
-/// sibling `<name>-<16 hex>`, leaving the stuck tree behind; every call
-/// best-effort sweeps such leftovers, so a later run removes it once the
-/// handles close. Callers must stage into the returned path, which is only
+/// sibling `<name>-<16 hex>`, leaving the stuck tree behind; every call sweeps
+/// such leftovers (reporting the count in [`StagingOutcome`]), so a later run
+/// removes them once the handles close.
+///
+/// `clean` is the `--clean-stage` operator escape hatch: it spends extra
+/// [`CLEAN_RECLAIM_ROUNDS`] reclaiming the preferred name so the recurring
+/// fallback stops once the locking process has exited, rather than accumulating
+/// yet another sibling. Callers must stage into the returned path, which is only
 /// `preferred` when the reset succeeded.
-pub fn prepare_staging_dir(preferred: &Path) -> Result<PathBuf> {
+pub fn prepare_staging_dir(preferred: &Path, clean: bool) -> Result<StagingOutcome> {
     let parent = preferred
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -108,14 +142,25 @@ pub fn prepare_staging_dir(preferred: &Path) -> Result<PathBuf> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("stage");
-    sweep_stale_staging(parent, name);
+    let (swept, leftover) = sweep_stale_staging(parent, name);
 
-    if remove_dir_all_robust(preferred).is_ok() {
-        // The recreate can still fail: a removed directory lingers in
-        // delete-pending state until the last open handle closes, and creating
-        // over it is access-denied. Treat that like the removal failing.
-        if std::fs::create_dir_all(preferred).is_ok() {
-            return Ok(preferred.to_path_buf());
+    // Reclaim the preferred tree. The recreate can still fail after a successful
+    // remove: a deleted directory lingers in delete-pending state until the last
+    // open handle closes, and creating over it is access-denied — treat that like
+    // the removal failing. `--clean-stage` retries this reclaim harder so an
+    // operator can deterministically recover the stable name; a normal run makes
+    // one attempt, then falls back so the build never blocks.
+    let rounds = if clean { CLEAN_RECLAIM_ROUNDS } else { 1 };
+    for round in 0..rounds {
+        if remove_dir_all_robust(preferred).is_ok() && std::fs::create_dir_all(preferred).is_ok() {
+            return Ok(StagingOutcome {
+                path: preferred.to_path_buf(),
+                swept,
+                leftover,
+            });
+        }
+        if round + 1 < rounds {
+            std::thread::sleep(CLEAN_RECLAIM_DELAY);
         }
     }
 
@@ -124,7 +169,13 @@ pub fn prepare_staging_dir(preferred: &Path) -> Result<PathBuf> {
     for _ in 0..MAX_TEMP_ATTEMPTS {
         let alt = parent.join(format!("{name}-{:016x}", random_token()));
         match std::fs::create_dir(&alt) {
-            Ok(()) => return Ok(alt),
+            Ok(()) => {
+                return Ok(StagingOutcome {
+                    path: alt,
+                    swept,
+                    leftover,
+                })
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
             Err(e) => return Err(Error::io(alt.display().to_string(), e)),
         }
@@ -135,14 +186,17 @@ pub fn prepare_staging_dir(preferred: &Path) -> Result<PathBuf> {
     Err(Error::io(preferred.display().to_string(), e))
 }
 
-/// Best-effort removal of fallback staging directories a previous run left
-/// behind (`<name>-<16 hex>` siblings of the preferred stage). Failures are
-/// ignored: a still-locked tree just waits for a later sweep.
-fn sweep_stale_staging(parent: &Path, name: &str) {
+/// Remove the fallback staging directories a previous run left behind
+/// (`<name>-<16 hex>` siblings of the preferred stage), returning
+/// `(swept, leftover)` — how many were removed and how many resisted (still
+/// locked). A still-locked tree just waits for a later sweep, so its count is
+/// reported rather than raised as an error.
+fn sweep_stale_staging(parent: &Path, name: &str) -> (usize, usize) {
     let Ok(entries) = std::fs::read_dir(parent) else {
-        return;
+        return (0, 0);
     };
     let prefix = format!("{name}-");
+    let (mut swept, mut leftover) = (0, 0);
     for entry in entries.flatten() {
         let file_name = entry.file_name();
         let Some(s) = file_name.to_str() else {
@@ -152,9 +206,13 @@ fn sweep_stale_staging(parent: &Path, name: &str) {
             continue;
         };
         if suffix.len() == 16 && suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
-            let _ = remove_dir_all_robust(&entry.path());
+            match remove_dir_all_robust(&entry.path()) {
+                Ok(()) => swept += 1,
+                Err(_) => leftover += 1,
+            }
         }
     }
+    (swept, leftover)
 }
 
 /// Write `contents` to `path` atomically.
@@ -312,9 +370,10 @@ mod tests {
         perms.set_readonly(true);
         std::fs::set_permissions(&leftover, perms).unwrap();
 
-        let stage = prepare_staging_dir(&preferred).unwrap();
-        assert_eq!(stage, preferred, "deletable stage is reused in place");
-        assert!(stage.is_dir(), "stage was recreated");
+        let out = prepare_staging_dir(&preferred, false).unwrap();
+        assert_eq!(out.path, preferred, "deletable stage is reused in place");
+        assert!(!out.fell_back(&preferred));
+        assert!(out.path.is_dir(), "stage was recreated");
         assert!(!leftover.exists(), "old contents were removed");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -324,9 +383,9 @@ mod tests {
     fn prepare_staging_dir_creates_missing_parents() {
         let dir = scratch("stage-fresh");
         let preferred = dir.join("targets").join("t").join("package-stage");
-        let stage = prepare_staging_dir(&preferred).unwrap();
-        assert_eq!(stage, preferred);
-        assert!(stage.is_dir());
+        let out = prepare_staging_dir(&preferred, false).unwrap();
+        assert_eq!(out.path, preferred);
+        assert!(out.path.is_dir());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -335,14 +394,40 @@ mod tests {
         let dir = scratch("stage-sweep");
         let preferred = dir.join("package-stage");
         let stale = dir.join("package-stage-0123456789abcdef");
+        let stale2 = dir.join("package-stage-fedcba9876543210");
         let unrelated = dir.join("package-stage-notahexsuffix!");
         std::fs::create_dir_all(stale.join("lib")).unwrap();
+        std::fs::create_dir_all(&stale2).unwrap();
         std::fs::create_dir_all(&unrelated).unwrap();
 
-        let stage = prepare_staging_dir(&preferred).unwrap();
-        assert_eq!(stage, preferred);
+        let out = prepare_staging_dir(&preferred, false).unwrap();
+        assert_eq!(out.path, preferred);
+        assert_eq!(out.swept, 2, "both hex-suffixed fallbacks were swept");
+        assert_eq!(out.leftover, 0, "nothing resisted removal");
         assert!(!stale.exists(), "fallback leftover was swept");
+        assert!(!stale2.exists(), "second fallback leftover was swept");
         assert!(unrelated.is_dir(), "non-fallback siblings are untouched");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clean_stage_reclaims_the_preferred_name() {
+        // `--clean-stage` on an ordinary (unlocked) tree behaves like a normal
+        // prepare: it reclaims the preferred name and reports the sweep. The
+        // extra reclaim rounds only cost time when a reclaim actually fails.
+        let dir = scratch("stage-clean");
+        let preferred = dir.join("package-stage");
+        std::fs::create_dir_all(preferred.join("lib")).unwrap();
+        let stale = dir.join("package-stage-0123456789abcdef");
+        std::fs::create_dir_all(&stale).unwrap();
+
+        let out = prepare_staging_dir(&preferred, true).unwrap();
+        assert_eq!(out.path, preferred, "clean run reclaims the stable name");
+        assert!(!out.fell_back(&preferred));
+        assert_eq!(out.swept, 1, "the stale fallback was swept");
+        assert!(!stale.exists());
+        assert!(out.path.is_dir());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -369,19 +454,24 @@ mod tests {
             .open(&locked)
             .unwrap();
 
-        let stage = prepare_staging_dir(&preferred).expect("rerun must not fail on a locked stage");
-        assert_ne!(stage, preferred, "locked stage forces a fallback sibling");
-        assert!(stage.is_dir(), "fallback stage exists");
-        let stage_name = stage.file_name().unwrap().to_str().unwrap();
+        let out =
+            prepare_staging_dir(&preferred, false).expect("rerun must not fail on a locked stage");
+        assert!(
+            out.fell_back(&preferred),
+            "locked stage forces a fallback sibling"
+        );
+        assert!(out.path.is_dir(), "fallback stage exists");
+        let stage_name = out.path.file_name().unwrap().to_str().unwrap();
         assert!(
             stage_name.starts_with("package-stage-"),
             "fallback is a recognizable sibling: {stage_name}"
         );
 
         drop(holder);
-        let swept = prepare_staging_dir(&preferred).unwrap();
-        assert_eq!(swept, preferred, "unlocked stage is reclaimed");
-        assert!(!stage.exists(), "previous fallback was swept");
+        let reclaimed = prepare_staging_dir(&preferred, true).unwrap();
+        assert_eq!(reclaimed.path, preferred, "unlocked stage is reclaimed");
+        assert_eq!(reclaimed.swept, 1, "the previous fallback was swept");
+        assert!(!out.path.exists(), "previous fallback was swept");
 
         std::fs::remove_dir_all(&dir).ok();
     }
