@@ -237,7 +237,7 @@ them. Each release is a coherent slice, not a phase boundary.
     publisher verification, provenance / SBOM bundle, trust levels in the support
     matrix, and generated trusted-publish CI — sequenced below (after the v0.11.0
     producer-correctness slice).
-- 🚧 **v0.11.0 — producer-side correctness + Linux runtime portability.** The
+- ✅ **v0.11.0 — producer-side correctness + Linux runtime portability.** The
   first *produce*-side hardening pass, from the 2026-07-10 recheck dogfooding
   report (`2026-07-10-v0.10.0-recheck-v0.11.0-asks.md`). That report re-verified
   every v0.10.0 P0/P1 ask as landed (from-source version stamp, runtime
@@ -264,7 +264,7 @@ them. Each release is a coherent slice, not a phase boundary.
     the false-pass is closed at its source. Still ⬜ (a P2 doc): a note that portable
     Linux runtimes are built against an old glibc base (manylinux_2_28 /
     older-Ubuntu / container).
-  - 🚧 **P0 — fix `ost artifact push` against GHCR (report ask #1).** The producer
+  - ✅ **P0 — fix `ost artifact push` against GHCR (report ask #1).** The producer
     verb shipped in v0.10.0 could not actually push to GHCR: `OST_REGISTRY_TOKEN`
     returned 403, and `OST_REGISTRY_USER`/`_PASSWORD` advanced to upload but sent an
     invalid `digest=sha256:sha256:<hex>` request (a double-`sha256:` producer bug)
@@ -1286,7 +1286,7 @@ its v0.10.0 slice. Delivered:
 
 ### Phase 6 — v0.11.0 backlog (from the 2026-07-10 recheck dogfooding report)
 
-**Targeted for v0.11.0.** The 2026-07-10 recheck report
+**Released in v0.11.0.** The 2026-07-10 recheck report
 (`2026-07-10-v0.10.0-recheck-v0.11.0-asks.md`, `ost 0.10.0`) re-verified every
 v0.10.0 P0/P1 ask as landed — `--build` stamps the built OpenUSD version
 (`26.05`) and validates without re-adopting, the runtime ships `jinja2` +
@@ -1297,7 +1297,7 @@ dogfood plus a public GHCR round-trip proving Windows **and** Linux runtime
 *consumption* by digest (anonymous `resolve` + digest-pinned `pull` with
 `--expect-artifact` / `--require-kind` / `--require-target`). The consume side is
 excellent; every remaining edge is on the *produce* side, and one is a hard
-blocker. Ranked:
+blocker. Delivered:
 
 - ✅ **P0 (BLOCKER) — measure and record the real glibc floor for Linux runtimes
   (report ask #7).** The Linux runtime was built in WSL on Ubuntu 26.04 (glibc

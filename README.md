@@ -28,7 +28,11 @@ reruns survive transient Windows file locks; v0.9.0 adds read-only OCI artifact
 transport, GitHub-hosted source-CI bootstrap/runtime pulls, runtime export
 ergonomics, and macOS co-hosted schema build robustness; v0.10.0 adds OCI
 artifact push, publishable runtime-completeness fixes, build-dependency
-preflight warnings, publish-flow docs, and `ost uv` shadow-dependency diagnosis.
+preflight warnings, publish-flow docs, and `ost uv` shadow-dependency diagnosis;
+v0.11.0 is a producer-side correctness pass — a real glibc floor stamped onto
+Linux runtimes from an ELF scan, the `ost artifact push` digest fix plus honest
+credential hints, in-tree symlink preservation in runtime export, actionable
+package-stage fallback, and declarative repo smoke tests in generated source CI.
 Sessions, GPU/AI, trust policy, and broader DCC matrices are still ahead. Linux
 x86_64 is the first-class target; other OS targets are modeled and partially
 working — these examples were exercised on Windows. See the
