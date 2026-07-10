@@ -19,9 +19,33 @@ use ost_core::digest;
 pub struct FileEntry {
     /// Path within the archive, forward-slashed and relative to the stage root.
     pub path: String,
-    /// `sha256:<hex>` of the file contents.
+    /// `sha256:<hex>` of the integrity payload: the file contents for a regular
+    /// file, or the (UTF-8) link-target string for a symlink. A symlink carries
+    /// no bytes of its own, so hashing its target gives it a stable, verifiable
+    /// identity in the per-file manifest.
     pub sha256: String,
+    /// Byte length of the integrity payload (file contents, or link target).
     pub size: u64,
+    /// For a symlink entry, the (validated, in-tree, relative) target as stored
+    /// in the archive; `None` for a regular file. See [`validate_symlink`].
+    pub link_target: Option<String>,
+}
+
+impl FileEntry {
+    /// This entry as a producer-manifest `files[]` object. A symlink additionally
+    /// carries `link_target`; a regular file omits it, so a pre-symlink manifest
+    /// stays byte-identical.
+    pub fn manifest_json(&self) -> serde_json::Value {
+        let mut entry = serde_json::json!({
+            "path": self.path,
+            "sha256": self.sha256,
+            "size": self.size,
+        });
+        if let Some(target) = &self.link_target {
+            entry["link_target"] = serde_json::Value::String(target.clone());
+        }
+        entry
+    }
 }
 
 /// The result of packing a directory.
@@ -131,27 +155,53 @@ pub fn pack_dir_with(
             .strip_prefix(stage)
             .map(|p| p.as_str().replace('\\', "/"))
             .unwrap_or_else(|_| abs.as_str().to_string());
-        let data = std::fs::read(abs.as_std_path())?;
 
-        let mut header = tar::Header::new_gnu();
-        header.set_size(data.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        builder.append_data(&mut header, &rel, data.as_slice())?;
+        // Judge the entry by itself, never by what a link points at. A symlink is
+        // written as a link entry carrying its (revalidated, in-tree) target — the
+        // link target's bytes are never copied into the artifact (harness §SEC-001).
+        let entry = if std::fs::symlink_metadata(abs.as_std_path())?
+            .file_type()
+            .is_symlink()
+        {
+            let target = validate_symlink(stage, abs)?;
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            header.set_mode(0o777);
+            builder.append_link(&mut header, &rel, &target)?;
 
-        total_size += data.len() as u64;
-        let sha256 = digest::sha256_hex(&data);
+            let payload = target.as_bytes();
+            total_size += payload.len() as u64;
+            FileEntry {
+                path: rel.clone(),
+                sha256: digest::sha256_hex(payload),
+                size: payload.len() as u64,
+                link_target: Some(target),
+            }
+        } else {
+            let data = std::fs::read(abs.as_std_path())?;
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, &rel, data.as_slice())?;
+
+            total_size += data.len() as u64;
+            FileEntry {
+                path: rel.clone(),
+                sha256: digest::sha256_hex(&data),
+                size: data.len() as u64,
+                link_target: None,
+            }
+        };
+
         progress(PackProgress {
             files_done: i + 1,
             files_total: total,
             bytes_done: total_size,
             path: &rel,
         });
-        entries.push(FileEntry {
-            path: rel,
-            sha256,
-            size: data.len() as u64,
-        });
+        entries.push(entry);
     }
 
     builder.finish()?;
@@ -177,12 +227,18 @@ pub fn pack_dir_with(
 /// explicitly allowed) and then hand the same list to [`pack_dir`]. Returns an
 /// empty list if `stage` does not exist.
 ///
-/// Only regular files and directories are accepted. A symlink, FIFO, socket, or
-/// device node anywhere in the tree (including the stage root itself) is a hard
-/// error: following a symlink would copy the *link target's* bytes into the
-/// artifact — SSH keys, CI credentials, environment files reached via a planted
-/// link — or recurse outside the tree entirely (harness §SEC-001). Type is
-/// judged by the entry itself, never by what a link points at.
+/// Regular files, directories, and *safe in-tree symlinks* are accepted. A FIFO,
+/// socket, or device node — or a symlink whose target escapes the tree — anywhere
+/// in the tree (including the stage root itself) is a hard error.
+///
+/// A symlink is only kept when its target is relative and resolves to a path that
+/// stays inside `stage` (a shared-library soname chain like
+/// `libFoo.so → libFoo.so.1 → libFoo.so.1.39.4` is the motivating case). It is
+/// written as a link entry — the link target's bytes are never copied into the
+/// artifact — so a planted absolute or `../`-escaping link cannot exfiltrate SSH
+/// keys, CI credentials, or files outside the tree (harness §SEC-001). Type is
+/// judged by the entry itself, never by what a link points at; the stage root
+/// itself must be a real directory, not a link.
 pub fn stage_files(stage: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
     match std::fs::symlink_metadata(stage.as_std_path()) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -193,7 +249,7 @@ pub fn stage_files(stage: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
         Err(e) => return Err(e),
     }
     let mut paths = Vec::new();
-    collect_files(stage, &mut paths)?;
+    collect_files(stage, stage, &mut paths)?;
     paths.sort();
     Ok(paths)
 }
@@ -255,8 +311,8 @@ pub fn is_sdk_path(rel: &Utf8Path) -> bool {
 /// top-level trees before validating their contents.
 ///
 /// This is the slim-export counterpart to [`stage_files`]: kept SDK subtrees
-/// still reject symlinks and special files, but excluded build/source trees are
-/// not walked at all.
+/// preserve safe in-tree symlinks (soname chains) and reject special files or
+/// escaping links, while excluded build/source trees are not walked at all.
 pub fn sdk_stage_files(stage: &Utf8Path) -> io::Result<SdkStageFiles> {
     match std::fs::symlink_metadata(stage.as_std_path()) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -279,7 +335,7 @@ pub fn sdk_stage_files(stage: &Utf8Path) -> io::Result<SdkStageFiles> {
 
 /// Recursively collect regular files under `dir`, rejecting any non-regular,
 /// non-directory entry.
-fn collect_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
+fn collect_files(stage: &Utf8Path, dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
     for entry in std::fs::read_dir(dir.as_std_path())? {
         let entry = entry?;
         let path = Utf8PathBuf::from_path_buf(entry.path())
@@ -288,9 +344,12 @@ fn collect_files(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) -> io::Result<()> {
         // `metadata`), so a link is classified as a link, not as its target.
         let ty = entry.file_type()?;
         if ty.is_symlink() {
-            return Err(unsupported_entry("symlink", &path));
+            // Keep a safe in-tree symlink (validated here so an unsafe one aborts
+            // before any archive is written); reject an escaping/absolute link.
+            validate_symlink(stage, &path)?;
+            out.push(path);
         } else if ty.is_dir() {
-            collect_files(&path, out)?;
+            collect_files(stage, &path, out)?;
         } else if ty.is_file() {
             out.push(path);
         } else {
@@ -332,13 +391,21 @@ fn collect_sdk_files(
             } else if let Some(top) = top {
                 excluded.insert(top.to_string());
             }
+        } else if ty.is_symlink() {
+            // A safe in-tree symlink inside a kept SDK subtree (a soname chain) is
+            // preserved; one outside the SDK layout is simply pruned. Either way,
+            // validate a kept link and reject an escaping/absolute target.
+            if in_sdk_subtree || is_sdk_path(rel) {
+                validate_symlink(stage, &path)?;
+                out.push(path);
+            } else if let Some(top) = top {
+                excluded.insert(top.to_string());
+            }
         } else if in_sdk_subtree || is_sdk_path(rel) {
-            let kind = if ty.is_symlink() {
-                "symlink"
-            } else {
-                "special file (FIFO/socket/device)"
-            };
-            return Err(unsupported_entry(kind, &path));
+            return Err(unsupported_entry(
+                "special file (FIFO/socket/device)",
+                &path,
+            ));
         } else if let Some(top) = top {
             excluded.insert(top.to_string());
         }
@@ -358,6 +425,74 @@ fn unsupported_entry(kind: &str, path: &Utf8Path) -> io::Error {
         io::ErrorKind::InvalidData,
         format!("{kind} is not allowed in the package staging area: {path}"),
     )
+}
+
+/// Validate that the symlink at `link` (which lives under `stage`) is safe to
+/// pack, returning its target as a forward-slashed relative string to store in
+/// the archive's link entry.
+///
+/// Safe means the target is **relative** and, resolved lexically against the
+/// link's own directory, stays **inside `stage`** — the shared-library soname
+/// chains a Linux SDK ships (`libFoo.so → libFoo.so.1.39.4`). An absolute target,
+/// a `../`-escape past the stage root, or a control character in the target is
+/// rejected (harness §SEC-001): the link is never dereferenced, so its target's
+/// bytes never enter the artifact.
+fn validate_symlink(stage: &Utf8Path, link: &Utf8Path) -> io::Result<String> {
+    let raw = std::fs::read_link(link.as_std_path())?;
+    let target = Utf8PathBuf::from_path_buf(raw)
+        .map_err(|_| unsupported_entry("symlink with a non-UTF-8 target", link))?;
+    let target = target.as_str().replace('\\', "/");
+
+    if target.is_empty() {
+        return Err(unsupported_entry("symlink with an empty target", link));
+    }
+    if target.chars().any(char::is_control) {
+        return Err(unsupported_entry(
+            "symlink with a control character in its target",
+            link,
+        ));
+    }
+    // Absolute POSIX (`/…`) or Windows (`C:\…`, `\\…`) targets escape the tree.
+    let bytes = target.as_bytes();
+    let absolute = target.starts_with('/')
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':');
+    if absolute {
+        return Err(unsupported_entry(
+            "symlink with an absolute target (escapes the staging area)",
+            link,
+        ));
+    }
+
+    // Resolve the target lexically against the link's parent directory (both
+    // relative to `stage`); a `..` that pops above the stage root is an escape.
+    // The caller only ever hands us links found under `stage`, so a failed
+    // `strip_prefix` is a caller bug — treat it as unsafe rather than fall back
+    // to the absolute path, which would silently widen the `..`-pop budget and
+    // let a target resolve outside the stage while still passing.
+    let link_rel = link
+        .strip_prefix(stage)
+        .map_err(|_| unsupported_entry("symlink resolved outside the staging area", link))?;
+    let mut stack: Vec<&str> = link_rel
+        .as_str()
+        .split(['/', '\\'])
+        .filter(|c| !c.is_empty())
+        .collect();
+    stack.pop(); // drop the link's own file name, leaving its directory
+    for comp in target.split('/').filter(|c| !c.is_empty()) {
+        match comp {
+            "." => {}
+            ".." => {
+                if stack.pop().is_none() {
+                    return Err(unsupported_entry(
+                        "symlink whose target escapes the staging area",
+                        link,
+                    ));
+                }
+            }
+            name => stack.push(name),
+        }
+    }
+    Ok(target)
 }
 
 #[cfg(test)]
@@ -461,14 +596,48 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sdk_stage_files_rejects_kept_symlinks() {
+    fn sdk_stage_files_rejects_escaping_kept_symlink() {
         let root = tmp("sdk-kept-symlink");
         std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        // An absolute link inside a kept SDK subtree must still be rejected.
         std::os::unix::fs::symlink("/etc/hostname", root.join("lib/link").as_std_path()).unwrap();
 
-        let err = sdk_stage_files(&root).expect_err("kept SDK symlinks must be rejected");
+        let err = sdk_stage_files(&root).expect_err("an escaping SDK symlink must be rejected");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("symlink"), "got: {err}");
+        assert!(err.to_string().contains("absolute"), "got: {err}");
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sdk_stage_files_keeps_safe_soname_symlink() {
+        let root = tmp("sdk-soname-symlink");
+        std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        std::fs::write(
+            root.join("lib/libMaterialXGenMsl.so.1.39.4").as_std_path(),
+            b"ELF",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            "libMaterialXGenMsl.so.1.39.4",
+            root.join("lib/libMaterialXGenMsl.so").as_std_path(),
+        )
+        .unwrap();
+
+        let selected = sdk_stage_files(&root).expect("a safe SDK soname symlink is kept");
+        let rels: Vec<String> = selected
+            .files
+            .iter()
+            .map(|p| p.strip_prefix(&root).unwrap().as_str().replace('\\', "/"))
+            .collect();
+        assert_eq!(
+            rels,
+            vec![
+                "lib/libMaterialXGenMsl.so",
+                "lib/libMaterialXGenMsl.so.1.39.4",
+            ]
+        );
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
@@ -544,16 +713,73 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn stage_files_rejects_symlinks(/* §SEC-001 */) {
-        let root = tmp("symlink");
+    fn stage_files_rejects_escaping_symlinks(/* §SEC-001 */) {
+        // An absolute link at a sensitive file outside the tree.
+        let root = tmp("symlink-abs");
         std::fs::create_dir_all(root.as_std_path()).unwrap();
         std::fs::write(root.join("real.txt").as_std_path(), b"ok").unwrap();
-        // A link pointing at a sensitive file outside the tree.
         std::os::unix::fs::symlink("/etc/hostname", root.join("leak").as_std_path()).unwrap();
-
-        let err = stage_files(&root).expect_err("a symlink in the stage must be rejected");
+        let err = stage_files(&root).expect_err("an absolute symlink must be rejected");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("symlink"), "got: {err}");
+        assert!(err.to_string().contains("absolute"), "got: {err}");
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+
+        // A relative link that climbs above the stage root with `..`.
+        let root = tmp("symlink-escape");
+        std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        std::os::unix::fs::symlink("../../secret", root.join("lib/leak").as_std_path()).unwrap();
+        let err = stage_files(&root).expect_err("a `..`-escaping symlink must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("escapes"), "got: {err}");
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_files_keeps_safe_in_tree_symlink_and_packs_it_as_a_link() {
+        // A shared-library soname chain: `libFoo.so → libFoo.so.1 → the real ELF`,
+        // all relative and in-tree — exactly what a Linux SDK ships.
+        let root = tmp("symlink-safe");
+        std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        std::fs::write(root.join("lib/libFoo.so.1.39.4").as_std_path(), b"ELF").unwrap();
+        std::os::unix::fs::symlink(
+            "libFoo.so.1.39.4",
+            root.join("lib/libFoo.so.1").as_std_path(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("libFoo.so.1", root.join("lib/libFoo.so").as_std_path())
+            .unwrap();
+
+        let files = stage_files(&root).expect("safe in-tree symlinks are kept");
+        assert_eq!(files.len(), 3, "real lib + two links: {files:?}");
+
+        let archive = root.join("out.tar.zst");
+        let packed = pack_dir(&root, &archive, &files).unwrap();
+        let links: Vec<_> = packed
+            .files
+            .iter()
+            .filter_map(|f| f.link_target.as_deref().map(|t| (f.path.as_str(), t)))
+            .collect();
+        assert_eq!(
+            links,
+            vec![
+                ("lib/libFoo.so", "libFoo.so.1"),
+                ("lib/libFoo.so.1", "libFoo.so.1.39.4"),
+            ]
+        );
+
+        // The archive stores link entries, never the target's bytes.
+        let reader =
+            zstd::stream::read::Decoder::new(File::open(archive.as_std_path()).unwrap()).unwrap();
+        let mut link_entries = 0;
+        for entry in tar::Archive::new(reader).entries().unwrap() {
+            let entry = entry.unwrap();
+            if entry.header().entry_type() == tar::EntryType::Symlink {
+                link_entries += 1;
+                assert_eq!(entry.header().size().unwrap(), 0);
+            }
+        }
+        assert_eq!(link_entries, 2);
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }

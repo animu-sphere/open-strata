@@ -375,6 +375,31 @@ impl ArtifactStore {
             std::fs::create_dir_all(dest.as_std_path())
                 .map_err(|e| Error::io(dest.to_string(), e))?;
         }
+        // Pre-extraction safety gate: now that safe in-tree symlinks are packable,
+        // scan the (digest-verified) archive and refuse before unpacking a byte if
+        // any entry is unsafe — an absolute/escaping symlink, a `..` path, a
+        // hardlink, or a special file (harness §SEC-001). A local artifact reaches
+        // here without the transport verify gate, so `extract` enforces it itself.
+        // The scan skips content hashing; only the safety verdict matters here.
+        let unsafe_entries = scan_unsafe_entries(&archive)?;
+        if !unsafe_entries.is_empty() {
+            return Err(Error::coded(
+                "ARTIFACT_UNSAFE_ENTRY",
+                Category::Validation,
+                format!(
+                    "stored archive for {} contains {} entr{} unsafe to extract: {}",
+                    record.short_digest(),
+                    unsafe_entries.len(),
+                    if unsafe_entries.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    },
+                    unsafe_entries.join("; "),
+                ),
+            ));
+        }
+
         let file =
             File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
         let decoder = zstd::stream::read::Decoder::new(file)
@@ -481,6 +506,9 @@ pub(crate) struct ArchiveFile {
     pub path: String,
     pub sha256: String,
     pub size: u64,
+    /// Set for a symlink entry: its (validated, in-tree) target. `sha256`/`size`
+    /// then cover the target string. `None` for a regular file.
+    pub link_target: Option<String>,
 }
 
 /// The result of decoding and hashing every entry of a `tar.zst` archive.
@@ -516,13 +544,12 @@ pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
             .to_string_lossy()
             .replace('\\', "/");
 
-        if let Some(why) = unsafe_entry_path(&path) {
-            walk.unsafe_entries.push(format!("{why}: {path}"));
-            continue;
-        }
-        let kind = entry.header().entry_type();
-        match kind {
-            tar::EntryType::Regular => {
+        let entry_type = entry.header().entry_type();
+        let link_target = read_link_target(&entry, entry_type, archive)?;
+        match classify_entry(&path, entry_type, link_target.as_deref()) {
+            EntryClass::Unsafe(reason) => walk.unsafe_entries.push(reason),
+            EntryClass::Directory => {}
+            EntryClass::Regular => {
                 if !seen_files.insert(path.clone()) {
                     walk.unsafe_entries
                         .push(format!("duplicate file path: {path}"));
@@ -534,19 +561,125 @@ pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
                     path,
                     sha256: sha,
                     size,
+                    link_target: None,
                 });
             }
-            tar::EntryType::Directory => {}
-            other => {
-                // Links and special files are refused wholesale: a symlink can
-                // redirect later writes outside the destination, and device /
-                // fifo entries have no place in an artifact.
-                walk.unsafe_entries
-                    .push(format!("unsupported entry type {other:?}: {path}"));
+            EntryClass::Symlink(target) => {
+                if !seen_files.insert(path.clone()) {
+                    walk.unsafe_entries
+                        .push(format!("duplicate file path: {path}"));
+                    continue;
+                }
+                // A symlink carries no bytes; its identity is its target string,
+                // hashed so a tampered target is a manifest mismatch.
+                walk.files.push(ArchiveFile {
+                    path,
+                    sha256: digest::sha256_hex(target.as_bytes()),
+                    size: target.len() as u64,
+                    link_target: Some(target),
+                });
             }
         }
     }
     Ok(walk)
+}
+
+/// Cheaply scan a `tar.zst` for entries unsafe to extract, **without hashing any
+/// file contents**. This is the extract-time safety gate: `extract` needs only
+/// the safety verdict, not the per-file digests `walk_archive` computes, and
+/// re-hashing every byte of a multi-GB SDK (the unpack pass reads it all again)
+/// is wasted work. Classification is shared with `walk_archive` via
+/// [`classify_entry`], so the pre-extraction gate can never drift from the walk.
+pub(crate) fn scan_unsafe_entries(archive: &Utf8Path) -> Result<Vec<String>> {
+    let file = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+    let decoder =
+        zstd::stream::read::Decoder::new(file).map_err(|e| Error::io(archive.to_string(), e))?;
+    let mut tar = tar::Archive::new(decoder);
+
+    let mut unsafe_entries = Vec::new();
+    let mut seen_files = std::collections::HashSet::new();
+    let entries = tar
+        .entries()
+        .map_err(|e| Error::io(archive.to_string(), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| Error::io(archive.to_string(), e))?;
+        let path = entry
+            .path()
+            .map_err(|e| Error::io(archive.to_string(), e))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let entry_type = entry.header().entry_type();
+        let link_target = read_link_target(&entry, entry_type, archive)?;
+        match classify_entry(&path, entry_type, link_target.as_deref()) {
+            EntryClass::Unsafe(reason) => unsafe_entries.push(reason),
+            EntryClass::Directory => {}
+            // A file or safe symlink: only the duplicate check matters here; the
+            // entry's bytes are never read, so the reader just skips past them.
+            EntryClass::Regular | EntryClass::Symlink(_) => {
+                if !seen_files.insert(path.clone()) {
+                    unsafe_entries.push(format!("duplicate file path: {path}"));
+                }
+            }
+        }
+    }
+    Ok(unsafe_entries)
+}
+
+/// The safety classification of one tar entry, judged purely from its path,
+/// type, and (for a symlink) link target — no contents read. Shared by
+/// [`walk_archive`] and [`scan_unsafe_entries`] so the two gates cannot disagree.
+enum EntryClass {
+    /// A regular file, safe to keep/extract.
+    Regular,
+    /// A directory: carries no manifest entry and is always safe.
+    Directory,
+    /// A safe symlink, carrying its validated, normalized in-tree target.
+    Symlink(String),
+    /// Unsafe to extract; the string is a ready-to-report `<why>: <path>` reason.
+    Unsafe(String),
+}
+
+/// Classify `path`/`entry_type`/`link_target` (see [`EntryClass`]). A shared-
+/// library soname chain is a legitimate symlink, but a symlink can redirect a
+/// later write outside the destination, so only a *relative, in-tree* target is
+/// kept; hardlinks and special files (device/fifo) have no place in an artifact
+/// (harness §SEC-001).
+fn classify_entry(path: &str, entry_type: tar::EntryType, link_target: Option<&str>) -> EntryClass {
+    if let Some(why) = unsafe_entry_path(path) {
+        return EntryClass::Unsafe(format!("{why}: {path}"));
+    }
+    match entry_type {
+        tar::EntryType::Regular => EntryClass::Regular,
+        tar::EntryType::Directory => EntryClass::Directory,
+        tar::EntryType::Symlink => {
+            let target = link_target.unwrap_or_default();
+            match unsafe_symlink_target(path, target) {
+                Some(why) => EntryClass::Unsafe(format!("{why}: {path}")),
+                None => EntryClass::Symlink(target.to_string()),
+            }
+        }
+        other => EntryClass::Unsafe(format!("unsupported entry type {other:?}: {path}")),
+    }
+}
+
+/// The normalized (forward-slashed) target of a symlink entry, or `None` for a
+/// non-symlink. Kept separate from [`classify_entry`] so the latter stays a pure
+/// function over already-decoded strings.
+fn read_link_target<R: std::io::Read>(
+    entry: &tar::Entry<'_, R>,
+    entry_type: tar::EntryType,
+    archive: &Utf8Path,
+) -> Result<Option<String>> {
+    if entry_type != tar::EntryType::Symlink {
+        return Ok(None);
+    }
+    Ok(Some(
+        entry
+            .link_name()
+            .map_err(|e| Error::io(archive.to_string(), e))?
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default(),
+    ))
 }
 
 /// Why an archived path must not be extracted, if any.
@@ -566,6 +699,45 @@ fn unsafe_entry_path(path: &str) -> Option<&'static str> {
     }
     if path.chars().any(char::is_control) {
         return Some("control character in path");
+    }
+    None
+}
+
+/// Why a symlink's target makes it unsafe to extract, if any. Purely lexical: no
+/// filesystem access, mirroring [`ost_build::validate_symlink`] on the producer
+/// side. `entry_path` is the (already path-validated) archive path of the link.
+///
+/// Safe means a **relative** target that, resolved against the link's own
+/// directory, stays inside the archive root. An absolute target or a `..` that
+/// climbs above the root is rejected (harness §SEC-001).
+fn unsafe_symlink_target(entry_path: &str, target: &str) -> Option<&'static str> {
+    if target.is_empty() {
+        return Some("symlink with an empty target");
+    }
+    if target.chars().any(char::is_control) {
+        return Some("symlink with a control character in its target");
+    }
+    if target.starts_with('/') {
+        return Some("symlink with an absolute target");
+    }
+    let tb = target.as_bytes();
+    if tb.len() >= 2 && tb[0].is_ascii_alphabetic() && tb[1] == b':' {
+        return Some("symlink with a drive-letter target");
+    }
+    // Resolve `target` against the link's parent directory; a `..` that pops past
+    // the archive root escapes the tree.
+    let mut stack: Vec<&str> = entry_path.split('/').filter(|c| !c.is_empty()).collect();
+    stack.pop(); // the link's own file name
+    for comp in target.split('/').filter(|c| !c.is_empty()) {
+        match comp {
+            "." => {}
+            ".." => {
+                if stack.pop().is_none() {
+                    return Some("symlink whose target escapes the archive root");
+                }
+            }
+            name => stack.push(name),
+        }
     }
     None
 }
@@ -598,7 +770,15 @@ pub(crate) fn compare_archive_files(
             continue;
         }
         match actual.iter().find(|f| f.path == want.path) {
-            Some(f) if f.sha256 == want.sha256 && f.size == want.size => cmp.matched += 1,
+            // A symlink and a regular file whose contents equal the target string
+            // hash alike; `link_target` keeps their manifest identities distinct.
+            Some(f)
+                if f.sha256 == want.sha256
+                    && f.size == want.size
+                    && f.link_target == want.link_target =>
+            {
+                cmp.matched += 1
+            }
             Some(_) => cmp.mismatched.push(want.path.clone()),
             None => cmp.missing.push(want.path.clone()),
         }
@@ -893,5 +1073,211 @@ mod tests {
         assert!(store.export(&out.record.digest, &dest).is_err());
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    /// One tar entry to write into a test archive.
+    enum Entry<'a> {
+        Reg(&'a str, &'a [u8]),
+        Sym(&'a str, &'a str),
+    }
+
+    /// Build a `tar.zst` at `archive` from `entries`, returning its digest.
+    fn write_archive(archive: &Utf8Path, entries: &[Entry]) -> String {
+        let out = File::create(archive.as_std_path()).unwrap();
+        let enc = zstd::stream::write::Encoder::new(out, 3)
+            .unwrap()
+            .auto_finish();
+        let mut tar = tar::Builder::new(enc);
+        for e in entries {
+            match e {
+                Entry::Reg(path, bytes) => {
+                    let mut h = tar::Header::new_gnu();
+                    h.set_size(bytes.len() as u64);
+                    h.set_mode(0o644);
+                    h.set_cksum();
+                    tar.append_data(&mut h, path, *bytes).unwrap();
+                }
+                Entry::Sym(path, target) => {
+                    let mut h = tar::Header::new_gnu();
+                    h.set_entry_type(tar::EntryType::Symlink);
+                    h.set_size(0);
+                    h.set_mode(0o777);
+                    tar.append_link(&mut h, path, target).unwrap();
+                }
+            }
+        }
+        tar.finish().unwrap();
+        drop(tar);
+        digest::sha256_hex(&std::fs::read(archive.as_std_path()).unwrap())
+    }
+
+    #[test]
+    fn unsafe_symlink_target_classifies_safe_and_escaping() {
+        // A relative, in-tree soname link is safe.
+        assert!(unsafe_symlink_target("lib/libFoo.so", "libFoo.so.1").is_none());
+        assert!(unsafe_symlink_target("lib/a/b.so", "../c/real.so").is_none());
+        // Escapes and absolutes are rejected.
+        assert!(unsafe_symlink_target("lib/leak", "/etc/hostname").is_some());
+        assert!(unsafe_symlink_target("lib/leak", "../../secret").is_some());
+        assert!(unsafe_symlink_target("lib/leak", "C:\\secret").is_some());
+        assert!(unsafe_symlink_target("lib/leak", "").is_some());
+        assert!(unsafe_symlink_target("lib/leak", "a\nb").is_some());
+    }
+
+    #[test]
+    fn walk_archive_keeps_safe_symlink_and_flags_escaping() {
+        let root = tmp_root("walk-symlink");
+        let archive = root.join("a.tar.zst");
+        write_archive(
+            &archive,
+            &[
+                Entry::Reg("lib/libFoo.so.1.39.4", b"ELF"),
+                Entry::Sym("lib/libFoo.so", "libFoo.so.1.39.4"),
+                Entry::Sym("lib/leak", "../../../etc/passwd"),
+            ],
+        );
+
+        let walk = walk_archive(&archive).unwrap();
+        // The real lib and the safe link are hashed files; the escaping link is not.
+        let link = walk
+            .files
+            .iter()
+            .find(|f| f.path == "lib/libFoo.so")
+            .expect("safe symlink is kept");
+        assert_eq!(link.link_target.as_deref(), Some("libFoo.so.1.39.4"));
+        assert_eq!(link.sha256, digest::sha256_hex(b"libFoo.so.1.39.4"));
+        assert!(!walk.files.iter().any(|f| f.path == "lib/leak"));
+        assert_eq!(walk.unsafe_entries.len(), 1);
+        assert!(
+            walk.unsafe_entries[0].contains("lib/leak"),
+            "{:?}",
+            walk.unsafe_entries
+        );
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn compare_flags_symlink_vs_regular_type_confusion() {
+        // The archive holds a regular file whose bytes equal a target string; the
+        // manifest claims a symlink with that target. Equal sha256/size must NOT
+        // pass — `link_target` distinguishes them.
+        let target = "libFoo.so.1";
+        let actual = vec![ArchiveFile {
+            path: "lib/x".into(),
+            sha256: digest::sha256_hex(target.as_bytes()),
+            size: target.len() as u64,
+            link_target: None,
+        }];
+        let expected = vec![crate::record::ManifestFile {
+            path: "lib/x".into(),
+            sha256: digest::sha256_hex(target.as_bytes()),
+            size: target.len() as u64,
+            link_target: Some(target.into()),
+        }];
+        let cmp = compare_archive_files(&actual, &expected);
+        assert!(!cmp.passed());
+        assert_eq!(cmp.mismatched, vec!["lib/x".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_recreates_safe_symlink_and_refuses_escaping() {
+        // A dist dir whose archive carries a real lib + a safe soname symlink.
+        let root = tmp_root("extract-symlink");
+        let dist = root.join("dist");
+        std::fs::create_dir_all(dist.as_std_path()).unwrap();
+        let archive_name = "sym-0.1.0-target.tar.zst";
+        let archive = dist.join(archive_name);
+        let target = "libFoo.so.1.39.4";
+        let dig = write_archive(
+            &archive,
+            &[
+                Entry::Reg("lib/libFoo.so.1.39.4", b"ELF"),
+                Entry::Sym("lib/libFoo.so", target),
+            ],
+        );
+        let archive_bytes = std::fs::read(archive.as_std_path()).unwrap();
+        let manifest = serde_json::json!({
+            "schema": 1,
+            "kind": "openstrata.plugin-bundle",
+            "plugin": { "name": "sym", "version": "0.1.0", "kind": "usd-fileformat", "license": "Apache-2.0" },
+            "target": "cy2026-linux-x86_64-gcc11-py313-usd",
+            "archive": archive_name,
+            "archive_digest": dig,
+            "archive_size": archive_bytes.len(),
+            "total_size": 3 + target.len(),
+            "created_unix": 1_750_000_000,
+            "provenance": { "profile": "usd", "runtime": { "id": "rt", "digest": "sha256:beef" }, "validation": { "passed": true } },
+            "files": [
+                { "path": "lib/libFoo.so.1.39.4", "sha256": digest::sha256_hex(b"ELF"), "size": 3 },
+                { "path": "lib/libFoo.so", "sha256": digest::sha256_hex(target.as_bytes()), "size": target.len(), "link_target": target },
+            ],
+        });
+        std::fs::write(
+            dist.join(MANIFEST_FILE).as_std_path(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let store = ArtifactStore::at(root.join("store"));
+        let out = store.import(&dist, ArtifactSource::Published).unwrap();
+        // verify agrees the packed symlink matches its manifest claim.
+        assert!(store.verify(&out.record.digest).unwrap().passed());
+
+        // extract recreates the symlink as a symlink, not a copied file.
+        let dest = root.join("unpacked");
+        store.extract(&out.record.digest, &dest).unwrap();
+        let link = dest.join("lib/libFoo.so");
+        let meta = std::fs::symlink_metadata(link.as_std_path()).unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "extract must restore the link"
+        );
+        assert_eq!(
+            std::fs::read_link(link.as_std_path()).unwrap(),
+            std::path::Path::new("libFoo.so.1.39.4")
+        );
+
+        // An escaping symlink smuggled into the stored archive is refused before a
+        // byte is unpacked, even though the archive digest matches its manifest.
+        let root2 = tmp_root("extract-escape");
+        let dist2 = root2.join("dist");
+        std::fs::create_dir_all(dist2.as_std_path()).unwrap();
+        let archive2 = dist2.join(archive_name);
+        let target = "../../../etc/passwd";
+        let dig = write_archive(
+            &archive2,
+            &[Entry::Reg("lib/real", b"x"), Entry::Sym("lib/leak", target)],
+        );
+        let manifest2 = serde_json::json!({
+            "schema": 1,
+            "kind": "openstrata.plugin-bundle",
+            "plugin": { "name": "sym", "version": "0.1.0", "kind": "usd-fileformat", "license": "Apache-2.0" },
+            "target": "cy2026-linux-x86_64-gcc11-py313-usd",
+            "archive": archive_name,
+            "archive_digest": digest::sha256_hex(&std::fs::read(archive2.as_std_path()).unwrap()),
+            "archive_size": std::fs::metadata(archive2.as_std_path()).unwrap().len(),
+            "total_size": 1,
+            "created_unix": 1_750_000_000,
+            "provenance": { "profile": "usd", "runtime": { "id": "rt", "digest": "sha256:beef" }, "validation": { "passed": true } },
+            "files": [ { "path": "lib/real", "sha256": digest::sha256_hex(b"x"), "size": 1 } ],
+        });
+        assert_eq!(dig, manifest2["archive_digest"].as_str().unwrap());
+        std::fs::write(
+            dist2.join(MANIFEST_FILE).as_std_path(),
+            serde_json::to_string_pretty(&manifest2).unwrap(),
+        )
+        .unwrap();
+        let store2 = ArtifactStore::at(root2.join("store"));
+        let out2 = store2.import(&dist2, ArtifactSource::Imported).unwrap();
+        let err = store2
+            .extract(&out2.record.digest, &root2.join("unpacked"))
+            .expect_err("an escaping symlink must be refused before unpacking");
+        assert!(err.to_string().contains("unsafe to extract"), "{err}");
+        assert!(!root2.join("unpacked/lib").as_std_path().exists());
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+        std::fs::remove_dir_all(root2.as_std_path()).ok();
     }
 }

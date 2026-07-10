@@ -275,14 +275,24 @@ them. Each release is a coherent slice, not a phase boundary.
     blocker. Still ⬜: the credential story (a static `OST_REGISTRY_TOKEN` 403 vs the
     working user/password token exchange) needs a clearer hint + docs, and a real
     GHCR round-trip.
-  - **P1 — Linux symlinks in runtime export (report ask #2).** Linux SDKs contain
-    normal shared-library symlink chains (`libFoo.so → libFoo.so.1 →
-    libFoo.so.1.39.4`; the built runtime had 48). `runtime export --slim` rejects
+  - ✅ **P1 — Linux symlinks in runtime export (report ask #2).** Linux SDKs
+    contain normal shared-library symlink chains (`libFoo.so → libFoo.so.1 →
+    libFoo.so.1.39.4`; the built runtime had 48). `runtime export --slim` rejected
     them via the package-staging safety model (`symlink is not allowed in the
     package staging area`), blocking direct export of a build-source Linux runtime
-    (the report worked around it with a `cp -aL` dereference + re-adopt). Preserve
-    safe *relative in-tree* symlinks, dereference them intentionally, or expose an
-    explicit policy switch — without weakening SEC-001's escape protection.
+    (the report worked around it with a `cp -aL` dereference + re-adopt).
+    **Landed:** the packaging model now preserves a *safe, relative, in-tree*
+    symlink as a link entry (never dereferencing it, so 48 soname links stay 48
+    links, not 48 full copies), while an absolute target or a `..`-escape past the
+    stage root is still a hard error — SEC-001's link-escape protection is intact.
+    A validated `link_target` rides through the producer manifest, `walk_archive`
+    (which re-checks the target lexically and flags an escaping link as unsafe),
+    and the per-file comparison (so a symlink can't be confused with a regular
+    file whose bytes equal the target). `Store::extract` gained a pre-extraction
+    safety gate that refuses an unsafe entry before unpacking a byte. Unit-tested
+    on both the produce and consume sides plus a full CLI `export → artifact
+    handoff → pull --from-artifact` round-trip that proves a soname chain survives
+    as symlinks.
   - **P1 — quieter / actionable package-stage fallback (report ask #4).** Repeated
     `ost plugin package` runs still emit `STAGE_FALLBACK` (previous `package-stage`
     held open by another process, so `ost` staged into `package-stage-<id>`). The
@@ -1323,15 +1333,33 @@ blocker. Ranked:
   the credential story (a static `OST_REGISTRY_TOKEN` 403 vs the working
   user/password token exchange) needs a clearer 403-on-write hint + docs, and a real
   GHCR round-trip to confirm the user/password path end to end.
-- ⬜ **P1 — support Linux symlinks in runtime export (report ask #2).** Direct
+- ✅ **P1 — support Linux symlinks in runtime export (report ask #2).** Direct
   `runtime export --slim` of the build-source Linux runtime failed with `symlink
   is not allowed in the package staging area:
   …/lib/libMaterialXGenMsl.so`. The built Linux SDK carries routine shared-library
   symlink chains (`libFoo.so → libFoo.so.1 → libFoo.so.1.39.4`; 48 counted); the
-  report shipped only via a `cp -aL` dereference-and-re-adopt workaround. Preserve
-  safe *relative in-tree* symlinks, dereference them intentionally at pack time, or
-  expose an explicit policy switch — without weakening SEC-001's link-escape
-  protection (an out-of-tree or absolute link target must still be rejected).
+  report shipped only via a `cp -aL` dereference-and-re-adopt workaround.
+  **Landed:** the strategy is *preserve safe in-tree links* (not dereference —
+  48 links stay 48 links, not full copies). `ost_build::validate_symlink` keeps a
+  symlink only when its target is relative and, resolved lexically against the
+  link's own directory, stays inside the stage root; an absolute target or a `..`
+  that climbs above the root is rejected, so SEC-001's link-escape protection is
+  untouched (no out-of-tree or absolute link can enter the artifact, and the link
+  is never dereferenced). A kept link is written as a tar link entry carrying its
+  target; a `link_target` field flows through `FileEntry` → the producer manifest
+  (`ManifestFile`) → `walk_archive` (which re-validates the target string with the
+  purely-lexical `unsafe_symlink_target` and flags an escaping link as unsafe) →
+  `compare_archive_files` (so a symlink and a regular file whose contents equal
+  the target string stay distinct identities). `Store::extract` now walks the
+  digest-verified archive and refuses any unsafe entry (escaping symlink,
+  hardlink, `..` path, special file) *before* unpacking a byte, so a local artifact
+  that skips the transport verify gate still cannot escape on extraction.
+  Unit-tested on the produce side (real-filesystem soname chain packs as links;
+  absolute + `..` links rejected), the consume side (walk keeps/flags, compare
+  type-confusion, extract restores a link and refuses an escaper), plus a full CLI
+  `runtime export → artifact export/import → runtime pull --from-artifact`
+  round-trip asserting the chain materializes as symlinks pointing at the one real
+  object.
 - ⬜ **P1 — quieter / more actionable package-stage fallback (report ask #4).**
   `ost plugin package` succeeds, but repeated runs emit `STAGE_FALLBACK`: the prior
   `package-stage` was "held open by another process", so `ost` staged into

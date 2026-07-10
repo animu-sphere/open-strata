@@ -757,11 +757,7 @@ fn package(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let files_json: Vec<_> = packed
-        .files
-        .iter()
-        .map(|f| serde_json::json!({ "path": f.path, "sha256": f.sha256, "size": f.size }))
-        .collect();
+    let files_json: Vec<_> = packed.files.iter().map(|f| f.manifest_json()).collect();
     let manifest = serde_json::json!({
         "schema": 1,
         "kind": "openstrata.plugin-bundle",

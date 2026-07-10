@@ -229,6 +229,71 @@ fn export_handoff_and_pull_from_artifact_roundtrip() {
     error_json(&out, 2);
 }
 
+/// A Linux runtime SDK ships shared-library soname chains as in-tree relative
+/// symlinks (`libFoo.so → libFoo.so.1.39.4`). Export must pack them as link
+/// entries — never dereferencing them into copies — and materialization from the
+/// artifact must restore them as symlinks pointing at the same in-tree target
+/// (v0.11.0 report ask #2). Symlinks are a unix construct, so this runs on unix
+/// hosts (macOS included), where `runtime export`/`pull --from-artifact` exercise
+/// the real filesystem link path end to end.
+#[cfg(unix)]
+#[test]
+fn export_preserves_in_tree_symlinks_through_pull_from_artifact() {
+    use std::os::unix::fs::symlink;
+
+    let sb1 = Sandbox::new("symlink-export");
+    stdout_json(&sb1.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
+    let prefix = sb1.promote_mock_to_build();
+
+    // A soname chain in lib/: the real object + two relative in-tree links.
+    let lib = prefix.join("lib");
+    std::fs::write(lib.join("libFoo.so.1.39.4"), b"\x7fELF real object").unwrap();
+    symlink("libFoo.so.1.39.4", lib.join("libFoo.so.1")).unwrap();
+    symlink("libFoo.so.1", lib.join("libFoo.so")).unwrap();
+
+    let v = stdout_json(&sb1.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
+    let digest = v["data"]["digest"].as_str().unwrap().to_string();
+
+    // Hand off to a fresh store and materialize the runtime there.
+    let handoff = sb1.base.join("handoff");
+    stdout_json(&sb1.ost(&["--json", "artifact", "export", &digest, path_str(&handoff)]));
+    let sb2 = Sandbox::new("symlink-fetch");
+    stdout_json(&sb2.ost(&["--json", "artifact", "import", path_str(&handoff)]));
+    stdout_json(&sb2.ost(&[
+        "--json",
+        "runtime",
+        "pull",
+        "cy2026",
+        "--profile",
+        "usd",
+        "--from-artifact",
+        &digest,
+    ]));
+
+    // The links survive as links (not dereferenced copies) with their targets.
+    let out_lib = sb2.runtime_prefix().join("lib");
+    let so = out_lib.join("libFoo.so");
+    let so1 = out_lib.join("libFoo.so.1");
+    assert!(
+        std::fs::symlink_metadata(&so)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "libFoo.so must be restored as a symlink"
+    );
+    assert_eq!(std::fs::read_link(&so).unwrap(), Path::new("libFoo.so.1"));
+    assert_eq!(
+        std::fs::read_link(&so1).unwrap(),
+        Path::new("libFoo.so.1.39.4")
+    );
+    // The link resolves to the real object, and only one real copy exists.
+    assert_eq!(std::fs::read(&so).unwrap(), b"\x7fELF real object");
+    assert!(!std::fs::symlink_metadata(out_lib.join("libFoo.so.1.39.4"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
 /// On Linux the runtime variant defaults to the nominal `glibc228`. Export must
 /// override that with the real floor measured from the packed ELF binaries, so a
 /// runtime that references `GLIBC_2.43` is labeled `glibc243` — the truthful
