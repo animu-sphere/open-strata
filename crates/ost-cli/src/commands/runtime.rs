@@ -1382,25 +1382,39 @@ fn preflight_build_deps(capabilities: &[String]) {
             .collect(),
         _ => return,
     };
+    for line in missing_dep_warning(&python.to_string_lossy(), &needed, &missing) {
+        eprintln!("{line}");
+    }
+}
+
+/// Format the missing-build-dep warning (the `import_name → pip_name` mapping is
+/// what turns a bare import miss into an actionable `pip install`). Pure so the
+/// warning — and its fix line — is testable without a clean interpreter (report
+/// ask #6): returns the lines to print, or empty when nothing is missing.
+fn missing_dep_warning(
+    python: &str,
+    needed: &[(&'static str, &'static str)],
+    missing: &[String],
+) -> Vec<String> {
     if missing.is_empty() {
-        return;
+        return Vec::new();
     }
     let pip: Vec<&str> = needed
         .iter()
         .filter(|(i, _)| missing.iter().any(|m| m == i))
         .map(|(_, p)| *p)
         .collect();
-    eprintln!(
-        "warning: build_usd.py needs Python packages not importable by {}: {}",
-        python.display(),
-        missing.join(", ")
-    );
-    eprintln!(
-        "  install them first: {} -m pip install {}",
-        python.display(),
-        pip.join(" ")
-    );
-    eprintln!("  (schema generation needs Jinja2; usdview needs PySide6 + PyOpenGL)");
+    vec![
+        format!(
+            "warning: build_usd.py needs Python packages not importable by {python}: {}",
+            missing.join(", ")
+        ),
+        format!(
+            "  install them first: {python} -m pip install {}",
+            pip.join(" ")
+        ),
+        "  (schema generation needs Jinja2; usdview needs PySide6 + PyOpenGL)".to_string(),
+    ]
 }
 
 fn emit_macos_build_notes(opts: &BuildOpts) {
@@ -2404,6 +2418,32 @@ mod tests {
                 ("OpenGL", "PyOpenGL")
             ]
         );
+    }
+
+    #[test]
+    fn missing_dep_warning_names_the_missing_packages_and_pip_fix() {
+        // Nothing missing -> no warning (a preflight must not cry wolf).
+        let needed = build_dep_requirements(&["usd-stage-read".into(), "qt-ui".into()]);
+        assert!(missing_dep_warning("/usr/bin/python3", &needed, &[]).is_empty());
+
+        // A clean interpreter missing jinja2 (but with PySide6) warns with the
+        // exact missing name and a pip line naming only Jinja2's pip package.
+        let lines = missing_dep_warning("/usr/bin/python3", &needed, &["jinja2".to_string()]);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("not importable by /usr/bin/python3"));
+        assert!(lines[0].contains("jinja2"));
+        assert!(lines[1].contains("-m pip install Jinja2"));
+        assert!(
+            !lines[1].contains("PySide6"),
+            "only the missing package is offered"
+        );
+        assert!(lines[2].contains("usdview needs PySide6 + PyOpenGL"));
+
+        // All three missing -> the pip line offers all three pip names in order.
+        let all = build_dep_requirements(&["usd-stage-read".into(), "hydra-preview".into()]);
+        let missing: Vec<String> = all.iter().map(|(i, _)| i.to_string()).collect();
+        let lines = missing_dep_warning("python", &all, &missing);
+        assert!(lines[1].contains("pip install Jinja2 PySide6 PyOpenGL"));
     }
 
     #[test]
