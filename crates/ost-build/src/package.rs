@@ -465,7 +465,13 @@ fn validate_symlink(stage: &Utf8Path, link: &Utf8Path) -> io::Result<String> {
 
     // Resolve the target lexically against the link's parent directory (both
     // relative to `stage`); a `..` that pops above the stage root is an escape.
-    let link_rel = link.strip_prefix(stage).unwrap_or(link);
+    // The caller only ever hands us links found under `stage`, so a failed
+    // `strip_prefix` is a caller bug — treat it as unsafe rather than fall back
+    // to the absolute path, which would silently widen the `..`-pop budget and
+    // let a target resolve outside the stage while still passing.
+    let link_rel = link.strip_prefix(stage).map_err(|_| {
+        unsupported_entry("symlink resolved outside the staging area", link)
+    })?;
     let mut stack: Vec<&str> = link_rel
         .as_str()
         .split(['/', '\\'])

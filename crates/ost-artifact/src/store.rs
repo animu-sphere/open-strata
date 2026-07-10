@@ -376,25 +376,22 @@ impl ArtifactStore {
                 .map_err(|e| Error::io(dest.to_string(), e))?;
         }
         // Pre-extraction safety gate: now that safe in-tree symlinks are packable,
-        // walk the (digest-verified) archive and refuse before unpacking a byte if
+        // scan the (digest-verified) archive and refuse before unpacking a byte if
         // any entry is unsafe — an absolute/escaping symlink, a `..` path, a
         // hardlink, or a special file (harness §SEC-001). A local artifact reaches
         // here without the transport verify gate, so `extract` enforces it itself.
-        let walk = walk_archive(&archive)?;
-        if !walk.unsafe_entries.is_empty() {
+        // The scan skips content hashing; only the safety verdict matters here.
+        let unsafe_entries = scan_unsafe_entries(&archive)?;
+        if !unsafe_entries.is_empty() {
             return Err(Error::coded(
                 "ARTIFACT_UNSAFE_ENTRY",
                 Category::Validation,
                 format!(
                     "stored archive for {} contains {} entr{} unsafe to extract: {}",
                     record.short_digest(),
-                    walk.unsafe_entries.len(),
-                    if walk.unsafe_entries.len() == 1 {
-                        "y"
-                    } else {
-                        "ies"
-                    },
-                    walk.unsafe_entries.join("; "),
+                    unsafe_entries.len(),
+                    if unsafe_entries.len() == 1 { "y" } else { "ies" },
+                    unsafe_entries.join("; "),
                 ),
             ));
         }
@@ -543,13 +540,12 @@ pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
             .to_string_lossy()
             .replace('\\', "/");
 
-        if let Some(why) = unsafe_entry_path(&path) {
-            walk.unsafe_entries.push(format!("{why}: {path}"));
-            continue;
-        }
-        let kind = entry.header().entry_type();
-        match kind {
-            tar::EntryType::Regular => {
+        let entry_type = entry.header().entry_type();
+        let link_target = read_link_target(&entry, entry_type, archive)?;
+        match classify_entry(&path, entry_type, link_target.as_deref()) {
+            EntryClass::Unsafe(reason) => walk.unsafe_entries.push(reason),
+            EntryClass::Directory => {}
+            EntryClass::Regular => {
                 if !seen_files.insert(path.clone()) {
                     walk.unsafe_entries
                         .push(format!("duplicate file path: {path}"));
@@ -564,20 +560,7 @@ pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
                     link_target: None,
                 });
             }
-            tar::EntryType::Directory => {}
-            tar::EntryType::Symlink => {
-                // A shared-library soname chain is a legitimate SDK entry, but a
-                // symlink can redirect a later write outside the destination, so
-                // only a *relative, in-tree* target is safe (harness §SEC-001).
-                let target = entry
-                    .link_name()
-                    .map_err(|e| Error::io(archive.to_string(), e))?
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .unwrap_or_default();
-                if let Some(why) = unsafe_symlink_target(&path, &target) {
-                    walk.unsafe_entries.push(format!("{why}: {path}"));
-                    continue;
-                }
+            EntryClass::Symlink(target) => {
                 if !seen_files.insert(path.clone()) {
                     walk.unsafe_entries
                         .push(format!("duplicate file path: {path}"));
@@ -592,16 +575,107 @@ pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
                     link_target: Some(target),
                 });
             }
-            other => {
-                // Hardlinks and special files have no place in an artifact: a
-                // hardlink references another member, and device / fifo entries
-                // are not portable content.
-                walk.unsafe_entries
-                    .push(format!("unsupported entry type {other:?}: {path}"));
-            }
         }
     }
     Ok(walk)
+}
+
+/// Cheaply scan a `tar.zst` for entries unsafe to extract, **without hashing any
+/// file contents**. This is the extract-time safety gate: `extract` needs only
+/// the safety verdict, not the per-file digests `walk_archive` computes, and
+/// re-hashing every byte of a multi-GB SDK (the unpack pass reads it all again)
+/// is wasted work. Classification is shared with `walk_archive` via
+/// [`classify_entry`], so the pre-extraction gate can never drift from the walk.
+pub(crate) fn scan_unsafe_entries(archive: &Utf8Path) -> Result<Vec<String>> {
+    let file = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+    let decoder =
+        zstd::stream::read::Decoder::new(file).map_err(|e| Error::io(archive.to_string(), e))?;
+    let mut tar = tar::Archive::new(decoder);
+
+    let mut unsafe_entries = Vec::new();
+    let mut seen_files = std::collections::HashSet::new();
+    let entries = tar
+        .entries()
+        .map_err(|e| Error::io(archive.to_string(), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| Error::io(archive.to_string(), e))?;
+        let path = entry
+            .path()
+            .map_err(|e| Error::io(archive.to_string(), e))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let entry_type = entry.header().entry_type();
+        let link_target = read_link_target(&entry, entry_type, archive)?;
+        match classify_entry(&path, entry_type, link_target.as_deref()) {
+            EntryClass::Unsafe(reason) => unsafe_entries.push(reason),
+            EntryClass::Directory => {}
+            // A file or safe symlink: only the duplicate check matters here; the
+            // entry's bytes are never read, so the reader just skips past them.
+            EntryClass::Regular | EntryClass::Symlink(_) => {
+                if !seen_files.insert(path.clone()) {
+                    unsafe_entries.push(format!("duplicate file path: {path}"));
+                }
+            }
+        }
+    }
+    Ok(unsafe_entries)
+}
+
+/// The safety classification of one tar entry, judged purely from its path,
+/// type, and (for a symlink) link target — no contents read. Shared by
+/// [`walk_archive`] and [`scan_unsafe_entries`] so the two gates cannot disagree.
+enum EntryClass {
+    /// A regular file, safe to keep/extract.
+    Regular,
+    /// A directory: carries no manifest entry and is always safe.
+    Directory,
+    /// A safe symlink, carrying its validated, normalized in-tree target.
+    Symlink(String),
+    /// Unsafe to extract; the string is a ready-to-report `<why>: <path>` reason.
+    Unsafe(String),
+}
+
+/// Classify `path`/`entry_type`/`link_target` (see [`EntryClass`]). A shared-
+/// library soname chain is a legitimate symlink, but a symlink can redirect a
+/// later write outside the destination, so only a *relative, in-tree* target is
+/// kept; hardlinks and special files (device/fifo) have no place in an artifact
+/// (harness §SEC-001).
+fn classify_entry(path: &str, entry_type: tar::EntryType, link_target: Option<&str>) -> EntryClass {
+    if let Some(why) = unsafe_entry_path(path) {
+        return EntryClass::Unsafe(format!("{why}: {path}"));
+    }
+    match entry_type {
+        tar::EntryType::Regular => EntryClass::Regular,
+        tar::EntryType::Directory => EntryClass::Directory,
+        tar::EntryType::Symlink => {
+            let target = link_target.unwrap_or_default();
+            match unsafe_symlink_target(path, target) {
+                Some(why) => EntryClass::Unsafe(format!("{why}: {path}")),
+                None => EntryClass::Symlink(target.to_string()),
+            }
+        }
+        other => EntryClass::Unsafe(format!("unsupported entry type {other:?}: {path}")),
+    }
+}
+
+/// The normalized (forward-slashed) target of a symlink entry, or `None` for a
+/// non-symlink. Kept separate from [`classify_entry`] so the latter stays a pure
+/// function over already-decoded strings.
+fn read_link_target<R: std::io::Read>(
+    entry: &tar::Entry<'_, R>,
+    entry_type: tar::EntryType,
+    archive: &Utf8Path,
+) -> Result<Option<String>> {
+    if entry_type != tar::EntryType::Symlink {
+        return Ok(None);
+    }
+    Ok(Some(
+        entry
+            .link_name()
+            .map_err(|e| Error::io(archive.to_string(), e))?
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default(),
+    ))
 }
 
 /// Why an archived path must not be extracted, if any.
