@@ -184,11 +184,12 @@ them. Each release is a coherent slice, not a phase boundary.
     and attributes every build failure to a phase (`schema-generate` /
     `configure` / `compile-link` / `schema-merge` / `plugin-discovery`) in
     both human and `--json` output.
-  - **Deferred (now sequenced as v0.10.0–v0.15.0 below):** OCI push (v0.10.0),
-    producer-side correctness + Linux runtime portability (v0.11.0), protected
-    publish policy + OIDC allowed-publisher (v0.12.0), provenance / SBOM bundle
-    (v0.13.0), generated trusted CI + trust levels in the support matrix
-    (v0.14.0), and DCC host integration (v0.15.0) — tracking plan
+  - **Deferred (now sequenced as v0.10.0–v0.16.0 below):** OCI push (v0.10.0),
+    producer-side correctness + Linux runtime portability (v0.11.0), hosted
+    macOS CI / runtime-contract hardening (v0.12.0), protected publish policy +
+    OIDC allowed-publisher (v0.13.0), provenance / SBOM bundle (v0.14.0),
+    generated trusted CI + trust levels in the support matrix (v0.15.0), and
+    DCC host integration (v0.16.0) — tracking plan
     Phase 3/4, SEC-006, and the Phase 6 trust-policy hooks. The 2026-07-09
     publish dogfooding additionally surfaced three runtime-completeness bugs
     (from-source `--build` version drift, missing `jinja2` in a published
@@ -233,10 +234,11 @@ them. Each release is a coherent slice, not a phase boundary.
     Also: use the `oras`/docker credential store (or clearly document
     `OST_REGISTRY_USER`/`_PASSWORD`), and document the WebUI-only GHCR
     visibility-flip step. Spelled `ost runtime publish --to oci://…` may front it.
-  - **Deferred (v0.12.0+):** protected-namespace / allowed-publisher policy, OIDC
+  - **Deferred (v0.13.0+):** protected-namespace / allowed-publisher policy, OIDC
     publisher verification, provenance / SBOM bundle, trust levels in the support
     matrix, and generated trusted-publish CI — sequenced below (after the v0.11.0
-    producer-correctness slice).
+    producer-correctness slice and the v0.12.0 hosted macOS CI/runtime-contract
+    hardening slice).
 - ✅ **v0.11.0 — producer-side correctness + Linux runtime portability.** The
   first *produce*-side hardening pass, from the 2026-07-10 recheck dogfooding
   report (`2026-07-10-v0.10.0-recheck-v0.11.0-asks.md`). That report re-verified
@@ -245,8 +247,9 @@ them. Each release is a coherent slice, not a phase boundary.
   surface) and proved public Windows **and** Linux runtime *consumption* by
   digest — but standing up the producer side exposed one hard ABI-labeling
   blocker plus a cluster of producer rough edges that must be boring before the
-  trust-policy ladder layers on top. Trust-policy foundation and the rest of the
-  ladder shift down one release (v0.12.0–v0.15.0). Details in the
+  trust-policy ladder layers on top. The 2026-07-11 macOS CI dogfood then exposed
+  one more runtime-contract slice before trust policy can be boring, so trust
+  starts at v0.13.0 and the ladder shifts to v0.13.0–v0.16.0. Details in the
   [Phase 6 — v0.11.0 backlog](#phase-6--v0110-backlog-from-the-2026-07-10-recheck-dogfooding-report).
   Scope:
   - ✅ **P0 — real glibc floor for Linux runtimes (BLOCKER; report ask #7).** The
@@ -324,17 +327,54 @@ them. Each release is a coherent slice, not a phase boundary.
     including the exact `pip install` fix line — was extracted into a pure,
     unit-tested `missing_dep_warning` so the previously-untestable message path is
     now covered without needing a pristine interpreter.
-- ⬜ **v0.12.0 — trust policy foundation.** With a producer verb in place, close
-  the publish-side trust boundary (future-policy §3.2/§7/§11). An
-  `openstrata-artifact-policy.toml` with protected-namespace + allowed-publisher
-  schema and a `local`/`unsigned`/`attested`/`verified`/`trusted` trust-level
-  enum; a policy parser with stable `ARTIFACT_POLICY_*` codes; OIDC publisher
-  verification (match repository / workflow path / git ref / actor / event against
-  the allowed-publisher list, reject protected-namespace publish from an untrusted
-  identity, `--allow-untrusted-publisher` as the explicit escape hatch); and
+- ⬜ **v0.12.0 — hosted macOS CI + runtime-contract hardening.** The 2026-07-11
+  macOS OpenUSD 26.05 PR CI dogfood proved the public GHCR runtime pull,
+  artifact verification, and Windows source-CI path, but the hosted macOS lane
+  only passed after repo-local temporary repairs (`actions/setup-python` for
+  Python 3.13 and `chmod +x` on the materialized runtime `bin/`). v0.12.0 makes
+  those requirements first-class so generated source CI does not need hand edits.
+  Details in the
+  [Phase 6 — v0.12.0 backlog](#phase-6--v0120-backlog-from-the-2026-07-11-macos-openusd-2605-pr-ci-dogfooding-report).
+  Scope:
+  - **P0 — republish macOS runtimes with executable tool bits preserved and
+    verified.** `runtime export` / artifact packaging must preserve Unix execute
+    modes for runtime `bin/` tools, `runtime validate` must catch a materialized
+    runtime whose tools are not executable, and the public cy2026 macOS arm64
+    OpenUSD 26.05 SDK artifact must be republished. Acceptance: a clean
+    GitHub-hosted `macos-15-arm64` source-CI lane reaches `ost plugin test
+    --up-to 5` with no `chmod` repair step.
+  - **P0 — make schema-generation Python an explicit runtime/CI contract.** A
+    `py313` runtime that does not bundle `bin/python3.13` cannot leave CI relying
+    on an accidental host interpreter. Either the runtime supplies a runnable
+    interpreter or generated source CI installs the declared Python ABI before
+    `ost plugin build`; local failures name the missing interpreter and the exact
+    setup fix before invoking `usdGenSchema`.
+  - **P1 — model pre-build requirements directly, not as late `source_checks`.**
+    The existing `source_checks:` hook intentionally runs after the verification
+    pyramid, so it is the wrong escape hatch for runtime/toolchain repair. Keep
+    repo-specific smoke tests there, but add first-class pre-build rendering for
+    modeled prerequisites such as host Python setup; avoid a broad arbitrary
+    pre-build shell hook unless another dogfood proves it is needed.
+  - **P1 — CI evidence for repaired assumptions.** Generated reports should make
+    the runtime artifact digest, OCI digest, Python ABI/setup source, runtime-bin
+    mode validation, and source-CI lane outcome visible enough that a future
+    failure is attributable to the contract, not to a hidden runner state.
+  - **P2 — docs and cleanup.** Document the macOS hosted source-CI contract,
+    remove the temporary branch-local setup/chmod steps after the runtime is
+    republished and CI regenerated, and keep the dogfood recipe as the acceptance
+    check for Windows + macOS public-runtime consumption.
+- ⬜ **v0.13.0 — trust policy foundation.** With a producer verb and stable hosted
+  source-CI runtime contract in place, close the publish-side trust boundary
+  (future-policy §3.2/§7/§11). An `openstrata-artifact-policy.toml` with
+  protected-namespace + allowed-publisher schema and a `local`/`unsigned`/
+  `attested`/`verified`/`trusted` trust-level enum; a policy parser with stable
+  `ARTIFACT_POLICY_*` codes; OIDC publisher verification (match repository /
+  workflow path / git ref / actor / event against the allowed-publisher list,
+  reject protected-namespace publish from an untrusted identity,
+  `--allow-untrusted-publisher` as the explicit escape hatch); and
   `ost artifact verify --policy`. Tracks SEC-006 and the Phase 6 trust-policy
   hooks.
-- ⬜ **v0.13.0 — provenance / SBOM bundle.** Make the artifact an *evidence
+- ⬜ **v0.14.0 — provenance / SBOM bundle.** Make the artifact an *evidence
   bundle*, not just an archive (future-policy §5/§6/§11): optional SBOM
   (`sbom.spdx.json`) and SLSA/in-toto provenance (`provenance.intoto.jsonl`)
   layers, `ost artifact push` attaching them and `ost artifact verify
@@ -343,7 +383,7 @@ them. Each release is a coherent slice, not a phase boundary.
   allowed-publisher policy, and source repo/revision match build metadata. Closes
   the Licensing & attribution "per-artifact SBOM" and Phase 6 "content attribution"
   gaps for published artifacts.
-- ⬜ **v0.14.0 — generated trusted CI.** Push the trust chain up into the CI
+- ⬜ **v0.15.0 — generated trusted CI.** Push the trust chain up into the CI
   contract (future-policy §7/§8/§13): a `trust` field on support-matrix targets, a
   minimum-trust requirement per lane (`pr_min_trust` / `main_min_trust` /
   `release_min_trust`), and lane-specific generated workflows — the PR / source-CI
@@ -351,15 +391,15 @@ them. Each release is a coherent slice, not a phase boundary.
   (protected branch/tag, OIDC, SBOM + provenance + validation report required,
   protected-namespace policy enforced) is generated distinctly from the release
   lane. Release workflows refuse untrusted artifacts.
-- ⬜ **v0.15.0 — DCC host integration.** Extend the support matrix beyond
+- ⬜ **v0.16.0 — DCC host integration.** Extend the support matrix beyond
   runtime-native apps to external DCC hosts (future-policy §9/§11; Phase 10
   [dcc-hosts.md](dcc-hosts.md)). Read-only host discovery + fingerprint
   (`ost dcc discover`, host record schema, Maya/Houdini detectors first), headless
   plugin compatibility test, and DCC support-matrix + CI-annotation integration —
   *without* a DCC API abstraction or SDK redistribution (future-policy §13
   non-goals).
-- ⬜ **v1.0.0 (after v0.15.0).** The downstream 2026-07-09 report framed its asks
-  as "v1.0.0-rc1"; that framing is **superseded** by the finer v0.10.0–v0.15.0
+- ⬜ **v1.0.0 (after v0.16.0).** The downstream 2026-07-09 report framed its asks
+  as "v1.0.0-rc1"; that framing is **superseded** by the finer v0.10.0–v0.16.0
   ladder above (the report's runtime-completeness asks landed as v0.10.0 P0, its
   `ost artifact push` ask as v0.10.0 P1, and the 2026-07-10 recheck's producer
   correctness/portability asks are the v0.11.0 slice). 1.0 is cut once the
@@ -1441,6 +1481,60 @@ blocker. Delivered:
   `missing_dep_warning` and unit-tested, so the message path is covered without
   needing a clean interpreter on the CI host. The `build_dep_requirements`
   capability→dep mapping was already unit-tested.
+
+### Phase 6 — v0.12.0 backlog (from the 2026-07-11 macOS OpenUSD 26.05 PR CI dogfooding report)
+
+The 2026-07-11 report
+(`2026-07-11-macos-openusd-26.05-pr-ci-dogfooding.md`, `ost 0.11.0`) exercised a
+public macOS arm64 OpenUSD 26.05 runtime in the generated `ost source ci` PR lane
+for `plugins/usdVrm`. The important result is mixed but useful: GHCR access,
+digest-pinned `ost artifact pull`, artifact verification, and `runtime pull
+--from-artifact` all worked on the hosted `macos-15-arm64` runner; Windows passed
+the same source-CI contract. The first macOS job failed earlier, during `ost
+plugin build` → `schema-generate`, because two assumptions were still implicit:
+the `py313` runtime did not provide `bin/python3.13`, and the published macOS
+runtime materialized `bin/` tools without executable bits. A follow-up commit made
+the PR green by adding repo-local temporary repairs (`actions/setup-python@v6`
+for Python 3.13 and `chmod +x <runtime>/bin/*` before build). v0.12.0 turns those
+repairs into product behavior so generated CI remains regenerable.
+
+- ⬜ **P0 — preserve and validate executable modes for runtime tools.** The public
+  macOS runtime artifact passed OpenStrata artifact verification, but local
+  `ost plugin test --up-to 5` could not run `usdcat` until `chmod +x` was applied
+  to the materialized runtime `bin/` tree. That means the artifact identity and
+  verification path still miss a runnable-runtime invariant. Durable fix:
+  `runtime export` / artifact packaging preserves Unix execute bits, extraction
+  restores them, `runtime validate` fails a runtime whose declared tools are not
+  executable, and the public cy2026 macOS arm64 OpenUSD 26.05 SDK is republished.
+  Acceptance: clean local materialization and a GitHub-hosted macOS source-CI lane
+  reach L5 without a workflow-level chmod repair.
+- ⬜ **P0 — make schema-generation Python explicit.** `ost plugin build` correctly
+  runs USD's script-style `usdGenSchema` through an interpreter, but for this
+  runtime the interpreter was found only on the host (`python3.13`) rather than in
+  the runtime. Local macOS had it; hosted macOS did not. Durable fix: the runtime
+  manifest / target contract exposes the Python ABI required by schema tooling,
+  and either the runtime provides a runnable interpreter or generated source CI
+  installs that exact Python before the build. If neither is true, `ost plugin
+  build` should fail before `usdGenSchema` with a precondition error naming every
+  interpreter candidate and the exact setup action.
+- ⬜ **P1 — pre-build requirements belong in the CI model, not `source_checks`.**
+  The existing `source_checks:` feature is deliberately post-pyramid, so it is too
+  late for Python setup, runtime-bin validation, or any other prerequisite needed
+  before `ost plugin build`. Keep `source_checks` for repo-specific smoke tests,
+  and render modeled pre-build prerequisites in a first-class section between
+  runtime materialization and plugin build. Do not add a broad arbitrary
+  pre-build shell hook unless a separate dogfood proves a repo-specific
+  prerequisite that cannot be modeled.
+- ⬜ **P1 — renderer and validation coverage for hosted macOS assumptions.** Add
+  tests that generated GitHub source-CI places Python setup / runtime validation
+  before the build step and leaves repo smoke tests after the pyramid; add runtime
+  validation coverage for non-executable tool bits; and keep the Windows +
+  macOS public-runtime PR lane as the acceptance fixture.
+- ⬜ **P2 — documentation and cleanup.** Document the macOS hosted source-CI
+  contract in `docs/examples.md` / runtime-publishing notes, record the incident
+  shape for future debugging, then remove the temporary repo-local
+  `actions/setup-python` and `chmod` repairs after the runtime is republished and
+  CI is regenerated from `openstrata.ci.yaml`.
 
 ## Phase 7 — Sessions / sandbox ⬜
 
