@@ -261,10 +261,10 @@ fn export_relabels_target_with_measured_glibc_floor() {
     let v = stdout_json(&sb.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
     assert_eq!(v["data"]["exported"], true);
     assert_eq!(v["data"]["glibc_floor"], "2.43");
-    assert_eq!(
-        v["data"]["target"],
-        "cy2026-linux-x86_64-glibc243-py313-usd"
-    );
+    // The runtime artifact's `target` is the variant slug (no cycle prefix / profile
+    // suffix), as `runtime_artifact_manifest` records it — the measured floor moves
+    // the ABI token from `glibc228` to `glibc243`.
+    assert_eq!(v["data"]["target"], "linux-x86_64-glibc243-py313");
     let digest = v["data"]["digest"].as_str().unwrap().to_string();
 
     // The registry record carries the corrected, truthful target, and records the
@@ -272,7 +272,7 @@ fn export_relabels_target_with_measured_glibc_floor() {
     let v = stdout_json(&sb.ost(&["--json", "artifact", "show", &digest]));
     assert_eq!(
         v["data"]["artifact"]["target"],
-        "cy2026-linux-x86_64-glibc243-py313-usd"
+        "linux-x86_64-glibc243-py313"
     );
 }
 
