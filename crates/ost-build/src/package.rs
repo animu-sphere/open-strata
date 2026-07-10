@@ -608,7 +608,11 @@ mod tests {
     fn sdk_stage_files_keeps_safe_soname_symlink() {
         let root = tmp("sdk-soname-symlink");
         std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
-        std::fs::write(root.join("lib/libMaterialXGenMsl.so.1.39.4").as_std_path(), b"ELF").unwrap();
+        std::fs::write(
+            root.join("lib/libMaterialXGenMsl.so.1.39.4").as_std_path(),
+            b"ELF",
+        )
+        .unwrap();
         std::os::unix::fs::symlink(
             "libMaterialXGenMsl.so.1.39.4",
             root.join("lib/libMaterialXGenMsl.so").as_std_path(),
@@ -732,9 +736,13 @@ mod tests {
         let root = tmp("symlink-safe");
         std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
         std::fs::write(root.join("lib/libFoo.so.1.39.4").as_std_path(), b"ELF").unwrap();
-        std::os::unix::fs::symlink("libFoo.so.1.39.4", root.join("lib/libFoo.so.1").as_std_path())
+        std::os::unix::fs::symlink(
+            "libFoo.so.1.39.4",
+            root.join("lib/libFoo.so.1").as_std_path(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("libFoo.so.1", root.join("lib/libFoo.so").as_std_path())
             .unwrap();
-        std::os::unix::fs::symlink("libFoo.so.1", root.join("lib/libFoo.so").as_std_path()).unwrap();
 
         let files = stage_files(&root).expect("safe in-tree symlinks are kept");
         assert_eq!(files.len(), 3, "real lib + two links: {files:?}");

@@ -389,7 +389,11 @@ impl ArtifactStore {
                     "stored archive for {} contains {} entr{} unsafe to extract: {}",
                     record.short_digest(),
                     walk.unsafe_entries.len(),
-                    if walk.unsafe_entries.len() == 1 { "y" } else { "ies" },
+                    if walk.unsafe_entries.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    },
                     walk.unsafe_entries.join("; "),
                 ),
             ));
@@ -1066,7 +1070,11 @@ mod tests {
         assert_eq!(link.sha256, digest::sha256_hex(b"libFoo.so.1.39.4"));
         assert!(!walk.files.iter().any(|f| f.path == "lib/leak"));
         assert_eq!(walk.unsafe_entries.len(), 1);
-        assert!(walk.unsafe_entries[0].contains("lib/leak"), "{:?}", walk.unsafe_entries);
+        assert!(
+            walk.unsafe_entries[0].contains("lib/leak"),
+            "{:?}",
+            walk.unsafe_entries
+        );
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
@@ -1144,7 +1152,10 @@ mod tests {
         store.extract(&out.record.digest, &dest).unwrap();
         let link = dest.join("lib/libFoo.so");
         let meta = std::fs::symlink_metadata(link.as_std_path()).unwrap();
-        assert!(meta.file_type().is_symlink(), "extract must restore the link");
+        assert!(
+            meta.file_type().is_symlink(),
+            "extract must restore the link"
+        );
         assert_eq!(
             std::fs::read_link(link.as_std_path()).unwrap(),
             std::path::Path::new("libFoo.so.1.39.4")
@@ -1159,10 +1170,7 @@ mod tests {
         let target = "../../../etc/passwd";
         let dig = write_archive(
             &archive2,
-            &[
-                Entry::Reg("lib/real", b"x"),
-                Entry::Sym("lib/leak", target),
-            ],
+            &[Entry::Reg("lib/real", b"x"), Entry::Sym("lib/leak", target)],
         );
         let manifest2 = serde_json::json!({
             "schema": 1,

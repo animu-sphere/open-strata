@@ -275,19 +275,23 @@ fn export_preserves_in_tree_symlinks_through_pull_from_artifact() {
     let so = out_lib.join("libFoo.so");
     let so1 = out_lib.join("libFoo.so.1");
     assert!(
-        std::fs::symlink_metadata(&so).unwrap().file_type().is_symlink(),
+        std::fs::symlink_metadata(&so)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
         "libFoo.so must be restored as a symlink"
     );
     assert_eq!(std::fs::read_link(&so).unwrap(), Path::new("libFoo.so.1"));
-    assert_eq!(std::fs::read_link(&so1).unwrap(), Path::new("libFoo.so.1.39.4"));
+    assert_eq!(
+        std::fs::read_link(&so1).unwrap(),
+        Path::new("libFoo.so.1.39.4")
+    );
     // The link resolves to the real object, and only one real copy exists.
     assert_eq!(std::fs::read(&so).unwrap(), b"\x7fELF real object");
-    assert!(
-        !std::fs::symlink_metadata(out_lib.join("libFoo.so.1.39.4"))
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
+    assert!(!std::fs::symlink_metadata(out_lib.join("libFoo.so.1.39.4"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
 }
 
 /// On Linux the runtime variant defaults to the nominal `glibc228`. Export must
