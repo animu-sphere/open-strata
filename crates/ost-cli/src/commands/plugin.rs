@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
 
-use ost_build::{pack_dir, stage_files};
+use ost_build::{pack_dir_with, stage_files, PackOptions};
 use ost_core::host::Os;
 use ost_core::paths::{find_project_root, STATE_DIR};
 use ost_core::variant::{Abi, Variant};
@@ -733,7 +733,13 @@ fn package(
     let archive_name = plugin_archive_name(name, version, &id);
     let dist_dir = plugin_dist_dir(&bundle.root, name, version, &id);
     let archive_path = dist_dir.join(&archive_name);
-    let packed = pack_dir(&stage, &archive_path, &staged)
+    // Pin every entry's mtime (from SOURCE_DATE_EPOCH, else epoch-0) so an
+    // unchanged staged tree repacks to a byte-identical archive digest.
+    let pack_opts = PackOptions {
+        mtime: ost_build::source_date_epoch(),
+        ..PackOptions::default()
+    };
+    let packed = pack_dir_with(&stage, &archive_path, &staged, pack_opts, &mut |_| {})
         .map_err(|e| Error::io(archive_path.to_string(), e))?;
 
     let runtime_manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
@@ -748,10 +754,15 @@ fn package(
         .map(|m| m.validation.as_str().to_string())
         .unwrap_or_else(|| "unknown".into());
 
-    let created = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // Under SOURCE_DATE_EPOCH the whole dist output — archive *and* manifest —
+    // must reproduce, so pin `created_unix` to it too; otherwise stamp wall-clock
+    // provenance.
+    let created = ost_build::source_date_epoch_opt().unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    });
     let files_json: Vec<_> = packed.files.iter().map(|f| f.manifest_json()).collect();
     let manifest = serde_json::json!({
         "schema": 1,

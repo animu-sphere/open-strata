@@ -1241,6 +1241,7 @@ fn export(
     let opts = ost_build::PackOptions {
         level: pack.level,
         workers,
+        mtime: ost_build::source_date_epoch(),
     };
     // Progress to stderr (throttled, in-place) so a long single- or
     // multi-threaded pack shows liveness; suppressed in JSON mode so the only
@@ -1284,10 +1285,14 @@ fn export(
         eprintln!(); // terminate the in-place progress line
     }
 
-    let created = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // Pin to SOURCE_DATE_EPOCH when set so the manifest reproduces alongside the
+    // archive; otherwise stamp wall-clock provenance.
+    let created = ost_build::source_date_epoch_opt().unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    });
     let mut producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
 
     // Measure the real glibc floor from the packed ELF binaries and label the
