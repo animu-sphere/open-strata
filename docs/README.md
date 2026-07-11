@@ -29,6 +29,6 @@ boundaries are established; the [roadmap](roadmap/) is decomposed into
 `current` / `backlog` with per-version [release records](releases/) and a
 [delivery history](reports/delivery-history.md) holding the granular detail.
 [Architecture](architecture/) is split into `overview` + `crates`, and the
-[reference](reference/) CLI / exit-code / schema pages are generated from source
-(`ost internal docs generate`) with a CI drift check. Still pending: a
-`support-matrix` page and a Markdown-lint / consistency CI gate.
+[reference](reference/) CLI / exit-code / schema / support-matrix pages are
+generated from source (`ost internal docs generate`) with a CI drift check. Still
+pending: a Markdown-lint / consistency CI gate.
