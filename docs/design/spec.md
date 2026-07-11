@@ -1,7 +1,7 @@
 \
 # OpenStrata / `ost` — 設計・実装方針
 
-> **OpenStrata** は、VFX Reference Platform の年次互換性を、実行・検証・配布可能な不変ランタイムレイヤーへ変換するための、VFX / OpenUSD 向け runtime・build・extension・validation プラットフォームである。  
+> **OpenStrata** は、VFX Reference Platform の年次互換性を、実行・検証・配布可能な不変ランタイムレイヤーへ変換するための、VFX / OpenUSD 向け runtime・build・extension・validation プラットフォームである。
 > CLI 名は **`ost`** とする。
 
 ---

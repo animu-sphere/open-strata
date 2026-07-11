@@ -1,8 +1,10 @@
-# Documentation gate. Validates that relative links and heading anchors across
-# the repository's Markdown resolve, so a moved or renamed doc cannot silently
-# break cross-references. Ubuntu-only and dependency-free (system python3), so it
-# runs cheaply on every PR. Additional documentation checks (Markdown lint,
-# generated-reference drift) are planned to join this workflow.
+# Documentation gate. Ubuntu-only and dependency-free (system python3), so it
+# runs cheaply on every PR. Two checks:
+#   - links:       relative links + heading anchors resolve (no broken refs).
+#   - consistency: crate inventory, version, and roadmap state match their
+#                  machine-readable sources; Markdown hygiene (no trailing
+#                  whitespace/tabs, final newline).
+# Generated-reference drift is checked separately in ci.yml (docs-generated).
 name: docs
 
 on:
@@ -21,3 +23,11 @@ jobs:
 
       - name: Check documentation links and anchors
         run: python3 scripts/check_doc_links.py .
+
+  consistency:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Check documentation consistency and hygiene
+        run: python3 scripts/check_docs_consistency.py .

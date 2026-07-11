@@ -83,3 +83,22 @@ Shipped context for each area is in the
   world-writable runtime roots; `ost build` / `ost plugin test` can require a
   minimum trust level (release/production CI refuses `local`). Foundation lands
   with v0.13.0.
+
+## Documentation & tooling
+
+Shipped documentation infrastructure is in the
+[delivery history](../reports/delivery-history.md); these are the remaining
+pieces of the documentation reorganization.
+
+- ⬜ **Documentation website.** Render the repository's Markdown (concepts,
+  guides, generated reference, release records) as a static site with search and
+  pull-request previews, treating the site as a *renderer* of repo-owned Markdown
+  — no manually duplicated CLI/schema content. A framework (Astro/Starlight,
+  Docusaurus, MkDocs, …) will be chosen when this is picked up; framework choice
+  is secondary to content ownership, which is already in place.
+- ⬜ **Generated `environment-variables.md`.** Centralize the scattered `OST_*`
+  environment variables into a single source and generate the reference page from
+  it (the last reference page not yet generated).
+- ⬜ **CI matrix validation from `support/platforms.toml`.** Reuse the support
+  declaration that drives the support matrix to validate the generated CI matrix
+  against declared support levels (§10).

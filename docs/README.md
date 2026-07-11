@@ -28,7 +28,9 @@ The documentation is being reorganized in phases (see the reorg plan). Category
 boundaries are established; the [roadmap](roadmap/) is decomposed into
 `current` / `backlog` with per-version [release records](releases/) and a
 [delivery history](reports/delivery-history.md) holding the granular detail.
-[Architecture](architecture/) is split into `overview` + `crates`, and the
+[Architecture](architecture/) is split into `overview` + `crates`; the
 [reference](reference/) CLI / exit-code / schema / support-matrix pages are
-generated from source (`ost internal docs generate`) with a CI drift check. Still
-pending: a Markdown-lint / consistency CI gate.
+generated from source (`ost internal docs generate`) with a CI drift check; and
+link, consistency (crate inventory / version / roadmap state), and hygiene checks
+run in CI. Remaining: a documentation
+[website](roadmap/backlog.md#documentation--tooling).
