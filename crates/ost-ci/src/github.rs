@@ -451,6 +451,8 @@ fn prebuild_steps(matrix: &SupportMatrix) -> String {
           mkdir -p .ost-ci
           if [ \"${{{{ matrix.hosted }}}}\" = \"true\" ] && [ -n \"${{{{ matrix.host_python }}}}\" ]; then
             source=host-setup-python
+          elif [ -n \"${{{{ matrix.host_python }}}}\" ]; then
+            source=operator-provisioned
           else
             source=runtime-bundled
           fi
@@ -1105,6 +1107,10 @@ mod tests {
             .as_str()
             .unwrap()
             .contains(".ost-ci/python-setup.json"));
+        assert!(evidence["run"]
+            .as_str()
+            .unwrap()
+            .contains("source=operator-provisioned"));
 
         // Still fork-PR safe.
         assert!(!a.contains("secrets."), "source CI uses no secrets");
