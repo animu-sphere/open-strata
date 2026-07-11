@@ -15,7 +15,7 @@ use camino::Utf8Path;
 
 use ost_core::{digest, Category, Error, Result};
 
-use crate::record::{manifest_files, ArtifactRecord};
+use crate::record::{manifest_debug_archive, manifest_files, ArtifactRecord};
 use crate::store::{compare_archive_files, locate_manifest, walk_archive};
 use crate::transport::{PullPolicy, StepStatus};
 
@@ -59,6 +59,13 @@ pub(crate) fn verify_dist(dist: &Utf8Path, policy: &PullPolicy) -> Result<ChainO
             "ARTIFACT_MANIFEST_INVALID",
             Category::Validation,
             format!("fetched manifest.json has no usable file list: {e}"),
+        )
+    })?;
+    let debug = manifest_debug_archive(&manifest).map_err(|e| {
+        Error::coded(
+            "ARTIFACT_MANIFEST_INVALID",
+            Category::Validation,
+            format!("fetched manifest.json has an invalid debug archive: {e}"),
         )
     })?;
     steps.push(("manifest_schema", "passed"));
@@ -145,6 +152,52 @@ pub(crate) fn verify_dist(dist: &Utf8Path, policy: &PullPolicy) -> Result<ChainO
         ));
     }
     steps.push(("file_digests", "passed"));
+
+    // A lean plugin's symbol sidecar is part of the producer promise even
+    // though the primary archive remains the artifact identity. Verify its
+    // transport bytes, extraction safety, and file list before importing it.
+    if let Some(debug) = debug {
+        let debug_path = dist_dir.join(&debug.archive);
+        let mut f = File::open(debug_path.as_std_path())
+            .map_err(|e| Error::io(debug_path.to_string(), e))?;
+        let (actual, actual_size) =
+            digest::sha256_hex_reader(&mut f).map_err(|e| Error::io(debug_path.to_string(), e))?;
+        if actual != debug.digest || actual_size != debug.archive_size {
+            return Err(Error::coded(
+                "ARTIFACT_ARCHIVE_DIGEST_MISMATCH",
+                Category::Validation,
+                format!(
+                    "fetched debug archive '{}' hashes to {actual} ({actual_size} bytes) but its \
+                     manifest records {} ({} bytes)",
+                    debug.archive, debug.digest, debug.archive_size
+                ),
+            ));
+        }
+        let walk = walk_archive(&debug_path)?;
+        if !walk.unsafe_entries.is_empty() {
+            return Err(Error::coded(
+                "ARTIFACT_ARCHIVE_UNSAFE",
+                Category::Validation,
+                format!(
+                    "fetched debug archive '{}' contains entries unsafe to extract: {}",
+                    debug.archive,
+                    walk.unsafe_entries.join("; ")
+                ),
+            ));
+        }
+        let cmp = compare_archive_files(&walk.files, &debug.files);
+        if !cmp.passed() {
+            return Err(Error::coded(
+                "ARTIFACT_FILE_DIGEST_MISMATCH",
+                Category::Validation,
+                format!(
+                    "fetched debug archive '{}' does not match its manifest file list",
+                    debug.archive
+                ),
+            ));
+        }
+        steps.push(("debug_archive", "passed"));
+    }
 
     // Artifact kind against the support line's requirement.
     match policy.require_kind {

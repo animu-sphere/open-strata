@@ -36,4 +36,4 @@ Per-feature, per-platform support levels. Sourced from [`support/platforms.toml`
 [^4]: A Unix concept; Windows has no execute bit to preserve.
 [^5]: Linux SDK soname chains; not part of the Windows packaging model.
 [^6]: A Linux-only concept (ELF scan of the runtime's binaries).
-[^7]: Planned (Phase 10 / v0.16.0); not yet implemented on any platform.
+[^7]: Planned (Phase 10 / v0.17.0); not yet implemented on any platform.

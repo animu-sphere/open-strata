@@ -4,7 +4,7 @@
 //! Speaks the OCI Distribution Spec pull *and* push surface against GHCR-class
 //! registries (GHCR, Harbor, ECR, GAR, ACR, `registry:2`), moving the ORAS-style
 //! artifact bundle this crate defines: an OCI image manifest whose layers are
-//! the canonical `tar.zst` archive and the producer `manifest.json`
+//! the canonical `tar.zst` archive, an optional debug sidecar, and the producer `manifest.json`
 //! (identified by media type, with the `org.opencontainers.image.title`
 //! annotation as a fallback for bundles pushed by a stock `oras` CLI). Push
 //! emits exactly that shape, so a pushed bundle round-trips cleanly back through
@@ -33,7 +33,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use ost_core::{digest, Category, Error, Result};
 
-use crate::record::{is_sha256_ref, MANIFEST_FILE};
+use crate::record::{is_sha256_ref, manifest_debug_archive, MANIFEST_FILE};
 use crate::reference::{OciReference, RemoteReference};
 use crate::transport::{ArtifactTransport, ResolvedRemote};
 
@@ -46,6 +46,8 @@ type HttpResponse = ureq::http::Response<ureq::Body>;
 pub const OCI_ARTIFACT_TYPE: &str = "application/vnd.openstrata.artifact.v1";
 /// Layer media type of the canonical artifact archive.
 pub const MEDIA_TYPE_ARCHIVE: &str = "application/vnd.openstrata.artifact.archive.v1+tar+zstd";
+/// Optional debug-symbol sidecar layer for a lean plugin artifact.
+pub const MEDIA_TYPE_DEBUG_ARCHIVE: &str = "application/vnd.openstrata.artifact.debug.v1+tar+zstd";
 /// Layer media type of the producer manifest JSON.
 pub const MEDIA_TYPE_PRODUCER_MANIFEST: &str =
     "application/vnd.openstrata.artifact.manifest.v1+json";
@@ -782,6 +784,40 @@ impl ArtifactTransport for OciTransport {
             })?;
         self.fetch_blob_to(r, archive_layer, &scratch.join(&archive_name))?;
 
+        if let Some(debug) = manifest_debug_archive(&producer).map_err(|e| {
+            Error::coded(
+                "ARTIFACT_MANIFEST_INVALID",
+                Category::Validation,
+                format!(
+                    "producer manifest from '{}' has an invalid debug archive: {e}",
+                    resolved.locator
+                ),
+            )
+        })? {
+            let debug_layer = manifest
+                .find_layer(MEDIA_TYPE_DEBUG_ARCHIVE, |title| title == debug.archive)
+                .ok_or_else(|| {
+                    oci_manifest_invalid(
+                        &resolved.locator,
+                        &format!(
+                            "producer manifest promises debug archive '{}' but no matching \
+                             debug layer exists",
+                            debug.archive
+                        ),
+                    )
+                })?;
+            if debug_layer.digest != debug.digest || debug_layer.size != debug.archive_size {
+                return Err(oci_manifest_invalid(
+                    &resolved.locator,
+                    &format!(
+                        "debug layer '{}' does not match the producer manifest digest/size",
+                        debug.archive
+                    ),
+                ));
+            }
+            self.fetch_blob_to(r, debug_layer, &scratch.join(&debug.archive))?;
+        }
+
         Ok(scratch.to_owned())
     }
 
@@ -798,6 +834,16 @@ impl ArtifactTransport for OciTransport {
         // re-prefixed, or the registry sees a malformed `sha256:sha256:<hex>`.
         let manifest_bytes = std::fs::read(source.manifest_path.as_std_path())
             .map_err(|e| Error::io(source.manifest_path.to_string(), e))?;
+        let producer: serde_json::Value = serde_json::from_slice(&manifest_bytes)
+            .map_err(|e| Error::parse(source.manifest_path.to_string(), anyhow::Error::new(e)))?;
+        let debug = manifest_debug_archive(&producer)?;
+        let source_dir = source
+            .manifest_path
+            .parent()
+            .ok_or_else(|| Error::usage("producer manifest has no parent directory"))?;
+        if let Some(debug) = &debug {
+            crate::store::verify_archive_claim(source_dir, debug)?;
+        }
         let manifest_digest = digest::sha256_hex(&manifest_bytes);
         let manifest_size = manifest_bytes.len() as u64;
 
@@ -809,22 +855,28 @@ impl ArtifactTransport for OciTransport {
         // Build the exact bytes the registry will store and hash them: the OCI
         // digest is content-addressed over precisely these bytes, so what we PUT
         // and what we advertise cannot diverge.
-        let oci_manifest = build_oci_manifest(
-            &LayerDescriptor {
-                media_type: MEDIA_TYPE_ARCHIVE,
-                digest: &archive_digest,
-                size: archive_size,
-                title: Some(&archive_title),
-            },
-            &LayerDescriptor {
-                media_type: MEDIA_TYPE_PRODUCER_MANIFEST,
-                digest: &manifest_digest,
-                size: manifest_size,
-                title: Some(MANIFEST_FILE),
-            },
-            &config_digest,
-            EMPTY_CONFIG_BYTES.len() as u64,
-        );
+        let mut layers = vec![LayerDescriptor {
+            media_type: MEDIA_TYPE_ARCHIVE,
+            digest: &archive_digest,
+            size: archive_size,
+            title: Some(&archive_title),
+        }];
+        if let Some(debug) = &debug {
+            layers.push(LayerDescriptor {
+                media_type: MEDIA_TYPE_DEBUG_ARCHIVE,
+                digest: &debug.digest,
+                size: debug.archive_size,
+                title: Some(&debug.archive),
+            });
+        }
+        layers.push(LayerDescriptor {
+            media_type: MEDIA_TYPE_PRODUCER_MANIFEST,
+            digest: &manifest_digest,
+            size: manifest_size,
+            title: Some(MANIFEST_FILE),
+        });
+        let oci_manifest =
+            build_oci_manifest(&layers, &config_digest, EMPTY_CONFIG_BYTES.len() as u64);
         let oci_digest = digest::sha256_hex(&oci_manifest);
 
         // A digest-pinned destination asserts the resulting OCI digest; refuse
@@ -857,6 +909,13 @@ impl ArtifactTransport for OciTransport {
                 &archive_digest,
                 WriteBody::File(source.archive_path.clone()),
             )?;
+            if let Some(debug) = &debug {
+                self.upload_blob(
+                    r,
+                    &debug.digest,
+                    WriteBody::File(source_dir.join(&debug.archive)),
+                )?;
+            }
             self.upload_blob(
                 r,
                 &manifest_digest,
@@ -944,14 +1003,13 @@ struct LayerDescriptor<'a> {
     title: Option<&'a str>,
 }
 
-/// Serialize the OCI image manifest for an OpenStrata bundle: an empty config,
-/// the archive layer, and the producer-manifest layer, each tagged with its
+/// Serialize the OCI image manifest for an OpenStrata bundle: an empty config
+/// plus the ordered main/debug/producer-manifest layers, each tagged with its
 /// media type and original filename. The bytes are deterministic (fixed field
 /// order), so hashing them yields the digest the registry stores and the pull
 /// path re-derives.
 fn build_oci_manifest(
-    archive: &LayerDescriptor,
-    producer_manifest: &LayerDescriptor,
+    layers: &[LayerDescriptor],
     config_digest: &str,
     config_size: u64,
 ) -> Vec<u8> {
@@ -977,7 +1035,7 @@ fn build_oci_manifest(
             "digest": config_digest,
             "size": config_size,
         },
-        "layers": [layer_json(archive), layer_json(producer_manifest)],
+        "layers": layers.iter().map(layer_json).collect::<Vec<_>>(),
     });
     // Compact, deterministic bytes (serde_json orders object keys stably), so
     // the digest we compute equals the one the registry stores and pull re-derives.
@@ -1304,45 +1362,36 @@ mod tests {
     #[test]
     fn built_manifest_round_trips_through_the_pull_parser() {
         // The push builder and the pull parser must agree: a manifest push emits
-        // has to expose exactly the archive + producer-manifest layers pull looks
-        // for, by media type and by title annotation.
+        // the main/debug archives + producer manifest that pull finds by media
+        // type and title annotation.
         let archive_digest = format!("sha256:{}", "aa".repeat(32));
+        let debug_digest = format!("sha256:{}", "cc".repeat(32));
         let manifest_digest = format!("sha256:{}", "bb".repeat(32));
         let config_digest = digest::sha256_hex(EMPTY_CONFIG_BYTES);
-        let bytes = build_oci_manifest(
-            &LayerDescriptor {
+        let layers = [
+            LayerDescriptor {
                 media_type: MEDIA_TYPE_ARCHIVE,
                 digest: &archive_digest,
                 size: 4096,
                 title: Some("rt-26.05-linux-x86_64.tar.zst"),
             },
-            &LayerDescriptor {
+            LayerDescriptor {
+                media_type: MEDIA_TYPE_DEBUG_ARCHIVE,
+                digest: &debug_digest,
+                size: 2048,
+                title: Some("rt-26.05-linux-x86_64-debug.tar.zst"),
+            },
+            LayerDescriptor {
                 media_type: MEDIA_TYPE_PRODUCER_MANIFEST,
                 digest: &manifest_digest,
                 size: 512,
                 title: Some(MANIFEST_FILE),
             },
-            &config_digest,
-            EMPTY_CONFIG_BYTES.len() as u64,
-        );
+        ];
+        let bytes = build_oci_manifest(&layers, &config_digest, EMPTY_CONFIG_BYTES.len() as u64);
 
         // Deterministic: same inputs, same bytes (so the OCI digest is stable).
-        let again = build_oci_manifest(
-            &LayerDescriptor {
-                media_type: MEDIA_TYPE_ARCHIVE,
-                digest: &archive_digest,
-                size: 4096,
-                title: Some("rt-26.05-linux-x86_64.tar.zst"),
-            },
-            &LayerDescriptor {
-                media_type: MEDIA_TYPE_PRODUCER_MANIFEST,
-                digest: &manifest_digest,
-                size: 512,
-                title: Some(MANIFEST_FILE),
-            },
-            &config_digest,
-            EMPTY_CONFIG_BYTES.len() as u64,
-        );
+        let again = build_oci_manifest(&layers, &config_digest, EMPTY_CONFIG_BYTES.len() as u64);
         assert_eq!(bytes, again, "manifest serialization must be deterministic");
 
         let parsed = parse_oci_manifest(&bytes, "oci://x/y").unwrap();
@@ -1358,6 +1407,12 @@ mod tests {
             .expect("archive layer");
         assert_eq!(archive.digest, archive_digest);
         assert_eq!(archive.size, 4096);
+
+        let debug = parsed
+            .find_layer(MEDIA_TYPE_DEBUG_ARCHIVE, |t| t.ends_with("-debug.tar.zst"))
+            .expect("debug layer");
+        assert_eq!(debug.digest, debug_digest);
+        assert_eq!(debug.size, 2048);
 
         // The top-level artifactType marks it as an OpenStrata bundle.
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1538,6 +1593,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ost-push-{}", std::process::id()));
         let dir = Utf8PathBuf::from_path_buf(dir).unwrap();
         let (archive_path, manifest_path, record) = push_fixture(&dir);
+        let debug_path = dir.join("rt-26.05-linux-x86_64-debug.tar.zst");
+        let debug_bytes = b"debug symbols";
+        std::fs::write(debug_path.as_std_path(), debug_bytes).unwrap();
+        std::fs::write(
+            manifest_path.as_std_path(),
+            serde_json::to_vec(&serde_json::json!({
+                "kind": "openstrata.runtime",
+                "debug": {
+                    "archive": "rt-26.05-linux-x86_64-debug.tar.zst",
+                    "archive_digest": digest::sha256_hex(debug_bytes),
+                    "archive_size": debug_bytes.len(),
+                    "files": [],
+                },
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let source = crate::transport::PushSource {
             archive_path,
             manifest_path,
@@ -1559,8 +1631,8 @@ mod tests {
             .ends_with(&format!("@{}", outcome.oci_digest)));
         {
             let st = state.lock().unwrap();
-            // config + archive + producer-manifest blobs, and the manifest PUT.
-            assert_eq!(st.blobs.len(), 3, "three blobs uploaded");
+            // config + main/debug archives + producer-manifest blobs.
+            assert_eq!(st.blobs.len(), 4, "four blobs uploaded");
             // Every blob digest sent in the `?digest=` query must be a single,
             // well-formed `sha256:<hex>` — a `sha256:sha256:<hex>` double prefix
             // (re-wrapping `digest::sha256_hex` output) is exactly what GHCR

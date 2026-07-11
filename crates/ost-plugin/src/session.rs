@@ -69,11 +69,26 @@ pub fn session_env(runtime_env: &EnvSet, bundle: &Bundle, os: Os) -> EnvSet {
 /// search order is primary first, followed by `--with` bundles in CLI order,
 /// followed by the runtime.
 pub fn session_env_with(runtime_env: &EnvSet, bundle: &Bundle, with: &[Bundle], os: Os) -> EnvSet {
+    let mut bundles = Vec::with_capacity(with.len() + 1);
+    bundles.push(bundle);
+    bundles.extend(with.iter());
+    session_env_from(runtime_env, &bundles, os)
+}
+
+/// Compose a session env from the runtime env plus an ordered list of
+/// contributing bundles, highest priority first.
+///
+/// This is the general form behind [`session_env_with`]: with `EnvSet::Prepend`
+/// semantics, `bundles[0]` ends up first in the final `PXR_PLUGINPATH_NAME` /
+/// loader search order, ahead of `bundles[1]`, …, ahead of the runtime. An empty
+/// `bundles` yields the bare runtime env — the "USD env only" session used to
+/// point a run at an external/extracted plugin tree without injecting a source
+/// bundle's build-tree paths.
+pub fn session_env_from(runtime_env: &EnvSet, bundles: &[&Bundle], os: Os) -> EnvSet {
     let mut vars = runtime_env.vars.clone();
-    for extra in with.iter().rev() {
-        vars.extend(bundle_vars(extra, os));
+    for bundle in bundles.iter().rev() {
+        vars.extend(bundle_vars(bundle, os));
     }
-    vars.extend(bundle_vars(bundle, os));
     EnvSet {
         sep: runtime_env.sep,
         vars,
@@ -173,6 +188,54 @@ usd: { plug_info: plugin/resources/usdluma/plugInfo.json }
         assert_eq!(
             pxr,
             "/bundles/usdluma/plugin/resources/usdluma:/bundles/a/plugin/resources/usdluma:/bundles/b/plugin/resources/usdluma:/runtime/plugin/usd"
+        );
+    }
+
+    #[test]
+    fn session_from_no_bundles_is_the_bare_runtime_env() {
+        // --no-inject with no --plugin-path/--with: the "USD env only" session.
+        let runtime = EnvSet {
+            sep: ':',
+            vars: vec![EnvVar {
+                key: "PXR_PLUGINPATH_NAME".into(),
+                op: EnvOp::Prepend("/runtime/plugin/usd".into()),
+            }],
+        };
+        let env = session_env_from(&runtime, &[], Os::Linux);
+        let resolved = env.resolve_over(&std::collections::HashMap::new());
+        let pxr = resolved
+            .iter()
+            .find(|(k, _)| k == "PXR_PLUGINPATH_NAME")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(pxr, "/runtime/plugin/usd", "no build-tree path is injected");
+    }
+
+    #[test]
+    fn session_from_external_tree_precedes_the_runtime() {
+        // --no-inject --plugin-path <extracted>: discovery points at the shipped
+        // tree, ahead of the runtime, with no source build-tree path present.
+        let runtime = EnvSet {
+            sep: ':',
+            vars: vec![EnvVar {
+                key: "PXR_PLUGINPATH_NAME".into(),
+                op: EnvOp::Prepend("/runtime/plugin/usd".into()),
+            }],
+        };
+        let extracted = Bundle {
+            root: Utf8PathBuf::from("/install/usdluma"),
+            ..bundle()
+        };
+        let env = session_env_from(&runtime, &[&extracted], Os::Linux);
+        let resolved = env.resolve_over(&std::collections::HashMap::new());
+        let pxr = resolved
+            .iter()
+            .find(|(k, _)| k == "PXR_PLUGINPATH_NAME")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(
+            pxr,
+            "/install/usdluma/plugin/resources/usdluma:/runtime/plugin/usd"
         );
     }
 

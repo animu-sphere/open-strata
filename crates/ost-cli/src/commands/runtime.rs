@@ -102,7 +102,8 @@ pub enum RuntimeCmd {
         #[arg(long, default_value_t = ost_build::ZSTD_LEVEL)]
         level: i32,
         /// zstd worker threads for compression. Defaults to the host's
-        /// available parallelism; `--jobs 1` forces the single-threaded encoder.
+        /// available parallelism, or the byte-stable single-threaded encoder
+        /// when SOURCE_DATE_EPOCH is set; `--jobs 0` also forces it explicitly.
         #[arg(long)]
         jobs: Option<u32>,
     },
@@ -1080,11 +1081,14 @@ struct ExportPack {
     jobs: Option<u32>,
 }
 
-/// The zstd worker count to pack with: the requested `--jobs`, else the host's
-/// available parallelism (falling back to single-threaded). Multithreading is
-/// the default here because a full adopted runtime is ~14 GB and packs for
-/// tens of minutes single-threaded (report #10).
-fn default_pack_workers() -> u32 {
+/// The zstd worker count to pack with: a reproducible build uses the stable
+/// single-threaded encoder (`0`); an ordinary export uses the host's available
+/// parallelism. Multithreading remains the fast default because a full adopted
+/// runtime is ~14 GB and packs for tens of minutes single-threaded (report #10).
+fn default_pack_workers(reproducible: bool) -> u32 {
+    if reproducible {
+        return 0;
+    }
     std::thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(1)
@@ -1237,10 +1241,17 @@ fn export(
     let archive_name = format!("{}.tar.zst", manifest.id);
     let archive_path = dist_dir.join(&archive_name);
 
-    let workers = pack.jobs.unwrap_or_else(default_pack_workers);
+    // zstd's multithreaded frame bytes depend on the worker count. A
+    // SOURCE_DATE_EPOCH build must therefore avoid the host-dependent
+    // available_parallelism default as well as pinning tar mtimes.
+    let reproducible = ost_build::source_date_epoch_opt().is_some();
+    let workers = pack
+        .jobs
+        .unwrap_or_else(|| default_pack_workers(reproducible));
     let opts = ost_build::PackOptions {
         level: pack.level,
         workers,
+        mtime: ost_build::source_date_epoch(),
     };
     // Progress to stderr (throttled, in-place) so a long single- or
     // multi-threaded pack shows liveness; suppressed in JSON mode so the only
@@ -1284,10 +1295,14 @@ fn export(
         eprintln!(); // terminate the in-place progress line
     }
 
-    let created = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // Pin to SOURCE_DATE_EPOCH when set so the manifest reproduces alongside the
+    // archive; otherwise stamp wall-clock provenance.
+    let created = ost_build::source_date_epoch_opt().unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    });
     let mut producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
 
     // Measure the real glibc floor from the packed ELF binaries and label the
@@ -2620,5 +2635,11 @@ mod tests {
             let deps = split_dep_prefixes("/deps/a:/deps/b");
             assert_eq!(deps, vec!["/deps/a".to_string(), "/deps/b".to_string()]);
         }
+    }
+
+    #[test]
+    fn reproducible_export_uses_a_host_independent_worker_default() {
+        assert_eq!(default_pack_workers(true), 0);
+        assert!(default_pack_workers(false) >= 1);
     }
 }

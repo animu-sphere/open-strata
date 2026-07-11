@@ -27,7 +27,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use ost_core::{Category, Error, Result};
 
-use crate::record::{ArtifactKind, ArtifactRecord, ArtifactSource};
+use crate::record::{manifest_debug_archive, ArtifactKind, ArtifactRecord, ArtifactSource};
 use crate::reference::RemoteReference;
 use crate::store::ArtifactStore;
 
@@ -88,7 +88,8 @@ pub trait ArtifactTransport {
     /// already pinned.
     fn resolve(&self, reference: &RemoteReference) -> Result<ResolvedRemote>;
 
-    /// Fetch the artifact's producer files (`<archive>` + `manifest.json`)
+    /// Fetch the artifact's producer files (main archive, optional debug
+    /// sidecar, and `manifest.json`)
     /// into a dist-shaped directory, verifying transport-level digests on the
     /// way down. Returns the directory holding the files (which may be the
     /// source itself for local backends). `scratch` is a caller-owned empty
@@ -248,6 +249,12 @@ pub fn push(
     let object_dir = store.object_dir(record.digest_hex());
     let archive_path = object_dir.join(&record.archive);
     let manifest_path = object_dir.join(crate::record::MANIFEST_FILE);
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(manifest_path.as_std_path())
+            .map_err(|e| Error::io(manifest_path.to_string(), e))?,
+    )
+    .map_err(|e| Error::parse(manifest_path.to_string(), anyhow::Error::new(e)))?;
+    let debug = manifest_debug_archive(&manifest)?;
 
     // Never publish store corruption: the recorded digest is a claim, the bytes
     // are the truth. Prove they still agree before a single byte leaves the host.
@@ -266,6 +273,10 @@ pub fn push(
             ),
         )
         .with_hint("re-import the artifact from its original producer output"));
+    }
+
+    if let Some(debug) = debug {
+        crate::store::verify_archive_claim(&object_dir, &debug)?;
     }
 
     let source = PushSource {

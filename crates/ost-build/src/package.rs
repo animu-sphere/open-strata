@@ -94,17 +94,51 @@ pub struct PackOptions {
     /// is much faster for a multi-GB runtime but produces a different — still
     /// valid — archive whose bytes depend on the worker count.
     pub workers: u32,
+    /// Modification time, in whole seconds since the Unix epoch, stamped on
+    /// *every* archive entry — the file's real mtime is deliberately discarded.
+    /// Pinning it makes the archive a pure function of the staged *contents*, so
+    /// an unchanged build repacks to a byte-identical digest regardless of when
+    /// the files were written. Producers set this from `SOURCE_DATE_EPOCH` (see
+    /// [`source_date_epoch`]); the default `0` reproduces the historical layout.
+    pub mtime: u64,
 }
 
 impl Default for PackOptions {
-    /// Level 19, single-threaded: the historical [`pack_dir`] behavior, so a
-    /// small artifact (`ost package`/`ost plugin`) keeps a byte-stable digest.
+    /// Level 19, single-threaded, epoch-0 entry mtimes: the historical
+    /// [`pack_dir`] behavior, so a small artifact (`ost package`/`ost plugin`)
+    /// keeps a byte-stable digest.
     fn default() -> Self {
         Self {
             level: ZSTD_LEVEL,
             workers: 0,
+            mtime: 0,
         }
     }
+}
+
+/// Resolve the reproducible-build timestamp from the `SOURCE_DATE_EPOCH`
+/// environment variable — whole seconds since the Unix epoch — falling back to
+/// `0` when it is unset, empty, or not a non-negative integer.
+///
+/// This is the [reproducible-builds.org] convention: a producer exports
+/// `SOURCE_DATE_EPOCH` (typically the source commit time) and every timestamp
+/// baked into an output is clamped to it, so the same sources yield the same
+/// bytes on any machine at any time. Feed the result into [`PackOptions::mtime`].
+///
+/// [reproducible-builds.org]: https://reproducible-builds.org/docs/source-date-epoch/
+pub fn source_date_epoch() -> u64 {
+    source_date_epoch_opt().unwrap_or(0)
+}
+
+/// The raw `SOURCE_DATE_EPOCH` timestamp, or `None` when it is unset, empty, or
+/// not a non-negative integer. Distinguishes "no reproducible timestamp
+/// requested" (fall back to wall-clock provenance such as a manifest's
+/// `created_unix`) from an explicit epoch-`0` pin — a distinction
+/// [`source_date_epoch`] collapses.
+pub fn source_date_epoch_opt() -> Option<u64> {
+    std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
 /// Progress emitted after each file is written into the archive. Lets a caller
@@ -180,6 +214,7 @@ pub fn pack_dir_with(
             header.set_entry_type(tar::EntryType::Symlink);
             header.set_size(0);
             header.set_mode(0o777);
+            header.set_mtime(opts.mtime);
             builder.append_link(&mut header, &rel, &target)?;
 
             let payload = target.as_bytes();
@@ -204,6 +239,7 @@ pub fn pack_dir_with(
             let mut header = tar::Header::new_gnu();
             header.set_size(data.len() as u64);
             header.set_mode(mode);
+            header.set_mtime(opts.mtime);
             header.set_cksum();
             builder.append_data(&mut header, &rel, data.as_slice())?;
 
@@ -700,6 +736,7 @@ mod tests {
             PackOptions {
                 level: 3,
                 workers: 2,
+                ..PackOptions::default()
             },
             &mut |p| seen.push((p.files_done, p.files_total, p.bytes_done)),
         )
@@ -729,6 +766,73 @@ mod tests {
         assert_eq!(names, vec!["lib/a.bin", "lib/b.bin", "top.txt"]);
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn pack_is_byte_reproducible_and_pins_entry_mtime() {
+        // Stage identical contents into two trees whose files carry different
+        // real mtimes (written seconds apart, and touched again below).
+        fn stage(root: &Utf8Path) {
+            std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+            std::fs::write(root.join("lib/payload.bin").as_std_path(), vec![42u8; 2048]).unwrap();
+            std::fs::write(root.join("plugInfo.json").as_std_path(), b"{}\n").unwrap();
+        }
+        let a = tmp("repro-a");
+        let b = tmp("repro-b");
+        stage(&a);
+        stage(&b);
+
+        let opts = PackOptions {
+            mtime: 1_700_000_000,
+            ..PackOptions::default()
+        };
+        let arc_a = a.join("out.tar.zst");
+        let arc_b = b.join("out.tar.zst");
+        let pa = pack_dir_with(&a, &arc_a, &stage_files(&a).unwrap(), opts, &mut |_| {}).unwrap();
+        let pb = pack_dir_with(&b, &arc_b, &stage_files(&b).unwrap(), opts, &mut |_| {}).unwrap();
+        // Same staged contents + same pinned mtime => byte-identical digest,
+        // independent of the files' real mtimes.
+        assert_eq!(
+            pa.archive_digest, pb.archive_digest,
+            "an unchanged build must repack to the same digest"
+        );
+
+        // A different pinned mtime changes the bytes — proving the stamp is real,
+        // not silently ignored.
+        let opts2 = PackOptions {
+            mtime: 1_700_000_042,
+            ..PackOptions::default()
+        };
+        let arc_c = a.join("out2.tar.zst");
+        let pc = pack_dir_with(&a, &arc_c, &stage_files(&a).unwrap(), opts2, &mut |_| {}).unwrap();
+        assert_ne!(
+            pa.archive_digest, pc.archive_digest,
+            "a distinct SOURCE_DATE_EPOCH must yield a distinct digest"
+        );
+
+        // The pinned mtime survives a round-trip through the archive.
+        let reader =
+            zstd::stream::read::Decoder::new(File::open(arc_a.as_std_path()).unwrap()).unwrap();
+        for entry in tar::Archive::new(reader).entries().unwrap() {
+            let entry = entry.unwrap();
+            assert_eq!(entry.header().mtime().unwrap(), 1_700_000_000);
+        }
+
+        std::fs::remove_dir_all(a.as_std_path()).ok();
+        std::fs::remove_dir_all(b.as_std_path()).ok();
+    }
+
+    #[test]
+    fn source_date_epoch_parses_or_falls_back_to_zero() {
+        // Pure parse of the value the resolver reads from the environment.
+        fn parse(v: &str) -> u64 {
+            v.trim().parse::<u64>().ok().unwrap_or(0)
+        }
+        assert_eq!(parse("1700000000"), 1_700_000_000);
+        assert_eq!(parse("  1700000000  "), 1_700_000_000);
+        assert_eq!(parse(""), 0);
+        assert_eq!(parse("not-a-number"), 0);
+        assert_eq!(parse("-5"), 0);
     }
 
     #[cfg(unix)]

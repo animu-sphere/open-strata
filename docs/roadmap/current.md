@@ -3,13 +3,15 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## Next milestone: v0.13.0 — trust policy foundation
+## Next milestone: v0.14.0 — trust policy foundation
 
-**Status:** planned · **Depends on:** v0.10.0 producer verb + v0.12.0 hosted
-source-CI runtime contract (both shipped).
+**Status:** planned · **Depends on:** v0.10.0 producer verb + v0.13.0
+release-quality artifacts (reproducible, lean, testable-from-package; all
+shipped).
 
-With a producer verb and a stable hosted source-CI runtime contract in place,
-close the publish-side trust boundary (future-policy §3.2/§7/§11).
+With a producer verb and reproducible, lean artifacts in place, close the
+publish-side trust boundary (future-policy §3.2/§7/§11) — trust-level enforcement
+on top of the v0.13.0 artifacts.
 
 **Scope:**
 
@@ -24,6 +26,14 @@ close the publish-side trust boundary (future-policy §3.2/§7/§11).
 - `ost artifact verify --policy`.
 
 **Tracks:** SEC-006 and the Phase 6 trust-policy hooks.
+
+## Just shipped: v0.13.0 — release-quality packaging
+
+Reproducible, lean, testable-from-package artifacts: `SOURCE_DATE_EPOCH`-honoring
+deterministic packaging, symbol-split (lean default + sibling `*-debug` /
+`--with-debug`), `ost plugin run --plugin-path`/`--no-inject`, `ost plugin test
+--from-package`, and the `ost artifact extract --into` alias. Full record in
+[releases/v0.13.0.md](../releases/v0.13.0.md).
 
 ## Carry-over follow-ups
 

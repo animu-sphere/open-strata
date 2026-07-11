@@ -28,7 +28,8 @@ use ost_core::paths::Store;
 use ost_core::{digest, fs::write_atomic, Category, Error, Result};
 
 use crate::record::{
-    manifest_files, ArtifactRecord, ArtifactSource, MANIFEST_FILE, RECORD_FILE, RECORD_SCHEMA,
+    manifest_debug_archive, manifest_files, ArtifactRecord, ArtifactSource, DebugArchive,
+    MANIFEST_FILE, RECORD_FILE, RECORD_SCHEMA,
 };
 
 /// Filename of the registry index at the store root.
@@ -134,6 +135,7 @@ impl ArtifactStore {
             .unwrap_or(0);
         let producer = format!("ost {}", env!("CARGO_PKG_VERSION"));
         let record = ArtifactRecord::from_producer_manifest(&manifest, source, created, &producer)?;
+        let debug = manifest_debug_archive(&manifest)?;
 
         // Re-hash the archive: the manifest's digest is a claim, the bytes are
         // the truth. Import refuses to register bytes it cannot vouch for.
@@ -165,13 +167,43 @@ impl ArtifactStore {
             ));
         }
 
+        if let Some(debug) = &debug {
+            verify_archive_claim(&dist_dir, debug)?;
+        }
+
         let hex = record.digest_hex().to_string();
         let object_dir = self.object_dir(&hex);
         if object_dir.join(RECORD_FILE).as_std_path().is_file() {
             // Same digest ⇒ same bytes: nothing to copy. Keep the existing
-            // record (its provenance reflects the first entry) but make sure the
-            // index knows it.
+            // record (its provenance reflects the first entry). If this exact
+            // producer manifest was imported by a pre-sidecar-aware version,
+            // repair the promised debug archive and checksum file in place.
             let existing = self.read_record(&object_dir)?;
+            let stored_manifest_path = object_dir.join(MANIFEST_FILE);
+            let stored_manifest = std::fs::read(stored_manifest_path.as_std_path())
+                .map_err(|e| Error::io(stored_manifest_path.to_string(), e))?;
+            if stored_manifest == manifest_bytes {
+                if let Some(debug) = &debug {
+                    let debug_dest = object_dir.join(&debug.archive);
+                    if !debug_dest.as_std_path().is_file() {
+                        let debug_src = dist_dir.join(&debug.archive);
+                        let temp = object_dir.join(format!(
+                            ".tmp-debug-{}-{}",
+                            std::process::id(),
+                            debug.archive
+                        ));
+                        std::fs::copy(debug_src.as_std_path(), temp.as_std_path())
+                            .map_err(|e| Error::io(debug_src.to_string(), e))?;
+                        std::fs::rename(temp.as_std_path(), debug_dest.as_std_path())
+                            .map_err(|e| Error::io(debug_dest.to_string(), e))?;
+                    }
+                    verify_archive_claim(&object_dir, debug)?;
+                    write_atomic(
+                        object_dir.join("SHA256SUMS").as_std_path(),
+                        checksum_contents(&existing, Some(debug)).as_bytes(),
+                    )?;
+                }
+            }
             self.index_upsert(&existing)?;
             return Ok(ImportOutcome {
                 record: existing,
@@ -202,10 +234,17 @@ impl ArtifactStore {
             // The producer manifest is stored byte-for-byte: it is the
             // provenance document, not ours to normalize.
             write_atomic(staging.join(MANIFEST_FILE).as_std_path(), &manifest_bytes)?;
-            let bare = &hex;
+            if let Some(debug) = &debug {
+                let debug_src = dist_dir.join(&debug.archive);
+                std::fs::copy(
+                    debug_src.as_std_path(),
+                    staging.join(&debug.archive).as_std_path(),
+                )
+                .map_err(|e| Error::io(debug_src.to_string(), e))?;
+            }
             write_atomic(
                 staging.join("SHA256SUMS").as_std_path(),
-                format!("{bare}  {}\n", record.archive).as_bytes(),
+                checksum_contents(&record, debug.as_ref()).as_bytes(),
             )?;
             let record_json = serde_json::to_string_pretty(&record)
                 .map_err(|e| Error::parse("artifact record", anyhow::Error::new(e)))?;
@@ -286,16 +325,18 @@ impl ArtifactStore {
     ) -> Result<(ArtifactRecord, Vec<Utf8PathBuf>)> {
         let record = self.resolve(digest_ref)?;
         let object_dir = self.object_dir(record.digest_hex());
+        let manifest = self.producer_manifest(&record)?;
+        let debug = manifest_debug_archive(&manifest)?;
 
         std::fs::create_dir_all(dest.as_std_path()).map_err(|e| Error::io(dest.to_string(), e))?;
 
         let mut written = Vec::new();
-        for name in [
-            record.archive.as_str(),
-            MANIFEST_FILE,
-            "SHA256SUMS",
-            RECORD_FILE,
-        ] {
+        let mut names = vec![record.archive.as_str()];
+        if let Some(debug) = &debug {
+            names.push(debug.archive.as_str());
+        }
+        names.extend([MANIFEST_FILE, "SHA256SUMS", RECORD_FILE]);
+        for name in names {
             let src = object_dir.join(name);
             let dst = dest.join(name);
             if dst.as_std_path().exists() {
@@ -326,6 +367,9 @@ impl ArtifactStore {
             )
             .with_hint("re-import the artifact from its original producer output"));
         }
+        if let Some(debug) = &debug {
+            verify_archive_claim(dest, debug)?;
+        }
 
         Ok((record, written))
     }
@@ -340,73 +384,7 @@ impl ArtifactStore {
     pub fn extract(&self, digest_ref: &str, dest: &Utf8Path) -> Result<ArtifactRecord> {
         let record = self.resolve(digest_ref)?;
         let archive = self.archive_path(&record);
-
-        let mut f =
-            File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
-        let (actual, _) =
-            digest::sha256_hex_reader(&mut f).map_err(|e| Error::io(archive.to_string(), e))?;
-        if actual != record.digest {
-            return Err(Error::coded(
-                "ARTIFACT_DIGEST_MISMATCH",
-                Category::Validation,
-                format!(
-                    "stored archive for {} hashes to {actual} — the local store is corrupted",
-                    record.short_digest()
-                ),
-            )
-            .with_hint("re-import the artifact from its original producer output"));
-        }
-
-        if dest.as_std_path().exists() {
-            if !dest.as_std_path().is_dir() {
-                return Err(Error::usage(format!(
-                    "extract destination '{dest}' exists but is not a directory"
-                )));
-            }
-            let mut entries = std::fs::read_dir(dest.as_std_path())
-                .map_err(|e| Error::io(dest.to_string(), e))?;
-            if let Some(entry) = entries.next() {
-                entry.map_err(|e| Error::io(dest.to_string(), e))?;
-                return Err(Error::usage(format!(
-                    "refusing to extract into non-empty directory '{dest}'"
-                )));
-            }
-        } else {
-            std::fs::create_dir_all(dest.as_std_path())
-                .map_err(|e| Error::io(dest.to_string(), e))?;
-        }
-        // Pre-extraction safety gate: now that safe in-tree symlinks are packable,
-        // scan the (digest-verified) archive and refuse before unpacking a byte if
-        // any entry is unsafe — an absolute/escaping symlink, a `..` path, a
-        // hardlink, or a special file (harness §SEC-001). A local artifact reaches
-        // here without the transport verify gate, so `extract` enforces it itself.
-        // The scan skips content hashing; only the safety verdict matters here.
-        let unsafe_entries = scan_unsafe_entries(&archive)?;
-        if !unsafe_entries.is_empty() {
-            return Err(Error::coded(
-                "ARTIFACT_UNSAFE_ENTRY",
-                Category::Validation,
-                format!(
-                    "stored archive for {} contains {} entr{} unsafe to extract: {}",
-                    record.short_digest(),
-                    unsafe_entries.len(),
-                    if unsafe_entries.len() == 1 {
-                        "y"
-                    } else {
-                        "ies"
-                    },
-                    unsafe_entries.join("; "),
-                ),
-            ));
-        }
-
-        let file =
-            File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
-        let decoder = zstd::stream::read::Decoder::new(file)
-            .map_err(|e| Error::io(archive.to_string(), e))?;
-        let mut tar = tar::Archive::new(decoder);
-        tar.unpack(dest.as_std_path())
-            .map_err(|e| Error::io(dest.to_string(), e))?;
+        extract_archive(&archive, &record.digest, dest)?;
         Ok(record)
     }
 
@@ -500,6 +478,43 @@ impl ArtifactStore {
     }
 }
 
+/// Re-hash one optional archive against the producer-manifest claim before it
+/// enters or leaves the store.
+pub(crate) fn verify_archive_claim(dist_dir: &Utf8Path, archive: &DebugArchive) -> Result<()> {
+    let path = dist_dir.join(&archive.archive);
+    let mut f = File::open(path.as_std_path()).map_err(|e| Error::io(path.to_string(), e))?;
+    let (actual, actual_size) =
+        digest::sha256_hex_reader(&mut f).map_err(|e| Error::io(path.to_string(), e))?;
+    if actual != archive.digest || actual_size != archive.archive_size {
+        return Err(Error::coded(
+            "ARTIFACT_DIGEST_MISMATCH",
+            Category::Validation,
+            format!(
+                "debug archive '{}' hashes to {actual} ({actual_size} bytes) but its manifest \
+                 records {} ({} bytes)",
+                archive.archive, archive.digest, archive.archive_size
+            ),
+        )
+        .with_hint("re-run the package step to produce a consistent debug archive + manifest"));
+    }
+    Ok(())
+}
+
+fn checksum_contents(record: &ArtifactRecord, debug: Option<&DebugArchive>) -> String {
+    let mut sums = format!("{}  {}\n", record.digest_hex(), record.archive);
+    if let Some(debug) = debug {
+        sums.push_str(&format!(
+            "{}  {}\n",
+            debug
+                .digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&debug.digest),
+            debug.archive
+        ));
+    }
+    sums
+}
+
 /// One hashed file entry from an artifact archive walk.
 #[derive(Debug, Clone)]
 pub(crate) struct ArchiveFile {
@@ -524,6 +539,78 @@ pub(crate) struct ArchiveWalk {
     /// absolute or traversal paths, links, and special file types. The walk
     /// itself never extracts, so listing them is safe.
     pub unsafe_entries: Vec<String>,
+}
+
+/// Verify `archive` hashes to `expected_digest`, refuse any entry unsafe to
+/// extract, then unpack it into `dest`.
+///
+/// The shared core of [`ArtifactStore::extract`] and callers that unpack a
+/// producer archive not (yet) in the store — e.g. `ost plugin test
+/// --from-package`, which extracts a freshly built dist archive to run
+/// discovery against the *shipped* layout. `dest` must be absent or an empty
+/// directory. Fails with `ARTIFACT_DIGEST_MISMATCH` on a byte mismatch and
+/// `ARTIFACT_UNSAFE_ENTRY` on an absolute/escaping symlink, a `..` path, a
+/// hardlink, or a special file (harness §SEC-001) — scanned before a single
+/// byte is unpacked.
+pub fn extract_archive(archive: &Utf8Path, expected_digest: &str, dest: &Utf8Path) -> Result<()> {
+    let mut f = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+    let (actual, _) =
+        digest::sha256_hex_reader(&mut f).map_err(|e| Error::io(archive.to_string(), e))?;
+    if actual != expected_digest {
+        return Err(Error::coded(
+            "ARTIFACT_DIGEST_MISMATCH",
+            Category::Validation,
+            format!("archive '{archive}' hashes to {actual}, expected {expected_digest}"),
+        )
+        .with_hint("the archive is corrupt or was modified after it was built — repackage it"));
+    }
+
+    if dest.as_std_path().exists() {
+        if !dest.as_std_path().is_dir() {
+            return Err(Error::usage(format!(
+                "extract destination '{dest}' exists but is not a directory"
+            )));
+        }
+        let mut entries =
+            std::fs::read_dir(dest.as_std_path()).map_err(|e| Error::io(dest.to_string(), e))?;
+        if let Some(entry) = entries.next() {
+            entry.map_err(|e| Error::io(dest.to_string(), e))?;
+            return Err(Error::usage(format!(
+                "refusing to extract into non-empty directory '{dest}'"
+            )));
+        }
+    } else {
+        std::fs::create_dir_all(dest.as_std_path()).map_err(|e| Error::io(dest.to_string(), e))?;
+    }
+
+    // Pre-extraction safety gate: scan the (digest-verified) archive and refuse
+    // before unpacking a byte if any entry is unsafe. A local artifact reaches
+    // here without the transport verify gate, so extraction enforces it itself.
+    let unsafe_entries = scan_unsafe_entries(archive)?;
+    if !unsafe_entries.is_empty() {
+        return Err(Error::coded(
+            "ARTIFACT_UNSAFE_ENTRY",
+            Category::Validation,
+            format!(
+                "archive '{archive}' contains {} entr{} unsafe to extract: {}",
+                unsafe_entries.len(),
+                if unsafe_entries.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+                unsafe_entries.join("; "),
+            ),
+        ));
+    }
+
+    let file = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+    let decoder =
+        zstd::stream::read::Decoder::new(file).map_err(|e| Error::io(archive.to_string(), e))?;
+    let mut tar = tar::Archive::new(decoder);
+    tar.unpack(dest.as_std_path())
+        .map_err(|e| Error::io(dest.to_string(), e))?;
+    Ok(())
 }
 
 /// Decode a `tar.zst` archive and hash every regular file, flagging entries
@@ -880,6 +967,31 @@ mod tests {
         dist
     }
 
+    fn add_debug_archive(dist: &Utf8Path, content: &[u8]) -> String {
+        let archive_name = "toy-0.1.0-target-debug.tar.zst";
+        let archive = dist.join(archive_name);
+        let digest = write_archive(&archive, &[Entry::Reg("lib/toy.pdb", content)]);
+        let archive_size = std::fs::metadata(archive.as_std_path()).unwrap().len();
+        let manifest_path = dist.join(MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest_path.as_std_path()).unwrap()).unwrap();
+        manifest["debug"] = serde_json::json!({
+            "archive": archive_name,
+            "archive_digest": digest,
+            "archive_size": archive_size,
+            "total_size": content.len(),
+            "files": [
+                { "path": "lib/toy.pdb", "sha256": digest::sha256_hex(content), "size": content.len() }
+            ],
+        });
+        std::fs::write(
+            manifest_path.as_std_path(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        archive_name.to_string()
+    }
+
     fn tmp_root(tag: &str) -> Utf8PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1081,6 +1193,67 @@ mod tests {
 
         // Second export into the same dir refuses to clobber.
         assert!(store.export(&out.record.digest, &dest).is_err());
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn debug_sidecar_imports_exports_and_reimports_with_the_main_artifact() {
+        let root = tmp_root("debug-roundtrip");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+        let debug_name = add_debug_archive(&dist, b"debug symbols");
+
+        let out = store.import(&dist, ArtifactSource::Published).unwrap();
+        let object = store.object_dir(out.record.digest_hex());
+        assert!(object.join(&debug_name).as_std_path().is_file());
+        let sums = std::fs::read_to_string(object.join("SHA256SUMS").as_std_path()).unwrap();
+        assert_eq!(sums.lines().count(), 2);
+        assert!(sums.contains(&debug_name));
+
+        // Re-import repairs stores created by an older version that retained
+        // the debug metadata but copied only the primary archive.
+        std::fs::remove_file(object.join(&debug_name).as_std_path()).unwrap();
+        std::fs::write(
+            object.join("SHA256SUMS").as_std_path(),
+            format!("{}  {}\n", out.record.digest_hex(), out.record.archive),
+        )
+        .unwrap();
+        let repaired = store.import(&dist, ArtifactSource::Imported).unwrap();
+        assert!(repaired.already_present);
+        assert!(object.join(&debug_name).as_std_path().is_file());
+        let sums = std::fs::read_to_string(object.join("SHA256SUMS").as_std_path()).unwrap();
+        assert_eq!(sums.lines().count(), 2);
+
+        let dest = root.join("handoff");
+        let (_, written) = store.export(&out.record.digest, &dest).unwrap();
+        assert_eq!(written.len(), 5);
+        assert!(dest.join(&debug_name).as_std_path().is_file());
+
+        let store2 = ArtifactStore::at(root.join("store2"));
+        let re = store2.import(&dest, ArtifactSource::Imported).unwrap();
+        assert!(store2
+            .object_dir(re.record.digest_hex())
+            .join(&debug_name)
+            .as_std_path()
+            .is_file());
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn import_rejects_a_tampered_debug_sidecar() {
+        let root = tmp_root("debug-tamper");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+        let debug_name = add_debug_archive(&dist, b"debug symbols");
+        std::fs::write(dist.join(debug_name).as_std_path(), b"tampered").unwrap();
+
+        let err = store
+            .import(&dist, ArtifactSource::Published)
+            .expect_err("tampered debug sidecar must be refused");
+        assert_eq!(err.code(), "ARTIFACT_DIGEST_MISMATCH");
+        assert!(store.list().unwrap().is_empty());
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
