@@ -1515,11 +1515,13 @@ repairs into product behavior so generated CI remains regenerable.
   `executable`, so a tool that lost `+x` is a per-file manifest mismatch, not a
   silent pass; and `runtime validate` emits a Unix-only `bin-tools-executable`
   check that fails any real runtime whose top-level `bin/` tools are not
-  executable (transitively gating `runtime export`, which requires a passing
-  validation). Unit-tested: pack→extract mode round-trip, walk/verify mismatch,
-  and the validate failure/repair. **Still ⬜:** republish the public cy2026 macOS
-  arm64 OpenUSD 26.05 SDK with preserved bits and confirm the hosted macOS
-  source-CI lane reaches L5 with no `chmod` repair (needs a Mac + live GHCR).
+  executable; `runtime export` re-runs the current validation report before
+  packing, so a stale pre-check `validation: passed` manifest cannot publish a
+  non-runnable runtime. Unit-tested: pack→extract mode round-trip,
+  walk/verify mismatch, validate failure/repair, and export's stale-validation
+  gate. **Still ⬜:** republish the public cy2026 macOS arm64 OpenUSD 26.05 SDK
+  with preserved bits and confirm the hosted macOS source-CI lane reaches L5
+  with no `chmod` repair (needs a Mac + live GHCR).
 - ⬜ **P0 — make schema-generation Python explicit.** `ost plugin build` correctly
   runs USD's script-style `usdGenSchema` through an interpreter, but for this
   runtime the interpreter was found only on the host (`python3.13`) rather than in

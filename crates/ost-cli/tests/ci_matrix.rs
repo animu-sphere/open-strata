@@ -377,10 +377,20 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     for (rel, content) in [
         ("plugin/usd/plugInfo.json", "{}"),
         ("lib/python/pxr/__init__.py", ""),
+        ("bin/usdcat", "#!/bin/sh\n"),
     ] {
         let path = prefix.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, content).unwrap();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            prefix.join("bin/usdcat"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
     }
     let v = stdout_json(&sb.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
     let runtime_digest = v["data"]["digest"].as_str().unwrap().to_string();
