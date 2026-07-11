@@ -327,7 +327,7 @@ them. Each release is a coherent slice, not a phase boundary.
     including the exact `pip install` fix line — was extracted into a pure,
     unit-tested `missing_dep_warning` so the previously-untestable message path is
     now covered without needing a pristine interpreter.
-- 🚧 **v0.12.0 — hosted macOS CI + runtime-contract hardening.** The 2026-07-11
+- ✅ **v0.12.0 — hosted macOS CI + runtime-contract hardening.** The 2026-07-11
   macOS OpenUSD 26.05 PR CI dogfood proved the public GHCR runtime pull,
   artifact verification, and Windows source-CI path, but the hosted macOS lane
   only passed after repo-local temporary repairs (`actions/setup-python` for
@@ -1496,8 +1496,11 @@ plugin build` → `schema-generate`, because two assumptions were still implicit
 the `py313` runtime did not provide `bin/python3.13`, and the published macOS
 runtime materialized `bin/` tools without executable bits. A follow-up commit made
 the PR green by adding repo-local temporary repairs (`actions/setup-python@v6`
-for Python 3.13 and `chmod +x <runtime>/bin/*` before build). v0.12.0 turns those
-repairs into product behavior so generated CI remains regenerable.
+for Python 3.13 and `chmod +x <runtime>/bin/*` before build). v0.12.0 turned those
+repairs into product behavior so generated CI remains regenerable. **Released in
+v0.12.0** (code slice); the remaining item is republishing the public macOS
+runtime and re-running the dogfood on a Mac + live GHCR to retire the temporary
+branch-local repairs.
 
 - 🚧 **P0 — preserve and validate executable modes for runtime tools.** The public
   macOS runtime artifact passed OpenStrata artifact verification, but local

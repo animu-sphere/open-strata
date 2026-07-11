@@ -32,7 +32,13 @@ preflight warnings, publish-flow docs, and `ost uv` shadow-dependency diagnosis;
 v0.11.0 is a producer-side correctness pass — a real glibc floor stamped onto
 Linux runtimes from an ELF scan, the `ost artifact push` digest fix plus honest
 credential hints, in-tree symlink preservation in runtime export, actionable
-package-stage fallback, and declarative repo smoke tests in generated source CI.
+package-stage fallback, and declarative repo smoke tests in generated source CI;
+v0.12.0 hardens the hosted-macOS CI/runtime contract — runtime tools keep and
+verify their Unix execute bits end-to-end (pack, extract, `runtime validate`),
+source cells declare their schema-tooling interpreter with `host_python` so
+generated CI pins `actions/setup-python` on hosted runners, and pre-build
+prerequisites (`ost runtime validate` + Python setup) are modeled in the CI
+graph rather than scripted as ad-hoc source checks.
 Sessions, GPU/AI, trust policy, and broader DCC matrices are still ahead. Linux
 x86_64 is the first-class target; other OS targets are modeled and partially
 working — these examples were exercised on Windows. See the
