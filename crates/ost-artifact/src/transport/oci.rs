@@ -37,6 +37,11 @@ use crate::record::{is_sha256_ref, MANIFEST_FILE};
 use crate::reference::{OciReference, RemoteReference};
 use crate::transport::{ArtifactTransport, ResolvedRemote};
 
+/// ureq 3.x dropped its own `Response`/`Request` types for the `http` crate's;
+/// a response is now an `http::Response<Body>`. Aliased for the many signatures
+/// that carry one.
+type HttpResponse = ureq::http::Response<ureq::Body>;
+
 /// OCI `artifactType` for OpenStrata bundles.
 pub const OCI_ARTIFACT_TYPE: &str = "application/vnd.openstrata.artifact.v1";
 /// Layer media type of the canonical artifact archive.
@@ -95,13 +100,24 @@ pub struct OciTransport {
 
 impl OciTransport {
     pub fn new(plain_http: bool) -> OciTransport {
+        // ureq 3.x: build a Config, then an Agent. `http_status_as_error(false)`
+        // hands non-2xx responses back as `Ok` so this transport keeps
+        // classifying status codes itself (it needs the 401 body's
+        // `WWW-Authenticate` for the token exchange). `max_redirects(0)` +
+        // `max_redirects_will_error(false)` returns the 3xx response instead of
+        // erroring, so blob redirects are still followed manually (see
+        // get_following_redirects). Only a connect and response-header timeout
+        // are bounded — a blob body may be large, so its read is left unbounded.
+        let config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .max_redirects_will_error(false)
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(120)))
+            .user_agent(format!("ost/{}", env!("CARGO_PKG_VERSION")))
+            .build();
         OciTransport {
-            agent: ureq::AgentBuilder::new()
-                .redirects(0) // followed manually; see get_blob
-                .timeout_connect(Duration::from_secs(30))
-                .timeout_read(Duration::from_secs(120))
-                .user_agent(&format!("ost/{}", env!("CARGO_PKG_VERSION")))
-                .build(),
+            agent: ureq::Agent::new_with_config(config),
             plain_http,
             tokens: RefCell::new(HashMap::new()),
             manifests: RefCell::new(HashMap::new()),
@@ -126,11 +142,13 @@ impl OciTransport {
 
     /// One authorized GET against the registry, with a single token-exchange
     /// retry on 401. Returns any non-4xx/5xx response (including 3xx).
-    fn get(&self, reference: &OciReference, url: &str, accept: &str) -> Result<ureq::Response> {
+    fn get(&self, reference: &OciReference, url: &str, accept: &str) -> Result<HttpResponse> {
         let auth = self.auth_header(reference)?;
         match self.raw_get(url, accept, auth.as_deref()) {
             Err(RequestFailure::Status(401, resp)) => {
-                let challenge = resp.header("www-authenticate").unwrap_or("").to_string();
+                let challenge = resp_header(&resp, "www-authenticate")
+                    .unwrap_or("")
+                    .to_string();
                 let scope = format!("repository:{}:pull", reference.repository);
                 let token = self.exchange_token(reference, &challenge, &scope)?;
                 let bearer = format!("Bearer {token}");
@@ -151,14 +169,14 @@ impl OciTransport {
         reference: &OciReference,
         url: &str,
         accept: &str,
-    ) -> Result<(ureq::Response, String)> {
+    ) -> Result<(HttpResponse, String)> {
         let registry_origin = origin_of(url).to_string();
         let mut auth_still_allowed = true;
         let mut resp = self.get(reference, url, accept)?;
         let mut hops = 0;
         let mut current_url = url.to_string();
 
-        while (300..400).contains(&resp.status()) {
+        while (300..400).contains(&resp.status().as_u16()) {
             hops += 1;
             if hops > MAX_REDIRECTS {
                 return Err(Error::coded(
@@ -167,7 +185,7 @@ impl OciTransport {
                     format!("{url} redirected more than {MAX_REDIRECTS} times"),
                 ));
             }
-            let location = resp.header("location").ok_or_else(|| {
+            let location = resp_header(&resp, "location").ok_or_else(|| {
                 Error::coded(
                     "ARTIFACT_TRANSPORT_FAILED",
                     Category::ExternalTool,
@@ -186,12 +204,13 @@ impl OciTransport {
             current_url = next;
         }
 
-        if !(200..300).contains(&resp.status()) {
+        if !(200..300).contains(&resp.status().as_u16()) {
+            let code = resp.status().as_u16();
             return Err(self.classify(
                 reference,
                 &current_url,
                 false,
-                RequestFailure::Status(resp.status(), Box::new(resp)),
+                RequestFailure::Status(code, Box::new(resp)),
             ));
         }
         Ok((resp, current_url))
@@ -202,18 +221,12 @@ impl OciTransport {
         url: &str,
         accept: &str,
         auth: Option<&str>,
-    ) -> std::result::Result<ureq::Response, RequestFailure> {
-        let mut req = self.agent.get(url).set("Accept", accept);
+    ) -> std::result::Result<HttpResponse, RequestFailure> {
+        let mut req = self.agent.get(url).header("Accept", accept);
         if let Some(auth) = auth {
-            req = req.set("Authorization", auth);
+            req = req.header("Authorization", auth);
         }
-        match req.call() {
-            Ok(resp) => Ok(resp),
-            Err(ureq::Error::Status(code, resp)) => {
-                Err(RequestFailure::Status(code, Box::new(resp)))
-            }
-            Err(ureq::Error::Transport(t)) => Err(RequestFailure::Transport(t.to_string())),
-        }
+        classify_response(req.call())
     }
 
     /// Map a request failure onto the stable `ARTIFACT_*` codes. `write` selects
@@ -389,7 +402,7 @@ impl OciTransport {
                     format!("token request to {realm} failed: {msg}"),
                 ),
             })?;
-        let body = read_capped(&mut resp.into_reader(), MAX_OCI_MANIFEST_BYTES)
+        let body = read_capped(&mut resp.into_body().into_reader(), MAX_OCI_MANIFEST_BYTES)
             .map_err(|e| Error::io(url.clone(), e))?;
         let json: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|e| auth_denied(format!("token endpoint returned invalid JSON: {e}")))?;
@@ -415,7 +428,7 @@ impl OciTransport {
             reference.repository
         );
         let (resp, final_url) = self.get_following_redirects(reference, &url, MANIFEST_ACCEPT)?;
-        let body = read_capped(&mut resp.into_reader(), MAX_OCI_MANIFEST_BYTES)
+        let body = read_capped(&mut resp.into_body().into_reader(), MAX_OCI_MANIFEST_BYTES)
             .map_err(|e| Error::io(final_url, e))?;
         let computed = digest::sha256_hex(&body);
         if let Some(pin) = &reference.digest {
@@ -458,8 +471,9 @@ impl OciTransport {
         let file = std::fs::File::create(dest.as_std_path())
             .map_err(|e| Error::io(dest.to_string(), e))?;
         let mut writer = std::io::BufWriter::new(file);
-        let (actual, size) = digest::sha256_hex_copy(&mut resp.into_reader(), &mut writer)
-            .map_err(|e| Error::io(dest.to_string(), e))?;
+        let (actual, size) =
+            digest::sha256_hex_copy(&mut resp.into_body().into_reader(), &mut writer)
+                .map_err(|e| Error::io(dest.to_string(), e))?;
         drop(writer);
         if actual != layer.digest || size != layer.size {
             let _ = std::fs::remove_file(dest.as_std_path());
@@ -478,46 +492,43 @@ impl OciTransport {
         Ok(())
     }
 
-    /// Build a request with headers and an optional Authorization.
-    fn build_write(
+    /// Build and send a write request (`POST`/`PUT`/`HEAD`), mapping ureq
+    /// outcomes onto [`RequestFailure`]. The body is re-materialized per call (a
+    /// file is re-opened) so a 401 retry can resend it. `Content-Length` is left
+    /// to ureq, which derives it from a `Bytes`/`File` body's own length —
+    /// setting the header here as well would be a duplicate ureq 3.x rejects
+    /// (`TooManyContentLengthHeaders`).
+    fn dispatch(
         &self,
         method: &str,
         url: &str,
         headers: &[(String, String)],
         auth: Option<&str>,
-    ) -> ureq::Request {
-        let mut req = self.agent.request(method, url);
+        body: &WriteBody,
+    ) -> std::result::Result<HttpResponse, RequestFailure> {
+        let mut builder = ureq::http::Request::builder().method(method).uri(url);
         for (k, v) in headers {
-            req = req.set(k, v);
+            builder = builder.header(k.as_str(), v.as_str());
         }
         if let Some(a) = auth {
-            req = req.set("Authorization", a);
+            builder = builder.header("Authorization", a);
         }
-        req
-    }
-
-    /// Send a request body, mapping ureq outcomes onto [`RequestFailure`]. The
-    /// body is re-materialized per call (a file is re-opened) so a 401 retry can
-    /// resend it.
-    fn dispatch(
-        &self,
-        req: ureq::Request,
-        body: &WriteBody,
-    ) -> std::result::Result<ureq::Response, RequestFailure> {
+        // ureq's `agent.run` unifies every body type back to the same
+        // `Result<Response, Error>`, so the arms line up despite the distinct
+        // `http::Request<S>` bodies.
         let sent = match body {
-            WriteBody::Empty => req.call(),
-            WriteBody::Bytes(b) => req.send_bytes(b),
+            WriteBody::Empty => builder.body(()).map(|req| self.agent.run(req)),
+            WriteBody::Bytes(b) => builder.body(b.as_slice()).map(|req| self.agent.run(req)),
             WriteBody::File(path) => match std::fs::File::open(path.as_std_path()) {
-                Ok(f) => req.send(f),
+                Ok(f) => builder.body(f).map(|req| self.agent.run(req)),
                 Err(e) => return Err(RequestFailure::Transport(format!("open {path}: {e}"))),
             },
         };
         match sent {
-            Ok(resp) => Ok(resp),
-            Err(ureq::Error::Status(code, resp)) => {
-                Err(RequestFailure::Status(code, Box::new(resp)))
-            }
-            Err(ureq::Error::Transport(t)) => Err(RequestFailure::Transport(t.to_string())),
+            Ok(run_result) => classify_response(run_result),
+            Err(e) => Err(RequestFailure::Transport(format!(
+                "could not build request to {url}: {e}"
+            ))),
         }
     }
 
@@ -531,23 +542,19 @@ impl OciTransport {
         reference: &OciReference,
         headers: Vec<(String, String)>,
         body: WriteBody,
-    ) -> Result<ureq::Response> {
+    ) -> Result<HttpResponse> {
         let auth = self.auth_header(reference)?;
-        let first = self.dispatch(
-            self.build_write(method, url, &headers, auth.as_deref()),
-            &body,
-        );
+        let first = self.dispatch(method, url, &headers, auth.as_deref(), &body);
         match first {
             Err(RequestFailure::Status(401, resp)) => {
-                let challenge = resp.header("www-authenticate").unwrap_or("").to_string();
+                let challenge = resp_header(&resp, "www-authenticate")
+                    .unwrap_or("")
+                    .to_string();
                 let scope = format!("repository:{}:pull,push", reference.repository);
                 let token = self.exchange_token(reference, &challenge, &scope)?;
                 let bearer = format!("Bearer {token}");
-                self.dispatch(
-                    self.build_write(method, url, &headers, Some(&bearer)),
-                    &body,
-                )
-                .map_err(|f| self.classify(reference, url, true, f))
+                self.dispatch(method, url, &headers, Some(&bearer), &body)
+                    .map_err(|f| self.classify(reference, url, true, f))
             }
             Ok(resp) => Ok(resp),
             Err(f) => Err(self.classify(reference, url, true, f)),
@@ -564,7 +571,7 @@ impl OciTransport {
             reference.repository
         );
         match self.send_write("HEAD", &url, reference, Vec::new(), WriteBody::Empty) {
-            Ok(resp) => Ok((200..300).contains(&resp.status())),
+            Ok(resp) => Ok((200..300).contains(&resp.status().as_u16())),
             Err(e) if e.code() == "ARTIFACT_REMOTE_NOT_FOUND" => Ok(false),
             Err(e) => Err(e),
         }
@@ -579,7 +586,7 @@ impl OciTransport {
         );
         let headers = vec![("Accept".to_string(), MANIFEST_ACCEPT.to_string())];
         match self.send_write("HEAD", &url, reference, headers, WriteBody::Empty) {
-            Ok(resp) => Ok((200..300).contains(&resp.status())),
+            Ok(resp) => Ok((200..300).contains(&resp.status().as_u16())),
             Err(e) if e.code() == "ARTIFACT_REMOTE_NOT_FOUND" => Ok(false),
             Err(e) => Err(e),
         }
@@ -588,13 +595,7 @@ impl OciTransport {
     /// Upload one blob if the registry does not already have it: start an upload
     /// session (`POST /blobs/uploads/`), then a monolithic `PUT` with the digest
     /// query. Idempotent — an existing blob is left untouched.
-    fn upload_blob(
-        &self,
-        reference: &OciReference,
-        digest: &str,
-        size: u64,
-        body: WriteBody,
-    ) -> Result<()> {
+    fn upload_blob(&self, reference: &OciReference, digest: &str, body: WriteBody) -> Result<()> {
         if self.blob_exists(reference, digest)? {
             return Ok(());
         }
@@ -610,14 +611,14 @@ impl OciTransport {
             vec![("Content-Length".to_string(), "0".to_string())],
             WriteBody::Empty,
         )?;
-        if !(200..300).contains(&resp.status()) {
+        if !(200..300).contains(&resp.status().as_u16()) {
             return Err(write_unexpected(
                 &start,
-                resp.status(),
+                resp.status().as_u16(),
                 "start a blob upload",
             ));
         }
-        let location = resp.header("location").ok_or_else(|| {
+        let location = resp_header(&resp, "location").ok_or_else(|| {
             Error::coded(
                 "ARTIFACT_TRANSPORT_FAILED",
                 Category::ExternalTool,
@@ -626,18 +627,18 @@ impl OciTransport {
         })?;
         let put_url = append_digest_query(&absolutize(&start, location), digest);
 
-        let headers = vec![
-            (
-                "Content-Type".to_string(),
-                "application/octet-stream".to_string(),
-            ),
-            ("Content-Length".to_string(), size.to_string()),
-        ];
+        // No explicit Content-Length: ureq derives it from the body's own length
+        // (see dispatch). The archive streams from a file, the small blobs from
+        // memory — either way the descriptor size and body length are the same.
+        let headers = vec![(
+            "Content-Type".to_string(),
+            "application/octet-stream".to_string(),
+        )];
         let resp = self.send_write("PUT", &put_url, reference, headers, body)?;
-        if !(200..300).contains(&resp.status()) {
+        if !(200..300).contains(&resp.status().as_u16()) {
             return Err(write_unexpected(
                 &put_url,
-                resp.status(),
+                resp.status().as_u16(),
                 "complete a blob upload",
             ));
         }
@@ -667,8 +668,12 @@ impl OciTransport {
             headers,
             WriteBody::Bytes(bytes.to_vec()),
         )?;
-        if !(200..300).contains(&resp.status()) {
-            return Err(write_unexpected(&url, resp.status(), "put the manifest"));
+        if !(200..300).contains(&resp.status().as_u16()) {
+            return Err(write_unexpected(
+                &url,
+                resp.status().as_u16(),
+                "put the manifest",
+            ));
         }
         Ok(())
     }
@@ -845,19 +850,16 @@ impl ArtifactTransport for OciTransport {
             self.upload_blob(
                 r,
                 &config_digest,
-                EMPTY_CONFIG_BYTES.len() as u64,
                 WriteBody::Bytes(EMPTY_CONFIG_BYTES.to_vec()),
             )?;
             self.upload_blob(
                 r,
                 &archive_digest,
-                archive_size,
                 WriteBody::File(source.archive_path.clone()),
             )?;
             self.upload_blob(
                 r,
                 &manifest_digest,
-                manifest_size,
                 WriteBody::Bytes(manifest_bytes.clone()),
             )?;
             // The immutable digest manifest — the contract a support line pins.
@@ -893,8 +895,35 @@ impl ArtifactTransport for OciTransport {
 /// A request that did not return 2xx/3xx. The response is boxed so the happy
 /// path never carries the failure variant's weight.
 enum RequestFailure {
-    Status(u16, Box<ureq::Response>),
+    Status(u16, Box<HttpResponse>),
     Transport(String),
+}
+
+/// Map a ureq call outcome onto [`RequestFailure`]. The agent runs with
+/// `http_status_as_error(false)`, so 4xx/5xx arrive as `Ok` and are the only
+/// codes turned into a `Status` failure; 2xx/3xx flow back to the caller (which
+/// follows redirects manually), and I/O / timeout errors become `Transport`.
+fn classify_response(
+    result: std::result::Result<HttpResponse, ureq::Error>,
+) -> std::result::Result<HttpResponse, RequestFailure> {
+    match result {
+        Ok(resp) => {
+            let code = resp.status().as_u16();
+            if (400..600).contains(&code) {
+                Err(RequestFailure::Status(code, Box::new(resp)))
+            } else {
+                Ok(resp)
+            }
+        }
+        Err(e) => Err(RequestFailure::Transport(e.to_string())),
+    }
+}
+
+/// Read a response header as a UTF-8 str (absent or non-ASCII → `None`). Header
+/// lookup is case-insensitive, matching `WWW-Authenticate` / `Location` however
+/// the registry cased them.
+fn resp_header<'a>(resp: &'a HttpResponse, name: &str) -> Option<&'a str> {
+    resp.headers().get(name).and_then(|v| v.to_str().ok())
 }
 
 /// A push request body, held owned so a 401 retry can resend it.
