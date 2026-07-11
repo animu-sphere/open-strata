@@ -8,16 +8,9 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-- ⬜ **v0.14.0 — trust policy foundation.** Close the publish-side trust boundary
-  (future-policy §3.2/§7/§11), on top of the reproducible, lean artifacts from
-  v0.13.0: an `openstrata-artifact-policy.toml` with a protected-namespace +
-  allowed-publisher schema and a `local` / `unsigned` / `attested` / `verified` /
-  `trusted` trust-level enum; a policy parser with stable `ARTIFACT_POLICY_*`
-  codes; OIDC publisher verification (match repository / workflow path / git ref /
-  actor / event against the allowed-publisher list, reject a protected-namespace
-  publish from an untrusted identity, with `--allow-untrusted-publisher` as the
-  explicit escape hatch); and `ost artifact verify --policy`. Tracks SEC-006 and
-  the Phase 6 trust-policy hooks.
+The next milestone (v0.14.0 — trust policy foundation) is detailed in
+[current.md](current.md).
+
 - ⬜ **v0.15.0 — provenance / SBOM bundle.** Make the artifact an *evidence
   bundle*, not just an archive (future-policy §5/§6/§11): optional SBOM
   (`sbom.spdx.json`) and SLSA/in-toto provenance (`provenance.intoto.jsonl`)

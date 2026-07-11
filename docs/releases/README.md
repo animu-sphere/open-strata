@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.13.0 | [v0.13.0.md](v0.13.0.md) | Release-quality packaging (reproducible + lean + testable-from-package) |
 | v0.12.0 | [v0.12.0.md](v0.12.0.md) | Hosted macOS CI + runtime-contract hardening |
 | v0.11.0 | [v0.11.0.md](v0.11.0.md) | Producer-side correctness + Linux runtime portability |
 | v0.10.0 | [v0.10.0.md](v0.10.0.md) | OCI publish foundation + runtime-completeness closure |
