@@ -94,6 +94,11 @@ pub enum PluginCmd {
         /// into another sibling. Use once the holding process has exited.
         #[arg(long)]
         clean_stage: bool,
+        /// Ship debug symbols (`.pdb`, `.dwo`) *inside* the main package instead
+        /// of the default lean package. By default the main archive is lean and
+        /// any debug symbols are split into a sibling `*-debug` package.
+        #[arg(long)]
+        with_debug: bool,
     },
     /// Publish a packaged plugin artifact into the local registry (by digest).
     Publish {
@@ -217,7 +222,8 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             target,
             profile,
             clean_stage,
-        } => package(&bundle, target, profile, clean_stage, fmt),
+            with_debug,
+        } => package(&bundle, target, profile, clean_stage, with_debug, fmt),
         PluginCmd::Publish {
             bundle,
             target,
@@ -663,6 +669,7 @@ fn package(
     target: Option<String>,
     profile: Option<String>,
     clean_stage: bool,
+    with_debug: bool,
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
@@ -739,8 +746,28 @@ fn package(
         mtime: ost_build::source_date_epoch(),
         ..PackOptions::default()
     };
-    let packed = pack_dir_with(&stage, &archive_path, &staged, pack_opts, &mut |_| {})
+
+    // Ship lean by default: split debug-symbol sidecars (`.pdb`, `.dwo`) out of
+    // the main archive into a sibling `*-debug` package, so the shipped artifact
+    // stays small without discarding the symbols. `--with-debug` keeps them in
+    // the main archive instead.
+    let (main_files, debug_files): (Vec<_>, Vec<_>) = if with_debug {
+        (staged, Vec::new())
+    } else {
+        staged.into_iter().partition(|p| !is_debug_symbol_file(p))
+    };
+    let packed = pack_dir_with(&stage, &archive_path, &main_files, pack_opts, &mut |_| {})
         .map_err(|e| Error::io(archive_path.to_string(), e))?;
+
+    let debug_pack = if debug_files.is_empty() {
+        None
+    } else {
+        let debug_name = plugin_debug_archive_name(name, version, &id);
+        let debug_path = dist_dir.join(&debug_name);
+        let dp = pack_dir_with(&stage, &debug_path, &debug_files, pack_opts, &mut |_| {})
+            .map_err(|e| Error::io(debug_path.to_string(), e))?;
+        Some((debug_name, dp))
+    };
 
     let runtime_manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
         .ok()
@@ -764,7 +791,19 @@ fn package(
             .unwrap_or(0)
     });
     let files_json: Vec<_> = packed.files.iter().map(|f| f.manifest_json()).collect();
-    let manifest = serde_json::json!({
+    // A sibling `*-debug` package, when symbols were split out: its own archive
+    // digest/size and file list, so a consumer can pull and overlay it to restore
+    // symbols in place.
+    let debug_json = debug_pack.as_ref().map(|(debug_name, dp)| {
+        serde_json::json!({
+            "archive": debug_name,
+            "archive_digest": dp.archive_digest,
+            "archive_size": dp.archive_size,
+            "total_size": dp.total_size,
+            "files": dp.files.iter().map(|f| f.manifest_json()).collect::<Vec<_>>(),
+        })
+    });
+    let mut manifest = serde_json::json!({
         "schema": 1,
         "kind": "openstrata.plugin-bundle",
         "plugin": {
@@ -799,19 +838,37 @@ fn package(
         },
         "files": files_json,
     });
+    if let Some(debug_json) = &debug_json {
+        manifest["debug"] = debug_json.clone();
+    }
     write_text(&dist_dir.join("manifest.json"), &pretty_json(&manifest)?)?;
 
-    let bare = packed
-        .archive_digest
-        .strip_prefix("sha256:")
-        .unwrap_or(&packed.archive_digest);
-    write_text(
-        &dist_dir.join("SHA256SUMS"),
-        &format!("{bare}  {archive_name}"),
-    )?;
+    // One SHA256SUMS line per shipped archive (main, then any sibling `*-debug`),
+    // so a `sha256sum -c` verifies the whole dist output.
+    let mut sha_lines = vec![format!(
+        "{}  {archive_name}",
+        bare_sha256(&packed.archive_digest)
+    )];
+    if let Some((debug_name, dp)) = &debug_pack {
+        sha_lines.push(format!("{}  {debug_name}", bare_sha256(&dp.archive_digest)));
+    }
+    write_text(&dist_dir.join("SHA256SUMS"), &sha_lines.join("\n"))?;
 
-    report_package(&id, &archive_path, &packed, &stage_warnings, fmt);
+    report_package(
+        &id,
+        &archive_path,
+        &packed,
+        debug_pack.as_ref(),
+        &stage_warnings,
+        fmt,
+    );
     Ok(())
+}
+
+/// The hex digest without the `sha256:` scheme prefix (the `sha256sum -c`
+/// on-disk format).
+fn bare_sha256(digest: &str) -> &str {
+    digest.strip_prefix("sha256:").unwrap_or(digest)
 }
 
 /// `ost plugin publish` — enter a *packaged* plugin artifact into the local
@@ -2001,6 +2058,21 @@ fn plugin_archive_name(name: &str, version: &str, id: &str) -> String {
     format!("{name}-{version}-{id}.tar.zst")
 }
 
+fn plugin_debug_archive_name(name: &str, version: &str, id: &str) -> String {
+    format!("{name}-{version}-{id}-debug.tar.zst")
+}
+
+/// Debug-symbol sidecar files split out of a lean package: the MSVC program
+/// database (`.pdb`) and split-DWARF objects (`.dwo`). Debug info embedded in an
+/// ELF/Mach-O binary is not a separate file and is left in place — stripping it
+/// needs the toolchain (`strip`/`objcopy`), not a file move.
+fn is_debug_symbol_file(path: &Utf8Path) -> bool {
+    matches!(
+        path.extension().map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("pdb") | Some("dwo")
+    )
+}
+
 fn write_text(path: &Utf8Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent.as_std_path())
@@ -2018,22 +2090,28 @@ fn report_package(
     id: &str,
     archive: &Utf8Path,
     packed: &ost_build::PackResult,
+    debug: Option<&(String, ost_build::PackResult)>,
     warnings: &[serde_json::Value],
     fmt: Format,
 ) {
     if fmt.is_json() {
-        output::report_with_warnings(
-            true,
-            &serde_json::json!({
-                "packaged": true,
-                "target": id,
-                "archive": archive.to_string(),
-                "archive_digest": packed.archive_digest,
-                "archive_size": packed.archive_size,
-                "files": packed.files.len(),
-            }),
-            warnings,
-        );
+        let mut obj = serde_json::json!({
+            "packaged": true,
+            "target": id,
+            "archive": archive.to_string(),
+            "archive_digest": packed.archive_digest,
+            "archive_size": packed.archive_size,
+            "files": packed.files.len(),
+        });
+        if let Some((debug_name, dp)) = debug {
+            obj["debug"] = serde_json::json!({
+                "archive": debug_name,
+                "archive_digest": dp.archive_digest,
+                "archive_size": dp.archive_size,
+                "files": dp.files.len(),
+            });
+        }
+        output::report_with_warnings(true, &obj, warnings);
         return;
     }
     for w in warnings {
@@ -2050,6 +2128,13 @@ fn report_package(
         packed.files.len(),
         packed.total_size
     );
+    if let Some((debug_name, dp)) = debug {
+        println!(
+            "  debug:    {debug_name} ({} bytes, {} file(s)) — sibling symbol package",
+            dp.archive_size,
+            dp.files.len()
+        );
+    }
     println!("  manifest.json + SHA256SUMS written alongside the archive");
 }
 
@@ -2425,6 +2510,33 @@ mod tests {
                 { "path": "NOTICE.md", "sha256": "sha256:aa", "size": 1 },
             ],
         })
+    }
+
+    #[test]
+    fn debug_symbol_files_are_classified_for_the_lean_split() {
+        // Split out of the lean main package into the sibling `*-debug` archive.
+        for debug in ["lib/usdToy.pdb", "lib/foo.PDB", "lib/bar.dwo"] {
+            assert!(
+                is_debug_symbol_file(Utf8Path::new(debug)),
+                "{debug} should be split out as a debug symbol"
+            );
+        }
+        // Kept in the lean main package: the loadable binary, bindings, plugInfo,
+        // notices — none are debug sidecars. Embedded ELF debug info rides along
+        // inside the `.so`.
+        for keep in [
+            "lib/usdToy.dll",
+            "lib/usdToy.so",
+            "lib/usdToy.dylib",
+            "plugin/usd/plugInfo.json",
+            "python/pxr/Toy/__init__.py",
+            "NOTICE.md",
+        ] {
+            assert!(
+                !is_debug_symbol_file(Utf8Path::new(keep)),
+                "{keep} must stay in the main package"
+            );
+        }
     }
 
     #[test]
