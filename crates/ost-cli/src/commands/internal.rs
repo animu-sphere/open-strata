@@ -3,13 +3,16 @@
 //!
 //! Regenerates the machine-sourced reference docs under `docs/reference/` from
 //! their sources — the clap command tree, the exit-code [`Category`] contract,
-//! and the JSON schemas — so those pages cannot drift from the shipped CLI. Run
-//! from the repository root; CI regenerates and fails on any diff.
+//! the JSON schemas, and the `support/platforms.toml` declaration — so those
+//! pages cannot drift from the shipped CLI. Run from the repository root; CI
+//! regenerates and fails on any diff.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, CommandFactory, Subcommand};
+use serde::Deserialize;
 
 use ost_core::{Category, Error, Result};
 
@@ -36,6 +39,9 @@ pub struct GenerateArgs {
     /// Directory holding the JSON schemas.
     #[arg(long, default_value = "schemas")]
     schemas: Utf8PathBuf,
+    /// Machine-readable support declaration.
+    #[arg(long, default_value = "support/platforms.toml")]
+    support: Utf8PathBuf,
 }
 
 pub fn run(cmd: InternalCmd, fmt: Format) -> Result<()> {
@@ -52,6 +58,11 @@ fn generate(args: GenerateArgs, fmt: Format) -> Result<()> {
         write_page(&args.out, "cli.md", &cli_reference())?,
         write_page(&args.out, "exit-codes.md", &exit_codes_reference())?,
         write_page(&args.out, "schemas.md", &schemas_reference(&args.schemas)?)?,
+        write_page(
+            &args.out,
+            "support-matrix.md",
+            &support_matrix_reference(&args.support)?,
+        )?,
     ];
 
     if fmt.is_json() {
@@ -349,6 +360,113 @@ fn schemas_reference(dir: &Utf8Path) -> Result<String> {
             }
         }
     }
+    Ok(out)
+}
+
+// ---- Support matrix ------------------------------------------------------
+
+/// The order support levels are defined/rendered in (most to least supported).
+const LEVEL_ORDER: [&str; 4] = ["stable", "beta", "experimental", "unsupported"];
+
+#[derive(Debug, Deserialize)]
+struct SupportData {
+    levels: BTreeMap<String, LevelDef>,
+    platforms: Vec<PlatformDef>,
+    features: Vec<FeatureDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LevelDef {
+    description: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlatformDef {
+    id: String,
+    label: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FeatureDef {
+    label: String,
+    #[serde(default)]
+    note: String,
+    support: BTreeMap<String, String>,
+}
+
+fn support_matrix_reference(path: &Utf8Path) -> Result<String> {
+    let text = std::fs::read_to_string(path.as_std_path())
+        .map_err(|e| Error::Operation(format!("cannot read {path}: {e}")))?;
+    let data: SupportData = toml::from_str(&text)
+        .map_err(|e| Error::config(format!("invalid support declaration {path}: {e}")))?;
+
+    // Validate: every feature declares a defined level for every platform.
+    for f in &data.features {
+        for p in &data.platforms {
+            let level = f.support.get(&p.id).ok_or_else(|| {
+                Error::config(format!(
+                    "feature '{}' is missing a support level for platform '{}'",
+                    f.label, p.id
+                ))
+            })?;
+            if !data.levels.contains_key(level) {
+                return Err(Error::config(format!(
+                    "feature '{}' uses undefined support level '{}' for '{}'",
+                    f.label, level, p.id
+                )));
+            }
+        }
+    }
+
+    let mut out = String::from(
+        "# Support matrix\n\n\
+         Per-feature, per-platform support levels. Sourced from \
+         [`support/platforms.toml`](../../support/platforms.toml). Linux x86_64 is \
+         the first-class target; other targets range from proven to \
+         evaluation-only.\n\n## Support levels\n\n",
+    );
+    for name in LEVEL_ORDER {
+        if let Some(def) = data.levels.get(name) {
+            let _ = writeln!(out, "- **{name}** — {}", def.description);
+        }
+    }
+
+    out.push_str("\n## Feature support\n\n| Feature |");
+    for p in &data.platforms {
+        let _ = write!(out, " {} |", p.label);
+    }
+    out.push_str("\n| --- |");
+    for _ in &data.platforms {
+        out.push_str(" --- |");
+    }
+    out.push('\n');
+
+    let mut footnotes: Vec<(usize, &FeatureDef)> = Vec::new();
+    for f in &data.features {
+        let marker = if f.note.is_empty() {
+            String::new()
+        } else {
+            footnotes.push((footnotes.len() + 1, f));
+            format!(" [^{}]", footnotes.len())
+        };
+        let _ = write!(out, "| {}{} |", f.label, marker);
+        for p in &data.platforms {
+            let _ = write!(
+                out,
+                " {} |",
+                f.support.get(&p.id).map(String::as_str).unwrap_or("—")
+            );
+        }
+        out.push('\n');
+    }
+
+    if !footnotes.is_empty() {
+        out.push('\n');
+        for (n, f) in footnotes {
+            let _ = writeln!(out, "[^{n}]: {}", one_line(&f.note));
+        }
+    }
+
     Ok(out)
 }
 

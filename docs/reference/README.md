@@ -10,6 +10,7 @@ drift in CI — do not edit them by hand.
 | [cli.md](cli.md) | generated (clap command tree) | Every `ost` command, its arguments and options. |
 | [exit-codes.md](exit-codes.md) | generated (`ost_core::Category`) | The category → exit-code contract. |
 | [schemas.md](schemas.md) | generated (`schemas/*.json`) | The JSON Schemas `ost` validates documents against. |
+| [support-matrix.md](support-matrix.md) | generated (`support/platforms.toml`) | Per-feature, per-platform support levels. |
 | [json-output.md](json-output.md) | hand-written | The `--json` output contract: envelope, error codes, and compatibility policy. |
 
 To regenerate the generated pages, from the repository root:
@@ -18,5 +19,4 @@ To regenerate the generated pages, from the repository root:
 cargo run -q -p ost-cli -- internal docs generate
 ```
 
-Planned (later phases): generated `environment-variables.md` and a
-`support-matrix.md`.
+Planned (later phases): a generated `environment-variables.md`.
