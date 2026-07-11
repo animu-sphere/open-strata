@@ -110,16 +110,18 @@ applies_to: v0.13+
 ## Previewing and checking
 
 - Preview locally by rendering the Markdown (any Markdown viewer / your editor).
-- Relative links must resolve and anchors must exist. Run the checker before
-  opening a pull request:
+- Run the documentation checks before opening a pull request:
 
   ```bash
-  python3 scripts/check_doc_links.py .
+  python3 scripts/check_doc_links.py .          # relative links + anchors resolve
+  python3 scripts/check_docs_consistency.py .   # crate/version/roadmap + hygiene
+  cargo run -q -p ost-cli -- internal docs generate  # refresh generated reference
   ```
 
-  The `docs` CI workflow runs the same check on every push and pull request, so a
-  broken relative link or `#anchor` fails the build. Markdown lint and
-  generated-reference drift checks are planned to join it.
+  The `docs` CI workflow runs the link and consistency checks on every push and
+  pull request, and `ci.yml` fails on generated-reference drift — so a broken
+  link, a stale crate/version/roadmap fact, trailing whitespace, or an
+  out-of-date generated page all fail the build.
 
 ## Definition of done (documentation)
 
