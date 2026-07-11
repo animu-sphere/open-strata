@@ -42,6 +42,23 @@ The next milestone (v0.14.0 — trust policy foundation) is detailed in
 
 ## Future phases
 
+- ⬜ **OpenUSD template catalog maturity and expansion.** Direction:
+  [openusd-plugin-templates.md](../design/proposed/openusd-plugin-templates.md).
+  Add versioned template descriptors, deterministic scaffold provenance,
+  clean-room generation/install/discovery gates, and self-contained copied CMake
+  helpers around the templates already shipped. Extend the existing
+  `ost plugin new` lifecycle—do not create a parallel template repository, CLI,
+  renderer, bundle model, or artifact path. Add asset/package resolver, Exec,
+  Hydra, and tool candidates only at evidence-appropriate maturity.
+- ⬜ **Renderer project skeleton and Level 7 verification.** Direction:
+  [renderer-templates.md](../design/proposed/renderer-templates.md). Add one
+  composable `renderer` project scaffold (host-neutral core, project-owned
+  extraction seam, Vulkan offscreen backend, validation pack, optional Hydra 2
+  adapter), a committed renderer composition manifest, and independently
+  reported discovery/delegate/GPU/RenderBuffer/usdview stable-update evidence.
+  Keep it at skeleton maturity until a second independent implementation;
+  instancing, materials, upload policy, and zero-copy interop remain
+  renderer-owned until separately proven.
 - ⬜ **Phase 7 — Sessions / sandbox.** Session metadata; `ost session start | fork
   | diff | discard | promote`. Workspace isolation; optional Linux namespace /
   overlayfs.
@@ -120,8 +137,10 @@ pieces of the documentation reorganization.
   reach), including the deadsnakes-py3.13 + venv + `libxt-dev` / X-GL dev
   prerequisites; consider shipping a reference Dockerfile. (The `glibc228`-vs-real-floor
   trap from v0.10.0/v0.12.0 is easy to fall into.)
-- ⬜ **Declarative post-build CI commands / corpus smoke.** `ost ci generate`
-  drops repo-specific smoke (e.g. a corpus CTest) on regeneration. Support
-  declarative post-build commands in `openstrata.ci.yaml`, or have `ost plugin
-  test` cover the corpus assets, so regeneration preserves them. (Complements the
-  v0.13.0 `--from-package` smoke.)
+- ⬜ **Generated release lanes.** Matrix-level `source_checks` already preserves
+  repo-specific corpus smoke in generated pull-request/main lanes. The remaining
+  gap is a typed, tag-triggered release model: version/ref agreement,
+  package-twice reproducibility, `--from-package`, artifact staging, trust and
+  provenance gates, and a separately permissioned draft/publish job. Do not use
+  raw per-cell `extra_steps` as a substitute. Direction:
+  [release-lane-ci.md](../design/proposed/release-lane-ci.md).
