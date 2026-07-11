@@ -64,3 +64,32 @@ jobs:
 
       - name: cargo test (workspace)
         run: cargo test --workspace --locked
+
+  # The generated reference docs (docs/reference/cli.md, exit-codes.md,
+  # schemas.md) must match their sources. Regenerate and fail on any diff so a
+  # CLI/schema/exit-code change cannot silently leave the docs stale.
+  docs-generated:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Regenerate reference docs
+        run: cargo run -q -p ost-cli --locked -- internal docs generate
+
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code -- docs/reference; then
+            echo "::error::docs/reference is stale — run: cargo run -p ost-cli -- internal docs generate"
+            exit 1
+          fi
