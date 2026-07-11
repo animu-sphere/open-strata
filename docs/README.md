@@ -14,7 +14,7 @@ spec wins and the summary is a bug.
 | [releases/](releases/) | Immutable per-version release records. | [README.md](releases/README.md) |
 | [design/](design/) | Why significant decisions were made (proposed / accepted / superseded). | [README.md](design/README.md) |
 | [reports/](reports/) | Evidence from real runs (incidents, dogfooding). | [reports/](reports/) |
-| [contributing/](contributing/) | How to write and maintain documentation. | [documentation.md](contributing/documentation.md) |
+| [contributing/](contributing/) | Contributor procedures: documentation and releases. | [README.md](contributing/README.md) |
 
 ## Canonical design spec
 
