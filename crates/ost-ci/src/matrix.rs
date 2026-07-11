@@ -283,6 +283,17 @@ pub struct SupportCell {
     /// Highest verification level to run (`ost plugin test --up-to`), 0..=6.
     #[serde(default = "default_up_to")]
     pub up_to: u8,
+    /// CPython `major.minor` (e.g. `3.13`) the runtime's schema tooling
+    /// (`usdGenSchema`) needs, declared when the runtime artifact does **not**
+    /// bundle a runnable interpreter under `bin/`. On a GitHub-hosted source
+    /// cell the generator renders a first-class `setup-python` prerequisite for
+    /// exactly this ABI before `ost plugin build`, so schema-generate never
+    /// depends on an accidental host interpreter (v0.12.0 macOS dogfood). Left
+    /// unset when the runtime ships its own interpreter or the profile needs no
+    /// schema tooling. Self-hosted runners keep their operator-provisioned
+    /// Python, so the step is gated on `matrix.hosted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_python: Option<String>,
     /// Publication policy (default `never`).
     #[serde(default)]
     pub publish: Publish,
@@ -315,6 +326,21 @@ fn is_kebab(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// A bare `<major>.<minor>` CPython version (e.g. `3.13`) — the only form
+/// `setup-python`'s `python-version` and the runtime Python-ABI contract accept
+/// here (no patch, no range, no wildcard, so the rendered pin is exact).
+fn is_major_minor(v: &str) -> bool {
+    match v.split_once('.') {
+        Some((maj, min)) => {
+            !maj.is_empty()
+                && !min.is_empty()
+                && maj.bytes().all(|b| b.is_ascii_digit())
+                && min.bytes().all(|b| b.is_ascii_digit())
+        }
+        None => false,
+    }
 }
 
 /// The support matrix document (`openstrata.ci.yaml`).
@@ -484,6 +510,20 @@ impl SupportMatrix {
                     cell.up_to
                 )));
             }
+            if let Some(py) = &cell.host_python {
+                if !is_major_minor(py) {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': host_python '{py}' must be a CPython major.minor \
+                         version like '3.13'"
+                    )));
+                }
+                if !cell.lane.is_source() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': host_python applies only to source lanes \
+                         (a support lane re-verifies a pinned plugin and never builds)"
+                    )));
+                }
+            }
 
             if let Some(remote) = &cell.runtime_remote {
                 validate_runtime_remote(name, remote)?;
@@ -539,6 +579,14 @@ impl SupportMatrix {
     /// Cells that re-validate pinned artifacts (`scheduled` / dispatch).
     pub fn support_cells(&self) -> Vec<&SupportCell> {
         self.cells.iter().filter(|c| !c.lane.is_source()).collect()
+    }
+
+    /// Whether any source cell declares a `host_python` ABI — the signal for
+    /// the source-CI generator to render the hosted `setup-python`
+    /// prerequisite. (The step itself is per-cell gated on `matrix.host_python`,
+    /// so a cell that ships its own interpreter renders it as a skip.)
+    pub fn needs_host_python(&self) -> bool {
+        self.source_cells().iter().any(|c| c.host_python.is_some())
     }
 
     /// Hosted runner profiles referenced by at least one cell without a
@@ -861,6 +909,16 @@ pub fn starter_matrix() -> String {
 #       platform: cy2026
 #       profile: usd
 #       up_to: 4
+#       # host_python: \"3.13\"   # see below
+#
+# If the pinned runtime does NOT bundle a runnable interpreter under bin/
+# but its profile still needs schema tooling (usdGenSchema), declare the
+# CPython major.minor the tooling expects with `host_python` on the source
+# cell. On a hosted runner the generator installs exactly that Python
+# (pinned setup-python) before `ost plugin build`, so schema-generate never
+# depends on an accidental host interpreter. Omit it when the runtime ships
+# its own interpreter; self-hosted runners keep their operator-provisioned
+# Python regardless.
 #
 # Self-hosted cells may omit runtime_remote and keep air-gapped local
 # import (`ost artifact import` on the runner); CI evidence records the
@@ -1340,5 +1398,38 @@ cells:
                 "expected '{needle}' in: {err}"
             );
         }
+    }
+
+    #[test]
+    fn host_python_is_validated() {
+        assert!(is_major_minor("3.13"));
+        assert!(is_major_minor("3.10"));
+        assert!(!is_major_minor("3"));
+        assert!(!is_major_minor("3.13.2"));
+        assert!(!is_major_minor("3.x"));
+        assert!(!is_major_minor("py313"));
+        assert!(!is_major_minor(""));
+
+        // A well-formed ABI on a source cell parses and is surfaced.
+        let src = valid_yaml().replace(
+            "  - name: linux-usd-toy\n    runtime_artifact",
+            "  - name: linux-usd-toy\n    lane: pull_request\n    host_python: \"3.13\"\n    runtime_artifact",
+        );
+        let m = SupportMatrix::from_yaml(&src).unwrap();
+        assert_eq!(m.cells[0].host_python.as_deref(), Some("3.13"));
+        assert!(m.needs_host_python());
+
+        // A malformed ABI is rejected.
+        let bad = src.replace("host_python: \"3.13\"", "host_python: \"3\"");
+        let err = SupportMatrix::from_yaml(&bad).expect_err("bad host_python");
+        assert!(err.to_string().contains("major.minor"), "{err}");
+
+        // host_python on a support (non-source) lane is rejected: it never builds.
+        let support = valid_yaml().replace(
+            "  - name: linux-usd-toy\n    runtime_artifact",
+            "  - name: linux-usd-toy\n    host_python: \"3.13\"\n    runtime_artifact",
+        );
+        let err = SupportMatrix::from_yaml(&support).expect_err("host_python on support lane");
+        assert!(err.to_string().contains("source lanes"), "{err}");
     }
 }

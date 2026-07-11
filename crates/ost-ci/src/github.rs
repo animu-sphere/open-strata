@@ -34,6 +34,11 @@ const UPLOAD_ARTIFACT: &str =
 /// `actions/cache`, pinned (SEC-004). Matches ci.yml.
 const CACHE: &str = "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0";
 
+/// `actions/setup-python`, pinned (SEC-004). Installs the runtime's declared
+/// schema-tooling Python ABI on a hosted source cell that has no bundled
+/// interpreter (v0.12.0 macOS dogfood).
+const SETUP_PYTHON: &str = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0";
+
 /// The hosted-runner billing notice step, gated per include entry so
 /// self-hosted cells in the same job stay quiet.
 const BILLING_NOTICE: &str = "\
@@ -401,6 +406,63 @@ fn source_check_steps(checks: &[SourceCheck]) -> String {
     out
 }
 
+/// Modeled pre-build prerequisites, rendered as a first-class section *between*
+/// runtime materialization and `ost plugin build` — deliberately distinct from
+/// `source_checks`, which run after the verification pyramid and so are too late
+/// for anything the build depends on (v0.12.0 macOS dogfood). Two prerequisites
+/// are modeled today:
+///
+/// - **Runnable-runtime validation** (always): `ost runtime validate` re-checks
+///   the freshly materialized tree, including the Unix `bin-tools-executable`
+///   invariant, so a runtime whose tools lost their execute bits fails *here*
+///   with visible evidence instead of deep inside `usdGenSchema`.
+/// - **Host Python for schema tooling** (when a source cell declares
+///   `host_python`): a pinned `setup-python` installs exactly the declared
+///   CPython ABI on a hosted runner before the build, so schema-generate never
+///   relies on an accidental host interpreter. The step is per-cell gated on
+///   `matrix.hosted && matrix.host_python`, and every cell records the resolved
+///   Python source as CI evidence.
+///
+/// No arbitrary pre-build shell hook is offered: prerequisites are modeled, not
+/// scripted (roadmap v0.12.0 P1).
+fn prebuild_steps(matrix: &SupportMatrix) -> String {
+    let mut out = String::from(
+        "\
+\x20     - name: Validate the materialized runtime (runnable tools)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          ost runtime validate ${{ matrix.platform }} --profile ${{ matrix.profile }} --json | tee .ost-ci/runtime-validate.json
+",
+    );
+    if matrix.needs_host_python() {
+        out.push_str(&format!(
+            "\
+\x20     - name: Set up host Python for schema tooling
+        if: ${{{{ matrix.hosted && matrix.host_python != '' }}}}
+        uses: {SETUP_PYTHON}
+        with:
+          python-version: ${{{{ matrix.host_python }}}}
+      - name: Record the schema-tooling Python contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          if [ \"${{{{ matrix.hosted }}}}\" = \"true\" ] && [ -n \"${{{{ matrix.host_python }}}}\" ]; then
+            source=host-setup-python
+          elif [ -n \"${{{{ matrix.host_python }}}}\" ]; then
+            source=operator-provisioned
+          else
+            source=runtime-bundled
+          fi
+          printf '{{\"schema\":1,\"host_python\":\"%s\",\"source\":\"%s\"}}\\n' \"${{{{ matrix.host_python }}}}\" \"$source\" > .ost-ci/python-setup.json
+",
+        ));
+    }
+    out
+}
+
 /// The shared step list of a source-CI job.
 fn source_steps(matrix: &SupportMatrix) -> String {
     let bootstrap = matrix
@@ -428,7 +490,8 @@ fn source_steps(matrix: &SupportMatrix) -> String {
           printf '{{\"schema\":1,\"runtime_artifact\":\"%s\",\"source\":\"%s\"}}\\n' \"${{{{ matrix.runtime_artifact }}}}\" \"${{{{ matrix.runtime_remote != '' && 'remote-pull' || 'local-registry' }}}}\" > .ost-ci/runtime-source.json
           ost artifact verify ${{{{ matrix.runtime_artifact }}}}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
-      - name: Build the plugin from source
+{prebuild}\
+\x20     - name: Build the plugin from source
         shell: bash
         run: ost plugin build ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
       - name: Run the verification pyramid
@@ -449,6 +512,7 @@ fn source_steps(matrix: &SupportMatrix) -> String {
 ",
         version_check = ost_version_step(matrix.bootstrap.as_ref()),
         fetch = runtime_fetch_steps(matrix.bootstrap.as_ref()),
+        prebuild = prebuild_steps(matrix),
         checks = source_check_steps(&matrix.source_checks),
     )
 }
@@ -463,12 +527,14 @@ fn source_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportCe
             .as_ref()
             .map(|r| r.uri.as_str())
             .unwrap_or("");
+        let host_python = cell.host_python.as_deref().unwrap_or("");
         include.push_str(&include_entry(
             matrix,
             cell,
             &format!(
                 "            bundle: {bundle}\n\
-                 \x20           runtime_remote: \"{remote}\"\n"
+                 \x20           runtime_remote: \"{remote}\"\n\
+                 \x20           host_python: \"{host_python}\"\n"
             ),
         ));
     }
@@ -581,6 +647,7 @@ mod tests {
             platform: "cy2026".into(),
             profile: "usd".into(),
             up_to: 5,
+            host_python: None,
             publish: Publish::default(),
             host: HostSpec::default(),
         }
@@ -945,6 +1012,108 @@ mod tests {
             .map(|s| s["name"].as_str().unwrap())
             .collect();
         assert!(!pnames.iter().any(|n| n.contains("corpus")));
+    }
+
+    #[test]
+    fn runtime_validation_renders_between_materialize_and_build() {
+        // The runnable-runtime check is a modeled pre-build prerequisite: it
+        // always renders, after materialization and before the build, so a
+        // runtime whose tools lost their execute bits fails in CI rather than
+        // silently inside usdGenSchema (v0.12.0 P0).
+        let a = generate_source(&lanes_matrix()).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&a).unwrap();
+        let steps = doc["jobs"]["pr"]["steps"].as_sequence().unwrap();
+        let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+
+        let materialize = names
+            .iter()
+            .position(|n| n.contains("materialize the pinned runtime"))
+            .expect("materialize step");
+        let validate = names
+            .iter()
+            .position(|n| n.contains("Validate the materialized runtime"))
+            .expect("runtime validate step");
+        let build = names
+            .iter()
+            .position(|n| n.contains("Build the plugin"))
+            .expect("build step");
+        assert!(
+            materialize < validate && validate < build,
+            "runtime validate sits between materialize and build: {names:?}"
+        );
+        let run = steps[validate]["run"].as_str().unwrap();
+        assert!(run.contains("ost runtime validate"));
+        assert!(
+            run.contains(".ost-ci/runtime-validate.json"),
+            "evidence teed"
+        );
+
+        // No host_python declared -> no setup-python step at all.
+        assert!(
+            !names.iter().any(|n| n.contains("Set up host Python")),
+            "setup-python only renders when a cell declares host_python: {names:?}"
+        );
+    }
+
+    #[test]
+    fn host_python_renders_setup_python_before_build() {
+        let mut m = lanes_matrix();
+        m.cells[0].host_python = Some("3.13".into());
+        let a = generate_source(&m).unwrap();
+        assert_eq!(a, generate_source(&m).unwrap(), "deterministic");
+        let doc: serde_yaml::Value = serde_yaml::from_str(&a).unwrap();
+        let steps = doc["jobs"]["pr"]["steps"].as_sequence().unwrap();
+        let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+
+        let setup = steps
+            .iter()
+            .position(|s| s["name"].as_str().unwrap().contains("Set up host Python"))
+            .expect("setup-python step");
+        let build = names
+            .iter()
+            .position(|n| n.contains("Build the plugin"))
+            .unwrap();
+        assert!(setup < build, "python setup precedes the build: {names:?}");
+
+        // Pinned action (SEC-004), gated on hosted + a declared ABI, exact ABI.
+        let step = &steps[setup];
+        assert!(step["uses"]
+            .as_str()
+            .unwrap()
+            .starts_with("actions/setup-python@"));
+        // The raw YAML pins a full SHA with a `# vN` comment (SEC-004); YAML
+        // strips the comment on parse, so assert it on the rendered text.
+        assert!(
+            a.contains("actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0"),
+            "setup-python is SHA-pinned with a version comment"
+        );
+        assert_eq!(
+            step["if"],
+            "${{ matrix.hosted && matrix.host_python != '' }}"
+        );
+        assert_eq!(step["with"]["python-version"], "${{ matrix.host_python }}");
+
+        // The declared ABI travels in the include entry, and the resolved
+        // Python source is recorded as CI evidence.
+        let entries = doc["jobs"]["pr"]["strategy"]["matrix"]["include"]
+            .as_sequence()
+            .unwrap();
+        assert_eq!(entries[0]["host_python"], "3.13");
+        let evidence = steps
+            .iter()
+            .find(|s| s["name"].as_str().unwrap().contains("Python contract"))
+            .expect("python evidence step");
+        assert!(evidence["run"]
+            .as_str()
+            .unwrap()
+            .contains(".ost-ci/python-setup.json"));
+        assert!(evidence["run"]
+            .as_str()
+            .unwrap()
+            .contains("source=operator-provisioned"));
+
+        // Still fork-PR safe.
+        assert!(!a.contains("secrets."), "source CI uses no secrets");
     }
 
     #[test]

@@ -390,6 +390,57 @@ source_checks:
       ctest --test-dir build/corpus --output-on-failure
 ```
 
+`source_checks` are deliberately **post-pyramid**: they run after
+`ost plugin test`, with the built plugin present. They are the wrong place for
+anything the *build* depends on. Build prerequisites are modeled separately and
+render in a first-class section between runtime materialization and
+`ost plugin build`.
+
+### Hosted source CI: the runtime/toolchain contract (macOS + Windows)
+
+A GitHub-hosted source cell (e.g. `macos-15-arm64`, `windows-2022`) pulls the
+runtime SDK by digest onto a clean runner, so two assumptions that hold on a
+developer's machine must become explicit — otherwise the lane only passes with
+hand-added `chmod`/`setup-python` repairs that the next `ost ci generate github`
+silently drops:
+
+1. **Runnable runtime tools.** `ost runtime export` / artifact packaging preserve
+   Unix execute bits (`bin/` tools pack as `0o755`, everything else stays the
+   canonical `0o644`), extraction restores them, and `ost runtime validate` fails
+   any runtime whose top-level `bin/` tools are not executable. Generated source
+   CI runs `ost runtime validate` right after materialization, so a runtime that
+   lost its execute bits fails there — with `.ost-ci/runtime-validate.json`
+   evidence — instead of deep inside `usdGenSchema`.
+
+2. **Schema-tooling Python.** If the pinned runtime does not bundle a runnable
+   interpreter under `bin/` but its profile needs `usdGenSchema`, declare the
+   CPython ABI the tooling expects with `host_python` on the source cell. On a
+   hosted runner the generator installs exactly that Python (a SHA-pinned
+   `actions/setup-python`) before `ost plugin build`, and records the resolved
+   Python source in `.ost-ci/python-setup.json`. Locally, `ost plugin build`
+   fails before `usdGenSchema` with a precondition naming every interpreter it
+   searched when none is runnable.
+
+```yaml
+cells:
+  - name: mac-usd-pr
+    lane: pull_request
+    runner: mac-hosted            # kind: github-hosted, image: macos-15-arm64
+    host_python: "3.13"           # runtime bundles no bin/python3.13
+    bundle: plugins/usdVrm
+    runtime_artifact: sha256:<runtime SDK digest>
+    runtime_remote:
+      uri: oci://ghcr.io/<owner>/<runtime-repo>@sha256:<oci-digest>
+      expected_oci_digest: sha256:<oci-digest>
+    platform: cy2026
+    profile: usd
+    up_to: 5
+```
+
+Self-hosted runners keep their operator-provisioned Python, so the `setup-python`
+step is gated on `matrix.hosted` and skips there. Omit `host_python` entirely
+when the runtime ships its own interpreter.
+
 ## lock — reproducibility
 
 ```bash
