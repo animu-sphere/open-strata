@@ -21,7 +21,8 @@ pub mod transport;
 
 pub use policy::{
     AllowedPublisher, ArtifactPolicy, ProtectedNamespace, PublisherAuthorization,
-    PublisherIdentity, TrustLevel, ARTIFACT_POLICY_FILE, ARTIFACT_POLICY_SCHEMA,
+    PublisherIdentity, TrustLevel, ARTIFACT_POLICY_FILE, ARTIFACT_POLICY_OIDC_AUDIENCE,
+    ARTIFACT_POLICY_SCHEMA,
 };
 pub use record::{
     is_sha256_ref, manifest_debug_archive, manifest_files, ArtifactKind, ArtifactRecord,

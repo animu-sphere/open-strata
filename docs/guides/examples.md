@@ -325,6 +325,13 @@ ost artifact resolve oci://ghcr.io/<owner>/openstrata-runtime:usd-26.05-linux-x8
 ost artifact pull    oci://ghcr.io/<owner>/openstrata-runtime@sha256:<oci-digest>
 ```
 
+When `openstrata-artifact-policy.toml` protects the destination, `push`
+auto-discovers it from the current directory or a parent and verifies the
+GitHub Actions OIDC publisher before contacting the registry. CI jobs need
+`id-token: write`; use `--policy <FILE>` when running outside the project tree.
+`--allow-untrusted-publisher` is an explicit, output-recorded break-glass
+override.
+
 Credentials and visibility (the two footguns standing up a first publish):
 
 - **`ost` does not read the `oras`/docker credential store.** For a private

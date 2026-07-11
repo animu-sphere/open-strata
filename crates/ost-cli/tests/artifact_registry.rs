@@ -43,6 +43,8 @@ impl Sandbox {
             .args(args)
             .current_dir(&self.base)
             .env("OST_HOME", &self.home)
+            .env_remove("ACTIONS_ID_TOKEN_REQUEST_URL")
+            .env_remove("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
             .output()
             .expect("spawn ost")
     }
@@ -265,6 +267,78 @@ fn verify_enforces_strict_artifact_policy() {
     assert_eq!(out.status.code(), Some(3));
     let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(error["error"]["code"], "ARTIFACT_POLICY_PARSE_FAILED");
+}
+
+#[test]
+fn push_enforces_protected_publisher_policy_before_transport() {
+    use std::io::Write;
+
+    let sb = Sandbox::new("push-policy");
+    let dist = sb.make_plugin_dist("toy", b"publisher checked bytes");
+    let imported = stdout_json(&sb.ost(&["--json", "artifact", "import", path_str(&dist)]));
+    let digest = imported["data"]["artifact"]["digest"].as_str().unwrap();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let policy = sb.base.join("openstrata-artifact-policy.toml");
+    std::fs::write(
+        &policy,
+        format!(
+            r#"schema = 1
+
+[[protected_namespaces]]
+namespace = "{address}/owner"
+minimum_trust = "verified"
+allowed_publishers = ["release"]
+
+[[allowed_publishers]]
+id = "release"
+trust = "verified"
+repository = "animu-sphere/open-strata"
+workflow_path = ".github/workflows/release.yml"
+git_refs = ["refs/tags/v*"]
+actors = ["release-bot"]
+events = ["push"]
+"#
+        ),
+    )
+    .unwrap();
+    let destination = format!("oci://{address}/owner/toy:v0.14.0");
+
+    // The policy is auto-discovered and rejects before any registry request.
+    listener.set_nonblocking(true).unwrap();
+    let out = sb.ost(&["--json", "artifact", "push", digest, &destination]);
+    assert_eq!(out.status.code(), Some(4));
+    let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        error["error"]["code"],
+        "ARTIFACT_POLICY_IDENTITY_UNAVAILABLE"
+    );
+    assert!(
+        listener.accept().is_err(),
+        "policy failure reached the registry"
+    );
+
+    // The explicit override crosses the policy gate and reaches transport.
+    listener.set_nonblocking(false).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+    });
+    let out = sb.ost(&[
+        "--json",
+        "artifact",
+        "push",
+        digest,
+        &destination,
+        "--allow-untrusted-publisher",
+    ]);
+    server.join().unwrap();
+    assert_eq!(out.status.code(), Some(6));
+    let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(error["error"]["code"], "ARTIFACT_TRANSPORT_FAILED");
 }
 
 /// `ost plugin publish` consumes `ost plugin package` output, enforces its

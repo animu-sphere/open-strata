@@ -148,7 +148,9 @@ Push a stored artifact to a remote OCI registry (the producer verb)
 
 | Option | Description |
 | --- | --- |
+| `--allow-untrusted-publisher` | Explicitly bypass publisher identity checks for a protected namespace. The override is recorded in command output |
 | `--plain-http` | Use plain http:// instead of https:// (fixture registries and air-gapped mirrors only) |
+| `--policy <FILE>` | Artifact policy TOML. When omitted, search the current directory and its parents for openstrata-artifact-policy.toml |
 
 #### `ost artifact resolve`
 

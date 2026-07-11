@@ -37,7 +37,8 @@ Top-level fields:
 | `allowed_publishers` | no | Named OIDC identity rules referenced by protected namespaces. |
 
 A protected `namespace` is a lowercase registry/repository prefix without a
-scheme, tag, digest, or trailing slash. Matching respects path boundaries and
+scheme, tag, digest, or trailing slash. A numeric registry port is accepted,
+for example `registry.internal:5000/vfx`. Matching respects path boundaries and
 uses the most-specific configured prefix. Each protected namespace must name at
 least one existing publisher whose `trust` meets that namespace's
 `minimum_trust`.
@@ -62,6 +63,35 @@ registered through the existing gated publish path is `unsigned` until
 attestation and identity evidence raise it in a later trust-chain step. Records
 created before the trust field existed deserialize conservatively as `local`.
 
+## Protected publishing
+
+`ost artifact push` automatically searches the current directory and its
+parents for `openstrata-artifact-policy.toml`. `--policy <FILE>` selects an
+explicit policy, which is recommended for automation that may run outside the
+project tree. If no policy is found, destinations retain the existing
+unprotected push behavior.
+
+For a protected destination, `ost` requests a short-lived GitHub Actions OIDC
+token directly from `https://token.actions.githubusercontent.com`, using the
+runner-provided request URL and bearer token. It refuses a different request
+origin and validates the returned issuer, the fixed
+`openstrata-artifact-publish` audience, validity window, and the repository,
+workflow path, git ref, actor, and event claims before contacting the registry.
+The workflow job therefore needs:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+```
+
+If the identity is missing or does not match, the push fails before any
+registry request. `--allow-untrusted-publisher` is the explicit break-glass
+override for a protected destination. Human and JSON success output record the
+policy path, protected namespace, matched publisher/trust, or that the override
+was used.
+
 ## Verification
 
 ```bash
@@ -83,5 +113,7 @@ A trust failure exits with validation status `5`.
 | `ARTIFACT_POLICY_PARSE_FAILED` | configuration | TOML or its strict field shape is invalid. |
 | `ARTIFACT_POLICY_SCHEMA_UNSUPPORTED` | configuration | `schema` is not supported. |
 | `ARTIFACT_POLICY_INVALID` | configuration | Cross-field or semantic validation failed. |
+| `ARTIFACT_POLICY_IDENTITY_UNAVAILABLE` | precondition | GitHub Actions cannot provide an OIDC identity, usually because `id-token: write` is missing. |
+| `ARTIFACT_POLICY_IDENTITY_INVALID` | validation | The OIDC endpoint or returned issuer, audience, validity window, or claims are invalid. |
 | `ARTIFACT_POLICY_TRUST_INSUFFICIENT` | validation | Artifact trust is below `minimum_trust`. |
 | `ARTIFACT_POLICY_PUBLISHER_UNTRUSTED` | validation | No allowed publisher matched every identity claim. |
