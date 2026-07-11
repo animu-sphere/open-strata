@@ -113,5 +113,5 @@ support = { linux_x86_64 = "stable", macos_arm64 = "unsupported", macos_x86_64 =
 [[features]]
 id = "dcc_integration"
 label = "DCC host integration"
-note = "Planned (Phase 10 / v0.16.0); not yet implemented on any platform."
+note = "Planned (Phase 10 / v0.17.0); not yet implemented on any platform."
 support = { linux_x86_64 = "unsupported", macos_arm64 = "unsupported", macos_x86_64 = "unsupported", windows_x86_64 = "unsupported" }

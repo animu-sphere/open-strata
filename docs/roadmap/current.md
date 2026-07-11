@@ -3,27 +3,42 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## Next milestone: v0.13.0 — trust policy foundation
+## Next milestone: v0.13.0 — release-quality packaging
 
-**Status:** planned · **Depends on:** v0.10.0 producer verb + v0.12.0 hosted
-source-CI runtime contract (both shipped).
+**Status:** planned · **Depends on:** v0.10.0 producer verb + v0.12.0 consumer
+path (`ost plugin package` → `artifact extract` → relocated run), both shipped.
 
-With a producer verb and a stable hosted source-CI runtime contract in place,
-close the publish-side trust boundary (future-policy §3.2/§7/§11).
+Dogfooding the clean-install / packaging path proved the consumer flow is solid,
+but surfaced the gaps that block a reproducible, distributable **release** (the
+downstream usd-vrm-plugins PR3 release lane): packaging is **not byte-reproducible**
+and the shipped artifact still carries **debug symbols**. Close the
+release-quality boundary so the produced artifact is reproducible, lean, and
+testable from the package — the prerequisite for the trust arc (v0.14.0+).
 
 **Scope:**
 
-- `openstrata-artifact-policy.toml` with a protected-namespace + allowed-publisher
-  schema and a `local` / `unsigned` / `attested` / `verified` / `trusted`
-  trust-level enum.
-- A policy parser with stable `ARTIFACT_POLICY_*` codes.
-- OIDC publisher verification: match repository / workflow path / git ref / actor
-  / event against the allowed-publisher list; reject a protected-namespace publish
-  from an untrusted identity; `--allow-untrusted-publisher` as the explicit escape
-  hatch.
-- `ost artifact verify --policy`.
+- **Deterministic packaging.** `ost plugin package` honors `SOURCE_DATE_EPOCH`
+  and normalizes entry mtimes, ordering, and permissions, so the archive is a
+  pure function of the staged files — a byte-identical digest across repeat runs
+  of an unchanged build.
+- **Symbol-split artifacts.** The default package ships lean (no `.pdb` / debug
+  symbols); debug symbols are opt-in via `--with-debug` or split into a sibling
+  `*-debug` package.
+- **External-plugin-path run.** A documented primitive to point a session at an
+  arbitrary installed/extracted plugin tree without injecting a bundle's own
+  path: `ost plugin run --plugin-path <dir>` / `--no-inject` (and/or an
+  `ost runtime run` that sets the USD env only), for clean-install / discovery
+  testing.
+- **Packaged-artifact smoke.** `ost plugin test --from-package` extracts the
+  just-built package and runs discovery / open / validate against it, catching a
+  build-tree path baked into `plugInfo` / `LibraryPath` that source-bundle L2
+  discovery cannot see.
+- **`ost artifact extract --into <DEST>` alias**, aligning the verb with
+  `ost artifact export`.
 
-**Tracks:** SEC-006 and the Phase 6 trust-policy hooks.
+**Tracks:** SEC-005 (reproducible-release + stable-checksum groundwork) and the
+downstream usd-vrm-plugins PR3 release lane. Trust-level enforcement on top of
+these artifacts follows in v0.14.0 (trust policy foundation).
 
 ## Carry-over follow-ups
 

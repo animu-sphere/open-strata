@@ -8,7 +8,17 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-- ⬜ **v0.14.0 — provenance / SBOM bundle.** Make the artifact an *evidence
+- ⬜ **v0.14.0 — trust policy foundation.** Close the publish-side trust boundary
+  (future-policy §3.2/§7/§11), on top of the reproducible, lean artifacts from
+  v0.13.0: an `openstrata-artifact-policy.toml` with a protected-namespace +
+  allowed-publisher schema and a `local` / `unsigned` / `attested` / `verified` /
+  `trusted` trust-level enum; a policy parser with stable `ARTIFACT_POLICY_*`
+  codes; OIDC publisher verification (match repository / workflow path / git ref /
+  actor / event against the allowed-publisher list, reject a protected-namespace
+  publish from an untrusted identity, with `--allow-untrusted-publisher` as the
+  explicit escape hatch); and `ost artifact verify --policy`. Tracks SEC-006 and
+  the Phase 6 trust-policy hooks.
+- ⬜ **v0.15.0 — provenance / SBOM bundle.** Make the artifact an *evidence
   bundle*, not just an archive (future-policy §5/§6/§11): optional SBOM
   (`sbom.spdx.json`) and SLSA/in-toto provenance (`provenance.intoto.jsonl`)
   layers, `ost artifact push` attaching them, and `ost artifact verify
@@ -17,7 +27,7 @@ Legend: ⬜ not started
   allowed-publisher policy, and source repo/revision match build metadata. Closes
   the licensing "per-artifact SBOM" and Phase 6 "content attribution" gaps for
   published artifacts.
-- ⬜ **v0.15.0 — generated trusted CI.** Push the trust chain up into the CI
+- ⬜ **v0.16.0 — generated trusted CI.** Push the trust chain up into the CI
   contract (future-policy §7/§8/§13): a `trust` field on support-matrix targets, a
   minimum-trust requirement per lane (`pr_min_trust` / `main_min_trust` /
   `release_min_trust`), and lane-specific generated workflows — the PR / source-CI
@@ -25,14 +35,14 @@ Legend: ⬜ not started
   (protected branch/tag, OIDC, SBOM + provenance + validation report required,
   protected-namespace policy enforced) is generated distinctly from the release
   lane. Release workflows refuse untrusted artifacts.
-- ⬜ **v0.16.0 — DCC host integration.** Extend the support matrix beyond
+- ⬜ **v0.17.0 — DCC host integration.** Extend the support matrix beyond
   runtime-native apps to external DCC hosts (future-policy §9/§11; Phase 10
   [dcc-hosts.md](../design/proposed/dcc-hosts.md)). Read-only host discovery +
   fingerprint (`ost dcc discover`, host record schema, Maya/Houdini detectors
   first), headless plugin compatibility test, and DCC support-matrix + CI-annotation
   integration — *without* a DCC API abstraction or SDK redistribution
   (future-policy §13 non-goals).
-- ⬜ **v1.0.0 (after v0.16.0).** Cut once the produce → trust → provenance →
+- ⬜ **v1.0.0 (after v0.17.0).** Cut once the produce → trust → provenance →
   trusted-CI arc and the initial DCC host matrix are shipped and dogfooded — i.e.
   "build it, publish it, verify its provenance, pull it in trusted CI, run it
   against a DCC host" is a single supported, digest-addressed arc.
@@ -58,7 +68,7 @@ Legend: ⬜ not started
   validation + fingerprints (Maya, then Houdini + Nuke); `ost host
   discover|list|inspect|probe|run|test`; host-standard packaging; matrix cells /
   tiers and cross-DCC USD compatibility; fleet inventory and `ost compat` /
-  `ost reproduce`. (Delivered incrementally via the v0.16.0 milestone.)
+  `ost reproduce`. (Delivered incrementally via the v0.17.0 milestone.)
 
 ## Cross-cutting open items
 
@@ -73,16 +83,25 @@ Shipped context for each area is in the
   manifests record upstream license metadata; built/adopted runtimes collect
   upstream `LICENSE`/`NOTICE` files; a runtime's licenses are inspectable
   (e.g. `ost runtime licenses <cy> --profile <p>`). Per-artifact SBOM lands with
-  v0.14.0. No artifact ships without complete third-party attribution.
+  v0.15.0. No artifact ships without complete third-party attribution.
 - ⬜ **SEC-005 (P1) — installer & release-asset verification.** Publish per-release
   checksums, signature/Sigstore material, SBOM, and provenance; the installer pins
   a version, verifies the checksum, and aborts on mismatch. Tracks Distribution →
-  signing/provenance.
+  signing/provenance. Reproducible packaging + stable checksums land with v0.13.0;
+  SBOM/provenance with v0.15.0.
 - ⬜ **SEC-006 (P2) — runtime trust policy.** Runtime trust levels (`local` /
   `verified` / `trusted`) recorded in the manifest and lock; warn on
   world-writable runtime roots; `ost build` / `ost plugin test` can require a
   minimum trust level (release/production CI refuses `local`). Foundation lands
-  with v0.13.0.
+  with v0.14.0.
+- ⬜ **Runtime distribution — glibc-floor ergonomics & OCI producer parity.**
+  From v0.12.0 Linux dogfooding: (a) surface the measured glibc floor earlier — in
+  `ost runtime show` / `validate`, not only at export; (b) at pull time, fail or
+  loudly warn when an artifact's `glibcNNN` floor exceeds the current host's glibc
+  even without `--require-target`, catching an ABI mismatch before the first
+  `dlopen`; (c) reconcile `ost artifact push` vs `oras push` OCI manifests —
+  document the canonical producer path (prefer `ost artifact push`) or reproduce
+  the `oras` manifest byte-for-byte so CI pins don't drift.
 
 ## Documentation & tooling
 
@@ -102,3 +121,14 @@ pieces of the documentation reorganization.
 - ⬜ **CI matrix validation from `support/platforms.toml`.** Reuse the support
   declaration that drives the support matrix to validate the generated CI matrix
   against declared support levels (§10).
+- ⬜ **Portable-Linux runtime build guide.** Document, as a first-class recipe,
+  building Linux runtimes in a container whose glibc ≤ the lowest target runner
+  (e.g. `ubuntu:24.04` for hosted `ubuntu-24.04`, or `manylinux_2_28` for broader
+  reach), including the deadsnakes-py3.13 + venv + `libxt-dev` / X-GL dev
+  prerequisites; consider shipping a reference Dockerfile. (The `glibc228`-vs-real-floor
+  trap from v0.10.0/v0.12.0 is easy to fall into.)
+- ⬜ **Declarative post-build CI commands / corpus smoke.** `ost ci generate`
+  drops repo-specific smoke (e.g. a corpus CTest) on regeneration. Support
+  declarative post-build commands in `openstrata.ci.yaml`, or have `ost plugin
+  test` cover the corpus assets, so regeneration preserves them. (Complements the
+  v0.13.0 `--from-package` smoke.)
