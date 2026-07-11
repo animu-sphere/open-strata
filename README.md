@@ -221,7 +221,8 @@ distribution path. Landed so far:
 
 Remaining work — installer/asset signature verification and a runtime trust
 policy — is tracked in the
-[roadmap](docs/roadmap/README.md#security-baseline).
+[roadmap backlog](docs/roadmap/backlog.md#cross-cutting-open-items) (shipped
+baseline detail: [delivery history](docs/reports/delivery-history.md#security-baseline)).
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md) (private disclosure).
 
@@ -235,4 +236,4 @@ Third-party components that OpenStrata bundles, links, or distributes (Rust
 dependencies and runtime/extension content such as OpenUSD, MaterialX, and their
 transitive dependencies) retain their own upstream licenses. Complete
 per-artifact third-party attribution is tracked in the
-[roadmap](docs/roadmap/README.md#licensing--third-party-attribution).
+[roadmap backlog](docs/roadmap/backlog.md#cross-cutting-open-items).

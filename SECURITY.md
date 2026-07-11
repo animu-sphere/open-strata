@@ -62,4 +62,6 @@ files, bundle-relative path enforcement, atomic `O_EXCL` writes, SHA-pinned CI
 Actions, and SLSA build-provenance attestations on release artifacts — and the
 remaining work (installer/asset signature verification and a runtime trust policy)
 are tracked in the
-[roadmap security baseline](docs/roadmap/README.md#security-baseline).
+[delivery history security baseline](docs/reports/delivery-history.md#security-baseline);
+remaining items are in the
+[roadmap backlog](docs/roadmap/backlog.md#cross-cutting-open-items).

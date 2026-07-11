@@ -133,7 +133,7 @@ Pushing the tag triggers [`release.yml`](../../.github/workflows/release.yml)
   third-party action to a full commit SHA (harness §SEC-004). After a dist bump,
   regenerate the workflow with `dist` and **re-pin every action to a full SHA** by
   hand before releasing. Tracked under the roadmap
-  [security baseline](../roadmap/README.md#security-baseline).
+  [security baseline](../reports/delivery-history.md#security-baseline).
 - **New third-party dependencies.** The `licenses` job (`cargo-deny`) must pass on
   permissive licenses/advisories, and `THIRD_PARTY_NOTICES.md` must be regenerated
   (step 1c).
