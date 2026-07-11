@@ -134,6 +134,34 @@ fn real_runtime_checks(prefix: &Utf8Path) -> Vec<Check> {
         ));
     }
 
+    // A materialized runtime's `bin/` tools must keep their execute bit or the
+    // session cannot run them (`usdcat: Permission denied`). Artifact packaging
+    // now preserves the bit and extraction restores it, but a runtime
+    // materialized some other way — a hand `cp`, an archive that dropped modes —
+    // can strip it, which is exactly what a hosted macOS source-CI lane hit
+    // before its temporary `chmod +x` repair. Assert it here so a non-runnable
+    // runtime fails `runtime validate` (and transitively `runtime export`, which
+    // requires a passing validation) instead of failing mid-build on the runner.
+    // Unix-only: Windows has no POSIX execute bit (tools are `.exe`).
+    #[cfg(unix)]
+    {
+        let non_exec = non_executable_bin_tools(&bin);
+        if non_exec.is_empty() {
+            checks.push(Check::pass("bin-tools-executable"));
+        } else {
+            checks.push(Check::fail(
+                "bin-tools-executable",
+                format!(
+                    "{} tool(s) under {bin} are not executable: {}; restore with \
+                     `chmod +x {bin}/*` (a runtime materialized from an OpenStrata \
+                     artifact preserves this automatically)",
+                    non_exec.len(),
+                    non_exec.join(", "),
+                ),
+            ));
+        }
+    }
+
     // A runtime that bundles `usdGenSchema` must also carry its schema-gen Python
     // deps (`jinja2`, and `MarkupSafe` transitively). `build_usd.py` installs
     // them only on the build host, so a published image is otherwise silently
@@ -176,6 +204,31 @@ fn bundles_usdgenschema(bin: &Utf8Path) -> bool {
     ]
     .iter()
     .any(|n| bin.join(n).as_std_path().is_file())
+}
+
+/// Top-level regular files under `bin` that lack any Unix execute bit. A real
+/// runtime's `bin/` holds only tools and scripts, all of which must be
+/// executable — mirroring the `chmod +x <runtime>/bin/*` repair the dogfood
+/// needed. Non-recursive: only direct `bin/` entries are runtime tools.
+#[cfg(unix)]
+fn non_executable_bin_tools(bin: &Utf8Path) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(entries) = std::fs::read_dir(bin.as_std_path()) else {
+        return Vec::new();
+    };
+    let mut bad = Vec::new();
+    for entry in entries.flatten() {
+        // Follow symlinks: a link to a real tool is fine as long as the tool is
+        // executable; only a non-executable regular file is a problem.
+        let Ok(meta) = std::fs::metadata(entry.path()) else {
+            continue;
+        };
+        if meta.is_file() && meta.permissions().mode() & 0o111 == 0 {
+            bad.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    bad.sort();
+    bad
 }
 
 fn module_present(python_lib_dir: &Utf8Path, module: &str) -> bool {
@@ -226,6 +279,18 @@ mod tests {
         dir
     }
 
+    /// Write a runtime `bin/` tool, marking it executable on Unix so it satisfies
+    /// the `bin-tools-executable` check the way a real materialized tool does.
+    fn write_tool(path: &Utf8Path, bytes: &[u8]) {
+        std::fs::write(path.as_std_path(), bytes).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path.as_std_path(), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+    }
+
     fn named(report: &ValidationReport, name: &str) -> Option<bool> {
         report
             .checks
@@ -257,7 +322,7 @@ mod tests {
         std::fs::create_dir_all(prefix.join("lib").as_std_path()).unwrap();
         std::fs::create_dir_all(prefix.join("lib/python/pxr").as_std_path()).unwrap();
         // Cover the .exe fallback on non-Windows too: either name satisfies it.
-        std::fs::write(bin.join("usdcat").as_std_path(), b"").unwrap();
+        write_tool(&bin.join("usdcat"), b"");
         let m = manifest(RuntimeSource::Local, vec!["bin".into(), "lib".into()]);
 
         let report = validate(&prefix, &m);
@@ -274,9 +339,9 @@ mod tests {
         std::fs::create_dir_all(bin.as_std_path()).unwrap();
         std::fs::create_dir_all(prefix.join("lib").as_std_path()).unwrap();
         std::fs::create_dir_all(prefix.join("lib/python/pxr").as_std_path()).unwrap();
-        std::fs::write(bin.join("usdcat").as_std_path(), b"").unwrap();
+        write_tool(&bin.join("usdcat"), b"");
         // Bundles usdGenSchema but no jinja2 on the runtime PYTHONPATH.
-        std::fs::write(bin.join("usdGenSchema").as_std_path(), b"").unwrap();
+        write_tool(&bin.join("usdGenSchema"), b"");
         let m = manifest(RuntimeSource::Build, vec!["bin".into(), "lib".into()]);
 
         let report = validate(&prefix, &m);
@@ -306,7 +371,7 @@ mod tests {
         let bin = prefix.join("bin");
         std::fs::create_dir_all(bin.as_std_path()).unwrap();
         std::fs::create_dir_all(prefix.join("lib/python/pxr").as_std_path()).unwrap();
-        std::fs::write(bin.join("usdcat").as_std_path(), b"").unwrap();
+        write_tool(&bin.join("usdcat"), b"");
         let m = manifest(RuntimeSource::Local, vec!["bin".into()]);
 
         // A runtime that does not bundle usdGenSchema never needs the deps, so
@@ -329,6 +394,47 @@ mod tests {
         assert_eq!(named(&report, "usdcat-present"), Some(false));
         assert_eq!(named(&report, "pxr-package"), Some(false));
         assert!(!report.passed());
+
+        std::fs::remove_dir_all(prefix.as_std_path()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_runtime_with_non_executable_bin_tool_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let prefix = tmp_dir("real-noexec");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(bin.as_std_path()).unwrap();
+        std::fs::create_dir_all(prefix.join("lib/python/pxr").as_std_path()).unwrap();
+        // usdcat is present and readable but lost its execute bit (the exact
+        // condition a hosted macOS runner hit before its `chmod +x` repair).
+        std::fs::write(bin.join("usdcat").as_std_path(), b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(
+            bin.join("usdcat").as_std_path(),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let m = manifest(RuntimeSource::Artifact, vec!["bin".into()]);
+
+        let report = validate(&prefix, &m);
+        // The tool is *present* but not *runnable* — so presence passes while the
+        // runnable invariant fails, and the whole runtime fails to validate.
+        assert_eq!(named(&report, "usdcat-present"), Some(true));
+        assert_eq!(named(&report, "bin-tools-executable"), Some(false));
+        assert!(
+            !report.passed(),
+            "a runtime whose tools are not executable must not validate"
+        );
+
+        // Restoring the bit makes it validate.
+        std::fs::set_permissions(
+            bin.join("usdcat").as_std_path(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let report = validate(&prefix, &m);
+        assert_eq!(named(&report, "bin-tools-executable"), Some(true));
 
         std::fs::remove_dir_all(prefix.as_std_path()).ok();
     }

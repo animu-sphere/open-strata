@@ -940,6 +940,70 @@ fn check_exportable(manifest: &RuntimeManifest) -> Result<()> {
     Ok(())
 }
 
+/// Build the same validation report `ost runtime validate` would show for this
+/// materialized runtime, including CLI-owned drift checks layered over the core
+/// runtime checks.
+fn current_validation_report(
+    manifest: &RuntimeManifest,
+    artifact_prefix: &Utf8Path,
+    platform: &str,
+    profile: &str,
+) -> ost_runtime::ValidationReport {
+    let mut report = ost_runtime::validate(artifact_prefix, manifest);
+    if let Some((recorded, real)) = openusd_version_drift(manifest, artifact_prefix) {
+        let fix = drift_repair_command(manifest, platform, profile);
+        report.checks.push(ost_runtime::Check {
+            name: "openusd-version-drift",
+            passed: false,
+            detail: Some(format!(
+                "manifest records OpenUSD {recorded}, but the install's pxr.h reports {real}; \
+                 fix with `{fix}`"
+            )),
+        });
+    }
+    report
+}
+
+fn failed_validation_summary(report: &ost_runtime::ValidationReport) -> String {
+    report
+        .checks
+        .iter()
+        .filter(|c| !c.passed)
+        .map(|c| match &c.detail {
+            Some(detail) => format!("{} ({detail})", c.name),
+            None => c.name.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Export trusts the persisted `validation: passed` status only as evidence
+/// that the user validated deliberately; before packing, re-run the current
+/// checks so an older manifest cannot bypass checks added after it was stamped.
+fn check_current_export_validation(
+    manifest: &RuntimeManifest,
+    artifact_prefix: &Utf8Path,
+    platform: &str,
+    profile: &str,
+) -> Result<()> {
+    let report = current_validation_report(manifest, artifact_prefix, platform, profile);
+    if report.passed() {
+        return Ok(());
+    }
+    Err(Error::coded(
+        "EXPORT_VALIDATION_REQUIRED",
+        ost_core::Category::Validation,
+        format!(
+            "runtime '{}' no longer passes validation: {}",
+            manifest.id,
+            failed_validation_summary(&report)
+        ),
+    )
+    .with_hint(format!(
+        "run `ost runtime validate {platform} --profile {profile}` and repair the reported checks"
+    )))
+}
+
 /// The producer `manifest.json` for a runtime artifact (`openstrata.runtime`).
 ///
 /// Mirrors the package/plugin producer manifests (same top-level identity +
@@ -1077,6 +1141,8 @@ fn export(
     // manifest travels in the producer manifest instead, so the archive is a
     // pure USD tree.
     let effective = Utf8PathBuf::from(manifest.effective_prefix(&r.prefix));
+    check_current_export_validation(&manifest, &effective, &platform, &profile)?;
+
     let map_stage_error = |e: std::io::Error| {
         if e.kind() == std::io::ErrorKind::InvalidData {
             Error::validation(e.to_string())
@@ -1766,18 +1832,7 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
 
     // Validate against the effective artifact prefix (the external USD root for
     // an adopted runtime; the store prefix otherwise).
-    let mut report = ost_runtime::validate(&r.artifact_prefix, &manifest);
-    if let Some((recorded, real)) = openusd_version_drift(&manifest, &r.artifact_prefix) {
-        let fix = drift_repair_command(&manifest, &platform, &profile);
-        report.checks.push(ost_runtime::Check {
-            name: "openusd-version-drift",
-            passed: false,
-            detail: Some(format!(
-                "manifest records OpenUSD {recorded}, but the install's pxr.h reports {real}; \
-                 fix with `{fix}`"
-            )),
-        });
-    }
+    let report = current_validation_report(&manifest, &r.artifact_prefix, &platform, &profile);
     let passed = report.passed();
 
     // Record the outcome back into the manifest (digest is unaffected).

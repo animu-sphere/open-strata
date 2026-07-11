@@ -1498,7 +1498,7 @@ the PR green by adding repo-local temporary repairs (`actions/setup-python@v6`
 for Python 3.13 and `chmod +x <runtime>/bin/*` before build). v0.12.0 turns those
 repairs into product behavior so generated CI remains regenerable.
 
-- ⬜ **P0 — preserve and validate executable modes for runtime tools.** The public
+- 🚧 **P0 — preserve and validate executable modes for runtime tools.** The public
   macOS runtime artifact passed OpenStrata artifact verification, but local
   `ost plugin test --up-to 5` could not run `usdcat` until `chmod +x` was applied
   to the materialized runtime `bin/` tree. That means the artifact identity and
@@ -1507,7 +1507,21 @@ repairs into product behavior so generated CI remains regenerable.
   restores them, `runtime validate` fails a runtime whose declared tools are not
   executable, and the public cy2026 macOS arm64 OpenUSD 26.05 SDK is republished.
   Acceptance: clean local materialization and a GitHub-hosted macOS source-CI lane
-  reach L5 without a workflow-level chmod repair.
+  reach L5 without a workflow-level chmod repair. **Landed (code):** `pack_dir`
+  reads each staged file's real mode and packs an executable file as `0o755`
+  (everything else stays the canonical `0o644` for a deterministic archive),
+  recording the runnable bit as `files[].executable` in the producer manifest;
+  `tar` extraction restores the mode; `walk_archive`/`verify` carry and compare
+  `executable`, so a tool that lost `+x` is a per-file manifest mismatch, not a
+  silent pass; and `runtime validate` emits a Unix-only `bin-tools-executable`
+  check that fails any real runtime whose top-level `bin/` tools are not
+  executable; `runtime export` re-runs the current validation report before
+  packing, so a stale pre-check `validation: passed` manifest cannot publish a
+  non-runnable runtime. Unit-tested: pack→extract mode round-trip,
+  walk/verify mismatch, validate failure/repair, and export's stale-validation
+  gate. **Still ⬜:** republish the public cy2026 macOS arm64 OpenUSD 26.05 SDK
+  with preserved bits and confirm the hosted macOS source-CI lane reaches L5
+  with no `chmod` repair (needs a Mac + live GHCR).
 - ⬜ **P0 — make schema-generation Python explicit.** `ost plugin build` correctly
   runs USD's script-style `usdGenSchema` through an interpreter, but for this
   runtime the interpreter was found only on the host (`python3.13`) rather than in

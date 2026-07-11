@@ -97,6 +97,15 @@ impl Sandbox {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, content).unwrap();
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                prefix.join("bin/usdcat"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
         prefix
     }
 }
@@ -166,6 +175,29 @@ fn export_dist_refuses_non_empty_directory_without_deleting_it() {
     let v = error_json(&out, 2);
     assert_eq!(v["error"]["code"], "INVALID_ARGUMENT");
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"do not delete");
+}
+
+#[cfg(unix)]
+#[test]
+fn export_revalidates_stale_passed_manifest_before_packing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sb = Sandbox::new("stale-noexec");
+    stdout_json(&sb.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
+    let prefix = sb.promote_mock_to_build();
+    // Simulate a runtime.json stamped `validation: passed` before the
+    // executable-bit check existed, but whose tool has since lost `+x`.
+    std::fs::set_permissions(
+        prefix.join("bin/usdcat"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]);
+    let v = error_json(&out, 5);
+    assert_eq!(v["error"]["code"], "EXPORT_VALIDATION_REQUIRED");
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(message.contains("bin-tools-executable"), "{message}");
 }
 
 #[test]
