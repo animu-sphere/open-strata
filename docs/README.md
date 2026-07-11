@@ -24,9 +24,9 @@ actually implemented; the spec is the source of truth when they disagree.
 
 ## Reorganization status
 
-The documentation is being reorganized in phases (see the reorg plan). Phase 2
-established these category boundaries and moved existing documents into them
-without major content rewriting. Decomposing the large hubs — the
-[roadmap](roadmap/README.md) into `current` / `backlog`, and
-[architecture](architecture/overview.md) into `overview` / `crates` — is the next
-phase; the monolithic files remain in place until then.
+The documentation is being reorganized in phases (see the reorg plan). Category
+boundaries are established; the [roadmap](roadmap/) is decomposed into
+`current` / `backlog` with per-version [release records](releases/) and a
+[delivery history](reports/delivery-history.md) holding the granular detail.
+Still pending: splitting [architecture](architecture/overview.md) into
+`overview` / `crates`, and generated reference pages.
