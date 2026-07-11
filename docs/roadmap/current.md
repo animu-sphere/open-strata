@@ -5,7 +5,7 @@ The next milestone and active carry-over work. Shipped detail is in
 
 ## Next milestone: v0.14.0 — trust policy foundation
 
-**Status:** planned · **Depends on:** v0.10.0 producer verb + v0.13.0
+**Status:** in progress · **Depends on:** v0.10.0 producer verb + v0.13.0
 release-quality artifacts (reproducible, lean, testable-from-package; all
 shipped).
 

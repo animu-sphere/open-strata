@@ -301,8 +301,21 @@ fn bootstrap_step(bootstrap: &Bootstrap) -> String {
           bin=\"$(find .ost-ci/bootstrap-bin -type f \\( -name ost -o -name ost.exe \\) | head -n 1)\"
           if [ -z \"$bin\" ]; then echo \"::error title=ost bootstrap::no ost binary inside $asset\" ; exit 1 ; fi
           chmod +x \"$bin\" 2> /dev/null || true
-          echo \"$(cd \"$(dirname \"$bin\")\" && pwd)\" >> \"$GITHUB_PATH\"
-          printf '{{\"schema\":1,\"pinned_version\":\"%s\",\"asset\":\"%s\",\"sha256\":\"%s\"}}\\n' \"{version}\" \"$asset\" \"$actual\" > .ost-ci/bootstrap.json
+          bin_dir=\"$(cd \"$(dirname \"$bin\")\" && pwd)\"
+          bin=\"$bin_dir/$(basename \"$bin\")\"
+          executable=\"$bin\"
+          exported_path=\"$bin_dir\"
+          if [ \"$RUNNER_OS\" = \"Windows\" ]; then
+            if ! command -v cygpath > /dev/null; then
+              echo \"::error title=ost bootstrap::cygpath is required to export a native Windows PATH\" ; exit 1
+            fi
+            executable=\"$(cygpath -w \"$bin\")\"
+            exported_path=\"$(cygpath -w \"$bin_dir\")\"
+          fi
+          echo \"$exported_path\" >> \"$GITHUB_PATH\"
+          json_executable=\"$(printf '%s' \"$executable\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g')\"
+          json_exported_path=\"$(printf '%s' \"$exported_path\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g')\"
+          printf '{{\"schema\":1,\"pinned_version\":\"%s\",\"asset\":\"%s\",\"sha256\":\"%s\",\"executable\":\"%s\",\"exported_path\":\"%s\"}}\\n' \"{version}\" \"$asset\" \"$actual\" \"$json_executable\" \"$json_exported_path\" > .ost-ci/bootstrap.json
 ",
         version = ost.version,
         repository = ost.repository,
@@ -313,6 +326,17 @@ fn bootstrap_step(bootstrap: &Bootstrap) -> String {
 /// report exactly the pinned version; the observed version always lands in
 /// the CI evidence.
 fn ost_version_step(bootstrap: Option<&Bootstrap>) -> String {
+    let resolve_version = if bootstrap.is_some() {
+        "\
+\x20         if [ \"${{ matrix.hosted }}\" = \"true\" ] && [ \"$RUNNER_OS\" = \"Windows\" ]; then
+            version=\"$(powershell -NoProfile -Command \"& ost.exe --version\" | tr -d '\\r')\"
+          else
+            version=\"$(ost --version)\"
+          fi
+"
+    } else {
+        "          version=\"$(ost --version)\"\n"
+    };
     let assert = match bootstrap {
         Some(b) => format!(
             "\
@@ -331,7 +355,7 @@ fn ost_version_step(bootstrap: Option<&Bootstrap>) -> String {
         run: |
           set -euo pipefail
           mkdir -p .ost-ci
-          version=\"$(ost --version)\"
+{resolve_version}
           echo \"$version\"
 {assert}\
 \x20         printf '{{\"schema\":1,\"ost_version\":\"%s\"}}\\n' \"$version\" > .ost-ci/ost-version.json
@@ -875,13 +899,22 @@ mod tests {
         assert!(run.contains("ost-cli-${triple}.${ext}"));
         assert!(run.contains(&"ee".repeat(32)), "matrix sha256 pin rendered");
         assert!(run.contains(".ost-ci/bootstrap.json"));
+        assert!(run.contains("bin=\"$bin_dir/$(basename \"$bin\")\""));
+        assert!(run.contains("cygpath -w \"$bin_dir\""));
+        assert!(run.contains("echo \"$exported_path\" >> \"$GITHUB_PATH\""));
+        assert!(run.contains("\"executable\":\"%s\""));
+        assert!(run.contains("\"exported_path\":\"%s\""));
 
-        // The version check asserts the pin on hosted runners.
+        // The next step asks native PowerShell process creation to find and
+        // launch ost.exe. Quoted conversion/export variables preserve paths
+        // containing spaces.
         let check = steps
             .iter()
             .find(|s| s["name"].as_str().unwrap().contains("record its version"))
             .expect("version step");
-        assert!(check["run"].as_str().unwrap().contains("ost 0.9.0"));
+        let run = check["run"].as_str().unwrap();
+        assert!(run.contains("ost 0.9.0"));
+        assert!(run.contains("powershell -NoProfile -Command \"& ost.exe --version\""));
 
         // Cache: digest-keyed, hosted-gated, disableable, never branch/run ids.
         let cache = steps

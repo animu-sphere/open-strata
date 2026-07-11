@@ -23,8 +23,9 @@ use camino::Utf8PathBuf;
 use clap::Subcommand;
 
 use ost_artifact::{
-    ArtifactKind, ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport, FileTransport,
-    OciTransport, PullEvidence, PullPolicy, PushOutcome, RemoteReference, VerifyReport,
+    ArtifactKind, ArtifactPolicy, ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport,
+    FileTransport, OciTransport, PullEvidence, PullPolicy, PushOutcome, RemoteReference,
+    VerifyReport,
 };
 use ost_core::{Error, Result};
 
@@ -53,6 +54,9 @@ pub enum ArtifactCmd {
     Verify {
         /// Digest reference: sha256:<hex> or a unique hex prefix (>= 6 chars).
         digest: String,
+        /// Enforce minimum trust from an artifact policy TOML file.
+        #[arg(long, value_name = "FILE")]
+        policy: Option<Utf8PathBuf>,
     },
     /// Export an artifact's files into a directory (CI handoff).
     Export {
@@ -124,7 +128,7 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
         ArtifactCmd::Import { path } => import(&store, &path, fmt),
         ArtifactCmd::List { kind } => list(&store, kind.as_deref(), fmt),
         ArtifactCmd::Show { digest } => show(&store, &digest, fmt),
-        ArtifactCmd::Verify { digest } => verify(&store, &digest, fmt),
+        ArtifactCmd::Verify { digest, policy } => verify(&store, &digest, policy.as_deref(), fmt),
         ArtifactCmd::Export { digest, dest } => export(&store, &digest, &dest, fmt),
         ArtifactCmd::Extract { digest, dest, into } => {
             let dest = dest.or(into).ok_or_else(|| {
@@ -416,6 +420,7 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
         r.file_count, r.total_size
     );
     println!("  source:      {}", r.source.as_str());
+    println!("  trust:       {}", r.trust);
     println!("  validation:  {}", r.validation);
     if r.licenses.is_empty() {
         println!("  licenses:    (none recorded)");
@@ -430,9 +435,20 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     Ok(())
 }
 
-fn verify(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
+fn verify(
+    store: &ArtifactStore,
+    digest: &str,
+    policy_path: Option<&camino::Utf8Path>,
+    fmt: Format,
+) -> Result<()> {
     let report = store.verify(digest)?;
-    let passed = report.passed();
+    let record = store.resolve(digest)?;
+    let policy = policy_path.map(ArtifactPolicy::load).transpose()?;
+    let policy_error = policy
+        .as_ref()
+        .and_then(|value| value.verify_trust(record.trust).err());
+    let policy_passed = policy_error.is_none();
+    let passed = report.passed() && policy_passed;
     if fmt.is_json() {
         output::report(
             passed,
@@ -444,10 +460,23 @@ fn verify(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
                 "files_mismatched": report.files_mismatched,
                 "files_missing": report.files_missing,
                 "files_extra": report.files_extra,
+                "trust": record.trust,
+                "policy": policy.as_ref().map(|value| serde_json::json!({
+                    "path": policy_path.map(ToString::to_string),
+                    "minimum_trust": value.minimum_trust,
+                    "passed": policy_passed,
+                    "error_code": policy_error.as_ref().map(|e| e.code()),
+                    "message": policy_error.as_ref().map(ToString::to_string),
+                })),
             }),
         );
     } else {
-        render_verify(&report);
+        render_verify(
+            &report,
+            policy.as_ref(),
+            record.trust,
+            policy_error.as_ref(),
+        );
     }
     // The report above is this command's single document (§14.3); a failed
     // verification exits with the validation category code directly.
@@ -457,7 +486,13 @@ fn verify(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     Ok(())
 }
 
-fn render_verify(report: &VerifyReport) {
+fn render_verify(
+    report: &VerifyReport,
+    policy: Option<&ArtifactPolicy>,
+    trust: ost_artifact::TrustLevel,
+    policy_error: Option<&Error>,
+) {
+    let passed = report.passed() && policy_error.is_none();
     println!("Verify {}", report.digest);
     println!(
         "  archive digest: {}",
@@ -479,10 +514,18 @@ fn render_verify(report: &VerifyReport) {
             println!("  EXTRA:    {f}");
         }
     }
-    println!(
-        "  result: {}",
-        if report.passed() { "PASS" } else { "FAIL" }
-    );
+    if let Some(policy) = policy {
+        println!("  trust:          {trust}");
+        println!("  policy minimum: {}", policy.minimum_trust);
+        println!(
+            "  policy result:  {}",
+            if policy_error.is_none() { "OK" } else { "FAIL" }
+        );
+        if let Some(error) = policy_error {
+            println!("  {}: {error}", error.code());
+        }
+    }
+    println!("  result: {}", if passed { "PASS" } else { "FAIL" });
 }
 
 fn export(store: &ArtifactStore, digest: &str, dest: &str, fmt: Format) -> Result<()> {

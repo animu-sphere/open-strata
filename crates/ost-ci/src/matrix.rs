@@ -60,6 +60,7 @@ impl HostOs {
 
 /// Where a cell runs: an OS plus optional runner labels.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostSpec {
     #[serde(default)]
     pub os: HostOs,
@@ -139,6 +140,7 @@ pub enum RunnerKind {
 /// project's acknowledgement that GitHub-hosted runners may incur billable
 /// usage — `ost ci validate` warns while it is missing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Billing {
     pub acknowledgement: Acknowledgement,
 }
@@ -155,6 +157,7 @@ pub enum Acknowledgement {
 /// labels, so runner policy lives in one place and a renderer is just a
 /// mapping (`image` → `runs-on: <image>`, `labels` → `runs-on: […]`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunnerProfile {
     pub kind: RunnerKind,
     /// GitHub-hosted image, e.g. `ubuntu-24.04` / `windows-2022`.
@@ -196,6 +199,7 @@ impl RunnerProfile {
 /// digest, so a hosted runner can fetch exactly the bytes this support line
 /// stands behind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeRemote {
     /// `oci://<registry>/<repository>@sha256:<oci-manifest-digest>`.
     pub uri: String,
@@ -212,12 +216,14 @@ pub struct RuntimeRemote {
 /// release asset with checksum verification. Self-hosted runners keep their
 /// operator-provisioned `ost`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Bootstrap {
     pub ost: OstBootstrap,
 }
 
 /// The pinned `ost` release the generated bootstrap step installs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OstBootstrap {
     /// Release version, e.g. `0.9.0` (the release tag is `v<version>`).
     pub version: String,
@@ -251,6 +257,7 @@ impl RuntimeRemote {
 
 /// One explicit support line: runtime digest × plugin digest × target/profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SupportCell {
     /// Unique cell name (kebab-case); becomes the job/report identifier.
     pub name: String,
@@ -313,6 +320,7 @@ fn default_up_to() -> u8 {
 /// (report ask #5). Support-lane jobs re-verify pinned artifacts and never
 /// build from source, so checks do not apply to them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceCheck {
     /// Step name, rendered verbatim as the `- name:` of a workflow step.
     pub name: String,
@@ -345,6 +353,7 @@ fn is_major_minor(v: &str) -> bool {
 
 /// The support matrix document (`openstrata.ci.yaml`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SupportMatrix {
     pub schema: u32,
     /// The pinned `ost` bootstrap for GitHub-hosted source CI. Required as
@@ -997,6 +1006,75 @@ cells:
             vec!["self-hosted".to_string(), "linux".to_string()]
         );
         assert!(!m.is_hosted(&m.cells[0]));
+    }
+
+    #[test]
+    fn unknown_keys_are_rejected_at_every_mapping_level() {
+        let base = valid_yaml();
+        let lanes = lanes_yaml();
+        let remote = remote_yaml();
+        let cases = [
+            (format!("{base}publsih: true\n"), "publsih"),
+            (
+                base.replace("    up_to: 4\n", "    up_to: 4\n    publsih: candidate\n"),
+                "publsih",
+            ),
+            (
+                base.replace(
+                    "      labels: [self-hosted, linux]\n",
+                    "      labels: [self-hosted, linux]\n      labls: [trusted]\n",
+                ),
+                "labls",
+            ),
+            (
+                lanes.replace(
+                    "        image: windows-2022\n",
+                    "        image: windows-2022\n        imgae: windows-2025\n",
+                ),
+                "imgae",
+            ),
+            (
+                remote.replace(
+                    "      acknowledgement: required\n",
+                    "      acknowledgement: required\n      acknowlegement: required\n",
+                ),
+                "acknowlegement",
+            ),
+            (
+                remote.replace(
+                    "bootstrap:\n",
+                    "bootstrap:\n  unsigned: true\n",
+                ),
+                "unsigned",
+            ),
+            (
+                remote.replace(
+                    "    version: \"0.9.0\"\n",
+                    "    version: \"0.9.0\"\n    checksums: {}\n",
+                ),
+                "checksums",
+            ),
+            (
+                remote.replace(
+                    "      expected_oci_digest:",
+                    "      expected_oci_digset: ignored\n      expected_oci_digest:",
+                ),
+                "expected_oci_digset",
+            ),
+            (
+                format!(
+                    "{base}source_checks:\n  - name: smoke\n    run: echo ok\n    rn: echo skipped\n"
+                ),
+                "rn",
+            ),
+        ];
+        for (yaml, key) in cases {
+            let err = SupportMatrix::from_yaml(&yaml).expect_err(key);
+            assert!(
+                err.to_string().contains(key),
+                "expected unknown key '{key}' in: {err}"
+            );
+        }
     }
 
     #[test]

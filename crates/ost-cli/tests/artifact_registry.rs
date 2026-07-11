@@ -207,6 +207,66 @@ fn tampered_archive_is_refused_and_verify_fails_on_corruption() {
     assert_eq!(out.status.code(), Some(4));
 }
 
+#[test]
+fn verify_enforces_strict_artifact_policy() {
+    let sb = Sandbox::new("policy");
+    let dist = sb.make_plugin_dist("toy", b"policy checked bytes");
+    let imported = stdout_json(&sb.ost(&["--json", "artifact", "import", path_str(&dist)]));
+    let digest = imported["data"]["artifact"]["digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(imported["data"]["artifact"]["trust"], "local");
+
+    let policy = sb.base.join("openstrata-artifact-policy.toml");
+    std::fs::write(&policy, "schema = 1\nminimum_trust = \"local\"\n").unwrap();
+    let verified = stdout_json(&sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--policy",
+        path_str(&policy),
+    ]));
+    assert_eq!(verified["data"]["policy"]["passed"], true);
+    assert_eq!(verified["data"]["trust"], "local");
+
+    std::fs::write(&policy, "schema = 1\nminimum_trust = \"unsigned\"\n").unwrap();
+    let out = sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--policy",
+        path_str(&policy),
+    ]);
+    assert_eq!(out.status.code(), Some(5));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["ok"], false);
+    assert_eq!(
+        report["data"]["policy"]["error_code"],
+        "ARTIFACT_POLICY_TRUST_INSUFFICIENT"
+    );
+    let out = sb.ost(&["artifact", "verify", &digest, "--policy", path_str(&policy)]);
+    assert_eq!(out.status.code(), Some(5));
+    let human = String::from_utf8_lossy(&out.stdout);
+    assert!(human.contains("policy result:  FAIL"), "{human}");
+    assert!(human.contains("result: FAIL"), "{human}");
+
+    std::fs::write(&policy, "schema = 1\nminimum_trsut = \"local\"\n").unwrap();
+    let out = sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--policy",
+        path_str(&policy),
+    ]);
+    assert_eq!(out.status.code(), Some(3));
+    let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(error["error"]["code"], "ARTIFACT_POLICY_PARSE_FAILED");
+}
+
 /// `ost plugin publish` consumes `ost plugin package` output, enforces its
 /// gates, and registers the artifact as `published`.
 #[test]

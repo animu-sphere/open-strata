@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use ost_core::{Error, Result};
 
+use crate::policy::TrustLevel;
+
 /// Filename of the registry record within an artifact's object directory.
 pub const RECORD_FILE: &str = "record.json";
 
@@ -113,6 +115,10 @@ pub struct ArtifactRecord {
     /// Tool that produced the registry entry, e.g. `ost 0.6.0`.
     pub producer: String,
     pub source: ArtifactSource,
+    /// Assurance currently established for this artifact. Old records predate
+    /// trust policy and therefore deserialize conservatively as `local`.
+    #[serde(default)]
+    pub trust: TrustLevel,
     /// Validation outcome carried over from the producer manifest:
     /// `passed` / `failed` / `pending` / `unknown`.
     pub validation: String,
@@ -246,6 +252,10 @@ impl ArtifactRecord {
             created_unix,
             producer: producer.to_string(),
             source,
+            trust: match source {
+                ArtifactSource::Imported => TrustLevel::Local,
+                ArtifactSource::Published => TrustLevel::Unsigned,
+            },
             validation,
             licenses,
             sbom: None,

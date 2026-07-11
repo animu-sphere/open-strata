@@ -13,11 +13,16 @@
 //! move bytes; identity (digests, manifest schema, verification policy) never
 //! leaves this crate's core.
 
+pub mod policy;
 pub mod record;
 pub mod reference;
 pub mod store;
 pub mod transport;
 
+pub use policy::{
+    AllowedPublisher, ArtifactPolicy, ProtectedNamespace, PublisherAuthorization,
+    PublisherIdentity, TrustLevel, ARTIFACT_POLICY_FILE, ARTIFACT_POLICY_SCHEMA,
+};
 pub use record::{
     is_sha256_ref, manifest_debug_archive, manifest_files, ArtifactKind, ArtifactRecord,
     ArtifactSource, DebugArchive, ManifestFile, MANIFEST_FILE, PLUGIN_BUNDLE_KIND, RECORD_FILE,
