@@ -132,6 +132,18 @@ pub enum PluginCmd {
         /// Additional plugin bundle(s) to include in the session env.
         #[arg(long = "with")]
         with: Vec<String>,
+        /// External installed/extracted plugin tree(s) to put on the discovery
+        /// path — an extracted package root (holds `openstrata.plugin.yaml`), not
+        /// the source bundle. Use with `--no-inject` to run a clean-install /
+        /// discovery test against the shipped layout rather than the build tree.
+        #[arg(long = "plugin-path")]
+        plugin_path: Vec<String>,
+        /// Do not inject the source bundle's own build-tree plugInfo/lib/python
+        /// paths. The session becomes the bare runtime env plus any
+        /// `--plugin-path` / `--with` trees — an `ost runtime run`-style USD-only
+        /// session. The bundle argument then only selects the runtime.
+        #[arg(long)]
+        no_inject: bool,
         /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
         #[arg(long)]
         target: Option<String>,
@@ -238,10 +250,21 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
         PluginCmd::Run {
             bundle,
             with,
+            plugin_path,
+            no_inject,
             target,
             profile,
             command,
-        } => run_session(&bundle, &with, target, profile, command, fmt),
+        } => run_session(
+            &bundle,
+            &with,
+            &plugin_path,
+            no_inject,
+            target,
+            profile,
+            command,
+            fmt,
+        ),
         PluginCmd::Test {
             bundle,
             workspace,
@@ -1062,9 +1085,12 @@ fn normalize_slash(path: &str) -> String {
 }
 
 /// `ost plugin run` — compose the runtime session and exec a command in it.
+#[allow(clippy::too_many_arguments)]
 fn run_session(
     bundle_path: &str,
     with_paths: &[String],
+    plugin_paths: &[String],
+    no_inject: bool,
     target: Option<String>,
     profile: Option<String>,
     command: Vec<String>,
@@ -1072,10 +1098,21 @@ fn run_session(
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
     let with_bundles = load_with_bundles(with_paths)?;
+    // An external installed/extracted tree is itself a bundle (same layout +
+    // openstrata.plugin.yaml), so it composes through the same bundle_vars.
+    let plugin_path_bundles = load_with_bundles(plugin_paths)?;
     let host = Host::detect();
     let r = require_real_runtime(target, profile)?;
 
-    let session = session_env_with(&r.env, &bundle, &with_bundles, host.os);
+    // Search order (highest first): the source bundle unless --no-inject, then
+    // any --plugin-path trees, then --with companions, then the runtime.
+    let mut contributing: Vec<&Bundle> = Vec::new();
+    if !no_inject {
+        contributing.push(&bundle);
+    }
+    contributing.extend(plugin_path_bundles.iter());
+    contributing.extend(with_bundles.iter());
+    let session = ost_plugin::session_env_from(&r.env, &contributing, host.os);
     let (prog, rest) = command.split_first().expect("clap requires >=1 arg");
 
     let mut cmd = Command::new(prog);
