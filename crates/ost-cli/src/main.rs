@@ -14,8 +14,8 @@ mod project_template;
 use clap::{Parser, Subcommand};
 
 use commands::{
-    artifact, build, ci, configure, devshell, doctor, env, extension, init, lock, package,
-    platform, plugin, presets, runtime, uv, validate,
+    artifact, build, ci, configure, devshell, doctor, env, extension, init, internal, lock,
+    package, platform, plugin, presets, runtime, uv, validate,
 };
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
@@ -90,6 +90,10 @@ enum Command {
 
     /// Run `uv` pinned to the project's runtime Python.
     Uv(uv::UvArgs),
+
+    /// Internal developer tasks (hidden; e.g. regenerating reference docs).
+    #[command(subcommand, hide = true)]
+    Internal(internal::InternalCmd),
 }
 
 fn main() -> std::process::ExitCode {
@@ -114,6 +118,7 @@ fn main() -> std::process::ExitCode {
         Command::Ci(cmd) => ci::run(cmd, fmt),
         Command::Lock(args) => lock::run(args, fmt),
         Command::Uv(args) => uv::run(args, fmt),
+        Command::Internal(cmd) => internal::run(cmd, fmt),
     };
 
     match result {

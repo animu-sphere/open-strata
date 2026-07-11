@@ -35,6 +35,31 @@ pub enum Category {
 }
 
 impl Category {
+    /// Every category, in ascending exit-code order. Lets tools (e.g. the
+    /// reference-doc generator) enumerate the exit-code contract from its source.
+    pub const ALL: [Category; 7] = [
+        Category::Usage,
+        Category::Configuration,
+        Category::Precondition,
+        Category::Validation,
+        Category::ExternalTool,
+        Category::Io,
+        Category::Internal,
+    ];
+
+    /// A one-line description of what this category means.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Category::Usage => "Bad arguments or usage.",
+            Category::Configuration => "Invalid manifest, lock, or configuration.",
+            Category::Precondition => "A missing prerequisite: runtime, tool, or directory.",
+            Category::Validation => "A validation mismatch (lock check, validate, plugin test).",
+            Category::ExternalTool => "An external tool failed (CMake, Ninja, compiler, OpenUSD).",
+            Category::Io => "Filesystem or permission error.",
+            Category::Internal => "An unexpected internal error.",
+        }
+    }
+
     /// The normalized process exit code for this category (design §14.4).
     pub fn exit_code(self) -> u8 {
         match self {

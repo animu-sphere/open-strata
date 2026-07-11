@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod env;
 pub mod extension;
 pub mod init;
+pub mod internal;
 pub mod lock;
 pub mod package;
 pub mod platform;
