@@ -222,6 +222,8 @@ Remaining work — installer/asset signature verification and a runtime trust
 policy — is tracked in the
 [roadmap](docs/roadmap.md#security-baseline).
 
+To report a vulnerability, see [SECURITY.md](SECURITY.md) (private disclosure).
+
 ## License
 
 OpenStrata is licensed under the [Apache License, Version 2.0](LICENSE); see also
