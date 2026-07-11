@@ -19,12 +19,13 @@
 //! Artifacts are addressed by digest (full `sha256:<hex>` or a unique prefix),
 //! never by mutable name — the registry is the source of truth CI pins.
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
 
 use ost_artifact::{
-    ArtifactKind, ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport, FileTransport,
-    OciTransport, PullEvidence, PullPolicy, PushOutcome, RemoteReference, VerifyReport,
+    ArtifactKind, ArtifactPolicy, ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport,
+    FileTransport, OciTransport, PublisherIdentity, PullEvidence, PullPolicy, PushOutcome,
+    RemoteReference, TrustLevel, VerifyReport,
 };
 use ost_core::{Error, Result};
 
@@ -53,6 +54,9 @@ pub enum ArtifactCmd {
     Verify {
         /// Digest reference: sha256:<hex> or a unique hex prefix (>= 6 chars).
         digest: String,
+        /// Enforce minimum trust from an artifact policy TOML file.
+        #[arg(long, value_name = "FILE")]
+        policy: Option<Utf8PathBuf>,
     },
     /// Export an artifact's files into a directory (CI handoff).
     Export {
@@ -90,6 +94,14 @@ pub enum ArtifactCmd {
         /// Destination: oci://<registry>/<repository>[:tag][@sha256:<oci-digest>].
         /// A pinned digest is verified against the computed manifest digest.
         destination: String,
+        /// Artifact policy TOML. When omitted, search the current directory
+        /// and its parents for openstrata-artifact-policy.toml.
+        #[arg(long, value_name = "FILE")]
+        policy: Option<Utf8PathBuf>,
+        /// Explicitly bypass publisher identity checks for a protected
+        /// namespace. The override is recorded in command output.
+        #[arg(long)]
+        allow_untrusted_publisher: bool,
         /// Use plain http:// instead of https:// (fixture registries and
         /// air-gapped mirrors only).
         #[arg(long)]
@@ -124,7 +136,7 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
         ArtifactCmd::Import { path } => import(&store, &path, fmt),
         ArtifactCmd::List { kind } => list(&store, kind.as_deref(), fmt),
         ArtifactCmd::Show { digest } => show(&store, &digest, fmt),
-        ArtifactCmd::Verify { digest } => verify(&store, &digest, fmt),
+        ArtifactCmd::Verify { digest, policy } => verify(&store, &digest, policy.as_deref(), fmt),
         ArtifactCmd::Export { digest, dest } => export(&store, &digest, &dest, fmt),
         ArtifactCmd::Extract { digest, dest, into } => {
             let dest = dest.or(into).ok_or_else(|| {
@@ -139,8 +151,18 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
         ArtifactCmd::Push {
             digest,
             destination,
+            policy,
+            allow_untrusted_publisher,
             plain_http,
-        } => push_remote(&store, &digest, &destination, plain_http, fmt),
+        } => push_remote(
+            &store,
+            &digest,
+            &destination,
+            policy.as_deref(),
+            allow_untrusted_publisher,
+            plain_http,
+            fmt,
+        ),
         ArtifactCmd::Pull {
             reference,
             expect_artifact,
@@ -210,20 +232,26 @@ fn push_remote(
     store: &ArtifactStore,
     digest: &str,
     destination: &str,
+    policy_path: Option<&Utf8Path>,
+    allow_untrusted_publisher: bool,
     plain_http: bool,
     fmt: Format,
 ) -> Result<()> {
     let parsed = RemoteReference::parse(destination)?;
-    if let RemoteReference::File(_) = parsed {
-        return Err(Error::usage(
-            "push targets an OCI registry (oci://…); to write a local dist directory \
-             use `ost artifact export <digest> <dir>`",
-        ));
-    }
+    let oci = match &parsed {
+        RemoteReference::Oci(oci) => oci,
+        RemoteReference::File(_) => {
+            return Err(Error::usage(
+                "push targets an OCI registry (oci://…); to write a local dist directory \
+                 use `ost artifact export <digest> <dir>`",
+            ));
+        }
+    };
+    let policy = authorize_push(oci, policy_path, allow_untrusted_publisher)?;
     let transport = transport_for(&parsed, plain_http);
     let outcome = ost_artifact::push(transport.as_ref(), store, digest, &parsed)?;
     if fmt.is_json() {
-        output::success(&push_outcome_json(&outcome));
+        output::success(&push_outcome_json(&outcome, policy.as_ref()));
         return Ok(());
     }
     let verb = if outcome.already_present {
@@ -236,6 +264,22 @@ fn push_remote(
     println!("  oci digest:   {}", outcome.oci_digest);
     println!("  artifact:     {}", outcome.artifact_digest);
     println!("  auth mode:    {}", outcome.auth_mode);
+    if let Some(policy) = &policy {
+        println!("  policy:       {}", policy.path);
+        match &policy.namespace {
+            Some(namespace) if policy.overridden => {
+                println!("  publisher:    OVERRIDDEN ({namespace})");
+            }
+            Some(namespace) => {
+                println!(
+                    "  publisher:    {} ({}, {namespace})",
+                    policy.publisher.as_deref().unwrap_or("unknown"),
+                    policy.trust.unwrap_or(TrustLevel::Local),
+                );
+            }
+            None => println!("  publisher:    not required (unprotected destination)"),
+        }
+    }
     println!();
     println!("Pin this in a support line's runtime_remote:");
     println!(
@@ -246,8 +290,79 @@ fn push_remote(
     Ok(())
 }
 
+#[derive(Debug)]
+struct PushPolicyEvidence {
+    path: Utf8PathBuf,
+    namespace: Option<String>,
+    publisher: Option<String>,
+    trust: Option<TrustLevel>,
+    overridden: bool,
+}
+
+fn authorize_push(
+    destination: &ost_artifact::OciReference,
+    explicit_path: Option<&Utf8Path>,
+    allow_untrusted_publisher: bool,
+) -> Result<Option<PushPolicyEvidence>> {
+    let loaded = if let Some(path) = explicit_path {
+        Some((path.to_owned(), ArtifactPolicy::load(path)?))
+    } else {
+        let cwd = std::env::current_dir().map_err(|source| Error::io(".", source))?;
+        let cwd = Utf8PathBuf::from_path_buf(cwd).map_err(|path| {
+            Error::config(format!(
+                "current directory '{}' is not valid UTF-8",
+                path.display()
+            ))
+        })?;
+        ArtifactPolicy::discover(&cwd)?
+    };
+    let Some((path, policy)) = loaded else {
+        return Ok(None);
+    };
+
+    let destination = format!(
+        "{}/{}",
+        destination.registry.to_ascii_lowercase(),
+        destination.repository
+    );
+    let Some(protected) = policy.protected_namespace(&destination) else {
+        return Ok(Some(PushPolicyEvidence {
+            path,
+            namespace: None,
+            publisher: None,
+            trust: None,
+            overridden: false,
+        }));
+    };
+    let namespace = protected.namespace.clone();
+    if allow_untrusted_publisher {
+        return Ok(Some(PushPolicyEvidence {
+            path,
+            namespace: Some(namespace),
+            publisher: None,
+            trust: None,
+            overridden: true,
+        }));
+    }
+
+    let identity = PublisherIdentity::from_github_actions_oidc()?;
+    let authorization = policy
+        .authorize_publisher(&destination, &identity)?
+        .expect("the destination was already matched to a protected namespace");
+    Ok(Some(PushPolicyEvidence {
+        path,
+        namespace: Some(authorization.namespace),
+        publisher: Some(authorization.publisher),
+        trust: Some(authorization.trust),
+        overridden: false,
+    }))
+}
+
 /// Push outcome as JSON, carrying every digest a caller might pin.
-fn push_outcome_json(outcome: &PushOutcome) -> serde_json::Value {
+fn push_outcome_json(
+    outcome: &PushOutcome,
+    policy: Option<&PushPolicyEvidence>,
+) -> serde_json::Value {
     serde_json::json!({
         "status": if outcome.already_present { "already-present" } else { "pushed" },
         "oci_digest": outcome.oci_digest,
@@ -257,6 +372,13 @@ fn push_outcome_json(outcome: &PushOutcome) -> serde_json::Value {
         "repository": outcome.repository,
         "already_present": outcome.already_present,
         "auth_mode": outcome.auth_mode,
+        "policy": policy.map(|policy| serde_json::json!({
+            "path": policy.path,
+            "protected_namespace": policy.namespace,
+            "publisher": policy.publisher,
+            "trust": policy.trust,
+            "overridden": policy.overridden,
+        })),
     })
 }
 
@@ -416,6 +538,7 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
         r.file_count, r.total_size
     );
     println!("  source:      {}", r.source.as_str());
+    println!("  trust:       {}", r.trust);
     println!("  validation:  {}", r.validation);
     if r.licenses.is_empty() {
         println!("  licenses:    (none recorded)");
@@ -430,9 +553,20 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     Ok(())
 }
 
-fn verify(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
+fn verify(
+    store: &ArtifactStore,
+    digest: &str,
+    policy_path: Option<&camino::Utf8Path>,
+    fmt: Format,
+) -> Result<()> {
     let report = store.verify(digest)?;
-    let passed = report.passed();
+    let record = store.resolve(digest)?;
+    let policy = policy_path.map(ArtifactPolicy::load).transpose()?;
+    let policy_error = policy
+        .as_ref()
+        .and_then(|value| value.verify_trust(record.trust).err());
+    let policy_passed = policy_error.is_none();
+    let passed = report.passed() && policy_passed;
     if fmt.is_json() {
         output::report(
             passed,
@@ -444,10 +578,23 @@ fn verify(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
                 "files_mismatched": report.files_mismatched,
                 "files_missing": report.files_missing,
                 "files_extra": report.files_extra,
+                "trust": record.trust,
+                "policy": policy.as_ref().map(|value| serde_json::json!({
+                    "path": policy_path.map(ToString::to_string),
+                    "minimum_trust": value.minimum_trust,
+                    "passed": policy_passed,
+                    "error_code": policy_error.as_ref().map(|e| e.code()),
+                    "message": policy_error.as_ref().map(ToString::to_string),
+                })),
             }),
         );
     } else {
-        render_verify(&report);
+        render_verify(
+            &report,
+            policy.as_ref(),
+            record.trust,
+            policy_error.as_ref(),
+        );
     }
     // The report above is this command's single document (§14.3); a failed
     // verification exits with the validation category code directly.
@@ -457,7 +604,13 @@ fn verify(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     Ok(())
 }
 
-fn render_verify(report: &VerifyReport) {
+fn render_verify(
+    report: &VerifyReport,
+    policy: Option<&ArtifactPolicy>,
+    trust: ost_artifact::TrustLevel,
+    policy_error: Option<&Error>,
+) {
+    let passed = report.passed() && policy_error.is_none();
     println!("Verify {}", report.digest);
     println!(
         "  archive digest: {}",
@@ -479,10 +632,18 @@ fn render_verify(report: &VerifyReport) {
             println!("  EXTRA:    {f}");
         }
     }
-    println!(
-        "  result: {}",
-        if report.passed() { "PASS" } else { "FAIL" }
-    );
+    if let Some(policy) = policy {
+        println!("  trust:          {trust}");
+        println!("  policy minimum: {}", policy.minimum_trust);
+        println!(
+            "  policy result:  {}",
+            if policy_error.is_none() { "OK" } else { "FAIL" }
+        );
+        if let Some(error) = policy_error {
+            println!("  {}: {error}", error.code());
+        }
+    }
+    println!("  result: {}", if passed { "PASS" } else { "FAIL" });
 }
 
 fn export(store: &ArtifactStore, digest: &str, dest: &str, fmt: Format) -> Result<()> {

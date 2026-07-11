@@ -1578,6 +1578,7 @@ mod tests {
             created_unix: 1_750_000_000,
             producer: "ost test".into(),
             source: crate::record::ArtifactSource::Published,
+            trust: crate::policy::TrustLevel::Unsigned,
             validation: "passed".into(),
             licenses: vec!["Apache-2.0".into()],
             sbom: None,

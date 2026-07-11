@@ -12,6 +12,7 @@ drift in CI — do not edit them by hand.
 | [schemas.md](schemas.md) | generated (`schemas/*.json`) | The JSON Schemas `ost` validates documents against. |
 | [support-matrix.md](support-matrix.md) | generated (`support/platforms.toml`) | Per-feature, per-platform support levels. |
 | [json-output.md](json-output.md) | hand-written | The `--json` output contract: envelope, error codes, and compatibility policy. |
+| [artifact-policy.md](artifact-policy.md) | hand-written | Artifact trust levels, policy TOML schema, matching rules, and stable errors. |
 
 To regenerate the generated pages, from the repository root:
 
