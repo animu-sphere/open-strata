@@ -1,5 +1,9 @@
 # Architecture
 
+*Last verified against: v0.12.0 (workspace version 0.12.0).* This document
+describes the system as it exists on the default branch; historical alternatives
+belong in design notes, not here.
+
 ## Workspace layout
 
 OpenStrata is a Rust workspace. The CLI is thin; domain logic lives in libraries so
@@ -14,18 +18,21 @@ crates/
   ost-build/      build target model, toolchain/preset generation, packaging, MSVC bootstrap
   ost-extension/  controlled extensions: model, loader, capability resolver
   ost-plugin/     OpenUSD plugin bundles: model, scaffold, verification levels, reports
+  ost-artifact/   artifact registry: identity records, content-addressed store, verification, OCI transport
+  ost-ci/         CI support matrix (openstrata.ci.yaml) + workflow generation (GitHub Actions)
   ost-manifest/   project (openstrata.toml) + lock (strata.lock) models
 platforms/        built-in CY manifests, embedded into the binary
 profiles/         capability bundles (core / dev / usd / lookdev)
 extensions/       controlled extension manifests (openusd / materialx)
-templates/        plugin scaffolding templates (usd-fileformat-cpp)
+templates/        project + plugin scaffolds (usd-fileformat-cpp, usd-schema-codeless, …)
 schemas/          JSON schemas for platform / project / lock / plugin-report documents
 docs/             this documentation
 ```
 
 Planned crates from the design (not yet created): `ost-solver`, `ost-session`,
-`ost-validation`, `ost-ci`. They are introduced as their phase lands, not up
-front.
+`ost-validation`. They are introduced as their phase lands, not up front.
+(`ost-artifact` and `ost-ci` were on this list historically; both now exist and
+are shipped, listed above.)
 
 ## Crate boundaries
 
@@ -45,6 +52,13 @@ front.
 - **`ost-plugin`** models the OpenUSD plugin *bundle* (`openstrata.plugin.yaml`),
   scaffolds new ones, and runs the verification pyramid (static L0–L1 + executed
   L2–L5 behind a `Probe` seam) into reports.
+- **`ost-artifact`** owns the artifact registry: identity records, the local
+  content-addressed store, integrity verification, and the `ArtifactTransport`
+  seam with a filesystem adapter and a read/write OCI adapter (GHCR-class
+  registries) for `ost artifact pull`/`push`.
+- **`ost-ci`** owns the CI support matrix (`openstrata.ci.yaml`) — runner
+  profiles, lanes, and digest-pinned runtime×plugin support lines — and renders
+  it into GitHub Actions workflows (`ost ci plan | validate | generate github`).
 - **`ost-manifest`** owns the human-authored `openstrata.toml` and the generated
   `strata.lock` (now populated: runtime digest, variant, Python ABI, validation).
 - **`ost-cli`** only parses arguments, calls the libraries, and renders results
@@ -63,6 +77,8 @@ front.
 | **Extension** | A controlled VFX-adjacent component (OpenUSD, MaterialX). | implemented |
 | **Runtime** | Platform + variant + profile + resolved artifacts, with a digest and a backend source (`mock`/`local`/`build`). | implemented |
 | **Plugin bundle** | A self-describing OpenUSD plugin (`openstrata.plugin.yaml` + sources + `plugInfo.json` + fixtures), verified by levels 0–5. | implemented |
+| **Artifact** | An immutable, digest-addressed bundle (`tar.zst` + manifest + validation report) in the local registry, transportable over OCI. | implemented |
+| **Support matrix** | `openstrata.ci.yaml`: digest-pinned runtime×plugin support lines, runner profiles, and lanes, rendered to CI workflows. | implemented |
 | **Session** | A mutable workspace over an immutable runtime. | planned |
 
 ## On-disk layout

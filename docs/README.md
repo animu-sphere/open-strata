@@ -7,7 +7,8 @@
 | [examples.md](examples.md) | Copy-pasteable examples for every `ost` command. |
 | [json-schema.md](json-schema.md) | The `--json` output contract: envelope, error codes, exit codes, and compatibility policy. |
 | [incident-notes.md](incident-notes.md) | Short debugging notes for incidents, root causes, fixes, and future guardrails. |
-| [roadmap.md](roadmap.md) | Phased delivery plan and current status. |
+| [roadmap.md](roadmap.md) | Phased delivery plan and remaining (incomplete) work. |
+| [releases/](releases/) | Immutable per-version release records (objective, shipped capabilities, compatibility, known limitations). |
 | [phase-4-plugin-harness.md](phase-4-plugin-harness.md) | Phase 4 direction: the OpenUSD plugin verification harness, mapped onto the codebase. |
 | [dcc-hosts.md](dcc-hosts.md) | Direction: third-party DCC host support (Maya/Houdini/Nuke) — discovery, headless run/package, and cross-DCC USD compatibility. |
 | [kubernetes.md](kubernetes.md) | Phase 9 direction: Kubernetes as a pluggable execution backend (`ost submit` / `ost jobs`). |

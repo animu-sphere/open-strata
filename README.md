@@ -1,5 +1,11 @@
 # OpenStrata (`ost`)
 
+[![ci](https://github.com/animu-sphere/open-strata/actions/workflows/ci.yml/badge.svg)](https://github.com/animu-sphere/open-strata/actions/workflows/ci.yml)
+[![licenses](https://github.com/animu-sphere/open-strata/actions/workflows/licenses.yml/badge.svg)](https://github.com/animu-sphere/open-strata/actions/workflows/licenses.yml)
+[![release](https://github.com/animu-sphere/open-strata/actions/workflows/release.yml/badge.svg)](https://github.com/animu-sphere/open-strata/actions/workflows/release.yml)
+[![latest release](https://img.shields.io/github/v/release/animu-sphere/open-strata?sort=semver)](https://github.com/animu-sphere/open-strata/releases/latest)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 > OpenStrata turns VFX compatibility into executable, validated, distributable runtime layers.
 
 OpenStrata is a VFX Reference Platform aware **runtime / build / extension / validation**
@@ -19,30 +25,19 @@ is largely in: a real OpenUSD runtime can be **adopted** (`--from-usd`) or
 plugin pyramid runs Levels 0–5 (`ost plugin new|inspect|build|doctor|run|test`).
 `ost plugin build` also regenerates co-hosted `schema.usda` contracts and can
 link generated typed schema APIs into an existing plugin library.
-Tagged binary releases (`v*`) are live via cargo-dist. The local digest-addressed
-artifact registry, plugin publishing, artifact-backed runtime pulls, and GitHub
-support-matrix generation are in. The v0.7.0 CI contract adds runner profiles,
-lanes, source/support workflow rendering, `ost ci plan`, workspace-level plugin
-testing, and CI evidence in plugin reports. v0.8.0 hardens package staging so
-reruns survive transient Windows file locks; v0.9.0 adds read-only OCI artifact
-transport, GitHub-hosted source-CI bootstrap/runtime pulls, runtime export
-ergonomics, and macOS co-hosted schema build robustness; v0.10.0 adds OCI
-artifact push, publishable runtime-completeness fixes, build-dependency
-preflight warnings, publish-flow docs, and `ost uv` shadow-dependency diagnosis;
-v0.11.0 is a producer-side correctness pass — a real glibc floor stamped onto
-Linux runtimes from an ELF scan, the `ost artifact push` digest fix plus honest
-credential hints, in-tree symlink preservation in runtime export, actionable
-package-stage fallback, and declarative repo smoke tests in generated source CI;
-v0.12.0 hardens the hosted-macOS CI/runtime contract — runtime tools keep and
-verify their Unix execute bits end-to-end (pack, extract, `runtime validate`),
-source cells declare their schema-tooling interpreter with `host_python` so
-generated CI pins `actions/setup-python` on hosted runners, and pre-build
-prerequisites (`ost runtime validate` + Python setup) are modeled in the CI
-graph rather than scripted as ad-hoc source checks.
+Tagged binary releases (`v*`) are live via cargo-dist. The digest-addressed
+artifact registry, plugin publishing, artifact-backed runtime pulls (local and
+read/write OCI transport), and GitHub support-matrix generation are in, along with
+a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
+
+The current release is **v0.12.0** — hosted macOS CI + runtime-contract hardening.
+Per-release detail (objective, shipped capabilities, compatibility, known
+limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
+in the [roadmap](docs/roadmap.md).
+
 Sessions, GPU/AI, trust policy, and broader DCC matrices are still ahead. Linux
 x86_64 is the first-class target; other OS targets are modeled and partially
-working — these examples were exercised on Windows. See the
-[roadmap](docs/roadmap.md).
+working — these examples were exercised on Windows.
 
 ## Install
 
