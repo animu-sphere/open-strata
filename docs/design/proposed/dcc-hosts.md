@@ -131,7 +131,7 @@ is defined as a **contract** (e.g. a publish contract: collect context → build
 stage → validate → publish) that adapters fulfil — not a unified node API.
 
 The cross-DCC USD compatibility check reuses the plugin verification harness's
-level model ([phase-4-plugin-harness.md](phase-4-plugin-harness.md)): stage open,
+level model ([phase-4-plugin-harness.md](../accepted/phase-4-plugin-harness.md)): stage open,
 schema load, reference/payload resolve, asset-resolver behaviour, layer-stack
 integrity, metadata + material-binding preservation.
 
@@ -186,7 +186,7 @@ but reconciles them to this repo:
   traits, per-DCC modules) mirroring `ost-plugin` / `ost-execution`. Platform
   specifics stay at provider boundaries.
 - **One output contract.** `--json` uses the shipped envelope and category exit
-  codes ([json-schema.md](json-schema.md)) — *not* the briefs' ad-hoc
+  codes ([json-schema.md](../../reference/json-output.md)) — *not* the briefs' ad-hoc
   `0/1/2/3/4`. `ost host discover` is diagnostic, so it exits `0` even when it
   finds nothing (like `doctor`); real failures use the category codes
   (`usage` 2, `precondition` 4, `io` 7, …). A persisted host record carries its

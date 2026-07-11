@@ -13,9 +13,9 @@ platform for VFX and OpenUSD work. The CLI is `ost`. It treats each VFX Referenc
 Platform calendar year as a machine-readable *target* and turns it into certified,
 reproducible runtime layers, extension artifacts, and builds.
 
-See [`docs/`](docs/) — [overview](docs/overview.md), [architecture](docs/architecture.md),
-[examples](docs/examples.md), [roadmap](docs/roadmap.md), and the full
-[design](docs/design.md).
+See [`docs/`](docs/) — [overview](docs/concepts/overview.md), [architecture](docs/architecture/overview.md),
+[examples](docs/guides/examples.md), [roadmap](docs/roadmap/README.md), and the full
+[design](docs/design/spec.md).
 
 ## Status
 
@@ -33,7 +33,7 @@ a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 The current release is **v0.12.0** — hosted macOS CI + runtime-contract hardening.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
-in the [roadmap](docs/roadmap.md).
+in the [roadmap](docs/roadmap/README.md).
 
 Sessions, GPU/AI, trust policy, and broader DCC matrices are still ahead. Linux
 x86_64 is the first-class target; other OS targets are modeled and partially
@@ -117,8 +117,8 @@ ost uv <args...>                                    run uv pinned to the runtime
 Every command accepts `--json` for machine-readable output: a single, versioned
 `{ok, schema, data, warnings}` envelope on stdout, with structured errors
 (`error.code` / `error.category`) and category-based exit codes for CI. See
-[docs/json-schema.md](docs/json-schema.md) for the contract and
-[docs/examples.md](docs/examples.md) for a copy-pasteable tour of every command.
+[docs/reference/json-output.md](docs/reference/json-output.md) for the contract and
+[docs/guides/examples.md](docs/guides/examples.md) for a copy-pasteable tour of every command.
 
 `ost runtime pull` materializes a runtime from a backend *source*: a placeholder
 `mock` layout, an adopted existing install (`--from-usd`), a from-source
@@ -220,7 +220,7 @@ distribution path. Landed so far:
 
 Remaining work — installer/asset signature verification and a runtime trust
 policy — is tracked in the
-[roadmap](docs/roadmap.md#security-baseline).
+[roadmap](docs/roadmap/README.md#security-baseline).
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md) (private disclosure).
 
@@ -234,4 +234,4 @@ Third-party components that OpenStrata bundles, links, or distributes (Rust
 dependencies and runtime/extension content such as OpenUSD, MaterialX, and their
 transitive dependencies) retain their own upstream licenses. Complete
 per-artifact third-party attribution is tracked in the
-[roadmap](docs/roadmap.md#licensing--third-party-attribution).
+[roadmap](docs/roadmap/README.md#licensing--third-party-attribution).

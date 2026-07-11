@@ -143,7 +143,7 @@ them. Each release is a coherent slice, not a phase boundary.
   `ost artifact pull` (produced out-of-band with `oras`, since there is no
   producer verb yet). Planned from dogfooding report #10 (2026-07-05),
   the remote-artifact-transport plan
-  ([remote-artifact-transport.md](remote-artifact-transport.md)), and the
+  ([remote-artifact-transport.md](../design/accepted/remote-artifact-transport.md)), and the
   macOS dogfooding report (2026-07-05, `ost 0.8.0` on macOS arm64). Report
   #10 produced real digests for both lanes on 0.8.0, but the rendered PR lane
   still cannot run on a GitHub-hosted runner: nothing installs `ost` there,
@@ -394,7 +394,7 @@ them. Each release is a coherent slice, not a phase boundary.
   lane. Release workflows refuse untrusted artifacts.
 - ⬜ **v0.16.0 — DCC host integration.** Extend the support matrix beyond
   runtime-native apps to external DCC hosts (future-policy §9/§11; Phase 10
-  [dcc-hosts.md](dcc-hosts.md)). Read-only host discovery + fingerprint
+  [dcc-hosts.md](../design/proposed/dcc-hosts.md)). Read-only host discovery + fingerprint
   (`ost dcc discover`, host record schema, Maya/Houdini detectors first), headless
   plugin compatibility test, and DCC support-matrix + CI-annotation integration —
   *without* a DCC API abstraction or SDK redistribution (future-policy §13
@@ -421,7 +421,7 @@ and lock schemas.
 - ✅ JSON schemas for platform / project / lock
 - ✅ `--json` output and deterministic exit codes — a versioned
   `{ok, schema, data, warnings}` envelope with stable `error.code`/`category` and
-  category-based exit codes ([json-schema.md](json-schema.md))
+  category-based exit codes ([json-schema.md](../reference/json-output.md))
 
 ## Phase 1 — Runtime and devshell ✅
 
@@ -496,7 +496,7 @@ Resolve a runtime manifest, lay it out locally, generate environment, enter a sh
 
 ## Phase 4 — OpenUSD plugin verification harness 🚧
 
-Direction: [phase-4-plugin-harness.md](phase-4-plugin-harness.md). Split around
+Direction: [phase-4-plugin-harness.md](../design/accepted/phase-4-plugin-harness.md). Split around
 the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mock).
 
 **4a — framework + static verification (mock backend, no real runtime): ✅**
@@ -513,7 +513,7 @@ the one hard dependency — a real OpenUSD runtime (today's `runtime pull` is mo
   never a false PASS
 - ✅ reports under `.strata/reports/<plugin>/<UTC>/` (`report.json` /
   `summary.txt` / `environment.json`) + published
-  [plugin-report JSON schema](../schemas/plugin-report.schema.json);
+  [plugin-report JSON schema](../../schemas/plugin-report.schema.json);
   human + `--json`, deterministic exit codes
 
 **4b — execution levels (gated on a real OpenUSD runtime backend): 🚧**
@@ -594,7 +594,7 @@ target + runtime variant. `doctor` should validate the resolved files for the
 target being tested, not silently accept host-default metadata.
 
 - ✅ **P1 — absolutize `<bundle>` once** in `Bundle::load`
-  ([bundle.rs](../crates/ost-plugin/src/bundle.rs)): a single `canonicalize`
+  ([bundle.rs](../../crates/ost-plugin/src/bundle.rs)): a single `canonicalize`
   removes *both* the relative-`CMAKE_TOOLCHAIN_FILE` build break and the
   relative-`PXR_PLUGINPATH_NAME` discovery break (single root cause), de-UNCing
   the `\\?\` prefix on Windows (CMake/USD mishandle it). Prerequisite for `--with`
@@ -603,18 +603,18 @@ target being tested, not silently accept host-default metadata.
   `LibraryPath: "lib{{Name}}FileFormat.so"` (wrong suffix off-Windows; beside
   `plugInfo.json` while the lib lands in `lib/`, and USD dlopens the absolutized
   path with no PATH fallback). Now a committed
-  [`plugInfo.json.in`](../templates/usd-fileformat-cpp/plugin/resources/{{name}}/plugInfo.json.in)
+  [`plugInfo.json.in`](../../templates/usd-fileformat-cpp/plugin/resources/{{name}}/plugInfo.json.in)
   (`../../../lib/lib…@CMAKE_SHARED_LIBRARY_SUFFIX@`) that the CMake
   `configure_file` resolves per target; `ost plugin new` also writes a
   host-correct concrete `plugInfo.json` so `doctor`/`test` work before the first
   build (doctor L0 only checks existence + JSON parse, so no collision).
 - ✅ **P1 — scaffold `CMakeLists.txt` stages to `${CMAKE_SOURCE_DIR}/lib`**
-  ([templates/usd-fileformat-cpp/CMakeLists.txt](../templates/usd-fileformat-cpp/CMakeLists.txt)):
+  ([templates/usd-fileformat-cpp/CMakeLists.txt](../../templates/usd-fileformat-cpp/CMakeLists.txt)):
   now uses `CMAKE_CURRENT_SOURCE_DIR` (so an `add_subdirectory()` consumer stages
   the lib in the bundle, not the repo root) and guards `find_package(pxr)` with
   `if(NOT pxr_FOUND)` so a dual-mode project root can resolve it once.
 - ✅ **P1 — `ost plugin build` doesn't bootstrap the MSVC env.** `run_step`
-  ([commands/plugin.rs](../crates/ost-cli/src/commands/plugin.rs)) now loads the
+  ([commands/plugin.rs](../../crates/ost-cli/src/commands/plugin.rs)) now loads the
   MSVC developer environment via `ost_build::msvc::bootstrap()` (Windows, `cl` not
   on PATH), as `ost build`/`runtime pull --build` already do.
 - ✅ **P2 — default `CMAKE_BUILD_TYPE=Release` for plugin builds.** `ost plugin
@@ -623,7 +623,7 @@ target being tested, not silently accept host-default metadata.
   links the missing `tbb12_debug.lib`. The runtimes OpenStrata ships/adopts are
   Release.
 - ✅ **P2 — adopted-runtime version was the static placeholder.** `adopt_local`
-  ([commands/runtime.rs](../crates/ost-cli/src/commands/runtime.rs)) now reads the
+  ([commands/runtime.rs](../../crates/ost-cli/src/commands/runtime.rs)) now reads the
   real `PXR_MINOR/PATCH_VERSION` from the install's `include/pxr/pxr.h` and
   records it (e.g. `26.08`) instead of the catalog's `25.05.01`, so the Level-1
   version gate enforces the actual range. (Python-ABI detection — the `py313` id
@@ -788,7 +788,7 @@ first, keep the compiled schema flow as stretch unless it stays small.
   that is actually 26.x can be recorded as the placeholder `25.05.01`, so the L1
   range check "passes" for the wrong reason. Landed: adopt-time
   `detect_openusd_version` reads `pxr.h`
-  ([runtime.rs](../crates/ost-cli/src/commands/runtime.rs)); `ost plugin doctor`
+  ([runtime.rs](../../crates/ost-cli/src/commands/runtime.rs)); `ost plugin doctor`
   prefers the install's real `pxr.h` version for L1; `runtime show` flags a
   manifest/install drift in both human output and `--json`; and `runtime validate`
   fails stale manifests with an `openusd-version-drift` check. Repair stays
@@ -853,7 +853,7 @@ discovery. Ranked:
   `python{ver}` / Windows `py -<ver>` / tool-cache interpreter, then
   `python3`, and only last a bare `python` — probed for runnability
   (`--version`), and `prepare_cohosted_schema`
-  ([plugin.rs](../crates/ost-cli/src/commands/plugin.rs)) runs `usdGenSchema`
+  ([plugin.rs](../../crates/ost-cli/src/commands/plugin.rs)) runs `usdGenSchema`
   through it. When nothing runs, a `PRECONDITION_FAILED` error names every
   candidate searched and the fix (unit-tested ordering; no more `IO_ERROR`).
 - ✅ **P1 — schema regeneration must not require a pre-existing plugin
@@ -904,7 +904,7 @@ discovery. Ranked:
     `ost plugin test --up-to <level>`, and uploads the report. Runners need
     `ost` on PATH and the pinned artifacts in their `OST_HOME` registry
     (self-hosted labels are the expected case). e2e:
-    [ci_matrix.rs](../crates/ost-cli/tests/ci_matrix.rs).
+    [ci_matrix.rs](../../crates/ost-cli/tests/ci_matrix.rs).
   - ⬜ JUnit + JSON report upload from `ost plugin test` (the generated
     workflow uploads the existing report dir; a JUnit format is still ahead)
   - ✅ scheduled/release gate for L0..L6 (the generated workflow is
@@ -924,14 +924,14 @@ its first renderer, not the source of CI semantics. Ranked:
 
 - ✅ **P0 — `ost ci generate github` emits invalid YAML.** The workflow
   template joined the rendered `matrix.include` block with a `\` string-literal
-  continuation ([github.rs](../crates/ost-ci/src/github.rs)); Rust's
+  continuation ([github.rs](../../crates/ost-ci/src/github.rs)); Rust's
   continuation also strips the next line's leading whitespace, so `steps:`
   landed at column 0 instead of under `jobs.cell`. Fixed with an
   `\x20`-protected indent; the unit test and the e2e now assert *placement*
   (`jobs.cell.steps` non-empty, no stray top-level key) — a column-0 `steps:`
   still parses as YAML, so a parse-only assertion misses the regression.
 - ✅ **P0 — `strata.lock` extension versions don't match `runtime show`.**
-  `build_lock` ([lock.rs](../crates/ost-cli/src/commands/lock.rs)) resolved
+  `build_lock` ([lock.rs](../../crates/ost-cli/src/commands/lock.rs)) resolved
   extensions from the static catalog (`ost_extension::resolve`), not from the
   pulled runtime's manifest — an adopted OpenUSD 26.08 runtime locked as the
   catalog's certified `25.05.01`, and `ost lock --check` still reported
@@ -943,7 +943,7 @@ its first renderer, not the source of CI semantics. Ranked:
 - ✅ **P1 — `ost plugin package` reruns are not idempotent.** A second package
   on Windows failed with access-denied (os error 5) at the reused
   `.strata/targets/<id>/package-stage`
-  ([plugin.rs](../crates/ost-cli/src/commands/plugin.rs)): staging copies with
+  ([plugin.rs](../../crates/ost-cli/src/commands/plugin.rs)): staging copies with
   `fs::copy`, which preserves the source's read-only attribute, and Windows
   refuses to delete read-only files. The stage reset now clears the attribute
   recursively and retries once (Windows-only; other platforms delete by
@@ -1005,7 +1005,7 @@ its first renderer, not the source of CI semantics. Ranked:
   `ost_plugin::ci_evidence_from_env` — records it as an additive `ci` block,
   so a support claim is reconstructible from its report. Absent outside CI
   (no `OST_CI_CELL`), so local reports are unchanged; the published
-  [plugin-report schema](../schemas/plugin-report.schema.json) documents the
+  [plugin-report schema](../../schemas/plugin-report.schema.json) documents the
   block. Target/profile, verification level, and validation outcome were
   already in the report body; package provenance stays in the package
   `manifest.json`.
@@ -1018,7 +1018,7 @@ its first renderer, not the source of CI semantics. Ranked:
   bundles compose into every session; a bundle path together with
   `--workspace` is a usage error.
 - ✅ **P2 — document the co-located schema migration path for existing
-  bundles.** [co-located-schema-migration.md](co-located-schema-migration.md):
+  bundles.** [co-located-schema-migration.md](../guides/co-located-schema-migration.md):
   when to co-host vs split a schema bundle, the `ost plugin schema add` fast
   path and the hand-wiring equivalent (`schema.source` + `provides:
   usd-schema:<Type>`), what the next build automates (usdGenSchema in the
@@ -1042,7 +1042,7 @@ Ranked:
   files open without `FILE_SHARE_DELETE`, an inherently transient lock the
   old clear-attribute-and-retry-once path never waited out. Staging now goes
   through `ost_core::fs::prepare_staging_dir`
-  ([fs.rs](../crates/ost-core/src/fs.rs)): bounded remove retries (~0.4s,
+  ([fs.rs](../../crates/ost-core/src/fs.rs)): bounded remove retries (~0.4s,
   clearing read-only between attempts), then **fall back to a fresh sibling
   stage** (`package-stage-<16 hex>`) instead of failing — the rerun always
   proceeds; the stuck tree is swept best-effort by every later run once the
@@ -1078,7 +1078,7 @@ Ranked:
   round-trips to a re-importable directory; `extract` unpacks an artifact's
   archive after re-verifying its digest (the runtime fetch and the CI matrix's
   plugin-under-test step share it). Covered by unit + e2e tests
-  ([artifact_registry.rs](../crates/ost-cli/tests/artifact_registry.rs)).
+  ([artifact_registry.rs](../../crates/ost-cli/tests/artifact_registry.rs)).
 - ✅ `RuntimeSource::Artifact` fetch/use path for prebuilt runtimes.
   `ost runtime export` packs a pulled real runtime (effective prefix, minus the
   store's `runtime.json` — the runtime manifest travels in the producer
@@ -1093,7 +1093,7 @@ Ranked:
   the manifest with `source: artifact` + the registry digest
   (`artifact_digest`), surfaced by `runtime show`/`list` and `doctor`
   (kind `downloaded`). Covered by unit + e2e tests
-  ([runtime_artifact.rs](../crates/ost-cli/tests/runtime_artifact.rs)),
+  ([runtime_artifact.rs](../../crates/ost-cli/tests/runtime_artifact.rs)),
   including a two-store export → handoff → fetch round-trip.
 - ✅ `ost plugin publish`: consumes existing `ost plugin package` output (never
   re-packages) and registers it by digest as a `published` artifact. Entry is
@@ -1108,12 +1108,12 @@ Ranked:
   complete notices and a generated SPDX or CycloneDX SBOM.
 - ⬜ Trust policy hooks: distinguish `local`, `verified`, and `trusted`
   artifacts; allow release CI to require a minimum trust level. Direction now
-  settled in [remote-artifact-transport.md](remote-artifact-transport.md)
+  settled in [remote-artifact-transport.md](../design/accepted/remote-artifact-transport.md)
   (integrity vs trust split, initial `local`/`verified`/`trusted` levels);
   implementation lands with the plan's Phase 4 (post-v0.9.0).
 - ✅ OCI layout / registry / oras transport — the read-only pull slice shipped in
   v0.9.0. Direction:
-  [remote-artifact-transport.md](remote-artifact-transport.md); ranked backlog
+  [remote-artifact-transport.md](../design/accepted/remote-artifact-transport.md); ranked backlog
   below. The read-only pull slice (transport contract + OCI backend +
   `ost artifact resolve|pull`) has landed; push and the publish policy stay
   deferred to v0.10.0+.
@@ -1127,7 +1127,7 @@ gate green — and isolated the one remaining blocker: the generated
 `ost-source-ci.yml` fails at "Check ost is available" on any GitHub-hosted
 runner, because `ost` install and runtime-artifact transport are both left to
 the operator. The remote-artifact-transport plan
-([remote-artifact-transport.md](remote-artifact-transport.md)) is the design
+([remote-artifact-transport.md](../design/accepted/remote-artifact-transport.md)) is the design
 contract; this backlog is its P0 slice plus the report's export-ergonomics
 asks. Ranked:
 
@@ -1150,7 +1150,7 @@ asks. Ranked:
   `ARTIFACT_OCI_DIGEST_MISMATCH`, `ARTIFACT_ARCHIVE_DIGEST_MISMATCH`,
   `ARTIFACT_ARCHIVE_UNSAFE`, `ARTIFACT_TRANSPORT_FAILED`, …) so CI can
   branch on cause. Integration-tested against a mock OCI registry
-  ([transport_pull.rs](../crates/ost-artifact/tests/transport_pull.rs)):
+  ([transport_pull.rs](../../crates/ost-artifact/tests/transport_pull.rs)):
   corrupt archive, manifest substitution, wrong platform / kind, unsafe
   archive entries, and mutable-only refs all fail.
 - ✅ **P0 — digest-pin policy.** Tags are convenience, digests are the
@@ -1254,7 +1254,7 @@ asks. Ranked:
   carries the generation recipe as a suggested action
   (`ost plugin run <bundle> -- usdcat --flatten <fixture> --out <golden>`),
   rendered under the diagnostic in human and `--json` output
-  ([levels.rs](../crates/ost-plugin/src/levels.rs) `level5_golden`).
+  ([levels.rs](../../crates/ost-plugin/src/levels.rs) `level5_golden`).
 - **Deferred to v0.10.0+:** `ost artifact push` + plugin publish over OCI +
   protected publish policy + OIDC federation (plan Phase 3); trust levels in
   manifest/CI contract, publisher identity/provenance, SBOM attach, trusted
@@ -1573,7 +1573,7 @@ branch-local repairs.
 
 ## Phase 9 — Kubernetes execution backend ⬜
 
-Direction: [kubernetes.md](kubernetes.md). OpenStrata owns the runtime contract,
+Direction: [kubernetes.md](../design/proposed/kubernetes.md). OpenStrata owns the runtime contract,
 artifacts, and validation; Kubernetes is a pluggable **execution backend** that
 runs those contracts on a cluster. `local` stays first-class; Kubernetes is
 opt-in. Start narrow — generate → submit → monitor → collect a `batch/v1 Job` via
@@ -1593,7 +1593,7 @@ opt-in. Start narrow — generate → submit → monitor → collect a `batch/v1
 
 ## Phase 10 — DCC host support ⬜
 
-Direction: [dcc-hosts.md](dcc-hosts.md). Runtime-native apps stay first-class;
+Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md). Runtime-native apps stay first-class;
 existing DCCs (Maya/Houdini/Nuke) are supported as **third-party external hosts**
 behind a host adapter boundary — discovered, fingerprinted, driven headlessly,
 packaged for, and checked for cross-DCC USD compatibility. No DCC API

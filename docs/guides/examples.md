@@ -6,7 +6,7 @@ codes, so the same invocations drive both interactive use and CI. Under `--json`
 each command prints a single `{ok, schema, data, warnings}` envelope on stdout
 (failures carry `error.code` / `error.category` instead of `data`). The full
 contract — envelope, codes, exit codes, and compatibility policy — is in
-[json-schema.md](json-schema.md):
+[json-schema.md](../reference/json-output.md):
 
 ```bash
 ost platform show cy2099 --json   # {"ok":false,"schema":1,"error":{"code":"PLATFORM_NOT_FOUND",…}}
@@ -20,7 +20,7 @@ ost() { cargo run -q -p ost-cli -- "$@"; }
 ```
 
 State lives under `~/.ost` (override with `OST_HOME`). See
-[architecture.md](architecture.md#on-disk-layout) for the on-disk layout.
+[architecture.md](../architecture/overview.md#on-disk-layout) for the on-disk layout.
 
 ---
 
@@ -267,7 +267,7 @@ ost plugin publish toy --target cy2026 --profile usd
 
 Reports land under `<bundle>/.strata/reports/<plugin>/<UTC>/`
 (`report.json`, `summary.txt`, `environment.json`); see the
-[plugin-report schema](../schemas/plugin-report.schema.json).
+[plugin-report schema](../../schemas/plugin-report.schema.json).
 Plugin package artifacts land under
 `<bundle>/dist/plugins/<name>/<version>/<target>/` with a `tar.zst`,
 `manifest.json`, and `SHA256SUMS`.
