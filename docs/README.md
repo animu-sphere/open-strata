@@ -1,19 +1,32 @@
 # OpenStrata Documentation
 
-| Document | Purpose |
-| --- | --- |
-| [overview.md](overview.md) | What OpenStrata is, who it is for, and the core principles (方針). |
-| [architecture.md](architecture.md) | Workspace layout, crate boundaries, and the domain model. |
-| [examples.md](examples.md) | Copy-pasteable examples for every `ost` command. |
-| [json-schema.md](json-schema.md) | The `--json` output contract: envelope, error codes, exit codes, and compatibility policy. |
-| [incident-notes.md](incident-notes.md) | Short debugging notes for incidents, root causes, fixes, and future guardrails. |
-| [roadmap.md](roadmap.md) | Phased delivery plan and remaining (incomplete) work. |
-| [releases/](releases/) | Immutable per-version release records (objective, shipped capabilities, compatibility, known limitations). |
-| [phase-4-plugin-harness.md](phase-4-plugin-harness.md) | Phase 4 direction: the OpenUSD plugin verification harness, mapped onto the codebase. |
-| [dcc-hosts.md](dcc-hosts.md) | Direction: third-party DCC host support (Maya/Houdini/Nuke) — discovery, headless run/package, and cross-DCC USD compatibility. |
-| [kubernetes.md](kubernetes.md) | Phase 9 direction: Kubernetes as a pluggable execution backend (`ost submit` / `ost jobs`). |
-| [design.md](design.md) | The full canonical design specification (source of truth). |
+Documentation is organized by responsibility: each category answers one primary
+class of question. When a summary disagrees with the canonical design spec, the
+spec wins and the summary is a bug.
 
-`design.md` is the long-form spec. The other documents are navigable summaries
-that stay in sync with what is actually implemented; when they disagree with the
-spec, the spec wins and the summary is a bug.
+| Category | Answers | Start here |
+| --- | --- | --- |
+| [concepts/](concepts/) | What OpenStrata is and the ideas it is built on. | [overview.md](concepts/overview.md) |
+| [architecture/](architecture/) | How the current system is structured (crates, domain model, on-disk layout). | [overview.md](architecture/overview.md) |
+| [guides/](guides/) | How to accomplish a task (command tour, migrations). | [examples.md](guides/examples.md) |
+| [reference/](reference/) | Factual contracts: `--json` output, schemas, exit codes. | [json-output.md](reference/json-output.md) |
+| [roadmap/](roadmap/) | What is planned next (only incomplete work). | [README.md](roadmap/README.md) |
+| [releases/](releases/) | Immutable per-version release records. | [README.md](releases/README.md) |
+| [design/](design/) | Why significant decisions were made (proposed / accepted / superseded). | [README.md](design/README.md) |
+| [reports/](reports/) | Evidence from real runs (incidents, dogfooding). | [reports/](reports/) |
+| [contributing/](contributing/) | How to write and maintain documentation. | [documentation.md](contributing/documentation.md) |
+
+## Canonical design spec
+
+[design/spec.md](design/spec.md) is the long-form canonical specification. The
+category documents above are navigable, current-state summaries that track what is
+actually implemented; the spec is the source of truth when they disagree.
+
+## Reorganization status
+
+The documentation is being reorganized in phases (see the reorg plan). Phase 2
+established these category boundaries and moved existing documents into them
+without major content rewriting. Decomposing the large hubs — the
+[roadmap](roadmap/README.md) into `current` / `backlog`, and
+[architecture](architecture/overview.md) into `overview` / `crates` — is the next
+phase; the monolithic files remain in place until then.
