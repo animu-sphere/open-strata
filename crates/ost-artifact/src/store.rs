@@ -340,73 +340,7 @@ impl ArtifactStore {
     pub fn extract(&self, digest_ref: &str, dest: &Utf8Path) -> Result<ArtifactRecord> {
         let record = self.resolve(digest_ref)?;
         let archive = self.archive_path(&record);
-
-        let mut f =
-            File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
-        let (actual, _) =
-            digest::sha256_hex_reader(&mut f).map_err(|e| Error::io(archive.to_string(), e))?;
-        if actual != record.digest {
-            return Err(Error::coded(
-                "ARTIFACT_DIGEST_MISMATCH",
-                Category::Validation,
-                format!(
-                    "stored archive for {} hashes to {actual} — the local store is corrupted",
-                    record.short_digest()
-                ),
-            )
-            .with_hint("re-import the artifact from its original producer output"));
-        }
-
-        if dest.as_std_path().exists() {
-            if !dest.as_std_path().is_dir() {
-                return Err(Error::usage(format!(
-                    "extract destination '{dest}' exists but is not a directory"
-                )));
-            }
-            let mut entries = std::fs::read_dir(dest.as_std_path())
-                .map_err(|e| Error::io(dest.to_string(), e))?;
-            if let Some(entry) = entries.next() {
-                entry.map_err(|e| Error::io(dest.to_string(), e))?;
-                return Err(Error::usage(format!(
-                    "refusing to extract into non-empty directory '{dest}'"
-                )));
-            }
-        } else {
-            std::fs::create_dir_all(dest.as_std_path())
-                .map_err(|e| Error::io(dest.to_string(), e))?;
-        }
-        // Pre-extraction safety gate: now that safe in-tree symlinks are packable,
-        // scan the (digest-verified) archive and refuse before unpacking a byte if
-        // any entry is unsafe — an absolute/escaping symlink, a `..` path, a
-        // hardlink, or a special file (harness §SEC-001). A local artifact reaches
-        // here without the transport verify gate, so `extract` enforces it itself.
-        // The scan skips content hashing; only the safety verdict matters here.
-        let unsafe_entries = scan_unsafe_entries(&archive)?;
-        if !unsafe_entries.is_empty() {
-            return Err(Error::coded(
-                "ARTIFACT_UNSAFE_ENTRY",
-                Category::Validation,
-                format!(
-                    "stored archive for {} contains {} entr{} unsafe to extract: {}",
-                    record.short_digest(),
-                    unsafe_entries.len(),
-                    if unsafe_entries.len() == 1 {
-                        "y"
-                    } else {
-                        "ies"
-                    },
-                    unsafe_entries.join("; "),
-                ),
-            ));
-        }
-
-        let file =
-            File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
-        let decoder = zstd::stream::read::Decoder::new(file)
-            .map_err(|e| Error::io(archive.to_string(), e))?;
-        let mut tar = tar::Archive::new(decoder);
-        tar.unpack(dest.as_std_path())
-            .map_err(|e| Error::io(dest.to_string(), e))?;
+        extract_archive(&archive, &record.digest, dest)?;
         Ok(record)
     }
 
@@ -524,6 +458,78 @@ pub(crate) struct ArchiveWalk {
     /// absolute or traversal paths, links, and special file types. The walk
     /// itself never extracts, so listing them is safe.
     pub unsafe_entries: Vec<String>,
+}
+
+/// Verify `archive` hashes to `expected_digest`, refuse any entry unsafe to
+/// extract, then unpack it into `dest`.
+///
+/// The shared core of [`ArtifactStore::extract`] and callers that unpack a
+/// producer archive not (yet) in the store — e.g. `ost plugin test
+/// --from-package`, which extracts a freshly built dist archive to run
+/// discovery against the *shipped* layout. `dest` must be absent or an empty
+/// directory. Fails with `ARTIFACT_DIGEST_MISMATCH` on a byte mismatch and
+/// `ARTIFACT_UNSAFE_ENTRY` on an absolute/escaping symlink, a `..` path, a
+/// hardlink, or a special file (harness §SEC-001) — scanned before a single
+/// byte is unpacked.
+pub fn extract_archive(archive: &Utf8Path, expected_digest: &str, dest: &Utf8Path) -> Result<()> {
+    let mut f = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+    let (actual, _) =
+        digest::sha256_hex_reader(&mut f).map_err(|e| Error::io(archive.to_string(), e))?;
+    if actual != expected_digest {
+        return Err(Error::coded(
+            "ARTIFACT_DIGEST_MISMATCH",
+            Category::Validation,
+            format!("archive '{archive}' hashes to {actual}, expected {expected_digest}"),
+        )
+        .with_hint("the archive is corrupt or was modified after it was built — repackage it"));
+    }
+
+    if dest.as_std_path().exists() {
+        if !dest.as_std_path().is_dir() {
+            return Err(Error::usage(format!(
+                "extract destination '{dest}' exists but is not a directory"
+            )));
+        }
+        let mut entries =
+            std::fs::read_dir(dest.as_std_path()).map_err(|e| Error::io(dest.to_string(), e))?;
+        if let Some(entry) = entries.next() {
+            entry.map_err(|e| Error::io(dest.to_string(), e))?;
+            return Err(Error::usage(format!(
+                "refusing to extract into non-empty directory '{dest}'"
+            )));
+        }
+    } else {
+        std::fs::create_dir_all(dest.as_std_path()).map_err(|e| Error::io(dest.to_string(), e))?;
+    }
+
+    // Pre-extraction safety gate: scan the (digest-verified) archive and refuse
+    // before unpacking a byte if any entry is unsafe. A local artifact reaches
+    // here without the transport verify gate, so extraction enforces it itself.
+    let unsafe_entries = scan_unsafe_entries(archive)?;
+    if !unsafe_entries.is_empty() {
+        return Err(Error::coded(
+            "ARTIFACT_UNSAFE_ENTRY",
+            Category::Validation,
+            format!(
+                "archive '{archive}' contains {} entr{} unsafe to extract: {}",
+                unsafe_entries.len(),
+                if unsafe_entries.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+                unsafe_entries.join("; "),
+            ),
+        ));
+    }
+
+    let file = File::open(archive.as_std_path()).map_err(|e| Error::io(archive.to_string(), e))?;
+    let decoder =
+        zstd::stream::read::Decoder::new(file).map_err(|e| Error::io(archive.to_string(), e))?;
+    let mut tar = tar::Archive::new(decoder);
+    tar.unpack(dest.as_std_path())
+        .map_err(|e| Error::io(dest.to_string(), e))?;
+    Ok(())
 }
 
 /// Decode a `tar.zst` archive and hash every regular file, flagging entries

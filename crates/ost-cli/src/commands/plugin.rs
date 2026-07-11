@@ -174,6 +174,14 @@ pub enum PluginCmd {
         /// Highest verification level to run (0..=6). Default 5; 6 adds usdview.
         #[arg(long, default_value_t = 5)]
         up_to: u8,
+        /// Test the *packaged* artifact, not the build tree: extract the
+        /// already-built `ost plugin package` output to a clean directory and run
+        /// discovery / open / validate against it. Catches a build-tree path
+        /// baked into `plugInfo`/`LibraryPath` that source-tree discovery cannot
+        /// see. Requires a prior `ost plugin package`; incompatible with
+        /// `--workspace`.
+        #[arg(long)]
+        from_package: bool,
     },
     /// Open a fixture in usdview inside the plugin's runtime session (Level 6).
     View {
@@ -272,11 +280,18 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             target,
             profile,
             up_to,
+            from_package,
         } => match (workspace, bundle) {
+            (true, _) if from_package => Err(Error::usage(
+                "--from-package tests one package — drop --workspace",
+            )),
             (true, Some(_)) => Err(Error::usage(
                 "--workspace discovers bundles itself — drop the bundle path",
             )),
             (true, None) => test_workspace(&with, target, profile, up_to, fmt),
+            (false, Some(bundle)) if from_package => {
+                test_from_package(&bundle, &with, target, profile, up_to, fmt)
+            }
             (false, Some(bundle)) => test(&bundle, &with, target, profile, up_to, fmt),
             (false, None) => Err(Error::usage(
                 "missing bundle path (or pass --workspace to test every bundle)",
@@ -1156,6 +1171,93 @@ fn test(
         output::report(report.passed(), &body);
     } else {
         print_report(&bundle, &report);
+        println!("\nReport: {report_dir}");
+    }
+    finish(&report)
+}
+
+/// `ost plugin test --from-package` — extract the already-built package to a
+/// clean directory and run the verification pyramid against the *shipped* tree.
+///
+/// Source-tree discovery walks the build tree, so a `plugInfo`/`LibraryPath`
+/// baked to a build-only absolute path still resolves and L2 passes green — then
+/// the shipped artifact fails to load on a clean host. Testing the extracted
+/// package reproduces the consumer's layout and catches that before publish.
+fn test_from_package(
+    bundle_path: &str,
+    with_paths: &[String],
+    target: Option<String>,
+    profile: Option<String>,
+    up_to: u8,
+    fmt: Format,
+) -> Result<()> {
+    let source = load_bundle(bundle_path)?;
+    let with_bundles = load_with_bundles(with_paths)?;
+    let host = Host::detect();
+
+    let (platform, profile) = selection(target, profile).ok_or_else(|| {
+        Error::usage(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
+        )
+    })?;
+    let (tgt, r) = build_target(&platform, &profile)?;
+    let id = tgt.id();
+
+    // Locate the dist output `ost plugin package` wrote for this target.
+    let name = &source.manifest.plugin.name;
+    let version = &source.manifest.plugin.version;
+    let dist_dir = plugin_dist_dir(&source.root, name, version, &id);
+    let manifest_path = dist_dir.join("manifest.json");
+    if !manifest_path.as_std_path().is_file() {
+        return Err(Error::precondition(format!(
+            "no packaged artifact at {dist_dir} — run `ost plugin package` for target {id} first"
+        )));
+    }
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(manifest_path.as_std_path())
+            .map_err(|e| Error::io(manifest_path.to_string(), e))?,
+    )
+    .map_err(|e| Error::parse(manifest_path.as_str(), anyhow::Error::new(e)))?;
+    let archive_name = manifest["archive"].as_str().ok_or_else(|| {
+        Error::validation(format!("{manifest_path} is missing an 'archive' field"))
+    })?;
+    let archive_digest = manifest["archive_digest"].as_str().ok_or_else(|| {
+        Error::validation(format!(
+            "{manifest_path} is missing an 'archive_digest' field"
+        ))
+    })?;
+    let archive_path = dist_dir.join(archive_name);
+
+    // Extract into a fresh, empty directory each run (extract_archive refuses a
+    // non-empty dest), so discovery sees only the shipped layout.
+    let extract_dir = target_state_dir(&source.root, &id).join("from-package");
+    if extract_dir.as_std_path().exists() {
+        std::fs::remove_dir_all(extract_dir.as_std_path())
+            .map_err(|e| Error::io(extract_dir.to_string(), e))?;
+    }
+    ost_artifact::extract_archive(&archive_path, archive_digest, &extract_dir)?;
+
+    let extracted = load_bundle(extract_dir.as_str())?;
+    let (report, report_dir) = test_bundle(&extracted, &with_bundles, Some(&r), &host, up_to)?;
+
+    if fmt.is_json() {
+        let mut body = ost_plugin::report_json(&extracted, &report);
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert(
+                "report_dir".into(),
+                serde_json::Value::String(report_dir.to_string()),
+            );
+            obj.insert("from_package".into(), serde_json::Value::Bool(true));
+            obj.insert(
+                "package".into(),
+                serde_json::Value::String(archive_path.to_string()),
+            );
+        }
+        output::report(report.passed(), &body);
+    } else {
+        println!("Testing packaged artifact: {archive_path}");
+        println!("  extracted to: {extract_dir}");
+        print_report(&extracted, &report);
         println!("\nReport: {report_dir}");
     }
     finish(&report)

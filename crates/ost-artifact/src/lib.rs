@@ -23,7 +23,7 @@ pub use record::{
     MANIFEST_FILE, PLUGIN_BUNDLE_KIND, RECORD_FILE, RECORD_SCHEMA, RUNTIME_KIND,
 };
 pub use reference::{FileReference, OciReference, RemoteReference};
-pub use store::{ArtifactStore, ImportOutcome, Index, VerifyReport, INDEX_FILE};
+pub use store::{extract_archive, ArtifactStore, ImportOutcome, Index, VerifyReport, INDEX_FILE};
 pub use transport::{
     file::FileTransport, oci::OciTransport, pull, push, ArtifactTransport, PullEvidence,
     PullPolicy, PushOutcome, PushSource, ResolvedRemote,
