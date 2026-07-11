@@ -1,0 +1,23 @@
+# Documentation gate. Validates that relative links and heading anchors across
+# the repository's Markdown resolve, so a moved or renamed doc cannot silently
+# break cross-references. Ubuntu-only and dependency-free (system python3), so it
+# runs cheaply on every PR. Additional documentation checks (Markdown lint,
+# generated-reference drift) are planned to join this workflow.
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Check documentation links and anchors
+        run: python3 scripts/check_doc_links.py .
