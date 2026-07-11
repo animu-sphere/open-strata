@@ -28,5 +28,6 @@ The documentation is being reorganized in phases (see the reorg plan). Category
 boundaries are established; the [roadmap](roadmap/) is decomposed into
 `current` / `backlog` with per-version [release records](releases/) and a
 [delivery history](reports/delivery-history.md) holding the granular detail.
-Still pending: splitting [architecture](architecture/overview.md) into
-`overview` / `crates`, and generated reference pages.
+[Architecture](architecture/) is split into `overview` + `crates`. Still pending:
+generated reference pages (`cli`, schemas, support-matrix) and a Markdown-lint /
+consistency CI gate.
