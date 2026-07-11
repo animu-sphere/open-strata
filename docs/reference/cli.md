@@ -71,14 +71,20 @@ Export an artifact's files into a directory (CI handoff)
 
 Unpack an artifact's archive into a directory (digest re-verified)
 
-**Usage:** `ost artifact extract <DIGEST> <DEST>`
+**Usage:** `ost artifact extract [OPTIONS] <DIGEST> [<DEST>]`
 
 **Arguments:**
 
 | Argument | Required | Description |
 | --- | --- | --- |
 | `<DIGEST>` | yes | Digest reference: sha256:<hex> or a unique hex prefix (>= 6 chars) |
-| `<DEST>` | yes | Destination directory (created if missing) |
+| `<DEST>` | no | Destination directory (created if missing). May also be given as `--into <DEST>` |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--into <INTO>` | Named form of the destination directory, e.g. `ost artifact extract <digest> --into ./out` |
 
 #### `ost artifact import`
 
@@ -609,6 +615,7 @@ Pack a built plugin bundle into a target-specific tar.zst artifact
 | `--clean-stage` | Reclaim the stable package stage harder and sweep stale fallback stages a previous locked run left behind, instead of quietly staging into another sibling. Use once the holding process has exited |
 | `--profile <PROFILE>` | Profile to package against. Defaults to the enclosing project's |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
+| `--with-debug` | Ship debug symbols (`.pdb`, `.dwo`) *inside* the main package instead of the default lean package. By default the main archive is lean and any debug symbols are split into a sibling `*-debug` package |
 
 #### `ost plugin publish`
 
@@ -646,6 +653,8 @@ Launch a command inside the plugin's runtime session (needs a real runtime)
 
 | Option | Description |
 | --- | --- |
+| `--no-inject` | Do not inject the source bundle's own build-tree plugInfo/lib/python paths. The session becomes the bare runtime env plus any `--plugin-path` / `--with` trees — an `ost runtime run`-style USD-only session. The bundle argument then only selects the runtime |
+| `--plugin-path <PLUGIN_PATH>` | External installed/extracted plugin tree(s) to put on the discovery path — an extracted package root (holds `openstrata.plugin.yaml`), not the source bundle. Use with `--no-inject` to run a clean-install / discovery test against the shipped layout rather than the build tree |
 | `--profile <PROFILE>` | Profile to activate. Defaults to the enclosing project's |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 | `--with <WITH>` | Additional plugin bundle(s) to include in the session env |
@@ -696,6 +705,7 @@ Orchestrate the verification pyramid (L0..L6) and write a report
 
 | Option | Description |
 | --- | --- |
+| `--from-package` | Test the *packaged* artifact, not the build tree: extract the already-built `ost plugin package` output to a clean directory and run discovery / open / validate against it. Catches a build-tree path baked into `plugInfo`/`LibraryPath` that source-tree discovery cannot see. Requires a prior `ost plugin package`; incompatible with `--workspace` |
 | `--profile <PROFILE>` | Profile to test against. Defaults to the enclosing project's |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 | `--up-to <UP_TO>` | Highest verification level to run (0..=6). Default 5; 6 adds usdview |
