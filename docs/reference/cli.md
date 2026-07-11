@@ -849,7 +849,7 @@ Export a pulled real runtime into the local artifact registry
 | Option | Description |
 | --- | --- |
 | `--dist <DIST>` | Also keep the producer output (archive + manifest.json + SHA256SUMS) in this directory instead of a temporary staging dir |
-| `--jobs <JOBS>` | zstd worker threads for compression. Defaults to the host's available parallelism; `--jobs 1` forces the single-threaded encoder |
+| `--jobs <JOBS>` | zstd worker threads for compression. Defaults to the host's available parallelism, or the byte-stable single-threaded encoder when `SOURCE_DATE_EPOCH` is set; `--jobs 0` also forces it explicitly |
 | `--level <LEVEL>` | zstd compression level (1–22). Lower is faster; the default (19) favors a small artifact, packed once and pulled many times |
 | `--profile <PROFILE>` | Profile, e.g. `usd` |
 | `--slim` | Export only the SDK layout (include, lib, bin, plugin, cmake, libraries, resources, and CMake config), dropping the source/build tree of a runtime adopted from a full USD build. Much smaller archive and faster per-PR pull |

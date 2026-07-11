@@ -273,6 +273,20 @@ pub struct ManifestFile {
     pub executable: bool,
 }
 
+/// An optional debug-symbol archive carried alongside the primary artifact.
+///
+/// Plugin packages use this for their lean-by-default `*-debug.tar.zst`
+/// sidecar. It remains subordinate to the primary artifact identity, but every
+/// movement edge must preserve and verify it because `manifest.json` promises
+/// that these bytes are available to consumers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugArchive {
+    pub archive: String,
+    pub digest: String,
+    pub archive_size: u64,
+    pub files: Vec<ManifestFile>,
+}
+
 /// Extract the per-file integrity list from a producer manifest.
 pub fn manifest_files(manifest: &serde_json::Value) -> Result<Vec<ManifestFile>> {
     let files = manifest
@@ -289,6 +303,49 @@ pub fn manifest_files(manifest: &serde_json::Value) -> Result<Vec<ManifestFile>>
             })
         })
         .collect()
+}
+
+/// Parse the optional plugin debug-symbol sidecar recorded under `debug`.
+/// Missing `debug` is the ordinary single-archive shape; when present, all
+/// identity fields are required and the filename must be safe to join beneath
+/// a dist/store directory.
+pub fn manifest_debug_archive(manifest: &serde_json::Value) -> Result<Option<DebugArchive>> {
+    let Some(debug) = manifest.get("debug") else {
+        return Ok(None);
+    };
+    if !debug.is_object() {
+        return Err(Error::InvalidManifest(
+            "producer manifest 'debug' must be an object".to_string(),
+        ));
+    }
+
+    let archive = require_archive_filename(debug)?;
+    let digest = require_str(debug, "archive_digest")?;
+    if !is_sha256_ref(&digest) {
+        return Err(Error::InvalidManifest(format!(
+            "producer manifest debug archive carries a malformed archive_digest '{digest}' \
+             (expected sha256:<64 hex chars>)"
+        )));
+    }
+    let archive_size = require_u64(debug, "archive_size")?;
+    let files = manifest_files(debug)?;
+
+    if manifest
+        .get("archive")
+        .and_then(|v| v.as_str())
+        .is_some_and(|main| main == archive)
+    {
+        return Err(Error::InvalidManifest(
+            "producer manifest debug archive must have a distinct filename".to_string(),
+        ));
+    }
+
+    Ok(Some(DebugArchive {
+        archive,
+        digest,
+        archive_size,
+        files,
+    }))
 }
 
 /// Classify a producer manifest by its `kind` tag (absent = project package).
@@ -475,6 +532,22 @@ mod tests {
                     .unwrap_err();
             assert!(err.to_string().contains("archive"), "got: {err}");
         }
+    }
+
+    #[test]
+    fn debug_archive_identity_is_validated() {
+        let mut m = plugin_manifest();
+        m["debug"] = serde_json::json!({
+            "archive": "toy-debug.tar.zst",
+            "archive_digest": format!("sha256:{}", "cd".repeat(32)),
+            "archive_size": 42,
+            "files": [],
+        });
+        let debug = manifest_debug_archive(&m).unwrap().unwrap();
+        assert_eq!(debug.archive, "toy-debug.tar.zst");
+
+        m["debug"]["archive"] = serde_json::json!("../toy-debug.tar.zst");
+        assert!(manifest_debug_archive(&m).is_err());
     }
 
     #[test]

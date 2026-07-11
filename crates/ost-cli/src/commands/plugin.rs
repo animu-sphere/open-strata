@@ -797,11 +797,15 @@ fn package(
     let packed = pack_dir_with(&stage, &archive_path, &main_files, pack_opts, &mut |_| {})
         .map_err(|e| Error::io(archive_path.to_string(), e))?;
 
+    let debug_name = plugin_debug_archive_name(name, version, &id);
+    let debug_path = dist_dir.join(&debug_name);
     let debug_pack = if debug_files.is_empty() {
+        // A previous lean package may have emitted this sibling. Do not leave
+        // stale symbols in a dist directory whose new manifest/SHA256SUMS says
+        // there is no debug archive (notably after switching to --with-debug).
+        remove_stale_debug_archive(&debug_path)?;
         None
     } else {
-        let debug_name = plugin_debug_archive_name(name, version, &id);
-        let debug_path = dist_dir.join(&debug_name);
         let dp = pack_dir_with(&stage, &debug_path, &debug_files, pack_opts, &mut |_| {})
             .map_err(|e| Error::io(debug_path.to_string(), e))?;
         Some((debug_name, dp))
@@ -2201,6 +2205,14 @@ fn plugin_debug_archive_name(name: &str, version: &str, id: &str) -> String {
     format!("{name}-{version}-{id}-debug.tar.zst")
 }
 
+fn remove_stale_debug_archive(path: &Utf8Path) -> Result<()> {
+    match std::fs::remove_file(path.as_std_path()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::io(path.to_string(), e)),
+    }
+}
+
 /// Debug-symbol sidecar files split out of a lean package: the MSVC program
 /// database (`.pdb`) and split-DWARF objects (`.dwo`). Debug info embedded in an
 /// ELF/Mach-O binary is not a separate file and is left in place — stripping it
@@ -2676,6 +2688,21 @@ mod tests {
                 "{keep} must stay in the main package"
             );
         }
+    }
+
+    #[test]
+    fn repack_without_a_debug_sidecar_removes_the_previous_one() {
+        let root = std::env::temp_dir().join(format!("ost-stale-debug-{}", std::process::id()));
+        let root = Utf8PathBuf::from_path_buf(root).unwrap();
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        let sidecar = root.join("toy-debug.tar.zst");
+        std::fs::write(sidecar.as_std_path(), b"old symbols").unwrap();
+
+        remove_stale_debug_archive(&sidecar).unwrap();
+        assert!(!sidecar.as_std_path().exists());
+        remove_stale_debug_archive(&sidecar).unwrap();
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[test]

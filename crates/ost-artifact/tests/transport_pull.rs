@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use ost_artifact::transport::oci::{MEDIA_TYPE_ARCHIVE, MEDIA_TYPE_PRODUCER_MANIFEST};
+use ost_artifact::transport::oci::{
+    MEDIA_TYPE_ARCHIVE, MEDIA_TYPE_DEBUG_ARCHIVE, MEDIA_TYPE_PRODUCER_MANIFEST,
+};
 use ost_artifact::{
     pull, ArtifactKind, ArtifactSource, ArtifactStore, ArtifactTransport, FileTransport,
     OciTransport, PullPolicy, RemoteReference,
@@ -121,6 +123,14 @@ impl MockRegistry {
             "application/octet-stream",
             bundle.producer_manifest.clone(),
         );
+        if let (Some(name), Some(bytes)) = (&bundle.debug_name, &bundle.debug_archive) {
+            self.put(
+                &format!("/v2/{repo}/blobs/{}", digest::sha256_hex(bytes)),
+                "application/octet-stream",
+                bytes.clone(),
+            );
+            assert!(name.ends_with("-debug.tar.zst"));
+        }
     }
 }
 
@@ -213,6 +223,8 @@ struct Bundle {
     archive: Vec<u8>,
     archive_name: String,
     producer_manifest: Vec<u8>,
+    debug_archive: Option<Vec<u8>>,
+    debug_name: Option<String>,
     oci_manifest: Vec<u8>,
     oci_digest: String,
     artifact_digest: String,
@@ -222,6 +234,48 @@ struct Bundle {
 fn make_bundle(name: &str, content: &[u8]) -> Bundle {
     let archive = tar_zst(&[("lib/payload.bin", content)]);
     make_bundle_from_archive(name, content, archive)
+}
+
+fn make_bundle_with_debug(name: &str, content: &[u8], symbols: &[u8]) -> Bundle {
+    let archive = tar_zst(&[("lib/payload.bin", content)]);
+    let archive_name = format!("{name}-0.1.0-{TARGET}.tar.zst");
+    let debug_archive = tar_zst(&[("lib/payload.pdb", symbols)]);
+    let debug_name = format!("{name}-0.1.0-{TARGET}-debug.tar.zst");
+    let producer = serde_json::json!({
+        "schema": 1,
+        "kind": "openstrata.plugin-bundle",
+        "plugin": { "name": name, "version": "0.1.0", "kind": "usd-fileformat", "license": "Apache-2.0" },
+        "target": TARGET,
+        "archive": archive_name,
+        "archive_digest": digest::sha256_hex(&archive),
+        "archive_size": archive.len(),
+        "total_size": content.len(),
+        "created_unix": 1_750_000_000u64,
+        "provenance": {
+            "profile": "usd",
+            "runtime": { "id": "rt", "digest": "sha256:beef" },
+            "validation": { "passed": true },
+        },
+        "files": [
+            { "path": "lib/payload.bin", "sha256": digest::sha256_hex(content), "size": content.len() },
+        ],
+        "debug": {
+            "archive": debug_name,
+            "archive_digest": digest::sha256_hex(&debug_archive),
+            "archive_size": debug_archive.len(),
+            "total_size": symbols.len(),
+            "files": [
+                { "path": "lib/payload.pdb", "sha256": digest::sha256_hex(symbols), "size": symbols.len() },
+            ],
+        },
+    });
+    let producer_manifest = serde_json::to_vec_pretty(&producer).unwrap();
+    finish_bundle_with_debug(
+        archive,
+        archive_name,
+        producer_manifest,
+        Some((debug_name, debug_archive)),
+    )
 }
 
 fn make_bundle_from_archive(name: &str, content: &[u8], archive: Vec<u8>) -> Bundle {
@@ -250,7 +304,36 @@ fn make_bundle_from_archive(name: &str, content: &[u8], archive: Vec<u8>) -> Bun
 }
 
 fn finish_bundle(archive: Vec<u8>, archive_name: String, producer_manifest: Vec<u8>) -> Bundle {
+    finish_bundle_with_debug(archive, archive_name, producer_manifest, None)
+}
+
+fn finish_bundle_with_debug(
+    archive: Vec<u8>,
+    archive_name: String,
+    producer_manifest: Vec<u8>,
+    debug: Option<(String, Vec<u8>)>,
+) -> Bundle {
     let artifact_digest = digest::sha256_hex(&archive);
+    let mut layers = vec![serde_json::json!({
+        "mediaType": MEDIA_TYPE_ARCHIVE,
+        "digest": artifact_digest,
+        "size": archive.len(),
+        "annotations": { "org.opencontainers.image.title": archive_name },
+    })];
+    if let Some((name, bytes)) = &debug {
+        layers.push(serde_json::json!({
+            "mediaType": MEDIA_TYPE_DEBUG_ARCHIVE,
+            "digest": digest::sha256_hex(bytes),
+            "size": bytes.len(),
+            "annotations": { "org.opencontainers.image.title": name },
+        }));
+    }
+    layers.push(serde_json::json!({
+        "mediaType": MEDIA_TYPE_PRODUCER_MANIFEST,
+        "digest": digest::sha256_hex(&producer_manifest),
+        "size": producer_manifest.len(),
+        "annotations": { "org.opencontainers.image.title": "manifest.json" },
+    }));
     let oci = serde_json::json!({
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -260,20 +343,7 @@ fn finish_bundle(archive: Vec<u8>, archive_name: String, producer_manifest: Vec<
             "digest": digest::sha256_hex(b"{}"),
             "size": 2,
         },
-        "layers": [
-            {
-                "mediaType": MEDIA_TYPE_ARCHIVE,
-                "digest": artifact_digest,
-                "size": archive.len(),
-                "annotations": { "org.opencontainers.image.title": archive_name },
-            },
-            {
-                "mediaType": MEDIA_TYPE_PRODUCER_MANIFEST,
-                "digest": digest::sha256_hex(&producer_manifest),
-                "size": producer_manifest.len(),
-                "annotations": { "org.opencontainers.image.title": "manifest.json" },
-            },
-        ],
+        "layers": layers,
     });
     let oci_manifest = serde_json::to_vec_pretty(&oci).unwrap();
     let oci_digest = digest::sha256_hex(&oci_manifest);
@@ -281,6 +351,8 @@ fn finish_bundle(archive: Vec<u8>, archive_name: String, producer_manifest: Vec<
         archive,
         archive_name,
         producer_manifest,
+        debug_archive: debug.as_ref().map(|(_, bytes)| bytes.clone()),
+        debug_name: debug.map(|(name, _)| name),
         oci_manifest,
         oci_digest,
         artifact_digest,
@@ -434,6 +506,33 @@ fn digest_pinned_pull_imports_and_verifies() {
         .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-pull-"))
         .collect();
     assert!(leftovers.is_empty(), "scratch dirs must be cleaned up");
+
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn digest_pinned_pull_preserves_and_verifies_the_debug_sidecar() {
+    let registry = MockRegistry::start();
+    let bundle = make_bundle_with_debug("toy", b"plugin bytes", b"debug symbols");
+    registry.register("fixtures/debug", "v1", &bundle);
+
+    let root = tmp_root("pull-debug");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::new(true);
+    let reference = oci_ref(
+        &registry,
+        "fixtures/debug",
+        &format!("@{}", bundle.oci_digest),
+    );
+    let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
+
+    assert!(evidence.verification.contains(&("debug_archive", "passed")));
+    let debug_name = bundle.debug_name.as_deref().unwrap();
+    assert!(store
+        .object_dir(evidence.record.digest_hex())
+        .join(debug_name)
+        .as_std_path()
+        .is_file());
 
     std::fs::remove_dir_all(root.as_std_path()).ok();
 }
