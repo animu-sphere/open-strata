@@ -29,6 +29,12 @@ pub struct FileEntry {
     /// For a symlink entry, the (validated, in-tree, relative) target as stored
     /// in the archive; `None` for a regular file. See [`validate_symlink`].
     pub link_target: Option<String>,
+    /// `true` if the regular file was packed with a Unix execute bit (mode
+    /// `0o755`), so a materialized runtime tool (`usdcat`, `usdGenSchema`, …)
+    /// stays runnable. Always `false` for a symlink or a non-executable file.
+    /// Recorded so the runnable-runtime invariant is part of the artifact
+    /// identity, not just a filesystem side effect at extract time.
+    pub executable: bool,
 }
 
 impl FileEntry {
@@ -43,6 +49,12 @@ impl FileEntry {
         });
         if let Some(target) = &self.link_target {
             entry["link_target"] = serde_json::Value::String(target.clone());
+        }
+        // Emit `executable` only when set, so a manifest of ordinary files stays
+        // byte-identical to a pre-executable-bit producer (symmetric with
+        // `link_target`).
+        if self.executable {
+            entry["executable"] = serde_json::Value::Bool(true);
         }
         entry
     }
@@ -177,12 +189,21 @@ pub fn pack_dir_with(
                 sha256: digest::sha256_hex(payload),
                 size: payload.len() as u64,
                 link_target: Some(target),
+                executable: false,
             }
         } else {
+            let meta = std::fs::symlink_metadata(abs.as_std_path())?;
             let data = std::fs::read(abs.as_std_path())?;
+            // Preserve the execute bit so a materialized runtime tool stays
+            // runnable, but normalize everything else to a canonical mode: the
+            // archive must be deterministic (identical input → identical bytes),
+            // and consumers only need "is this a tool" (0o755) vs "is this data"
+            // (0o644), not the producer's exact umask.
+            let executable = is_executable(&meta);
+            let mode = if executable { 0o755 } else { 0o644 };
             let mut header = tar::Header::new_gnu();
             header.set_size(data.len() as u64);
-            header.set_mode(0o644);
+            header.set_mode(mode);
             header.set_cksum();
             builder.append_data(&mut header, &rel, data.as_slice())?;
 
@@ -192,6 +213,7 @@ pub fn pack_dir_with(
                 sha256: digest::sha256_hex(&data),
                 size: data.len() as u64,
                 link_target: None,
+                executable,
             }
         };
 
@@ -425,6 +447,24 @@ fn unsupported_entry(kind: &str, path: &Utf8Path) -> io::Error {
         io::ErrorKind::InvalidData,
         format!("{kind} is not allowed in the package staging area: {path}"),
     )
+}
+
+/// Whether a staged regular file carries a Unix execute bit, so packing can
+/// stamp `0o755` and keep it runnable after extraction.
+///
+/// On Unix this reads the real mode. On Windows there are no POSIX permission
+/// bits (executability is by extension), so a file staged there is packed
+/// non-executable — a runtime whose tools must be `+x` is produced on the OS it
+/// targets (macOS/Linux), which is where the bit exists to preserve.
+#[cfg(unix)]
+fn is_executable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_meta: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// Validate that the symlink at `link` (which lives under `stage`) is safe to
@@ -687,6 +727,75 @@ mod tests {
         }
         names.sort();
         assert_eq!(names, vec!["lib/a.bin", "lib/b.bin", "top.txt"]);
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_preserves_execute_bit_and_extraction_restores_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tmp("pack-exec");
+        std::fs::create_dir_all(root.join("bin").as_std_path()).unwrap();
+        std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        // A runtime tool (executable) beside an ordinary data file.
+        std::fs::write(root.join("bin/usdcat").as_std_path(), b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(
+            root.join("bin/usdcat").as_std_path(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::write(root.join("lib/data.txt").as_std_path(), b"data").unwrap();
+        std::fs::set_permissions(
+            root.join("lib/data.txt").as_std_path(),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+
+        let files = stage_files(&root).unwrap();
+        let archive = root.join("out.tar.zst");
+        let packed = pack_dir(&root, &archive, &files).unwrap();
+
+        // The manifest records the runnable invariant per file.
+        let tool = packed
+            .files
+            .iter()
+            .find(|f| f.path == "bin/usdcat")
+            .unwrap();
+        assert!(tool.executable, "the tool must be recorded executable");
+        assert_eq!(tool.manifest_json()["executable"], serde_json::json!(true));
+        let data = packed
+            .files
+            .iter()
+            .find(|f| f.path == "lib/data.txt")
+            .unwrap();
+        assert!(!data.executable, "an ordinary data file is not executable");
+        // A non-executable file omits the key, keeping legacy manifests intact.
+        assert!(data.manifest_json().get("executable").is_none());
+
+        // Extraction restores the mode from the archive header.
+        let dest = root.join("out");
+        std::fs::create_dir_all(dest.as_std_path()).unwrap();
+        let reader =
+            zstd::stream::read::Decoder::new(File::open(archive.as_std_path()).unwrap()).unwrap();
+        tar::Archive::new(reader)
+            .unpack(dest.as_std_path())
+            .unwrap();
+        let tool_mode = std::fs::metadata(dest.join("bin/usdcat").as_std_path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_ne!(tool_mode & 0o111, 0, "extracted tool must be executable");
+        let data_mode = std::fs::metadata(dest.join("lib/data.txt").as_std_path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            data_mode & 0o111,
+            0,
+            "extracted data must not be executable"
+        );
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }

@@ -509,6 +509,10 @@ pub(crate) struct ArchiveFile {
     /// Set for a symlink entry: its (validated, in-tree) target. `sha256`/`size`
     /// then cover the target string. `None` for a regular file.
     pub link_target: Option<String>,
+    /// `true` if the tar entry's mode carries a Unix execute bit — the packed
+    /// runnable-tool invariant, checked against the manifest so a runtime whose
+    /// tools lost `+x` fails verification, not just at runtime.
+    pub executable: bool,
 }
 
 /// The result of decoding and hashing every entry of a `tar.zst` archive.
@@ -545,6 +549,7 @@ pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
             .replace('\\', "/");
 
         let entry_type = entry.header().entry_type();
+        let executable = entry.header().mode().unwrap_or(0) & 0o111 != 0;
         let link_target = read_link_target(&entry, entry_type, archive)?;
         match classify_entry(&path, entry_type, link_target.as_deref()) {
             EntryClass::Unsafe(reason) => walk.unsafe_entries.push(reason),
@@ -562,6 +567,7 @@ pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
                     sha256: sha,
                     size,
                     link_target: None,
+                    executable,
                 });
             }
             EntryClass::Symlink(target) => {
@@ -577,6 +583,7 @@ pub(crate) fn walk_archive(archive: &Utf8Path) -> Result<ArchiveWalk> {
                     sha256: digest::sha256_hex(target.as_bytes()),
                     size: target.len() as u64,
                     link_target: Some(target),
+                    executable: false,
                 });
             }
         }
@@ -772,10 +779,13 @@ pub(crate) fn compare_archive_files(
         match actual.iter().find(|f| f.path == want.path) {
             // A symlink and a regular file whose contents equal the target string
             // hash alike; `link_target` keeps their manifest identities distinct.
+            // `executable` is part of the identity too — a runtime tool that lost
+            // its `+x` bit is a mismatch, not a silent pass.
             Some(f)
                 if f.sha256 == want.sha256
                     && f.size == want.size
-                    && f.link_target == want.link_target =>
+                    && f.link_target == want.link_target
+                    && f.executable == want.executable =>
             {
                 cmp.matched += 1
             }
@@ -1078,6 +1088,8 @@ mod tests {
     /// One tar entry to write into a test archive.
     enum Entry<'a> {
         Reg(&'a str, &'a [u8]),
+        /// A regular file packed with the execute bit (mode `0o755`).
+        RegExec(&'a str, &'a [u8]),
         Sym(&'a str, &'a str),
     }
 
@@ -1094,6 +1106,13 @@ mod tests {
                     let mut h = tar::Header::new_gnu();
                     h.set_size(bytes.len() as u64);
                     h.set_mode(0o644);
+                    h.set_cksum();
+                    tar.append_data(&mut h, path, *bytes).unwrap();
+                }
+                Entry::RegExec(path, bytes) => {
+                    let mut h = tar::Header::new_gnu();
+                    h.set_size(bytes.len() as u64);
+                    h.set_mode(0o755);
                     h.set_cksum();
                     tar.append_data(&mut h, path, *bytes).unwrap();
                 }
@@ -1168,16 +1187,67 @@ mod tests {
             sha256: digest::sha256_hex(target.as_bytes()),
             size: target.len() as u64,
             link_target: None,
+            executable: false,
         }];
         let expected = vec![crate::record::ManifestFile {
             path: "lib/x".into(),
             sha256: digest::sha256_hex(target.as_bytes()),
             size: target.len() as u64,
             link_target: Some(target.into()),
+            executable: false,
         }];
         let cmp = compare_archive_files(&actual, &expected);
         assert!(!cmp.passed());
         assert_eq!(cmp.mismatched, vec!["lib/x".to_string()]);
+    }
+
+    #[test]
+    fn walk_reads_executable_bit_and_verify_flags_a_stripped_tool() {
+        let root = tmp_root("walk-exec");
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        let archive = root.join("a.tar.zst");
+        write_archive(
+            &archive,
+            &[
+                Entry::RegExec("bin/usdcat", b"#!/bin/sh\n"),
+                Entry::Reg("lib/data.txt", b"data"),
+            ],
+        );
+
+        let walk = walk_archive(&archive).unwrap();
+        let tool = walk.files.iter().find(|f| f.path == "bin/usdcat").unwrap();
+        assert!(tool.executable, "the 0o755 entry is read as executable");
+        let data = walk
+            .files
+            .iter()
+            .find(|f| f.path == "lib/data.txt")
+            .unwrap();
+        assert!(!data.executable, "the 0o644 entry is not executable");
+
+        // A manifest that claims the tool is NOT executable must not verify
+        // against an archive whose tool is — the runnable invariant is part of
+        // the per-file identity, not just content bytes.
+        let expected = vec![
+            crate::record::ManifestFile {
+                path: "bin/usdcat".into(),
+                sha256: tool.sha256.clone(),
+                size: tool.size,
+                link_target: None,
+                executable: false,
+            },
+            crate::record::ManifestFile {
+                path: "lib/data.txt".into(),
+                sha256: data.sha256.clone(),
+                size: data.size,
+                link_target: None,
+                executable: false,
+            },
+        ];
+        let cmp = compare_archive_files(&walk.files, &expected);
+        assert!(!cmp.passed());
+        assert_eq!(cmp.mismatched, vec!["bin/usdcat".to_string()]);
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[cfg(unix)]

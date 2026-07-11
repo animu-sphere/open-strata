@@ -266,6 +266,11 @@ pub struct ManifestFile {
     /// so a pre-symlink manifest still round-trips unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_target: Option<String>,
+    /// `true` if the archive entry carries a Unix execute bit. Absent in a
+    /// pre-executable-bit manifest (defaults to `false`), so old manifests still
+    /// round-trip and a runtime of ordinary data files is unaffected.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub executable: bool,
 }
 
 /// Extract the per-file integrity list from a producer manifest.
