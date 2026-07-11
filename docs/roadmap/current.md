@@ -27,6 +27,23 @@ on top of the v0.13.0 artifacts.
 
 **Tracks:** SEC-006 and the Phase 6 trust-policy hooks.
 
+### Release-lane dogfood hardening
+
+The usd-vrm-plugins v0.13.0 release-lane report found three small correctness
+gaps that should close with v0.14 without changing its trust-policy objective:
+
+- recursively reject unknown `openstrata.ci.yaml` keys instead of silently
+  dropping a misspelled verification/publication control;
+- emit a native Windows directory to `GITHUB_PATH` from the generated Bash
+  bootstrap and prove a native child process can launch `ost`;
+- make `ost plugin run -- python ...` resolve an absolute interpreter matching
+  the runtime Python ABI, or fail before launch with an actionable diagnostic.
+
+An atomic helper for updating `bootstrap.ost.version` plus exact per-target
+checksums is a v0.14 non-blocking target. Tag-triggered release-lane generation
+waits for the trust + provenance foundations and is not part of v0.14. Direction:
+[release-lane-ci.md](../design/proposed/release-lane-ci.md).
+
 ## Just shipped: v0.13.0 — release-quality packaging
 
 Reproducible, lean, testable-from-package artifacts: `SOURCE_DATE_EPOCH`-honoring
@@ -50,3 +67,7 @@ Small open items not tied to the milestone ladder:
 - **SEC-002 follow-up — symlink escape inside a bundle.** Reject a *real* symlink
   within a bundle that resolves outside the root at read time
   (canonicalize-and-contain), complementing the lexical manifest check.
+- **Packaging diagnostic — stale debug sidecar candidate.** Optionally warn when
+  a same-basename PDB is older than its DLL; keep it non-fatal until PE/PDB
+  identity can be compared reliably. See
+  [release-lane-ci.md](../design/proposed/release-lane-ci.md#debug-sidecar-diagnostics).
