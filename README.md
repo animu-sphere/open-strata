@@ -31,7 +31,8 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.12.0** — hosted macOS CI + runtime-contract hardening.
+The current release is **v0.13.0** — release-quality packaging (reproducible,
+lean, and testable-from-package).
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
