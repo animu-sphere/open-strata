@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! JSON output contract tests (design §14.3/§14.4, docs/json-schema.md).
+//! JSON output contract tests (design §14.3/§14.4, docs/reference/json-output.md).
 //!
 //! These drive the real `ost` binary and assert the *contract*, not prose:
 //!

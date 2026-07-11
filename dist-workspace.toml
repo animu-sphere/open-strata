@@ -31,5 +31,5 @@ github-attestations = true
 # full commit SHA (harness §SEC-004), which diverges from dist's generated
 # output. Tell dist not to fail its "CI is up to date" check on that divergence.
 # Trade-off: a dist version bump needs the workflow regenerated and re-pinned by
-# hand (see docs/roadmap.md → Security baseline).
+# hand (see docs/roadmap/README.md → Security baseline).
 allow-dirty = ["ci"]
