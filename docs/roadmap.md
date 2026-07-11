@@ -327,42 +327,43 @@ them. Each release is a coherent slice, not a phase boundary.
     including the exact `pip install` fix line — was extracted into a pure,
     unit-tested `missing_dep_warning` so the previously-untestable message path is
     now covered without needing a pristine interpreter.
-- ⬜ **v0.12.0 — hosted macOS CI + runtime-contract hardening.** The 2026-07-11
+- 🚧 **v0.12.0 — hosted macOS CI + runtime-contract hardening.** The 2026-07-11
   macOS OpenUSD 26.05 PR CI dogfood proved the public GHCR runtime pull,
   artifact verification, and Windows source-CI path, but the hosted macOS lane
   only passed after repo-local temporary repairs (`actions/setup-python` for
   Python 3.13 and `chmod +x` on the materialized runtime `bin/`). v0.12.0 makes
   those requirements first-class so generated source CI does not need hand edits.
-  Details in the
+  The code slice is complete; the one remaining item is republishing the public
+  macOS runtime and re-running the dogfood on a Mac + live GHCR. Details in the
   [Phase 6 — v0.12.0 backlog](#phase-6--v0120-backlog-from-the-2026-07-11-macos-openusd-2605-pr-ci-dogfooding-report).
   Scope:
-  - **P0 — republish macOS runtimes with executable tool bits preserved and
-    verified.** `runtime export` / artifact packaging must preserve Unix execute
-    modes for runtime `bin/` tools, `runtime validate` must catch a materialized
-    runtime whose tools are not executable, and the public cy2026 macOS arm64
-    OpenUSD 26.05 SDK artifact must be republished. Acceptance: a clean
-    GitHub-hosted `macos-15-arm64` source-CI lane reaches `ost plugin test
-    --up-to 5` with no `chmod` repair step.
-  - **P0 — make schema-generation Python an explicit runtime/CI contract.** A
-    `py313` runtime that does not bundle `bin/python3.13` cannot leave CI relying
-    on an accidental host interpreter. Either the runtime supplies a runnable
-    interpreter or generated source CI installs the declared Python ABI before
-    `ost plugin build`; local failures name the missing interpreter and the exact
-    setup fix before invoking `usdGenSchema`.
-  - **P1 — model pre-build requirements directly, not as late `source_checks`.**
-    The existing `source_checks:` hook intentionally runs after the verification
-    pyramid, so it is the wrong escape hatch for runtime/toolchain repair. Keep
-    repo-specific smoke tests there, but add first-class pre-build rendering for
-    modeled prerequisites such as host Python setup; avoid a broad arbitrary
-    pre-build shell hook unless another dogfood proves it is needed.
-  - **P1 — CI evidence for repaired assumptions.** Generated reports should make
-    the runtime artifact digest, OCI digest, Python ABI/setup source, runtime-bin
-    mode validation, and source-CI lane outcome visible enough that a future
-    failure is attributable to the contract, not to a hidden runner state.
-  - **P2 — docs and cleanup.** Document the macOS hosted source-CI contract,
-    remove the temporary branch-local setup/chmod steps after the runtime is
-    republished and CI regenerated, and keep the dogfood recipe as the acceptance
-    check for Windows + macOS public-runtime consumption.
+  - 🚧 **P0 — republish macOS runtimes with executable tool bits preserved and
+    verified.** `runtime export` / artifact packaging preserve Unix execute
+    modes for runtime `bin/` tools, extraction restores them, and `runtime
+    validate` catches a materialized runtime whose tools are not executable (all
+    landed, unit-tested; #101). Generated source CI now runs `ost runtime
+    validate` after materialization so the check fires in the lane. **Still ⬜**
+    (needs a Mac + live GHCR): republish the public cy2026 macOS arm64 OpenUSD
+    26.05 SDK and confirm a clean GitHub-hosted `macos-15-arm64` source-CI lane
+    reaches `ost plugin test --up-to 5` with no `chmod` repair step.
+  - ✅ **P0 — make schema-generation Python an explicit runtime/CI contract.** A
+    source cell declares the CPython ABI its schema tooling needs with
+    `host_python: "3.13"`; generated source CI installs exactly that Python
+    (SHA-pinned `actions/setup-python`) before `ost plugin build` on hosted
+    runners, and local builds already fail before `usdGenSchema` with a
+    precondition naming every interpreter candidate.
+  - ✅ **P1 — model pre-build requirements directly, not as late `source_checks`.**
+    Modeled prerequisites (runtime validation + host Python setup) render in a
+    first-class section between runtime materialization and the build; no broad
+    arbitrary pre-build shell hook was added.
+  - ✅ **P1 — CI evidence for repaired assumptions.** The source lane now writes
+    `.ost-ci/runtime-validate.json` (runtime-bin mode validation) and
+    `.ost-ci/python-setup.json` (Python ABI + resolved source) alongside the
+    existing runtime-artifact/OCI-digest evidence, all uploaded with the report.
+  - 🚧 **P2 — docs and cleanup.** The macOS hosted source-CI contract is
+    documented (`docs/examples.md`, `ost ci init` starter). **Still ⬜:** remove
+    the temporary branch-local setup/chmod steps in the downstream fixture repo
+    after the runtime is republished and CI regenerated.
 - ⬜ **v0.13.0 — trust policy foundation.** With a producer verb and stable hosted
   source-CI runtime contract in place, close the publish-side trust boundary
   (future-policy §3.2/§7/§11). An `openstrata-artifact-policy.toml` with
@@ -1522,33 +1523,39 @@ repairs into product behavior so generated CI remains regenerable.
   gate. **Still ⬜:** republish the public cy2026 macOS arm64 OpenUSD 26.05 SDK
   with preserved bits and confirm the hosted macOS source-CI lane reaches L5
   with no `chmod` repair (needs a Mac + live GHCR).
-- ⬜ **P0 — make schema-generation Python explicit.** `ost plugin build` correctly
-  runs USD's script-style `usdGenSchema` through an interpreter, but for this
-  runtime the interpreter was found only on the host (`python3.13`) rather than in
-  the runtime. Local macOS had it; hosted macOS did not. Durable fix: the runtime
-  manifest / target contract exposes the Python ABI required by schema tooling,
-  and either the runtime provides a runnable interpreter or generated source CI
-  installs that exact Python before the build. If neither is true, `ost plugin
-  build` should fail before `usdGenSchema` with a precondition error naming every
-  interpreter candidate and the exact setup action.
-- ⬜ **P1 — pre-build requirements belong in the CI model, not `source_checks`.**
-  The existing `source_checks:` feature is deliberately post-pyramid, so it is too
-  late for Python setup, runtime-bin validation, or any other prerequisite needed
-  before `ost plugin build`. Keep `source_checks` for repo-specific smoke tests,
-  and render modeled pre-build prerequisites in a first-class section between
-  runtime materialization and plugin build. Do not add a broad arbitrary
-  pre-build shell hook unless a separate dogfood proves a repo-specific
-  prerequisite that cannot be modeled.
-- ⬜ **P1 — renderer and validation coverage for hosted macOS assumptions.** Add
-  tests that generated GitHub source-CI places Python setup / runtime validation
-  before the build step and leaves repo smoke tests after the pyramid; add runtime
-  validation coverage for non-executable tool bits; and keep the Windows +
-  macOS public-runtime PR lane as the acceptance fixture.
-- ⬜ **P2 — documentation and cleanup.** Document the macOS hosted source-CI
-  contract in `docs/examples.md` / runtime-publishing notes, record the incident
-  shape for future debugging, then remove the temporary repo-local
-  `actions/setup-python` and `chmod` repairs after the runtime is republished and
-  CI is regenerated from `openstrata.ci.yaml`.
+- ✅ **P0 — make schema-generation Python explicit.** `ost plugin build` already
+  runs USD's script-style `usdGenSchema` through an interpreter and, when none is
+  runnable, fails *before* `usdGenSchema` with a precondition naming every
+  interpreter candidate (`resolve_run_python` / `run_python_search_paths`,
+  phase-attributed `schema-generate`). The missing half — the runtime that ships
+  no bundled interpreter cannot leave a hosted lane relying on an accidental host
+  `python3.13` — is now a first-class CI contract: a source cell declares the
+  CPython ABI its schema tooling needs with **`host_python: "3.13"`** (validated
+  `major.minor`, source-lane-only), and `ost ci generate github` renders a
+  SHA-pinned `actions/setup-python` for exactly that ABI on hosted runners before
+  the build, recording the resolved Python source as `.ost-ci/python-setup.json`
+  evidence. Self-hosted runners keep their operator Python (the step is gated on
+  `matrix.hosted`). Unit-tested (matrix validation + renderer ordering/gating).
+- ✅ **P1 — pre-build requirements belong in the CI model, not `source_checks`.**
+  Modeled pre-build prerequisites now render in a first-class section *between*
+  runtime materialization and `ost plugin build` (distinct from the post-pyramid
+  `source_checks`): an always-on `ost runtime validate` of the freshly
+  materialized tree (the runnable-tools invariant, teed to
+  `.ost-ci/runtime-validate.json`) plus the hosted `host_python` setup above. No
+  broad arbitrary pre-build shell hook was added — prerequisites are modeled, not
+  scripted.
+- ✅ **P1 — renderer and validation coverage for hosted macOS assumptions.** Added
+  renderer tests that source CI places `ost runtime validate` and (when a cell
+  declares `host_python`) the pinned `setup-python` before the build, and keeps
+  repo smoke tests after the pyramid; the non-executable-tool-bit runtime
+  validation coverage landed with the P0 exec-bits work (`ost_runtime::validate`
+  `bin-tools-executable`).
+- 🚧 **P2 — documentation and cleanup.** `docs/examples.md` now documents the
+  hosted source-CI runtime/toolchain contract (runnable-tool bits + `host_python`)
+  and the `ost ci init` starter template describes `host_python`. **Still ⬜** (a
+  Mac + live GHCR): remove the temporary repo-local `actions/setup-python` and
+  `chmod` repairs in the downstream fixture repo after the macOS runtime is
+  republished and its CI is regenerated from `openstrata.ci.yaml`.
 
 ## Phase 7 — Sessions / sandbox ⬜
 
