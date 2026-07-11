@@ -65,8 +65,13 @@ pub enum ArtifactCmd {
     Extract {
         /// Digest reference: sha256:<hex> or a unique hex prefix (>= 6 chars).
         digest: String,
-        /// Destination directory (created if missing).
-        dest: String,
+        /// Destination directory (created if missing). May also be given as
+        /// `--into <DEST>`.
+        dest: Option<String>,
+        /// Named form of the destination directory, e.g.
+        /// `ost artifact extract <digest> --into ./out`.
+        #[arg(long, conflicts_with = "dest")]
+        into: Option<String>,
     },
     /// Resolve a remote reference (tag) to its immutable digest.
     Resolve {
@@ -121,7 +126,12 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
         ArtifactCmd::Show { digest } => show(&store, &digest, fmt),
         ArtifactCmd::Verify { digest } => verify(&store, &digest, fmt),
         ArtifactCmd::Export { digest, dest } => export(&store, &digest, &dest, fmt),
-        ArtifactCmd::Extract { digest, dest } => extract(&store, &digest, &dest, fmt),
+        ArtifactCmd::Extract { digest, dest, into } => {
+            let dest = dest.or(into).ok_or_else(|| {
+                Error::usage("missing destination: pass a directory or --into <DEST>")
+            })?;
+            extract(&store, &digest, &dest, fmt)
+        }
         ArtifactCmd::Resolve {
             reference,
             plain_http,
