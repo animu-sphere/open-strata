@@ -2,6 +2,7 @@
 
 [![ci](https://github.com/animu-sphere/open-strata/actions/workflows/ci.yml/badge.svg)](https://github.com/animu-sphere/open-strata/actions/workflows/ci.yml)
 [![licenses](https://github.com/animu-sphere/open-strata/actions/workflows/licenses.yml/badge.svg)](https://github.com/animu-sphere/open-strata/actions/workflows/licenses.yml)
+[![docs](https://github.com/animu-sphere/open-strata/actions/workflows/docs.yml/badge.svg)](https://github.com/animu-sphere/open-strata/actions/workflows/docs.yml)
 [![release](https://github.com/animu-sphere/open-strata/actions/workflows/release.yml/badge.svg)](https://github.com/animu-sphere/open-strata/actions/workflows/release.yml)
 [![latest release](https://img.shields.io/github/v/release/animu-sphere/open-strata?sort=semver)](https://github.com/animu-sphere/open-strata/releases/latest)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)

@@ -98,9 +98,16 @@ applies_to: v0.13+
 ## Previewing and checking
 
 - Preview locally by rendering the Markdown (any Markdown viewer / your editor).
-- Relative links must resolve and anchors must exist. A link/anchor checker and
-  Markdown lint are planned as a CI gate (reorg Phase 4); until then, verify links
-  by hand or with a local checker before opening a pull request.
+- Relative links must resolve and anchors must exist. Run the checker before
+  opening a pull request:
+
+  ```bash
+  python3 scripts/check_doc_links.py .
+  ```
+
+  The `docs` CI workflow runs the same check on every push and pull request, so a
+  broken relative link or `#anchor` fails the build. Markdown lint and
+  generated-reference drift checks are planned to join it.
 
 ## Definition of done (documentation)
 
