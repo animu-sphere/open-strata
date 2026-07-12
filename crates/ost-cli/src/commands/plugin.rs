@@ -1183,6 +1183,9 @@ fn prepare_session_command(
     let (program, rest) = command
         .split_first()
         .ok_or_else(|| Error::usage("missing command"))?;
+    if is_explicit_py_launcher_version_request(program, rest) {
+        return Ok((program.clone(), rest.to_vec()));
+    }
     if !is_runtime_python_request(program) {
         return Ok((program.clone(), rest.to_vec()));
     }
@@ -1214,7 +1217,47 @@ fn is_runtime_python_request(program: &str) -> bool {
     matches!(
         name.as_str(),
         "python" | "python.exe" | "python3" | "python3.exe"
-    ) || (cfg!(windows) && matches!(name.as_str(), "py" | "py.exe"))
+    ) || (cfg!(windows) && is_py_launcher_request(&name))
+}
+
+fn is_py_launcher_request(program: &str) -> bool {
+    let name = program.to_ascii_lowercase();
+    matches!(name.as_str(), "py" | "py.exe")
+}
+
+fn is_explicit_py_launcher_version_request(program: &str, args: &[String]) -> bool {
+    is_py_launcher_request(program)
+        && args
+            .first()
+            .is_some_and(|arg| is_py_launcher_version_selector(arg))
+}
+
+fn is_py_launcher_version_selector(arg: &str) -> bool {
+    let spec = if let Some(spec) = arg.strip_prefix("-V:") {
+        spec.rsplit('/').next().unwrap_or(spec)
+    } else {
+        let Some(spec) = arg.strip_prefix('-') else {
+            return false;
+        };
+        if !spec.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        spec
+    };
+    let version = spec.split('-').next().unwrap_or(spec);
+    let mut parts = version.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    if major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    if let Some(minor) = parts.next() {
+        if minor.is_empty() || !minor.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+    }
+    parts.next().is_none()
 }
 
 fn merge_resolved_python_command(
@@ -2839,6 +2882,28 @@ mod tests {
                 "{explicit} is explicit and must not be replaced"
             );
         }
+    }
+
+    #[test]
+    fn plugin_run_leaves_py_launcher_version_selectors_explicit() {
+        for selector in ["-3", "-3.11", "-3.11-64", "-V:PythonCore/3.11"] {
+            let rest = vec![
+                selector.to_string(),
+                "-c".to_string(),
+                "print(1)".to_string(),
+            ];
+            let mut command = vec!["py".to_string()];
+            command.extend(rest.clone());
+            let (program, args) = prepare_session_command(&command, Utf8Path::new("."), "3.11")
+                .expect("explicit py launcher selector should not need runtime resolution");
+            assert_eq!(program, "py");
+            assert_eq!(args, rest);
+        }
+
+        assert!(!is_explicit_py_launcher_version_request(
+            "py",
+            &["-c".to_string(), "print(1)".to_string()]
+        ));
     }
 
     #[test]
