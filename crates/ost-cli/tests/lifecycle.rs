@@ -515,6 +515,10 @@ fn generated_plugin_scaffolds_and_inspects() {
         bundle.join("openstrata.plugin.yaml").is_file(),
         "the bundle should carry its plugin manifest"
     );
+    assert!(
+        bundle.join("cmake/OpenStrataPlugin.cmake").is_file(),
+        "the bundle should carry its self-contained CMake helper"
+    );
 
     // Inspect is a static Level 0 report. A freshly scaffolded bundle legitimately
     // fails the *one* check that needs a built `.so` — so assert the structural
@@ -621,6 +625,7 @@ fn generated_asset_resolver_requires_scheme_and_records_provenance() {
     assert!(root
         .join("plugin/resources/studio-assets/plugInfo.json")
         .is_file());
+    assert!(root.join("cmake/OpenStrataPlugin.cmake").is_file());
 }
 
 /// `ost plugin test --workspace` discovers bundles at the root and under

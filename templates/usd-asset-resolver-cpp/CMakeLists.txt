@@ -12,10 +12,8 @@ endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
-if(NOT _is_multi_config AND NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-endif()
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenStrataPlugin.cmake")
+openstrata_default_build_type()
 
 if(NOT pxr_FOUND)
     find_package(pxr REQUIRED CONFIG)
@@ -31,59 +29,20 @@ target_include_directories(${PLUGIN_NAME} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     ${PXR_INCLUDE_DIRS})
 
-if(TARGET usd_ms)
-    target_link_libraries(${PLUGIN_NAME} PRIVATE usd_ms)
-else()
-    set(_pxr_targets)
-    foreach(_t IN ITEMS arch tf js plug vt ar)
-        if(TARGET ${_t})
-            list(APPEND _pxr_targets ${_t})
-        elseif(TARGET pxr::${_t})
-            list(APPEND _pxr_targets pxr::${_t})
-        endif()
-    endforeach()
-    if(_pxr_targets)
-        target_link_libraries(${PLUGIN_NAME} PRIVATE ${_pxr_targets})
-    elseif(PXR_LIBRARIES)
-        target_link_libraries(${PLUGIN_NAME} PRIVATE ${PXR_LIBRARIES})
-    else()
-        message(FATAL_ERROR "Could not locate OpenUSD CMake targets or PXR_LIBRARIES.")
-    endif()
-endif()
+openstrata_link_openusd(
+    TARGET ${PLUGIN_NAME}
+    COMPONENTS arch tf js plug vt ar)
 
-set(OPENSTRATA_PLUGIN_LIBRARY_PREFIX "lib")
-set_target_properties(${PLUGIN_NAME} PROPERTIES
-    PREFIX "${OPENSTRATA_PLUGIN_LIBRARY_PREFIX}"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib")
-foreach(_config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
-    set_target_properties(${PLUGIN_NAME} PROPERTIES
-        ARCHIVE_OUTPUT_DIRECTORY_${_config} "${CMAKE_CURRENT_SOURCE_DIR}/lib"
-        LIBRARY_OUTPUT_DIRECTORY_${_config} "${CMAKE_CURRENT_SOURCE_DIR}/lib"
-        RUNTIME_OUTPUT_DIRECTORY_${_config} "${CMAKE_CURRENT_SOURCE_DIR}/lib")
-endforeach()
+openstrata_configure_plugin(
+    TARGET ${PLUGIN_NAME}
+    PLUG_INFO_INPUT "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json.in"
+    PLUG_INFO_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json")
 
-if(MSVC)
-    target_compile_definitions(${PLUGIN_NAME} PRIVATE NOMINMAX)
-    target_compile_options(${PLUGIN_NAME} PRIVATE /utf-8)
-endif()
-
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json.in"
-    "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json"
-    @ONLY)
-
-install(TARGETS ${PLUGIN_NAME}
-    RUNTIME DESTINATION "lib"
-    LIBRARY DESTINATION "lib"
-    ARCHIVE DESTINATION "lib")
-install(FILES
-    "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json"
-    DESTINATION "plugin/resources/{{name}}")
-install(FILES
-    "${CMAKE_CURRENT_SOURCE_DIR}/openstrata.plugin.yaml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/openstrata.scaffold.yaml"
-    DESTINATION ".")
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
-    DESTINATION "tests")
+openstrata_install_plugin_bundle(
+    TARGET ${PLUGIN_NAME}
+    RESOURCES "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json"
+    RESOURCE_DESTINATION "plugin/resources/{{name}}"
+    MANIFESTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/openstrata.plugin.yaml"
+        "${CMAKE_CURRENT_SOURCE_DIR}/openstrata.scaffold.yaml"
+    FIXTURE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")

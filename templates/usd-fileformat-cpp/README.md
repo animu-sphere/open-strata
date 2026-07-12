@@ -7,10 +7,16 @@ Scaffolded by `ost plugin new usd-fileformat {{name}} --extension {{extension}}`
 ```
 openstrata.plugin.yaml          bundle contract (identity, runtime range, provides, tests)
 CMakeLists.txt                  builds lib{{Name}}FileFormat.so into lib/
+cmake/OpenStrataPlugin.cmake    pinned, self-contained build/install mechanics
 src/{{Name}}FileFormat.{h,cpp}  the SdfFileFormat implementation
 plugin/resources/{{name}}/plugInfo.json   USD plugin registration
 tests/fixtures/                 basic (valid) + invalid (negative) fixtures
 ```
+
+The copied CMake helper is versioned with this scaffold and requires neither an
+OpenStrata checkout nor `ost` at build time. Keep bundle-specific targets,
+components, resources, and tests in `CMakeLists.txt`; update helper mechanics by
+reviewing a newer template rather than linking to the generator source tree.
 
 ## Workflow
 

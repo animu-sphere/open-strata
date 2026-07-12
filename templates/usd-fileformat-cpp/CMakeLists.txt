@@ -12,6 +12,9 @@ endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenStrataPlugin.cmake")
+openstrata_default_build_type()
+
 # Resolved from the runtime OpenStrata activates (toolchain sets CMAKE_PREFIX_PATH).
 # Guarded so a parent project (a dual-mode root that `add_subdirectory()`s this
 # bundle) can resolve OpenUSD once and have it flow down here.
@@ -38,45 +41,23 @@ if(DEFINED OPENSTRATA_SCHEMA_SOURCES_FILE AND EXISTS "${OPENSTRATA_SCHEMA_SOURCE
     include("${OPENSTRATA_SCHEMA_SOURCES_FILE}")
 endif()
 
-# Link the USD monolith if present, else the discrete libraries this plugin uses.
-if(TARGET usd_ms)
-    target_link_libraries(${PLUGIN_NAME} PRIVATE usd_ms)
-else()
-    set(_pxr_targets)
-    foreach(_t IN ITEMS arch tf gf vt sdf usd)
-        if(TARGET ${_t})
-            list(APPEND _pxr_targets ${_t})
-        elseif(TARGET pxr::${_t})
-            list(APPEND _pxr_targets pxr::${_t})
-        endif()
-    endforeach()
-    if(_pxr_targets)
-        target_link_libraries(${PLUGIN_NAME} PRIVATE ${_pxr_targets})
-    elseif(PXR_LIBRARIES)
-        target_link_libraries(${PLUGIN_NAME} PRIVATE ${PXR_LIBRARIES})
-    else()
-        message(FATAL_ERROR "Could not locate OpenUSD CMake targets or PXR_LIBRARIES.")
-    endif()
-endif()
+openstrata_link_openusd(
+    TARGET ${PLUGIN_NAME}
+    COMPONENTS arch tf gf vt sdf usd)
 
-# Stage the shared library into the bundle's lib/ so `ost plugin doctor` and the
-# session env find it (lib/ is placed on the dynamic-library path). Use
-# CMAKE_CURRENT_SOURCE_DIR (this bundle), not CMAKE_SOURCE_DIR — the latter points
-# at the repo root when this bundle is consumed via add_subdirectory(), which
-# would stage the lib away from the committed plugInfo.json LibraryPath.
-set(OPENSTRATA_PLUGIN_LIBRARY_PREFIX "lib")
-set_target_properties(${PLUGIN_NAME} PROPERTIES
-    PREFIX "${OPENSTRATA_PLUGIN_LIBRARY_PREFIX}"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/lib")
+# The copied helper keeps output/install mechanics identical in standalone and
+# add_subdirectory workspace builds. This file still owns the target, OpenUSD
+# components, resource path, and fixtures as the bundle's readable policy.
+openstrata_configure_plugin(
+    TARGET ${PLUGIN_NAME}
+    PLUG_INFO_INPUT "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json.in"
+    PLUG_INFO_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json")
 
-# Generate plugInfo.json from the .in so its LibraryPath carries this target's
-# shared-library prefix/suffix. `ost plugin new` writes a host-correct
-# plugInfo.json up front (so `doctor`/`test` can inspect it before the first
-# build); this regenerates it for the target actually being built. USD resolves
-# LibraryPath relative to plugInfo's Root and dlopens the absolutized path (no
-# PATH fallback), so the name and the ../../../lib/ location must both be exact.
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json.in"
-    "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json"
-    @ONLY)
+openstrata_install_plugin_bundle(
+    TARGET ${PLUGIN_NAME}
+    RESOURCES "${CMAKE_CURRENT_SOURCE_DIR}/plugin/resources/{{name}}/plugInfo.json"
+    RESOURCE_DESTINATION "plugin/resources/{{name}}"
+    MANIFESTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/openstrata.plugin.yaml"
+        "${CMAKE_CURRENT_SOURCE_DIR}/openstrata.scaffold.yaml"
+    FIXTURE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")

@@ -47,6 +47,10 @@ const USD_FILEFORMAT_CPP: &[TemplateFile] = &[
         include_str!("../../../templates/usd-fileformat-cpp/.gitignore"),
     ),
     tf(
+        "cmake/OpenStrataPlugin.cmake",
+        include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake"),
+    ),
+    tf(
         "src/{{Name}}FileFormat.h",
         include_str!("../../../templates/usd-fileformat-cpp/src/{{Name}}FileFormat.h"),
     ),
@@ -135,6 +139,10 @@ const USD_ASSET_RESOLVER_CPP: &[TemplateFile] = &[
     tf(
         ".gitignore",
         include_str!("../../../templates/usd-asset-resolver-cpp/.gitignore"),
+    ),
+    tf(
+        "cmake/OpenStrataPlugin.cmake",
+        include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake"),
     ),
     tf(
         "src/{{Name}}Resolver.h",
@@ -799,6 +807,9 @@ mod tests {
         // The manifest and a token-substituted source file landed.
         assert!(files.iter().any(|f| f.as_str() == "openstrata.plugin.yaml"));
         assert!(files.iter().any(|f| f.as_str() == "src/ToyFileFormat.cpp"));
+        assert!(files
+            .iter()
+            .any(|f| f.as_str() == "cmake/OpenStrataPlugin.cmake"));
         assert!(files.iter().any(|f| f.as_str() == SCAFFOLD_PROVENANCE));
         // Both the configure_file source (.in) and the ready-to-use concrete
         // plugInfo.json are written.
@@ -835,6 +846,17 @@ mod tests {
         // same shared library. Bundles without a schema simply have no fragment.
         let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
         assert!(cmake.contains("OPENSTRATA_SCHEMA_SOURCES_FILE"));
+        assert!(cmake.contains("openstrata_link_openusd"));
+        assert!(cmake.contains("openstrata_install_plugin_bundle"));
+        let helper =
+            std::fs::read_to_string(dir.join("cmake/OpenStrataPlugin.cmake").as_std_path())
+                .unwrap();
+        assert_eq!(
+            helper,
+            include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake")
+        );
+        assert!(helper.contains("OPENSTRATA_PLUGIN_CMAKE_HELPER_VERSION \"1.0.0\""));
+        assert!(!helper.contains("templates/_shared"));
 
         let provenance: ScaffoldProvenance = serde_yaml::from_str(
             &std::fs::read_to_string(dir.join(SCAFFOLD_PROVENANCE).as_std_path()).unwrap(),
@@ -865,6 +887,9 @@ mod tests {
         assert!(files
             .iter()
             .any(|f| { f.as_str() == "plugin/resources/studio-assets/plugInfo.json" }));
+        assert!(files
+            .iter()
+            .any(|f| f.as_str() == "cmake/OpenStrataPlugin.cmake"));
 
         let bundle = crate::Bundle::load(&dir).expect("resolver bundle loads");
         assert_eq!(bundle.manifest.kind(), PluginKind::UsdAssetResolver);
@@ -878,6 +903,11 @@ mod tests {
         assert!(source.contains("AR_DEFINE_RESOLVER(StudioAssetsResolver, ArResolver)"));
         assert!(source.contains("SchemePrefix = \"studio:\""));
         assert!(!source.contains("{{"));
+
+        let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
+        assert!(cmake.contains("openstrata_link_openusd"));
+        assert!(cmake.contains("COMPONENTS arch tf js plug vt ar"));
+        assert!(cmake.contains("openstrata_install_plugin_bundle"));
 
         let provenance: ScaffoldProvenance = serde_yaml::from_str(
             &std::fs::read_to_string(dir.join(SCAFFOLD_PROVENANCE).as_std_path()).unwrap(),
