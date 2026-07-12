@@ -18,10 +18,12 @@ namespace {
 /// replaces this with the container's entry table and bounded reads.
 constexpr const char* ContentsSuffix = ".contents";
 
-/// The package boundary guard: an entry path must stay inside the package,
-/// whatever the backing container is. Reject empty, absolute, and rooted
-/// paths, and any `..` segment that survives normalization, so a hostile
-/// `pkg[../../secret]` cannot escape.
+/// The entry-path guard: an entry path must stay inside the package, whatever
+/// the backing container is. Reject empty, absolute, and rooted paths, and any
+/// `..` segment that survives normalization, so a hostile reference string like
+/// `pkg[../../secret]` cannot traverse out via the entry path. This guards the
+/// path string only; with the sidecar backing it does not stop a symlink under
+/// `.contents/` — a real container reads a self-contained byte range instead.
 bool
 IsSafeEntryPath(const std::filesystem::path& entry)
 {

@@ -460,16 +460,20 @@ fn level2_package_resolver_registration(bundle: &Bundle, session: &Session) -> D
     // the plug-registry level: the plugin is discovered by name and its library
     // loads. Dispatch through the extension is covered by L3/L4 opening the
     // smoke fixture, which sublayers a packaged path.
+    // Bind the name once from its JSON-escaped literal (valid Python too), then
+    // reference the `name` variable everywhere so a plugInfo `Name` containing a
+    // quote or newline can never break — or inject into — the probe script.
     let name_literal = serde_json::to_string(plugin_name).unwrap_or_else(|_| "\"\"".into());
     let script = format!(
         r#"import sys
 from pxr import Plug
-p = Plug.Registry().GetPluginWithName({name_literal})
+name = {name_literal}
+p = Plug.Registry().GetPluginWithName(name)
 if not p:
-    sys.stderr.write('plugin {plugin_name} not found in the plug registry')
+    sys.stderr.write('plugin %s not found in the plug registry' % name)
     sys.exit(7)
 if not p.Load():
-    sys.stderr.write('plugin {plugin_name} found but its library failed to load')
+    sys.stderr.write('plugin %s found but its library failed to load' % name)
     sys.exit(8)
 sys.exit(0)
 "#

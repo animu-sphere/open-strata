@@ -20,12 +20,15 @@ Replace the sidecar mapping at the `EntryLocation` seam in
 `src/{{Name}}PackageResolver.cpp`.
 
 **Security:** the entry-path guard (`IsSafeEntryPath`) rejects absolute,
-rooted, and `..` entry paths so a hostile `pkg[../../secret]` cannot escape
-the package boundary. That guard is the only part of the security contract
-the skeleton can own. Everything a real container adds — offset/size overflow,
-declared/actual size mismatch, duplicate entries, oversized reads, corrupt
-containers, decompression limits — must get explicit tests before this
-resolver handles untrusted packages.
+rooted, and `..` entry paths so a hostile *reference string* like
+`pkg[../../secret]` cannot traverse out of the package via the entry path.
+That string-level check is the only part of the security contract the skeleton
+can own; because the sidecar backing hits the real filesystem, it does **not**
+stop a symlink inside `foo.{{extension}}.contents/` from pointing elsewhere. Everything
+a real container adds — a self-contained byte range instead of host files,
+offset/size overflow, declared/actual size mismatch, duplicate entries,
+oversized reads, corrupt containers, decompression limits — must get explicit
+tests before this resolver handles untrusted packages.
 
 The skeleton is deliberately read-only: `ArPackageResolver` has no write
 interface, and the starter neither creates nor mutates packages.

@@ -417,7 +417,10 @@ fn validate_name(name: &str) -> Result<()> {
 /// so anything path-like (`/`, `\`, `.`, `..`) must be rejected to keep
 /// scaffolding confined to the destination directory.
 fn validate_extension(ext: &str) -> Result<()> {
-    let ok = !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric());
+    let ok = !ext.is_empty()
+        && ext
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
     if ok {
         Ok(())
     } else {
@@ -1035,6 +1038,10 @@ mod tests {
         assert!(validate_extension("../../etc").is_err());
         assert!(validate_extension("a/b").is_err());
         assert!(validate_extension("a.b").is_err());
+        // Uppercase is rejected too: the documented contract is lowercase only,
+        // and the extension is echoed verbatim into fixture filenames and the
+        // plugInfo `extensions` list.
+        assert!(validate_extension("Toy").is_err());
         assert!(validate_extension("toy").is_ok());
         // And the scaffold entry point rejects it too.
         let dir = unique_tmp("scaffold-badext");
