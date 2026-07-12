@@ -29,7 +29,7 @@ use ost_core::host::Os;
 use ost_core::paths::{find_project_root, STATE_DIR};
 use ost_core::template::SCAFFOLD_PROVENANCE;
 use ost_core::variant::{Abi, Variant};
-use ost_core::{tools, Error, Host, Result};
+use ost_core::{tools, Category, Error, Host, Result};
 use ost_plugin::{
     default_template_id, diagnose, run_levels, scaffold_with_template, session_env_with,
     usdview_check, Bundle, CxxAbi, DoctorReport, PluginKind, Probe, RuntimeContext, Session,
@@ -1160,19 +1160,77 @@ fn run_session(
     contributing.extend(plugin_path_bundles.iter());
     contributing.extend(with_bundles.iter());
     let session = ost_plugin::session_env_from(&r.env, &contributing, host.os);
-    let (prog, rest) = command.split_first().expect("clap requires >=1 arg");
+    let (program, args) = prepare_session_command(&command, &r.artifact_prefix, &r.python_version)?;
 
-    let mut cmd = Command::new(prog);
-    cmd.args(rest);
+    let mut cmd = Command::new(&program);
+    cmd.args(&args);
     session.apply(&mut cmd); // overlay the resolved session env, no global mutation
     let status = cmd
         .status()
-        .map_err(|e| Error::io(format!("run {prog}"), e))?;
+        .map_err(|e| Error::io(format!("run {program}"), e))?;
     // Propagate the child's exit code for CI.
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+fn prepare_session_command(
+    command: &[String],
+    artifact_prefix: &Utf8Path,
+    python_version: &str,
+) -> Result<(String, Vec<String>)> {
+    let (program, rest) = command
+        .split_first()
+        .ok_or_else(|| Error::usage("missing command"))?;
+    if !is_runtime_python_request(program) {
+        return Ok((program.clone(), rest.to_vec()));
+    }
+    let resolved = ost_build::resolve_run_python(artifact_prefix, python_version).ok_or_else(|| {
+        let expected = ost_build::usd_python_requirement(artifact_prefix)
+            .or_else(|| ost_build::python::major_minor(python_version))
+            .unwrap_or_else(|| python_version.to_string());
+        let searched = ost_build::run_python_search_paths(artifact_prefix, python_version);
+        Error::coded(
+            "RUNTIME_PYTHON_NOT_FOUND",
+            Category::Precondition,
+            format!(
+                "no Python interpreter matching runtime ABI {expected} found for `ost plugin run -- {program}` (searched: {})",
+                searched.join(", ")
+            ),
+        )
+        .with_hint(format!(
+            "install CPython {expected}, add it to PATH, or pull a runtime that bundles an interpreter under bin/"
+        ))
+    })?;
+    merge_resolved_python_command(resolved, rest)
+}
+
+fn is_runtime_python_request(program: &str) -> bool {
+    if program.contains('/') || program.contains('\\') {
+        return false;
+    }
+    let name = program.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "python" | "python.exe" | "python3" | "python3.exe"
+    ) || (cfg!(windows) && matches!(name.as_str(), "py" | "py.exe"))
+}
+
+fn merge_resolved_python_command(
+    resolved: Vec<String>,
+    rest: &[String],
+) -> Result<(String, Vec<String>)> {
+    let (program, leading) = resolved.split_first().ok_or_else(|| {
+        Error::coded(
+            "RUNTIME_PYTHON_NOT_FOUND",
+            Category::Precondition,
+            "runtime Python resolver returned no command",
+        )
+    })?;
+    let mut args = leading.to_vec();
+    args.extend(rest.iter().cloned());
+    Ok((program.clone(), args))
 }
 
 /// `ost plugin test` — run the verification pyramid L0..=`up_to` and write a report.
@@ -2759,6 +2817,45 @@ mod tests {
                 "{keep} must stay in the main package"
             );
         }
+    }
+
+    #[test]
+    fn plugin_run_resolves_only_bare_python_requests() {
+        for program in ["python", "python3", "python.exe", "python3.exe"] {
+            assert!(
+                is_runtime_python_request(program),
+                "{program} should request runtime-aware Python resolution"
+            );
+        }
+        if cfg!(windows) {
+            assert!(is_runtime_python_request("py"));
+            assert!(is_runtime_python_request("py.exe"));
+        } else {
+            assert!(!is_runtime_python_request("py"));
+        }
+        for explicit in ["./python", "/usr/bin/python", "C:\\Python313\\python.exe"] {
+            assert!(
+                !is_runtime_python_request(explicit),
+                "{explicit} is explicit and must not be replaced"
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_run_preserves_args_after_resolved_python() {
+        let rest = vec!["-c".to_string(), "print(1)".to_string()];
+        let (program, args) =
+            merge_resolved_python_command(vec!["C:/Python313/python.exe".into()], &rest).unwrap();
+        assert_eq!(program, "C:/Python313/python.exe");
+        assert_eq!(args, rest);
+
+        let (program, args) = merge_resolved_python_command(
+            vec!["C:/Python313/python.exe".into(), "-I".into()],
+            &rest,
+        )
+        .unwrap();
+        assert_eq!(program, "C:/Python313/python.exe");
+        assert_eq!(args, ["-I", "-c", "print(1)"]);
     }
 
     #[test]

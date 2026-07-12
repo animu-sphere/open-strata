@@ -3,54 +3,29 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## Next milestone: v0.14.0 — trust policy foundation
+## Next milestone: v0.15.0 — provenance / SBOM bundle
 
-**Status:** in progress · **Depends on:** v0.10.0 producer verb + v0.13.0
-release-quality artifacts (reproducible, lean, testable-from-package; all
-shipped).
+**Status:** not started · **Depends on:** v0.14.0 trust policy foundation
+(shipped).
 
-With a producer verb and reproducible, lean artifacts in place, close the
-publish-side trust boundary (future-policy §3.2/§7/§11) — trust-level enforcement
-on top of the v0.13.0 artifacts.
+Make the artifact an *evidence bundle*, not just an archive (future-policy
+§5/§6/§11): optional SBOM (`sbom.spdx.json`) and SLSA/in-toto provenance
+(`provenance.intoto.jsonl`) layers, `ost artifact push` attaching them, and
+`ost artifact verify --require-sbom` / `--require-provenance` checking that the
+provenance subject digest matches the OpenStrata artifact digest, the builder
+identity matches the allowed-publisher policy, and source repo/revision match
+build metadata.
 
-**Scope:**
+**Tracks:** licensing per-artifact SBOM, Phase 6 content attribution, and the
+future-policy provenance requirements for trusted release lanes.
 
-- `openstrata-artifact-policy.toml` with a protected-namespace + allowed-publisher
-  schema and a `local` / `unsigned` / `attested` / `verified` / `trusted`
-  trust-level enum.
-- A policy parser with stable `ARTIFACT_POLICY_*` codes.
-- OIDC publisher verification: match repository / workflow path / git ref / actor
-  / event against the allowed-publisher list; reject a protected-namespace publish
-  from an untrusted identity; `--allow-untrusted-publisher` as the explicit escape
-  hatch.
-- `ost artifact verify --policy`.
+## Just shipped: v0.14.0 — artifact trust policy foundation
 
-**Tracks:** SEC-006 and the Phase 6 trust-policy hooks.
-
-### Release-lane dogfood hardening
-
-The usd-vrm-plugins v0.13.0 release-lane report found three small correctness
-gaps that should close with v0.14 without changing its trust-policy objective:
-
-- recursively reject unknown `openstrata.ci.yaml` keys instead of silently
-  dropping a misspelled verification/publication control;
-- emit a native Windows directory to `GITHUB_PATH` from the generated Bash
-  bootstrap and prove a native child process can launch `ost`;
-- make `ost plugin run -- python ...` resolve an absolute interpreter matching
-  the runtime Python ABI, or fail before launch with an actionable diagnostic.
-
-An atomic helper for updating `bootstrap.ost.version` plus exact per-target
-checksums is a v0.14 non-blocking target. Tag-triggered release-lane generation
-waits for the trust + provenance foundations and is not part of v0.14. Direction:
-[release-lane-ci.md](../design/proposed/release-lane-ci.md).
-
-## Just shipped: v0.13.0 — release-quality packaging
-
-Reproducible, lean, testable-from-package artifacts: `SOURCE_DATE_EPOCH`-honoring
-deterministic packaging, symbol-split (lean default + sibling `*-debug` /
-`--with-debug`), `ost plugin run --plugin-path`/`--no-inject`, `ost plugin test
---from-package`, and the `ost artifact extract --into` alias. Full record in
-[releases/v0.13.0.md](../releases/v0.13.0.md).
+Strict `openstrata-artifact-policy.toml`, stable `ARTIFACT_POLICY_*` errors,
+protected publisher enforcement for `ost artifact push`, `ost artifact verify
+--policy`, and the release-lane dogfood hardening (strict CI manifest keys,
+native Windows bootstrap PATH, ABI-matched bare Python under `ost plugin run`).
+Full record in [releases/v0.14.0.md](../releases/v0.14.0.md).
 
 ## Carry-over follow-ups
 

@@ -8,18 +8,9 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.14.0 — trust policy foundation) is detailed in
+The next milestone (v0.15.0 — provenance / SBOM bundle) is detailed in
 [current.md](current.md).
 
-- ⬜ **v0.15.0 — provenance / SBOM bundle.** Make the artifact an *evidence
-  bundle*, not just an archive (future-policy §5/§6/§11): optional SBOM
-  (`sbom.spdx.json`) and SLSA/in-toto provenance (`provenance.intoto.jsonl`)
-  layers, `ost artifact push` attaching them, and `ost artifact verify
-  --require-sbom` / `--require-provenance` checking that the provenance subject
-  digest matches the OpenStrata artifact digest, the builder identity matches the
-  allowed-publisher policy, and source repo/revision match build metadata. Closes
-  the licensing "per-artifact SBOM" and Phase 6 "content attribution" gaps for
-  published artifacts.
 - ⬜ **v0.16.0 — generated trusted CI.** Push the trust chain up into the CI
   contract (future-policy §7/§8/§13): a `trust` field on support-matrix targets, a
   minimum-trust requirement per lane (`pr_min_trust` / `main_min_trust` /
@@ -104,8 +95,8 @@ Shipped context for each area is in the
 - ⬜ **SEC-006 (P2) — runtime trust policy.** Runtime trust levels (`local` /
   `verified` / `trusted`) recorded in the manifest and lock; warn on
   world-writable runtime roots; `ost build` / `ost plugin test` can require a
-  minimum trust level (release/production CI refuses `local`). Foundation lands
-  with v0.14.0.
+  minimum trust level (release/production CI refuses `local`). Artifact policy
+  foundation landed with v0.14.0; runtime minimum-trust hooks remain future work.
 - ⬜ **Runtime distribution — glibc-floor ergonomics & OCI producer parity.**
   From v0.12.0 Linux dogfooding: (a) surface the measured glibc floor earlier — in
   `ost runtime show` / `validate`, not only at export; (b) at pull time, fail or
