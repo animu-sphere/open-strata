@@ -574,10 +574,53 @@ fn generated_plugin_scaffolds_and_inspects() {
     assert!(manifest_text.contains("\"kind\": \"openstrata.plugin-bundle\""));
     assert!(manifest_text.contains("\"cxx_abi\""));
     assert!(
+        manifest_text.contains("openstrata.scaffold.yaml"),
+        "package should preserve deterministic scaffold provenance:\n{manifest_text}"
+    );
+    assert!(
         manifest_text.contains("\"license\": \"Apache-2.0\""),
         "package manifest should record the plugin license:\n{manifest_text}"
     );
     assert!(find_first(&dist, "SHA256SUMS").is_some());
+}
+
+#[test]
+fn generated_asset_resolver_requires_scheme_and_records_provenance() {
+    let sb = Sandbox::new("resolver-scaffold");
+    init_and_pull(&sb);
+
+    let missing = sb.ost(&["plugin", "new", "usd-asset-resolver", "studio-assets"]);
+    assert_eq!(missing.status.code(), Some(4), "{}", out_text(&missing));
+    assert!(out_text(&missing).contains("needs --scheme"));
+
+    let out = sb.ost(&[
+        "--json",
+        "plugin",
+        "new",
+        "usd-asset-resolver",
+        "studio-assets",
+        "--scheme",
+        "studio",
+    ]);
+    assert!(
+        out.status.success(),
+        "resolver scaffold failed:\n{}",
+        out_text(&out)
+    );
+    let body: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["data"]["kind"], "usd-asset-resolver");
+
+    let root = sb.work.join("studio-assets");
+    let provenance: serde_yaml::Value = serde_yaml::from_str(
+        &std::fs::read_to_string(root.join("openstrata.scaffold.yaml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(provenance["template"]["id"], "usd-asset-resolver-cpp");
+    assert_eq!(provenance["inputs"]["scheme"], "studio");
+    assert!(root
+        .join("plugin/resources/studio-assets/plugInfo.json")
+        .is_file());
 }
 
 /// `ost plugin test --workspace` discovers bundles at the root and under

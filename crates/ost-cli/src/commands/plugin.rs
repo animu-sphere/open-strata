@@ -27,6 +27,7 @@ use clap::Subcommand;
 use ost_build::{pack_dir_with, stage_files, PackOptions};
 use ost_core::host::Os;
 use ost_core::paths::{find_project_root, STATE_DIR};
+use ost_core::template::SCAFFOLD_PROVENANCE;
 use ost_core::variant::{Abi, Variant};
 use ost_core::{tools, Error, Host, Result};
 use ost_plugin::{
@@ -51,6 +52,9 @@ pub enum PluginCmd {
         /// File extension the plugin reads (required for usd-fileformat).
         #[arg(long)]
         extension: Option<String>,
+        /// URI scheme the resolver handles (required for usd-asset-resolver).
+        #[arg(long)]
+        scheme: Option<String>,
         /// Destination directory. Defaults to ./<name>.
         #[arg(long)]
         dir: Option<String>,
@@ -226,8 +230,16 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             kind,
             name,
             extension,
+            scheme,
             dir,
-        } => new(&kind, &name, extension.as_deref(), dir.as_deref(), fmt),
+        } => new(
+            &kind,
+            &name,
+            extension.as_deref(),
+            scheme.as_deref(),
+            dir.as_deref(),
+            fmt,
+        ),
         PluginCmd::Inspect { bundle } => inspect(&bundle, fmt),
         PluginCmd::Build {
             bundle,
@@ -381,6 +393,7 @@ fn new(
     kind: &str,
     name: &str,
     extension: Option<&str>,
+    scheme: Option<&str>,
     dir: Option<&str>,
     fmt: Format,
 ) -> Result<()> {
@@ -393,7 +406,7 @@ fn new(
     })?;
 
     let dest = Utf8PathBuf::from(dir.unwrap_or(name));
-    let files = scaffold(kind, name, extension, &dest)?;
+    let files = scaffold(kind, name, extension, scheme, &dest)?;
 
     if fmt.is_json() {
         output::success(&serde_json::json!({
@@ -2070,6 +2083,13 @@ fn stage_plugin_bundle(bundle: &Bundle, stage: &Utf8Path) -> Result<()> {
     }
     for fixture in bundle.manifest.all_fixtures() {
         copy_file_required(&bundle.path(fixture), Utf8Path::new(fixture), stage)?;
+    }
+    // New scaffolds carry deterministic template/generator/input provenance.
+    // Keep packaging backward-compatible with adopted/legacy bundles that do
+    // not have it, but preserve it whenever present.
+    let provenance = bundle.path(SCAFFOLD_PROVENANCE);
+    if provenance.as_std_path().is_file() {
+        copy_file_required(&provenance, Utf8Path::new(SCAFFOLD_PROVENANCE), stage)?;
     }
     // Carry third-party notices into the package so it ships with attribution.
     for notice in bundle.notices() {

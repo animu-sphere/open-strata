@@ -12,6 +12,7 @@ pub mod error;
 pub mod fs;
 pub mod host;
 pub mod paths;
+pub mod template;
 pub mod tools;
 pub mod variant;
 

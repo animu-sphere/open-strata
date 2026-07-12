@@ -3,11 +3,15 @@
 //!
 //! Templates live under `templates/<kind>-<lang>/` and are compiled into the
 //! binary. Files (and path components) carry `{{token}}` placeholders that are
-//! substituted per invocation. Today `usd-fileformat-cpp` and
-//! `usd-schema-codeless` exist; `usd-asset-resolver` slots in alongside them.
+//! substituted per invocation. The catalog currently ships
+//! `usd-fileformat-cpp`, `usd-schema-codeless`, and the experimental
+//! `usd-asset-resolver-cpp` skeleton.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+use ost_core::template::{ScaffoldProvenance, TemplateDescriptor, SCAFFOLD_PROVENANCE};
 use ost_core::{Error, Result};
 
 use crate::model::PluginKind;
@@ -16,6 +20,11 @@ use crate::model::PluginKind;
 struct TemplateFile {
     path: &'static str,
     contents: &'static str,
+}
+
+struct EmbeddedTemplate {
+    descriptor: &'static str,
+    files: &'static [TemplateFile],
 }
 
 /// The `usd-fileformat-cpp` template. `include_str!` paths are relative to this
@@ -61,6 +70,9 @@ const USD_FILEFORMAT_CPP: &[TemplateFile] = &[
     ),
 ];
 
+const USD_FILEFORMAT_CPP_DESCRIPTOR: &str =
+    include_str!("../../../templates/usd-fileformat-cpp/template.yaml");
+
 /// The `usd-schema-codeless` template: a resource-only (codeless) API schema —
 /// no C++, no shared library; usdGenSchema turns `schema.usda` into the bundle's
 /// `plugInfo.json` `Types` block.
@@ -103,6 +115,54 @@ const USD_SCHEMA_CODELESS: &[TemplateFile] = &[
     ),
 ];
 
+const USD_SCHEMA_CODELESS_DESCRIPTOR: &str =
+    include_str!("../../../templates/usd-schema-codeless/template.yaml");
+
+/// The `usd-asset-resolver-cpp` URI resolver skeleton.
+const USD_ASSET_RESOLVER_CPP: &[TemplateFile] = &[
+    tf(
+        "openstrata.plugin.yaml",
+        include_str!("../../../templates/usd-asset-resolver-cpp/openstrata.plugin.yaml"),
+    ),
+    tf(
+        "CMakeLists.txt",
+        include_str!("../../../templates/usd-asset-resolver-cpp/CMakeLists.txt"),
+    ),
+    tf(
+        "README.md",
+        include_str!("../../../templates/usd-asset-resolver-cpp/README.md"),
+    ),
+    tf(
+        ".gitignore",
+        include_str!("../../../templates/usd-asset-resolver-cpp/.gitignore"),
+    ),
+    tf(
+        "src/{{Name}}Resolver.h",
+        include_str!("../../../templates/usd-asset-resolver-cpp/src/{{Name}}Resolver.h"),
+    ),
+    tf(
+        "src/{{Name}}Resolver.cpp",
+        include_str!("../../../templates/usd-asset-resolver-cpp/src/{{Name}}Resolver.cpp"),
+    ),
+    tf(
+        "plugin/resources/{{name}}/plugInfo.json.in",
+        include_str!(
+            "../../../templates/usd-asset-resolver-cpp/plugin/resources/{{name}}/plugInfo.json.in"
+        ),
+    ),
+    tf(
+        "tests/fixtures/basic.usda",
+        include_str!("../../../templates/usd-asset-resolver-cpp/tests/fixtures/basic.usda"),
+    ),
+    tf(
+        "tests/fixtures/referenced.usda",
+        include_str!("../../../templates/usd-asset-resolver-cpp/tests/fixtures/referenced.usda"),
+    ),
+];
+
+const USD_ASSET_RESOLVER_CPP_DESCRIPTOR: &str =
+    include_str!("../../../templates/usd-asset-resolver-cpp/template.yaml");
+
 const fn tf(path: &'static str, contents: &'static str) -> TemplateFile {
     TemplateFile { path, contents }
 }
@@ -118,6 +178,7 @@ struct Vars {
     /// plugin name (`vrm-schema`) cannot be used there verbatim.
     ident: String,
     extension: String,
+    scheme: String,
 }
 
 impl Vars {
@@ -127,6 +188,7 @@ impl Vars {
             .replace("{{NAME}}", &self.upper)
             .replace("{{ident}}", &self.ident)
             .replace("{{extension}}", &self.extension)
+            .replace("{{scheme}}", &self.scheme)
     }
 }
 
@@ -189,41 +251,89 @@ fn validate_extension(ext: &str) -> Result<()> {
     }
 }
 
+/// Validate an RFC 3986 URI scheme in its normalized lowercase form.
+fn validate_scheme(scheme: &str) -> Result<()> {
+    let valid = scheme
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_lowercase())
+        .unwrap_or(false)
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '-' | '.'));
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::Operation(format!(
+            "invalid URI scheme '{scheme}': use lowercase letters, digits, '+', '-' or '.', starting with a letter"
+        )))
+    }
+}
+
 /// Scaffold a new bundle of `kind` named `name` into `dest` (the bundle root).
 ///
-/// `extension` is required for file-format plugins. Returns the list of files
-/// written (bundle-relative), in creation order. Refuses to overwrite a
-/// non-empty destination.
+/// `extension` is required for file-format plugins and `scheme` for asset
+/// resolvers. Returns the list of files written (bundle-relative), in creation
+/// order. Refuses to overwrite a non-empty destination.
 pub fn scaffold(
     kind: PluginKind,
     name: &str,
     extension: Option<&str>,
+    scheme: Option<&str>,
     dest: &Utf8Path,
 ) -> Result<Vec<Utf8PathBuf>> {
     validate_name(name)?;
 
-    let files = match kind {
-        PluginKind::UsdFileformat => USD_FILEFORMAT_CPP,
-        PluginKind::UsdSchema => USD_SCHEMA_CODELESS,
-        other => {
-            return Err(Error::Operation(format!(
-                "no template yet for kind '{}' (ships usd-fileformat + usd-schema; others follow)",
-                other.as_str()
-            )))
-        }
+    let embedded = match kind {
+        PluginKind::UsdFileformat => EmbeddedTemplate {
+            descriptor: USD_FILEFORMAT_CPP_DESCRIPTOR,
+            files: USD_FILEFORMAT_CPP,
+        },
+        PluginKind::UsdSchema => EmbeddedTemplate {
+            descriptor: USD_SCHEMA_CODELESS_DESCRIPTOR,
+            files: USD_SCHEMA_CODELESS,
+        },
+        PluginKind::UsdAssetResolver => EmbeddedTemplate {
+            descriptor: USD_ASSET_RESOLVER_CPP_DESCRIPTOR,
+            files: USD_ASSET_RESOLVER_CPP,
+        },
     };
+    let descriptor = TemplateDescriptor::parse(embedded.descriptor)?;
+    if descriptor.plugin_kind.as_deref() != Some(kind.as_str()) {
+        return Err(Error::InvalidManifest(format!(
+            "template '{}' declares plugin_kind {:?}, expected '{}'",
+            descriptor.template.id,
+            descriptor.plugin_kind,
+            kind.as_str()
+        )));
+    }
 
-    let extension = match (kind, extension) {
-        (PluginKind::UsdFileformat, Some(e)) => {
+    let (extension, scheme) = match (kind, extension, scheme) {
+        (PluginKind::UsdFileformat, Some(e), None) => {
             validate_extension(e)?;
-            e.to_string()
+            (e.to_string(), String::new())
         }
-        (PluginKind::UsdFileformat, None) => {
+        (PluginKind::UsdFileformat, None, None) => {
             return Err(Error::Operation(
                 "usd-fileformat needs --extension <ext> (the file extension it reads)".into(),
             ))
         }
-        (_, e) => e.unwrap_or("").to_string(),
+        (PluginKind::UsdAssetResolver, None, Some(s)) => {
+            validate_scheme(s)?;
+            (String::new(), s.to_string())
+        }
+        (PluginKind::UsdAssetResolver, None, None) => {
+            return Err(Error::Operation(
+                "usd-asset-resolver needs --scheme <scheme> (the URI scheme it handles)".into(),
+            ))
+        }
+        (PluginKind::UsdSchema, None, None) => (String::new(), String::new()),
+        (kind, _, _) => {
+            return Err(Error::Operation(format!(
+                "options do not match plugin kind '{}': use --extension only for usd-fileformat and --scheme only for usd-asset-resolver",
+                kind.as_str()
+            )))
+        }
     };
 
     if dest.as_std_path().exists() {
@@ -243,10 +353,14 @@ pub fn scaffold(
         upper: to_pascal(name).to_ascii_uppercase(),
         ident: to_ident(name),
         extension,
+        scheme,
     };
 
+    let planned = planned_outputs(embedded.files, &vars)?;
+    validate_descriptor_outputs(&descriptor, &vars, &planned)?;
+
     let mut written = Vec::new();
-    for file in files {
+    for file in embedded.files {
         let rel = Utf8PathBuf::from(vars.apply(file.path));
         let abs = dest.join(&rel);
         if let Some(parent) = abs.parent() {
@@ -277,7 +391,82 @@ pub fn scaffold(
         }
     }
 
+    let mut inputs: BTreeMap<String, String> = BTreeMap::from([("name".into(), name.to_string())]);
+    if !vars.extension.is_empty() {
+        inputs.insert("extension".into(), vars.extension.clone());
+    }
+    if !vars.scheme.is_empty() {
+        inputs.insert("scheme".into(), vars.scheme.clone());
+    }
+    let provenance =
+        ScaffoldProvenance::new(&descriptor, env!("CARGO_PKG_VERSION"), inputs).to_yaml()?;
+    let provenance_path = dest.join(SCAFFOLD_PROVENANCE);
+    std::fs::write(provenance_path.as_std_path(), provenance)
+        .map_err(|e| Error::io(provenance_path.to_string(), e))?;
+    written.push(SCAFFOLD_PROVENANCE.into());
+
     Ok(written)
+}
+
+fn planned_outputs(files: &[TemplateFile], vars: &Vars) -> Result<Vec<Utf8PathBuf>> {
+    let mut planned = Vec::new();
+    let mut destinations = BTreeSet::new();
+    for file in files {
+        let rel = Utf8PathBuf::from(vars.apply(file.path));
+        crate::bundle::check_safe_relative("template output", rel.as_str())?;
+        if rel.as_str().contains("{{") {
+            return Err(Error::InvalidManifest(format!(
+                "template output '{}' contains an unresolved token",
+                rel
+            )));
+        }
+        if !destinations.insert(rel.to_string()) {
+            return Err(Error::InvalidManifest(format!(
+                "template renders duplicate output '{rel}'"
+            )));
+        }
+        planned.push(rel.clone());
+        if let Some(concrete) = rel.as_str().strip_suffix(".in") {
+            if !destinations.insert(concrete.into()) {
+                return Err(Error::InvalidManifest(format!(
+                    "template renders duplicate output '{concrete}'"
+                )));
+            }
+            planned.push(concrete.into());
+        }
+    }
+    if !destinations.insert(SCAFFOLD_PROVENANCE.into()) {
+        return Err(Error::InvalidManifest(format!(
+            "template renders duplicate output '{SCAFFOLD_PROVENANCE}'"
+        )));
+    }
+    planned.push(SCAFFOLD_PROVENANCE.into());
+    Ok(planned)
+}
+
+fn validate_descriptor_outputs(
+    descriptor: &TemplateDescriptor,
+    vars: &Vars,
+    planned: &[Utf8PathBuf],
+) -> Result<()> {
+    let declared: BTreeSet<String> = descriptor
+        .outputs
+        .files
+        .iter()
+        .map(|path| vars.apply(path))
+        .collect();
+    let actual: BTreeSet<String> = planned.iter().map(ToString::to_string).collect();
+    if declared != actual {
+        let missing: Vec<_> = actual.difference(&declared).cloned().collect();
+        let extra: Vec<_> = declared.difference(&actual).cloned().collect();
+        return Err(Error::InvalidManifest(format!(
+            "template '{}' outputs do not match embedded files (undeclared: [{}]; missing: [{}])",
+            descriptor.template.id,
+            missing.join(", "),
+            extra.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 /// What [`add_cohosted_schema`] created/changed in the bundle.
@@ -377,6 +566,7 @@ pub fn add_cohosted_schema(
         upper: pascal.to_ascii_uppercase(),
         ident: to_ident(manifest.name()),
         extension: String::new(),
+        scheme: String::new(),
     };
     if let Some(parent) = schema_abs.parent() {
         std::fs::create_dir_all(parent.as_std_path())
@@ -589,7 +779,14 @@ mod tests {
         assert!(validate_extension("toy").is_ok());
         // And the scaffold entry point rejects it too.
         let dir = unique_tmp("scaffold-badext");
-        assert!(scaffold(PluginKind::UsdFileformat, "toy", Some("../evil"), &dir).is_err());
+        assert!(scaffold(
+            PluginKind::UsdFileformat,
+            "toy",
+            Some("../evil"),
+            None,
+            &dir
+        )
+        .is_err());
         assert!(!dir.as_std_path().exists());
     }
 
@@ -597,11 +794,12 @@ mod tests {
     fn scaffolds_a_buildable_bundle() {
         let dir = unique_tmp("scaffold");
         let files =
-            scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+            scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), None, &dir).expect("scaffold");
 
         // The manifest and a token-substituted source file landed.
         assert!(files.iter().any(|f| f.as_str() == "openstrata.plugin.yaml"));
         assert!(files.iter().any(|f| f.as_str() == "src/ToyFileFormat.cpp"));
+        assert!(files.iter().any(|f| f.as_str() == SCAFFOLD_PROVENANCE));
         // Both the configure_file source (.in) and the ready-to-use concrete
         // plugInfo.json are written.
         assert!(files
@@ -638,14 +836,82 @@ mod tests {
         let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
         assert!(cmake.contains("OPENSTRATA_SCHEMA_SOURCES_FILE"));
 
+        let provenance: ScaffoldProvenance = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.join(SCAFFOLD_PROVENANCE).as_std_path()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance.template.id, "usd-fileformat-cpp");
+        assert_eq!(provenance.inputs.get("name").unwrap(), "toy");
+        assert_eq!(provenance.inputs.get("extension").unwrap(), "toy");
+
         std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn scaffolds_an_asset_resolver_skeleton() {
+        let dir = unique_tmp("scaffold-resolver");
+        let files = scaffold(
+            PluginKind::UsdAssetResolver,
+            "studio-assets",
+            None,
+            Some("studio"),
+            &dir,
+        )
+        .expect("scaffold resolver");
+
+        assert!(files
+            .iter()
+            .any(|f| f.as_str() == "src/StudioAssetsResolver.cpp"));
+        assert!(files
+            .iter()
+            .any(|f| { f.as_str() == "plugin/resources/studio-assets/plugInfo.json" }));
+
+        let bundle = crate::Bundle::load(&dir).expect("resolver bundle loads");
+        assert_eq!(bundle.manifest.kind(), PluginKind::UsdAssetResolver);
+        let plug_info = std::fs::read_to_string(bundle.plug_info().as_std_path()).unwrap();
+        assert!(plug_info.contains("\"uriSchemes\": [\"studio\"]"));
+        assert!(plug_info.contains("\"bases\": [\"ArResolver\"]"));
+
+        let source =
+            std::fs::read_to_string(dir.join("src/StudioAssetsResolver.cpp").as_std_path())
+                .unwrap();
+        assert!(source.contains("AR_DEFINE_RESOLVER(StudioAssetsResolver, ArResolver)"));
+        assert!(source.contains("SchemePrefix = \"studio:\""));
+        assert!(!source.contains("{{"));
+
+        let provenance: ScaffoldProvenance = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.join(SCAFFOLD_PROVENANCE).as_std_path()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance.template.id, "usd-asset-resolver-cpp");
+        assert_eq!(provenance.inputs.get("scheme").unwrap(), "studio");
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn asset_resolver_requires_a_normalized_uri_scheme() {
+        for scheme in [None, Some("Studio"), Some("9studio"), Some("bad/scheme")] {
+            let dir = unique_tmp("scaffold-resolver-badscheme");
+            assert!(scaffold(
+                PluginKind::UsdAssetResolver,
+                "studio-assets",
+                None,
+                scheme,
+                &dir,
+            )
+            .is_err());
+            assert!(!dir.as_std_path().exists());
+        }
+        assert!(validate_scheme("studio+cache").is_ok());
     }
 
     #[test]
     fn scaffolds_a_codeless_schema_bundle() {
         let dir = unique_tmp("scaffold-schema");
         // A schema needs no --extension.
-        let files = scaffold(PluginKind::UsdSchema, "vrm-schema", None, &dir).expect("scaffold");
+        let files =
+            scaffold(PluginKind::UsdSchema, "vrm-schema", None, None, &dir).expect("scaffold");
 
         // The schema source, the resource-only plugInfo.json, and the manifest landed.
         assert!(files.iter().any(|f| f.as_str() == "schema.usda"));
@@ -744,7 +1010,7 @@ mod tests {
     #[test]
     fn schema_add_wires_a_fileformat_bundle() {
         let dir = unique_tmp("schema-add");
-        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), None, &dir).expect("scaffold");
 
         let added =
             add_cohosted_schema(&dir, "API", "schema/schema.usda", false).expect("schema add");
@@ -784,14 +1050,14 @@ mod tests {
     fn schema_add_refusals() {
         // A usd-schema bundle is refused (it IS the schema).
         let dir = unique_tmp("schema-add-kind");
-        scaffold(PluginKind::UsdSchema, "vrm", None, &dir).expect("scaffold");
+        scaffold(PluginKind::UsdSchema, "vrm", None, None, &dir).expect("scaffold");
         let err = add_cohosted_schema(&dir, "API", "schema/schema.usda", false).unwrap_err();
         assert!(err.to_string().contains("already is a usd-schema"), "{err}");
         std::fs::remove_dir_all(dir.as_std_path()).ok();
 
         // Class and source shapes are validated.
         let dir = unique_tmp("schema-add-shape");
-        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), None, &dir).expect("scaffold");
         assert!(add_cohosted_schema(&dir, "api", "schema/schema.usda", false).is_err());
         assert!(add_cohosted_schema(&dir, "API", "../outside.usda", false).is_err());
         assert!(add_cohosted_schema(&dir, "API", "schema/schema.txt", false).is_err());
@@ -809,7 +1075,7 @@ mod tests {
     #[test]
     fn schema_add_refuses_existing_cohosted_schema_without_redirecting_source() {
         let dir = unique_tmp("schema-add-existing-cohost");
-        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), None, &dir).expect("scaffold");
 
         let manifest_path = dir.join("openstrata.plugin.yaml");
         let manifest = std::fs::read_to_string(manifest_path.as_std_path()).unwrap();
@@ -840,7 +1106,7 @@ mod tests {
     #[test]
     fn schema_add_refuses_conventional_schema_source_before_writing_default_source() {
         let dir = unique_tmp("schema-add-existing-source");
-        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir).expect("scaffold");
+        scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), None, &dir).expect("scaffold");
         std::fs::write(dir.join("schema.usda").as_std_path(), "#usda 1.0\n").unwrap();
 
         let err = add_cohosted_schema(&dir, "API", "schema/schema.usda", false).unwrap_err();
@@ -862,7 +1128,7 @@ mod tests {
         let dir = unique_tmp("scaffold-existing");
         std::fs::create_dir_all(dir.as_std_path()).unwrap();
         std::fs::write(dir.join("keep.txt").as_std_path(), "x").unwrap();
-        let err = scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), &dir);
+        let err = scaffold(PluginKind::UsdFileformat, "toy", Some("toy"), None, &dir);
         assert!(err.is_err());
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
@@ -870,7 +1136,7 @@ mod tests {
     #[test]
     fn fileformat_requires_extension() {
         let dir = unique_tmp("scaffold-noext");
-        assert!(scaffold(PluginKind::UsdFileformat, "toy", None, &dir).is_err());
+        assert!(scaffold(PluginKind::UsdFileformat, "toy", None, None, &dir).is_err());
     }
 
     fn unique_tmp(tag: &str) -> Utf8PathBuf {

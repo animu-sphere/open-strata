@@ -8,8 +8,11 @@
 //! substituted per invocation. `--bare` selects no template, for adopting
 //! OpenStrata into an existing CMake project.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use camino::{Utf8Path, Utf8PathBuf};
 
+use ost_core::template::{ScaffoldProvenance, TemplateDescriptor, SCAFFOLD_PROVENANCE};
 use ost_core::{Error, Result};
 
 /// The project template to scaffold.
@@ -48,13 +51,26 @@ impl Template {
         }
     }
 
-    fn files(self) -> &'static [TemplateFile] {
+    fn embedded(self) -> Option<EmbeddedTemplate> {
         match self {
-            Template::CppLibrary => CPP_LIBRARY,
-            Template::UsdPlugin => USD_PLUGIN,
-            Template::PluginWorkspace => PLUGIN_WORKSPACE,
-            Template::Bare => &[],
+            Template::CppLibrary => Some(EmbeddedTemplate {
+                descriptor: CPP_LIBRARY_DESCRIPTOR,
+                files: CPP_LIBRARY,
+            }),
+            Template::UsdPlugin => Some(EmbeddedTemplate {
+                descriptor: USD_PLUGIN_DESCRIPTOR,
+                files: USD_PLUGIN,
+            }),
+            Template::PluginWorkspace => Some(EmbeddedTemplate {
+                descriptor: PLUGIN_WORKSPACE_DESCRIPTOR,
+                files: PLUGIN_WORKSPACE,
+            }),
+            Template::Bare => None,
         }
+    }
+
+    fn files(self) -> &'static [TemplateFile] {
+        self.embedded().map(|t| t.files).unwrap_or(&[])
     }
 }
 
@@ -62,6 +78,12 @@ impl Template {
 struct TemplateFile {
     path: &'static str,
     contents: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct EmbeddedTemplate {
+    descriptor: &'static str,
+    files: &'static [TemplateFile],
 }
 
 const fn tf(path: &'static str, contents: &'static str) -> TemplateFile {
@@ -92,6 +114,8 @@ const CPP_LIBRARY: &[TemplateFile] = &[
     ),
 ];
 
+const CPP_LIBRARY_DESCRIPTOR: &str = include_str!("../../../templates/cpp-library/template.yaml");
+
 const USD_PLUGIN: &[TemplateFile] = &[
     tf(
         "CMakeLists.txt",
@@ -115,6 +139,8 @@ const USD_PLUGIN: &[TemplateFile] = &[
     ),
 ];
 
+const USD_PLUGIN_DESCRIPTOR: &str = include_str!("../../../templates/usd-plugin/template.yaml");
+
 /// A dual-mode workspace root: a CMakeLists.txt that resolves OpenUSD once and
 /// add_subdirectory()s every bundle, so the repo is `cmake -S .`-able without
 /// `ost`. Carries no per-bundle files — bundles are added with `ost plugin new`.
@@ -136,6 +162,9 @@ const PLUGIN_WORKSPACE: &[TemplateFile] = &[
         include_str!("../../../templates/plugin-workspace/.gitignore"),
     ),
 ];
+
+const PLUGIN_WORKSPACE_DESCRIPTOR: &str =
+    include_str!("../../../templates/plugin-workspace/template.yaml");
 
 /// Placeholder substitutions for a template.
 struct Vars {
@@ -199,14 +228,13 @@ pub fn validate_name(name: &str) -> Result<()> {
 
 /// Template files that already exist under `root` (root-relative). Lets the
 /// caller fail before writing anything when `--force` was not given.
-pub fn conflicts(template: Template, name: &str, root: &Utf8Path) -> Vec<Utf8PathBuf> {
+pub fn conflicts(template: Template, name: &str, root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
     let vars = Vars::new(name);
-    template
-        .files()
-        .iter()
-        .map(|f| Utf8PathBuf::from(vars.apply(f.path)))
+    let planned = planned_outputs(template, &vars)?;
+    Ok(planned
+        .into_iter()
         .filter(|rel| root.join(rel).as_std_path().exists())
-        .collect()
+        .collect())
 }
 
 /// Write `template`'s files into `root`, returning the files written
@@ -225,12 +253,12 @@ pub fn scaffold(
         validate_name(name)?;
     }
     let vars = Vars::new(name);
+    let planned = planned_outputs(template, &vars)?;
 
     // Pre-flight: never clobber an existing file unless --force was given.
     if !force {
-        for f in template.files() {
-            let rel = vars.apply(f.path);
-            let abs = root.join(&rel);
+        for rel in &planned {
+            let abs = root.join(rel);
             if abs.as_std_path().exists() {
                 return Err(Error::Operation(format!(
                     "refusing to overwrite existing '{rel}'; \
@@ -252,7 +280,63 @@ pub fn scaffold(
             .map_err(|e| Error::io(abs.to_string(), e))?;
         written.push(rel);
     }
+    if let Some(embedded) = template.embedded() {
+        let descriptor = TemplateDescriptor::parse(embedded.descriptor)?;
+        let inputs: BTreeMap<String, String> = BTreeMap::from([("name".into(), name.to_string())]);
+        let provenance =
+            ScaffoldProvenance::new(&descriptor, env!("CARGO_PKG_VERSION"), inputs).to_yaml()?;
+        let path = root.join(SCAFFOLD_PROVENANCE);
+        std::fs::write(path.as_std_path(), provenance)
+            .map_err(|e| Error::io(path.to_string(), e))?;
+        written.push(SCAFFOLD_PROVENANCE.into());
+    }
     Ok(written)
+}
+
+fn planned_outputs(template: Template, vars: &Vars) -> Result<Vec<Utf8PathBuf>> {
+    let Some(embedded) = template.embedded() else {
+        return Ok(Vec::new());
+    };
+    let descriptor = TemplateDescriptor::parse(embedded.descriptor)?;
+    if descriptor.template.id != template.as_str() {
+        return Err(Error::InvalidManifest(format!(
+            "template descriptor id '{}' does not match catalog id '{}'",
+            descriptor.template.id,
+            template.as_str()
+        )));
+    }
+
+    let mut planned: Vec<Utf8PathBuf> = embedded
+        .files
+        .iter()
+        .map(|file| Utf8PathBuf::from(vars.apply(file.path)))
+        .collect();
+    planned.push(SCAFFOLD_PROVENANCE.into());
+
+    let actual: BTreeSet<String> = planned.iter().map(ToString::to_string).collect();
+    if actual.len() != planned.len() {
+        return Err(Error::InvalidManifest(format!(
+            "template '{}' renders duplicate output paths",
+            descriptor.template.id
+        )));
+    }
+    let declared: BTreeSet<String> = descriptor
+        .outputs
+        .files
+        .iter()
+        .map(|path| vars.apply(path))
+        .collect();
+    if declared != actual {
+        let missing: Vec<_> = actual.difference(&declared).cloned().collect();
+        let extra: Vec<_> = declared.difference(&actual).cloned().collect();
+        return Err(Error::InvalidManifest(format!(
+            "template '{}' outputs do not match embedded files (undeclared: [{}]; missing: [{}])",
+            descriptor.template.id,
+            missing.join(", "),
+            extra.join(", ")
+        )));
+    }
+    Ok(planned)
 }
 
 #[cfg(test)]
@@ -279,6 +363,21 @@ mod tests {
     }
 
     #[test]
+    fn every_project_catalog_descriptor_matches_its_embedded_outputs() {
+        let vars = Vars::new("catalog-check");
+        for template in [
+            Template::CppLibrary,
+            Template::UsdPlugin,
+            Template::PluginWorkspace,
+        ] {
+            let outputs = planned_outputs(template, &vars).expect("valid catalog entry");
+            assert!(outputs
+                .iter()
+                .any(|path| path.as_str() == SCAFFOLD_PROVENANCE));
+        }
+    }
+
+    #[test]
     fn plugin_workspace_emits_a_dual_mode_glob_root() {
         let dir = unique_tmp("workspace");
         std::fs::create_dir_all(dir.as_std_path()).unwrap();
@@ -286,6 +385,7 @@ mod tests {
 
         assert!(written.iter().any(|p| p.as_str() == "CMakeLists.txt"));
         assert!(written.iter().any(|p| p.as_str() == "CMakePresets.json"));
+        assert!(written.iter().any(|p| p.as_str() == SCAFFOLD_PROVENANCE));
 
         // The root resolves USD once and add_subdirectory()s discovered bundles,
         // and its project() name is the substituted workspace name.
@@ -296,6 +396,13 @@ mod tests {
         assert!(cml.contains("openstrata.plugin.yaml"));
         assert!(cml.contains("add_subdirectory"));
         assert!(cml.contains("${CMAKE_CURRENT_SOURCE_DIR}/plugins"));
+
+        let provenance: ScaffoldProvenance = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.join(SCAFFOLD_PROVENANCE).as_std_path()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance.template.id, "usd-plugin-workspace");
+        assert_eq!(provenance.inputs.get("name").unwrap(), "vrm-plugins");
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
