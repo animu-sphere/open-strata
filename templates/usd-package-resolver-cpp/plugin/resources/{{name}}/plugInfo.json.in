@@ -1,0 +1,20 @@
+{
+    "Plugins": [
+        {
+            "Type": "library",
+            "Name": "{{Name}}PackageResolver",
+            "Root": ".",
+            "LibraryPath": "../../../lib/@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@{{Name}}PackageResolver@CMAKE_SHARED_LIBRARY_SUFFIX@",
+            "ResourcePath": ".",
+            "Info": {
+                "Types": {
+                    "{{Name}}PackageResolver": {
+                        "bases": ["ArPackageResolver"],
+                        "displayName": "{{Name}} Package Resolver",
+                        "extensions": ["{{extension}}"]
+                    }
+                }
+            }
+        }
+    ]
+}

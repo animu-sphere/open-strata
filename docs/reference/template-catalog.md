@@ -25,6 +25,7 @@ backwards-compatible default for `usd-schema`.
 | `usd-schema-codeless` | template | `usd-schema` | none |
 | `usd-schema-cpp` | skeleton | `usd-schema` | `--template usd-schema-cpp` |
 | `usd-asset-resolver-cpp` | skeleton | `usd-asset-resolver` | `--scheme <scheme>` |
+| `usd-package-resolver-cpp` | skeleton | `usd-package-resolver` | `--extension <ext>` |
 
 Skeletons have stable generation and lifecycle seams, but their domain
 architecture has not met the promotion evidence required of a template.

@@ -629,6 +629,52 @@ fn generated_asset_resolver_requires_scheme_and_records_provenance() {
 }
 
 #[test]
+fn generated_package_resolver_requires_extension_and_records_provenance() {
+    let sb = Sandbox::new("pkg-resolver-scaffold");
+    init_and_pull(&sb);
+
+    let missing = sb.ost(&["plugin", "new", "usd-package-resolver", "shot-pack"]);
+    assert_eq!(missing.status.code(), Some(4), "{}", out_text(&missing));
+    assert!(out_text(&missing).contains("needs --extension"));
+
+    let out = sb.ost(&[
+        "--json",
+        "plugin",
+        "new",
+        "usd-package-resolver",
+        "shot-pack",
+        "--extension",
+        "pack",
+    ]);
+    assert!(
+        out.status.success(),
+        "package resolver scaffold failed:\n{}",
+        out_text(&out)
+    );
+    let body: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["data"]["kind"], "usd-package-resolver");
+    assert_eq!(body["data"]["template"], "usd-package-resolver-cpp");
+
+    let root = sb.work.join("shot-pack");
+    let provenance: serde_yaml::Value = serde_yaml::from_str(
+        &std::fs::read_to_string(root.join("openstrata.scaffold.yaml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(provenance["template"]["id"], "usd-package-resolver-cpp");
+    assert_eq!(provenance["inputs"]["extension"], "pack");
+    assert!(root
+        .join("plugin/resources/shot-pack/plugInfo.json")
+        .is_file());
+    assert!(root.join("cmake/OpenStrataPlugin.cmake").is_file());
+    // The sidecar package entry lands so the smoke fixture's packaged
+    // sublayer path resolves once the plugin is built.
+    assert!(root
+        .join("tests/fixtures/basic.pack.contents/content/inner.usda")
+        .is_file());
+}
+
+#[test]
 fn compiled_schema_template_is_selected_explicitly_and_reported() {
     let sb = Sandbox::new("schema-cpp-scaffold");
     let out = sb.ost(&[

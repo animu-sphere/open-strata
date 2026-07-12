@@ -1,0 +1,35 @@
+schema: openstrata.template/v1alpha1
+template:
+  id: usd-package-resolver-cpp
+  version: 0.1.0
+  maturity: skeleton
+  artifact_kind: plugin
+plugin_kind: usd-package-resolver
+variables:
+  - name: name
+    type: portable-identifier
+    required: true
+  - name: extension
+    type: file-extension
+    required: true
+outputs:
+  files:
+    - openstrata.plugin.yaml
+    - CMakeLists.txt
+    - README.md
+    - .gitignore
+    - cmake/OpenStrataPlugin.cmake
+    - src/{{Name}}PackageResolver.h
+    - src/{{Name}}PackageResolver.cpp
+    - plugin/resources/{{name}}/plugInfo.json.in
+    - plugin/resources/{{name}}/plugInfo.json
+    - tests/fixtures/basic.usda
+    - tests/fixtures/basic.{{extension}}
+    - tests/fixtures/basic.{{extension}}.contents/content/inner.usda
+    - openstrata.scaffold.yaml
+verification:
+  levels: [0, 1, 2]
+  assertions: [deterministic-generation, package-resolver-registration, install-tree-discovery]
+compatibility:
+  ost: ">=0.13,<1.0"
+  openusd: ">=25.05,<27.0"

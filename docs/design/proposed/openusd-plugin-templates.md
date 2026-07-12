@@ -558,9 +558,17 @@ containers, and decompression limits when compression exists.
 This remains a skeleton until at least two independent package backends prove
 the boundary. Architectural similarity alone is not promotion evidence.
 
-Use a distinct `usd-package-resolver-cpp` catalog id once the skeleton exists.
-It may share pinned CMake and test-harness mechanics with the asset-resolver
-scaffold, but it is not a mode of the same formal template.
+The manifest and embedded catalog now model `usd-package-resolver`; the shipped
+skeleton establishes registration, extension dispatch, an entry-lookup seam, a
+traversal-rejecting entry-path guard, deterministic provenance, and a smoke
+fixture that sublayers a packaged path. Its starter backs entries with a
+sidecar directory precisely so no container model is standardized; the real
+container, its bounded random access, and the security tests above are the
+promotion evidence, not part of the shared template.
+
+The catalog id is the distinct `usd-package-resolver-cpp`. It shares pinned
+CMake and test-harness mechanics with the asset-resolver scaffold, but it is
+not a mode of the same formal template.
 
 ### Exec
 
@@ -601,7 +609,7 @@ only if it actually ships a discoverable OpenUSD plugin.
 | `usd-schema-codeless` | shipped scaffold, generation, registration lifecycle | template |
 | `usd-schema-cpp` | embedded standalone scaffold, four generation modes, committed 26.05 outputs, contract baseline, CMake export, and downstream fixture | skeleton; clean-install automation and broader matrix evidence pending |
 | `usd-asset-resolver-cpp` | embedded URI resolver scaffold, copied CMake helper, descriptor, provenance, and registration fixture | skeleton; promotion evidence pending |
-| `usd-package-resolver-cpp` | one format/reference report | reference, then skeleton |
+| `usd-package-resolver-cpp` | embedded sidecar-backed scaffold, copied CMake helper, descriptor, provenance, and registration fixture | skeleton; second package backend pending |
 | `usd-exec-cpp` | architecture/reference reports | reference, then skeleton |
 | `hydra-render-delegate-cpp` | hdMerlin dogfood evidence | skeleton candidate |
 | `renderer-project` | hdMerlin end-to-end structure | skeleton candidate |

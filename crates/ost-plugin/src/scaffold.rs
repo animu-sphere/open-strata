@@ -5,7 +5,8 @@
 //! binary. Files (and path components) carry `{{token}}` placeholders that are
 //! substituted per invocation. The catalog currently ships
 //! `usd-fileformat-cpp`, `usd-schema-codeless`, `usd-schema-cpp`, and the
-//! experimental `usd-asset-resolver-cpp` skeleton.
+//! experimental `usd-asset-resolver-cpp` and `usd-package-resolver-cpp`
+//! skeletons.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -252,6 +253,70 @@ const USD_ASSET_RESOLVER_CPP: &[TemplateFile] = &[
 const USD_ASSET_RESOLVER_CPP_DESCRIPTOR: &str =
     include_str!("../../../templates/usd-asset-resolver-cpp/template.yaml");
 
+/// The `usd-package-resolver-cpp` skeleton: an `ArPackageResolver` dispatched
+/// by package extension. The starter backs entries with a sidecar directory
+/// (no container format is standardized); the smoke fixture sublayers a
+/// packaged path so L3/L4 exercise real dispatch.
+const USD_PACKAGE_RESOLVER_CPP: &[TemplateFile] = &[
+    tf(
+        "openstrata.plugin.yaml",
+        include_str!("../../../templates/usd-package-resolver-cpp/openstrata.plugin.yaml"),
+    ),
+    tf(
+        "CMakeLists.txt",
+        include_str!("../../../templates/usd-package-resolver-cpp/CMakeLists.txt"),
+    ),
+    tf(
+        "README.md",
+        include_str!("../../../templates/usd-package-resolver-cpp/README.md"),
+    ),
+    tf(
+        ".gitignore",
+        include_str!("../../../templates/usd-package-resolver-cpp/.gitignore"),
+    ),
+    tf(
+        "cmake/OpenStrataPlugin.cmake",
+        include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake"),
+    ),
+    tf(
+        "src/{{Name}}PackageResolver.h",
+        include_str!(
+            "../../../templates/usd-package-resolver-cpp/src/{{Name}}PackageResolver.h"
+        ),
+    ),
+    tf(
+        "src/{{Name}}PackageResolver.cpp",
+        include_str!(
+            "../../../templates/usd-package-resolver-cpp/src/{{Name}}PackageResolver.cpp"
+        ),
+    ),
+    tf(
+        "plugin/resources/{{name}}/plugInfo.json.in",
+        include_str!(
+            "../../../templates/usd-package-resolver-cpp/plugin/resources/{{name}}/plugInfo.json.in"
+        ),
+    ),
+    tf(
+        "tests/fixtures/basic.usda",
+        include_str!("../../../templates/usd-package-resolver-cpp/tests/fixtures/basic.usda"),
+    ),
+    tf(
+        "tests/fixtures/basic.{{extension}}",
+        include_str!(
+            "../../../templates/usd-package-resolver-cpp/tests/fixtures/basic.{{extension}}"
+        ),
+    ),
+    tf(
+        "tests/fixtures/basic.{{extension}}.contents/content/inner.usda",
+        include_str!(
+            "../../../templates/usd-package-resolver-cpp/tests/fixtures/basic.{{extension}}.contents/content/inner.usda"
+        ),
+    ),
+];
+
+const USD_PACKAGE_RESOLVER_CPP_DESCRIPTOR: &str =
+    include_str!("../../../templates/usd-package-resolver-cpp/template.yaml");
+
 const fn tf(path: &'static str, contents: &'static str) -> TemplateFile {
     TemplateFile { path, contents }
 }
@@ -426,6 +491,10 @@ pub fn scaffold_with_template(
             descriptor: USD_ASSET_RESOLVER_CPP_DESCRIPTOR,
             files: USD_ASSET_RESOLVER_CPP,
         },
+        (PluginKind::UsdPackageResolver, "usd-package-resolver-cpp") => EmbeddedTemplate {
+            descriptor: USD_PACKAGE_RESOLVER_CPP_DESCRIPTOR,
+            files: USD_PACKAGE_RESOLVER_CPP,
+        },
         _ => {
             return Err(Error::Operation(format!(
             "template '{requested}' is not available for plugin kind '{}' (expected one of: {})",
@@ -463,10 +532,20 @@ pub fn scaffold_with_template(
                 "usd-asset-resolver needs --scheme <scheme> (the URI scheme it handles)".into(),
             ))
         }
+        (PluginKind::UsdPackageResolver, Some(e), None) => {
+            validate_extension(e)?;
+            (e.to_string(), String::new())
+        }
+        (PluginKind::UsdPackageResolver, None, None) => {
+            return Err(Error::Operation(
+                "usd-package-resolver needs --extension <ext> (the package extension it handles)"
+                    .into(),
+            ))
+        }
         (PluginKind::UsdSchema, None, None) => (String::new(), String::new()),
         (kind, _, _) => {
             return Err(Error::Operation(format!(
-                "options do not match plugin kind '{}': use --extension only for usd-fileformat and --scheme only for usd-asset-resolver",
+                "options do not match plugin kind '{}': use --extension for usd-fileformat or usd-package-resolver and --scheme only for usd-asset-resolver",
                 kind.as_str()
             )))
         }
@@ -564,6 +643,7 @@ pub const fn default_template_id(kind: PluginKind) -> &'static str {
         PluginKind::UsdFileformat => "usd-fileformat-cpp",
         PluginKind::UsdSchema => "usd-schema-codeless",
         PluginKind::UsdAssetResolver => "usd-asset-resolver-cpp",
+        PluginKind::UsdPackageResolver => "usd-package-resolver-cpp",
     }
 }
 
@@ -573,6 +653,7 @@ pub const fn template_ids(kind: PluginKind) -> &'static [&'static str] {
         PluginKind::UsdFileformat => &["usd-fileformat-cpp"],
         PluginKind::UsdSchema => &["usd-schema-codeless", "usd-schema-cpp"],
         PluginKind::UsdAssetResolver => &["usd-asset-resolver-cpp"],
+        PluginKind::UsdPackageResolver => &["usd-package-resolver-cpp"],
     }
 }
 
@@ -1087,6 +1168,98 @@ mod tests {
         assert_eq!(provenance.inputs.get("scheme").unwrap(), "studio");
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn scaffolds_a_package_resolver_skeleton() {
+        let dir = unique_tmp("scaffold-pkg-resolver");
+        let files = scaffold(
+            PluginKind::UsdPackageResolver,
+            "shot-pack",
+            Some("pack"),
+            None,
+            &dir,
+        )
+        .expect("scaffold package resolver");
+
+        assert!(files
+            .iter()
+            .any(|f| f.as_str() == "src/ShotPackPackageResolver.cpp"));
+        assert!(files
+            .iter()
+            .any(|f| f.as_str() == "plugin/resources/shot-pack/plugInfo.json"));
+        // The package file, its sidecar entry, and the sublayering smoke
+        // fixture all land with the extension substituted into the paths.
+        assert!(files
+            .iter()
+            .any(|f| f.as_str() == "tests/fixtures/basic.pack"));
+        assert!(files
+            .iter()
+            .any(|f| f.as_str() == "tests/fixtures/basic.pack.contents/content/inner.usda"));
+        assert!(files
+            .iter()
+            .any(|f| f.as_str() == "cmake/OpenStrataPlugin.cmake"));
+
+        let bundle = crate::Bundle::load(&dir).expect("package resolver bundle loads");
+        assert_eq!(bundle.manifest.kind(), PluginKind::UsdPackageResolver);
+        let plug_info = std::fs::read_to_string(bundle.plug_info().as_std_path()).unwrap();
+        assert!(plug_info.contains("\"extensions\": [\"pack\"]"));
+        assert!(plug_info.contains("\"bases\": [\"ArPackageResolver\"]"));
+
+        let source =
+            std::fs::read_to_string(dir.join("src/ShotPackPackageResolver.cpp").as_std_path())
+                .unwrap();
+        assert!(source
+            .contains("AR_DEFINE_PACKAGE_RESOLVER(ShotPackPackageResolver, ArPackageResolver)"));
+        assert!(source.contains("IsSafeEntryPath"));
+        assert!(!source.contains("{{"));
+
+        // The smoke fixture routes through the package: opening it exercises
+        // extension dispatch and entry reading on a real runtime (L3/L4).
+        let fixture =
+            std::fs::read_to_string(dir.join("tests/fixtures/basic.usda").as_std_path()).unwrap();
+        assert!(fixture.contains("@./basic.pack[content/inner.usda]@"));
+
+        let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
+        assert!(cmake.contains("openstrata_link_openusd"));
+        assert!(cmake.contains("COMPONENTS arch tf js plug vt ar"));
+        assert!(cmake.contains("openstrata_install_plugin_bundle"));
+
+        let provenance: ScaffoldProvenance = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.join(SCAFFOLD_PROVENANCE).as_std_path()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance.template.id, "usd-package-resolver-cpp");
+        assert_eq!(provenance.inputs.get("extension").unwrap(), "pack");
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn package_resolver_requires_a_safe_extension() {
+        for extension in [None, Some("../evil"), Some("a.b"), Some("")] {
+            let dir = unique_tmp("scaffold-pkg-resolver-badext");
+            assert!(scaffold(
+                PluginKind::UsdPackageResolver,
+                "shot-pack",
+                extension,
+                None,
+                &dir,
+            )
+            .is_err());
+            assert!(!dir.as_std_path().exists());
+        }
+        // --scheme belongs to usd-asset-resolver, not the package resolver.
+        let dir = unique_tmp("scaffold-pkg-resolver-scheme");
+        assert!(scaffold(
+            PluginKind::UsdPackageResolver,
+            "shot-pack",
+            Some("pack"),
+            Some("shot"),
+            &dir,
+        )
+        .is_err());
+        assert!(!dir.as_std_path().exists());
     }
 
     #[test]

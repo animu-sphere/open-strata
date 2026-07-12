@@ -24,12 +24,13 @@ pub struct PluginManifestHeader {
     pub schema: String,
 }
 
-/// The kind of OpenUSD plugin a bundle ships. The MVP covers three kinds.
+/// The kind of OpenUSD plugin a bundle ships.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginKind {
     UsdFileformat,
     UsdAssetResolver,
+    UsdPackageResolver,
     UsdSchema,
 }
 
@@ -38,6 +39,7 @@ impl PluginKind {
         match self {
             PluginKind::UsdFileformat => "usd-fileformat",
             PluginKind::UsdAssetResolver => "usd-asset-resolver",
+            PluginKind::UsdPackageResolver => "usd-package-resolver",
             PluginKind::UsdSchema => "usd-schema",
         }
     }
@@ -46,15 +48,17 @@ impl PluginKind {
         match s {
             "usd-fileformat" => Some(PluginKind::UsdFileformat),
             "usd-asset-resolver" => Some(PluginKind::UsdAssetResolver),
+            "usd-package-resolver" => Some(PluginKind::UsdPackageResolver),
             "usd-schema" => Some(PluginKind::UsdSchema),
             _ => None,
         }
     }
 
     /// Every kind, for help text and validation messages.
-    pub const ALL: [PluginKind; 3] = [
+    pub const ALL: [PluginKind; 4] = [
         PluginKind::UsdFileformat,
         PluginKind::UsdAssetResolver,
+        PluginKind::UsdPackageResolver,
         PluginKind::UsdSchema,
     ];
 }
