@@ -628,6 +628,45 @@ fn generated_asset_resolver_requires_scheme_and_records_provenance() {
     assert!(root.join("cmake/OpenStrataPlugin.cmake").is_file());
 }
 
+#[test]
+fn compiled_schema_template_is_selected_explicitly_and_reported() {
+    let sb = Sandbox::new("schema-cpp-scaffold");
+    let out = sb.ost(&[
+        "--json",
+        "plugin",
+        "new",
+        "usd-schema",
+        "vrm-schema",
+        "--template",
+        "usd-schema-cpp",
+    ]);
+    assert!(out.status.success(), "{}", out_text(&out));
+
+    let body: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(body["data"]["template"], "usd-schema-cpp");
+    let root = sb.work.join("vrm-schema");
+    let provenance: serde_yaml::Value = serde_yaml::from_str(
+        &std::fs::read_to_string(root.join("openstrata.scaffold.yaml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(provenance["template"]["id"], "usd-schema-cpp");
+    assert!(root.join("generated/contractAPI.cpp").is_file());
+    assert!(root.join("tests/consumer/CMakeLists.txt").is_file());
+
+    let wrong = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "wrong",
+        "--extension",
+        "wrong",
+        "--template",
+        "usd-schema-cpp",
+    ]);
+    assert_eq!(wrong.status.code(), Some(4), "{}", out_text(&wrong));
+    assert!(out_text(&wrong).contains("not available for plugin kind 'usd-fileformat'"));
+}
+
 /// `ost plugin test --workspace` discovers bundles at the root and under
 /// plugins/*, tests each, and aggregates. Codeless schema scaffolds pass
 /// L0/L1 without a build, so this runs against the mock runtime.

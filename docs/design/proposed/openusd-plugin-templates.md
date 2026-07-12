@@ -1,6 +1,6 @@
 # OpenUSD plugin template policy
 
-> Status: proposed; delivery steps 1–3 are implemented and step 4 is in
+> Status: proposed; delivery steps 1–3 are implemented and steps 4–5 are in
 > progress. This reconciles the 2026-07-12 OpenUSD plugin template
 > report and the follow-up bundle/workspace implementation proposal with the
 > OpenStrata implementation that already ships embedded scaffolds, `ost plugin
@@ -486,9 +486,11 @@ Project-owned:
 
 - actual properties/tokens, prim contracts, schema evolution, and migration.
 
-Keep `usd-schema-codeless` and future `usd-schema-cpp` as different template ids.
-The shipped co-hosted compiled-schema workflow is evidence for the latter, but
-does not automatically prove a standalone compiled-schema scaffold.
+Keep `usd-schema-codeless` and `usd-schema-cpp` as different template ids. The
+standalone compiled skeleton is selected explicitly with
+`ost plugin new usd-schema <name> --template usd-schema-cpp`; codeless remains
+the default. Co-hosted compiled-schema evidence does not by itself promote the
+standalone skeleton.
 
 The compiled skeleton may commit generated C++ and `generatedSchema.usda` so a
 source archive remains buildable without an OST checkout. Its generation policy
@@ -597,7 +599,7 @@ only if it actually ships a discoverable OpenUSD plugin.
 | `usd-plugin-workspace` | shipped dual-mode scaffold, graph preflight, and `plugin test --workspace` | template; build-order generation pending |
 | `usd-fileformat-cpp` | shipped scaffold, copied CMake helper, install rules, and L0-L5 lifecycle | template |
 | `usd-schema-codeless` | shipped scaffold, generation, registration lifecycle | template |
-| `usd-schema-cpp` | co-hosted compiled-schema path exists | skeleton candidate; also described as compiled schema |
+| `usd-schema-cpp` | embedded standalone scaffold, four generation modes, committed 26.05 outputs, contract baseline, CMake export, and downstream fixture | skeleton; clean-install automation and broader matrix evidence pending |
 | `usd-asset-resolver-cpp` | embedded URI resolver scaffold, copied CMake helper, descriptor, provenance, and registration fixture | skeleton; promotion evidence pending |
 | `usd-package-resolver-cpp` | one format/reference report | reference, then skeleton |
 | `usd-exec-cpp` | architecture/reference reports | reference, then skeleton |
@@ -667,8 +669,10 @@ path; existing generated source remains project-owned.
    The versioned copied helper and standalone/workspace configure evidence have
    landed for the compiled file-format and asset-resolver entries; full build
    and clean-install evidence remains before this step is complete.
-5. Add the standalone `usd-schema-cpp` skeleton with pinned generation modes,
-   contract baseline, downstream consumer fixture, and clean-install tests.
+5. ⏳ Add the standalone `usd-schema-cpp` skeleton with pinned generation modes,
+   contract baseline, downstream consumer fixture, and clean-install tests. The
+   embedded skeleton, `VERIFY` baseline, CMake export, and fixture have landed;
+   automated clean-install and second-platform/OpenUSD-line evidence remain.
 6. Harden the `usd-asset-resolver-cpp` skeleton with identifier, cache,
    concurrency, cross-platform, and broader clean-install evidence.
 7. Define the product descriptor and aggregate report, then compose existing

@@ -4,8 +4,8 @@
 //! Templates live under `templates/<kind>-<lang>/` and are compiled into the
 //! binary. Files (and path components) carry `{{token}}` placeholders that are
 //! substituted per invocation. The catalog currently ships
-//! `usd-fileformat-cpp`, `usd-schema-codeless`, and the experimental
-//! `usd-asset-resolver-cpp` skeleton.
+//! `usd-fileformat-cpp`, `usd-schema-codeless`, `usd-schema-cpp`, and the
+//! experimental `usd-asset-resolver-cpp` skeleton.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -122,6 +122,87 @@ const USD_SCHEMA_CODELESS: &[TemplateFile] = &[
 const USD_SCHEMA_CODELESS_DESCRIPTOR: &str =
     include_str!("../../../templates/usd-schema-codeless/template.yaml");
 
+/// The experimental `usd-schema-cpp` compiled API-schema skeleton. Generated
+/// sources are committed so PREGENERATED and generator-less AUTO builds remain
+/// possible; CMake can regenerate or verify them with a compatible OpenUSD SDK.
+const USD_SCHEMA_CPP: &[TemplateFile] = &[
+    tf(
+        "openstrata.plugin.yaml",
+        include_str!("../../../templates/usd-schema-cpp/openstrata.plugin.yaml"),
+    ),
+    tf(
+        "CMakeLists.txt",
+        include_str!("../../../templates/usd-schema-cpp/CMakeLists.txt"),
+    ),
+    tf(
+        "README.md",
+        include_str!("../../../templates/usd-schema-cpp/README.md"),
+    ),
+    tf(
+        ".gitignore",
+        include_str!("../../../templates/usd-schema-cpp/.gitignore"),
+    ),
+    tf(
+        "cmake/OpenStrataPlugin.cmake",
+        include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake"),
+    ),
+    tf(
+        "cmake/{{Name}}Config.cmake.in",
+        include_str!("../../../templates/usd-schema-cpp/cmake/{{Name}}Config.cmake.in"),
+    ),
+    tf(
+        "schema.usda",
+        include_str!("../../../templates/usd-schema-cpp/schema.usda"),
+    ),
+    tf(
+        "generated/api.h",
+        include_str!("../../../templates/usd-schema-cpp/generated/api.h"),
+    ),
+    tf(
+        "generated/contractAPI.h",
+        include_str!("../../../templates/usd-schema-cpp/generated/contractAPI.h"),
+    ),
+    tf(
+        "generated/contractAPI.cpp",
+        include_str!("../../../templates/usd-schema-cpp/generated/contractAPI.cpp"),
+    ),
+    tf(
+        "generated/tokens.h",
+        include_str!("../../../templates/usd-schema-cpp/generated/tokens.h"),
+    ),
+    tf(
+        "generated/tokens.cpp",
+        include_str!("../../../templates/usd-schema-cpp/generated/tokens.cpp"),
+    ),
+    tf(
+        "plugin/resources/{{name}}/plugInfo.json.in",
+        include_str!(
+            "../../../templates/usd-schema-cpp/plugin/resources/{{name}}/plugInfo.json.in"
+        ),
+    ),
+    tf(
+        "plugin/resources/{{name}}/generatedSchema.usda",
+        include_str!(
+            "../../../templates/usd-schema-cpp/plugin/resources/{{name}}/generatedSchema.usda"
+        ),
+    ),
+    tf(
+        "tests/fixtures/basic.usda",
+        include_str!("../../../templates/usd-schema-cpp/tests/fixtures/basic.usda"),
+    ),
+    tf(
+        "tests/consumer/CMakeLists.txt",
+        include_str!("../../../templates/usd-schema-cpp/tests/consumer/CMakeLists.txt"),
+    ),
+    tf(
+        "tests/consumer/main.cpp",
+        include_str!("../../../templates/usd-schema-cpp/tests/consumer/main.cpp"),
+    ),
+];
+
+const USD_SCHEMA_CPP_DESCRIPTOR: &str =
+    include_str!("../../../templates/usd-schema-cpp/template.yaml");
+
 /// The `usd-asset-resolver-cpp` URI resolver skeleton.
 const USD_ASSET_RESOLVER_CPP: &[TemplateFile] = &[
     tf(
@@ -185,6 +266,11 @@ struct Vars {
     /// `{{ident}}:example` — must match `[A-Za-z_][A-Za-z0-9_]*`, so a hyphenated
     /// plugin name (`vrm-schema`) cannot be used there verbatim.
     ident: String,
+    /// USD identifier with only its first character uppercased, matching the
+    /// accessor spelling usdGenSchema derives (`vrm_schema` -> `Vrm_schema`).
+    ident_title: String,
+    /// Uppercase USD identifier, preserving separators for generated comments.
+    ident_upper: String,
     extension: String,
     scheme: String,
 }
@@ -194,6 +280,8 @@ impl Vars {
         s.replace("{{name}}", &self.name)
             .replace("{{Name}}", &self.pascal)
             .replace("{{NAME}}", &self.upper)
+            .replace("{{Ident}}", &self.ident_title)
+            .replace("{{IDENT}}", &self.ident_upper)
             .replace("{{ident}}", &self.ident)
             .replace("{{extension}}", &self.extension)
             .replace("{{scheme}}", &self.scheme)
@@ -222,6 +310,14 @@ fn to_ident(name: &str) -> String {
     name.chars()
         .map(|c| if c == '-' || c == ' ' { '_' } else { c })
         .collect()
+}
+
+fn uppercase_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Validate a plugin name: lowercase alphanumerics plus `-`/`_`, starting with a
@@ -290,21 +386,46 @@ pub fn scaffold(
     scheme: Option<&str>,
     dest: &Utf8Path,
 ) -> Result<Vec<Utf8PathBuf>> {
+    scaffold_with_template(kind, name, extension, scheme, None, dest)
+}
+
+/// Scaffold using an explicit catalog template id. Omitting `template_id`
+/// preserves the established defaults (`usd-schema-codeless` for usd-schema).
+pub fn scaffold_with_template(
+    kind: PluginKind,
+    name: &str,
+    extension: Option<&str>,
+    scheme: Option<&str>,
+    template_id: Option<&str>,
+    dest: &Utf8Path,
+) -> Result<Vec<Utf8PathBuf>> {
     validate_name(name)?;
 
-    let embedded = match kind {
-        PluginKind::UsdFileformat => EmbeddedTemplate {
+    let requested = template_id.unwrap_or_else(|| default_template_id(kind));
+    let embedded = match (kind, requested) {
+        (PluginKind::UsdFileformat, "usd-fileformat-cpp") => EmbeddedTemplate {
             descriptor: USD_FILEFORMAT_CPP_DESCRIPTOR,
             files: USD_FILEFORMAT_CPP,
         },
-        PluginKind::UsdSchema => EmbeddedTemplate {
+        (PluginKind::UsdSchema, "usd-schema-codeless") => EmbeddedTemplate {
             descriptor: USD_SCHEMA_CODELESS_DESCRIPTOR,
             files: USD_SCHEMA_CODELESS,
         },
-        PluginKind::UsdAssetResolver => EmbeddedTemplate {
+        (PluginKind::UsdSchema, "usd-schema-cpp") => EmbeddedTemplate {
+            descriptor: USD_SCHEMA_CPP_DESCRIPTOR,
+            files: USD_SCHEMA_CPP,
+        },
+        (PluginKind::UsdAssetResolver, "usd-asset-resolver-cpp") => EmbeddedTemplate {
             descriptor: USD_ASSET_RESOLVER_CPP_DESCRIPTOR,
             files: USD_ASSET_RESOLVER_CPP,
         },
+        _ => {
+            return Err(Error::Operation(format!(
+            "template '{requested}' is not available for plugin kind '{}' (expected one of: {})",
+            kind.as_str(),
+            template_ids(kind).join(", ")
+        )))
+        }
     };
     let descriptor = TemplateDescriptor::parse(embedded.descriptor)?;
     if descriptor.plugin_kind.as_deref() != Some(kind.as_str()) {
@@ -355,11 +476,14 @@ pub fn scaffold(
         }
     }
 
+    let ident = to_ident(name);
     let vars = Vars {
         name: name.to_string(),
         pascal: to_pascal(name),
         upper: to_pascal(name).to_ascii_uppercase(),
-        ident: to_ident(name),
+        ident_title: uppercase_first(&ident),
+        ident_upper: ident.to_ascii_uppercase(),
+        ident,
         extension,
         scheme,
     };
@@ -379,20 +503,28 @@ pub fn scaffold(
         std::fs::write(abs.as_std_path(), &contents).map_err(|e| Error::io(abs.to_string(), e))?;
         written.push(rel.clone());
 
-        // A `*.in` is a CMake `configure_file` source. Emit a ready-to-use
-        // concrete file next to it (with the host's shared-library name) so
-        // `ost plugin doctor`/`test` can inspect it before the first build — the
-        // build's `configure_file` then regenerates it for the target being
-        // built.
-        if let Some(concrete) = rel.as_str().strip_suffix(".in") {
-            let concrete_rel = Utf8PathBuf::from(concrete);
+        // A plugInfo.json.in is a CMake `configure_file` source. Emit a
+        // ready-to-use concrete file next to it (with the host's shared-library
+        // name) so doctor/test can inspect it before the first build. Other
+        // `*.in` files (for example installed package configs) remain inputs.
+        if let Some(concrete_rel) = concrete_scaffold_output(&rel) {
             let concrete_abs = dest.join(&concrete_rel);
             let resolved = contents
                 .replace("@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@", "lib")
                 .replace(
                     "@CMAKE_SHARED_LIBRARY_SUFFIX@",
                     std::env::consts::DLL_SUFFIX,
-                );
+                )
+                .replace(
+                    "@PLUG_INFO_LIBRARY_PATH@",
+                    &format!(
+                        "../../../lib/lib{}{}",
+                        vars.pascal,
+                        std::env::consts::DLL_SUFFIX
+                    ),
+                )
+                .replace("@PLUG_INFO_RESOURCE_PATH@", ".")
+                .replace("@PLUG_INFO_ROOT@", ".");
             std::fs::write(concrete_abs.as_std_path(), resolved)
                 .map_err(|e| Error::io(concrete_abs.to_string(), e))?;
             written.push(concrete_rel);
@@ -416,6 +548,25 @@ pub fn scaffold(
     Ok(written)
 }
 
+/// Default catalog id for a plugin kind. The codeless schema remains the
+/// backwards-compatible default; compiled schemas require an explicit choice.
+pub const fn default_template_id(kind: PluginKind) -> &'static str {
+    match kind {
+        PluginKind::UsdFileformat => "usd-fileformat-cpp",
+        PluginKind::UsdSchema => "usd-schema-codeless",
+        PluginKind::UsdAssetResolver => "usd-asset-resolver-cpp",
+    }
+}
+
+/// Catalog ids compatible with a plugin kind.
+pub const fn template_ids(kind: PluginKind) -> &'static [&'static str] {
+    match kind {
+        PluginKind::UsdFileformat => &["usd-fileformat-cpp"],
+        PluginKind::UsdSchema => &["usd-schema-codeless", "usd-schema-cpp"],
+        PluginKind::UsdAssetResolver => &["usd-asset-resolver-cpp"],
+    }
+}
+
 fn planned_outputs(files: &[TemplateFile], vars: &Vars) -> Result<Vec<Utf8PathBuf>> {
     let mut planned = Vec::new();
     let mut destinations = BTreeSet::new();
@@ -434,13 +585,13 @@ fn planned_outputs(files: &[TemplateFile], vars: &Vars) -> Result<Vec<Utf8PathBu
             )));
         }
         planned.push(rel.clone());
-        if let Some(concrete) = rel.as_str().strip_suffix(".in") {
-            if !destinations.insert(concrete.into()) {
+        if let Some(concrete) = concrete_scaffold_output(&rel) {
+            if !destinations.insert(concrete.to_string()) {
                 return Err(Error::InvalidManifest(format!(
                     "template renders duplicate output '{concrete}'"
                 )));
             }
-            planned.push(concrete.into());
+            planned.push(concrete);
         }
     }
     if !destinations.insert(SCAFFOLD_PROVENANCE.into()) {
@@ -450,6 +601,11 @@ fn planned_outputs(files: &[TemplateFile], vars: &Vars) -> Result<Vec<Utf8PathBu
     }
     planned.push(SCAFFOLD_PROVENANCE.into());
     Ok(planned)
+}
+
+fn concrete_scaffold_output(path: &Utf8Path) -> Option<Utf8PathBuf> {
+    (path.file_name() == Some("plugInfo.json.in"))
+        .then(|| Utf8PathBuf::from(path.as_str().trim_end_matches(".in")))
 }
 
 fn validate_descriptor_outputs(
@@ -568,11 +724,14 @@ pub fn add_cohosted_schema(
     }
 
     // 1. The starter schema source.
+    let ident = to_ident(manifest.name());
     let vars = Vars {
         name: manifest.name().to_string(),
         pascal: pascal.clone(),
         upper: pascal.to_ascii_uppercase(),
-        ident: to_ident(manifest.name()),
+        ident_title: uppercase_first(&ident),
+        ident_upper: ident.to_ascii_uppercase(),
+        ident,
         extension: String::new(),
         scheme: String::new(),
     };
@@ -855,7 +1014,7 @@ mod tests {
             helper,
             include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake")
         );
-        assert!(helper.contains("OPENSTRATA_PLUGIN_CMAKE_HELPER_VERSION \"1.0.0\""));
+        assert!(helper.contains("OPENSTRATA_PLUGIN_CMAKE_HELPER_VERSION \"1.1.0\""));
         assert!(!helper.contains("templates/_shared"));
 
         let provenance: ScaffoldProvenance = serde_yaml::from_str(
@@ -1016,6 +1175,90 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn scaffolds_a_compiled_schema_skeleton_by_template_id() {
+        let dir = unique_tmp("scaffold-schema-cpp");
+        let files = scaffold_with_template(
+            PluginKind::UsdSchema,
+            "vrm-schema",
+            None,
+            None,
+            Some("usd-schema-cpp"),
+            &dir,
+        )
+        .expect("compiled schema scaffold");
+
+        for expected in [
+            "schema.usda",
+            "generated/contractAPI.h",
+            "generated/contractAPI.cpp",
+            "plugin/resources/vrm-schema/plugInfo.json.in",
+            "plugin/resources/vrm-schema/plugInfo.json",
+            "tests/consumer/CMakeLists.txt",
+        ] {
+            assert!(files.iter().any(|f| f.as_str() == expected), "{expected}");
+        }
+
+        let bundle = crate::Bundle::load(&dir).expect("compiled schema loads");
+        assert_eq!(bundle.manifest.kind(), PluginKind::UsdSchema);
+        assert!(!bundle.manifest.is_codeless_schema());
+        assert_eq!(
+            bundle.manifest.schema.as_ref().and_then(|s| s.contract),
+            Some(1)
+        );
+        assert_eq!(
+            bundle.manifest.schema_provides(),
+            vec!["VrmSchemaContractAPI"]
+        );
+
+        let plug_info = std::fs::read_to_string(bundle.plug_info().as_std_path()).unwrap();
+        assert!(!plug_info.contains('@'));
+        assert!(plug_info.contains("VrmSchemaContractAPI"));
+        assert!(plug_info.contains(&format!(
+            "../../../lib/libVrmSchema{}",
+            std::env::consts::DLL_SUFFIX
+        )));
+
+        let generated =
+            std::fs::read_to_string(dir.join("generated/contractAPI.cpp").as_std_path()).unwrap();
+        assert!(generated.contains("VrmSchemaContractAPI"));
+        assert!(generated.contains("vrm_schemaExample"));
+        assert!(!generated.contains("{{"));
+
+        let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
+        for mode in ["AUTO", "GENERATE", "PREGENERATED", "VERIFY"] {
+            assert!(cmake.contains(mode), "missing generation mode {mode}");
+        }
+        assert!(cmake.contains("EXPORT_SET VrmSchemaTargets"));
+        assert!(cmake.contains("VrmSchema::Schema"));
+
+        let provenance: ScaffoldProvenance = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.join(SCAFFOLD_PROVENANCE).as_std_path()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance.template.id, "usd-schema-cpp");
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn rejects_a_template_from_another_plugin_kind() {
+        let dir = unique_tmp("scaffold-template-kind");
+        let err = scaffold_with_template(
+            PluginKind::UsdSchema,
+            "toy",
+            None,
+            None,
+            Some("usd-fileformat-cpp"),
+            &dir,
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("not available for plugin kind 'usd-schema'"));
+        assert!(!dir.as_std_path().exists());
     }
 
     #[test]

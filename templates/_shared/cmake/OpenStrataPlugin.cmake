@@ -5,7 +5,7 @@
 # and an OpenUSD SDK, without an OpenStrata source checkout or an `ost` binary.
 include_guard(DIRECTORY)
 
-set(OPENSTRATA_PLUGIN_CMAKE_HELPER_VERSION "1.0.0")
+set(OPENSTRATA_PLUGIN_CMAKE_HELPER_VERSION "1.1.0")
 
 function(openstrata_default_build_type)
     get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
@@ -15,7 +15,7 @@ function(openstrata_default_build_type)
 endfunction()
 
 function(openstrata_link_openusd)
-    cmake_parse_arguments(ARG "" "TARGET" "COMPONENTS" ${ARGN})
+    cmake_parse_arguments(ARG "" "TARGET;VISIBILITY" "COMPONENTS" ${ARGN})
     if(NOT ARG_TARGET)
         message(FATAL_ERROR "openstrata_link_openusd requires TARGET")
     elseif(NOT TARGET ${ARG_TARGET})
@@ -25,13 +25,19 @@ function(openstrata_link_openusd)
     if(NOT ARG_COMPONENTS)
         message(FATAL_ERROR "openstrata_link_openusd requires COMPONENTS")
     endif()
+    if(NOT ARG_VISIBILITY)
+        set(ARG_VISIBILITY PRIVATE)
+    elseif(NOT ARG_VISIBILITY MATCHES "^(PRIVATE|PUBLIC|INTERFACE)$")
+        message(FATAL_ERROR
+            "openstrata_link_openusd VISIBILITY must be PRIVATE, PUBLIC, or INTERFACE")
+    endif()
 
     if(TARGET usd_ms)
-        target_link_libraries(${ARG_TARGET} PRIVATE usd_ms)
+        target_link_libraries(${ARG_TARGET} ${ARG_VISIBILITY} usd_ms)
         return()
     endif()
     if(TARGET pxr::usd_ms)
-        target_link_libraries(${ARG_TARGET} PRIVATE pxr::usd_ms)
+        target_link_libraries(${ARG_TARGET} ${ARG_VISIBILITY} pxr::usd_ms)
         return()
     endif()
 
@@ -44,9 +50,9 @@ function(openstrata_link_openusd)
         endif()
     endforeach()
     if(_pxr_targets)
-        target_link_libraries(${ARG_TARGET} PRIVATE ${_pxr_targets})
+        target_link_libraries(${ARG_TARGET} ${ARG_VISIBILITY} ${_pxr_targets})
     elseif(PXR_LIBRARIES)
-        target_link_libraries(${ARG_TARGET} PRIVATE ${PXR_LIBRARIES})
+        target_link_libraries(${ARG_TARGET} ${ARG_VISIBILITY} ${PXR_LIBRARIES})
     else()
         message(FATAL_ERROR
             "Could not locate OpenUSD CMake targets or PXR_LIBRARIES for ${ARG_TARGET}.")
@@ -97,7 +103,7 @@ function(openstrata_install_plugin_bundle)
     cmake_parse_arguments(
         ARG
         ""
-        "TARGET;RESOURCE_DESTINATION;FIXTURE_SOURCE"
+        "TARGET;RESOURCE_DESTINATION;FIXTURE_SOURCE;EXPORT_SET"
         "MANIFESTS;RESOURCES"
         ${ARGN})
     if(NOT ARG_TARGET)
@@ -111,10 +117,18 @@ function(openstrata_install_plugin_bundle)
             "openstrata_install_plugin_bundle requires RESOURCES and RESOURCE_DESTINATION")
     endif()
 
-    install(TARGETS ${ARG_TARGET}
-        RUNTIME DESTINATION "lib"
-        LIBRARY DESTINATION "lib"
-        ARCHIVE DESTINATION "lib")
+    if(ARG_EXPORT_SET)
+        install(TARGETS ${ARG_TARGET}
+            EXPORT ${ARG_EXPORT_SET}
+            RUNTIME DESTINATION "lib"
+            LIBRARY DESTINATION "lib"
+            ARCHIVE DESTINATION "lib")
+    else()
+        install(TARGETS ${ARG_TARGET}
+            RUNTIME DESTINATION "lib"
+            LIBRARY DESTINATION "lib"
+            ARCHIVE DESTINATION "lib")
+    endif()
     install(FILES ${ARG_RESOURCES} DESTINATION "${ARG_RESOURCE_DESTINATION}")
     if(ARG_MANIFESTS)
         install(FILES ${ARG_MANIFESTS} DESTINATION ".")

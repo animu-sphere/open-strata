@@ -31,8 +31,9 @@ use ost_core::template::SCAFFOLD_PROVENANCE;
 use ost_core::variant::{Abi, Variant};
 use ost_core::{tools, Error, Host, Result};
 use ost_plugin::{
-    diagnose, run_levels, scaffold, session_env_with, usdview_check, Bundle, CxxAbi, DoctorReport,
-    PluginKind, Probe, RuntimeContext, Session, Status, ToolOutput,
+    default_template_id, diagnose, run_levels, scaffold_with_template, session_env_with,
+    usdview_check, Bundle, CxxAbi, DoctorReport, PluginKind, Probe, RuntimeContext, Session,
+    Status, ToolOutput,
 };
 use ost_runtime::{EnvSet, RuntimeManifest, MANIFEST_FILE};
 
@@ -55,6 +56,10 @@ pub enum PluginCmd {
         /// URI scheme the resolver handles (required for usd-asset-resolver).
         #[arg(long)]
         scheme: Option<String>,
+        /// Catalog template id. usd-schema defaults to usd-schema-codeless;
+        /// use usd-schema-cpp for the experimental compiled skeleton.
+        #[arg(long)]
+        template: Option<String>,
         /// Destination directory. Defaults to ./<name>.
         #[arg(long)]
         dir: Option<String>,
@@ -231,12 +236,14 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             name,
             extension,
             scheme,
+            template,
             dir,
         } => new(
             &kind,
             &name,
             extension.as_deref(),
             scheme.as_deref(),
+            template.as_deref(),
             dir.as_deref(),
             fmt,
         ),
@@ -394,6 +401,7 @@ fn new(
     name: &str,
     extension: Option<&str>,
     scheme: Option<&str>,
+    template: Option<&str>,
     dir: Option<&str>,
     fmt: Format,
 ) -> Result<()> {
@@ -406,13 +414,15 @@ fn new(
     })?;
 
     let dest = Utf8PathBuf::from(dir.unwrap_or(name));
-    let files = scaffold(kind, name, extension, scheme, &dest)?;
+    let template_id = template.unwrap_or_else(|| default_template_id(kind));
+    let files = scaffold_with_template(kind, name, extension, scheme, template, &dest)?;
 
     if fmt.is_json() {
         output::success(&serde_json::json!({
             "created": true,
             "kind": kind.as_str(),
             "name": name,
+            "template": template_id,
             "dir": dest.to_string(),
             "workspace_template": "usd-plugin-workspace",
             "workspace_command": "ost init --template usd-plugin-workspace",
@@ -421,7 +431,10 @@ fn new(
         return Ok(());
     }
 
-    println!("Created {} plugin '{name}' in {dest}/", kind.as_str());
+    println!(
+        "Created {} plugin '{name}' from {template_id} in {dest}/",
+        kind.as_str()
+    );
     for f in &files {
         println!("  {f}");
     }
