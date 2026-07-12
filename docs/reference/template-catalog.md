@@ -1,0 +1,49 @@
+# Template catalog
+
+OST embeds its scaffold catalog in the executable so generation is deterministic
+and works offline. Every generated scaffold carries `openstrata.scaffold.yaml`
+with the template id/version, generator version, and normalized inputs.
+
+## Project and workspace templates
+
+| Template id | Maturity | Command | Purpose |
+| --- | --- | --- | --- |
+| `cpp-library` | template | `ost init --template cpp-library` | Minimal installable C++ library. |
+| `usd-plugin` | skeleton | `ost init --template usd-plugin` | Minimal generic OpenUSD plugin project. |
+| `usd-plugin-workspace` | template | `ost init --template usd-plugin-workspace` | Dual-mode root that discovers immediate bundles and `plugins/*`. |
+
+## Plugin templates
+
+`ost plugin new` currently selects the default template for each plugin kind.
+The stable template id is recorded in provenance even though the command accepts
+the kind.
+
+| Template id | Maturity | Plugin kind | Required input |
+| --- | --- | --- | --- |
+| `usd-fileformat-cpp` | template | `usd-fileformat` | `--extension <ext>` |
+| `usd-schema-codeless` | template | `usd-schema` | none |
+| `usd-asset-resolver-cpp` | skeleton | `usd-asset-resolver` | `--scheme <scheme>` |
+
+Skeletons have stable generation and lifecycle seams, but their domain
+architecture has not met the promotion evidence required of a template.
+
+## Copied CMake helper
+
+Compiled plugin scaffolds include `cmake/OpenStrataPlugin.cmake`. It is a pinned,
+self-contained copy of the shared mechanics for:
+
+- selecting a default single-config build type;
+- linking the OpenUSD monolith or declared discrete components;
+- using a bundle-local, multi-config-safe shared-library output directory;
+- configuring `plugInfo.json` with the target platform's library name; and
+- installing the library, plugin resources, manifests, provenance, and fixtures.
+
+The generated bundle never loads this helper from the OST source tree and does
+not require `ost` at CMake configure/build time. Bundle-specific targets,
+OpenUSD components, resource paths, and fixtures remain explicit in the
+generated top-level `CMakeLists.txt`.
+
+The canonical helper lives at `templates/_shared/cmake/OpenStrataPlugin.cmake`.
+Changing it requires a template-version bump for every catalog entry that copies
+the new bytes. Existing generated projects keep their pinned copy; updates are
+reviewed as template migrations rather than applied silently.

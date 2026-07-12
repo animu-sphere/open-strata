@@ -26,6 +26,10 @@ implementer's responsibility before this resolver handles untrusted input.
 The skeleton is deliberately read-only. Keep it that way until write semantics,
 atomicity, and authorization have explicit tests.
 
+`cmake/OpenStrataPlugin.cmake` is a pinned, self-contained copy of the shared
+build/install mechanics. The generated bundle does not need an OpenStrata
+checkout or `ost` when built directly with CMake or as a workspace subdirectory.
+
 ```sh
 ost plugin inspect .
 ost plugin build .

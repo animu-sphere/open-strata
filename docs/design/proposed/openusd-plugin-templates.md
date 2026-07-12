@@ -1,6 +1,7 @@
 # OpenUSD plugin template policy
 
-> Status: proposed; delivery steps 1–3 are implemented. This reconciles the 2026-07-12 OpenUSD plugin template
+> Status: proposed; delivery steps 1–3 are implemented and step 4 is in
+> progress. This reconciles the 2026-07-12 OpenUSD plugin template
 > report and the follow-up bundle/workspace implementation proposal with the
 > OpenStrata implementation that already ships embedded scaffolds, `ost plugin
 > new`, a multi-bundle workspace scaffold, plugin bundle manifests,
@@ -594,10 +595,10 @@ only if it actually ships a discoverable OpenUSD plugin.
 | Catalog entry | Current evidence | Policy state |
 | --- | --- | --- |
 | `usd-plugin-workspace` | shipped dual-mode scaffold, graph preflight, and `plugin test --workspace` | template; build-order generation pending |
-| `usd-fileformat-cpp` | shipped scaffold and L0-L5 lifecycle | template |
+| `usd-fileformat-cpp` | shipped scaffold, copied CMake helper, install rules, and L0-L5 lifecycle | template |
 | `usd-schema-codeless` | shipped scaffold, generation, registration lifecycle | template |
 | `usd-schema-cpp` | co-hosted compiled-schema path exists | skeleton candidate; also described as compiled schema |
-| `usd-asset-resolver-cpp` | embedded URI resolver scaffold, descriptor, provenance, and registration fixture | skeleton; promotion evidence pending |
+| `usd-asset-resolver-cpp` | embedded URI resolver scaffold, copied CMake helper, descriptor, provenance, and registration fixture | skeleton; promotion evidence pending |
 | `usd-package-resolver-cpp` | one format/reference report | reference, then skeleton |
 | `usd-exec-cpp` | architecture/reference reports | reference, then skeleton |
 | `hydra-render-delegate-cpp` | hdMerlin dogfood evidence | skeleton candidate |
@@ -661,8 +662,11 @@ path; existing generated source remains project-owned.
    manifest acceptance unexpectedly.
 3. ✅ Add read-only dependency graph validation: deterministic discovery, duplicate
    and missing ids, version/contract checks, forbidden directions, and cycles.
-4. Extract self-contained shared CMake mechanics, test copied helpers, and prove
+4. ⏳ Extract self-contained shared CMake mechanics, test copied helpers, and prove
    standalone plus workspace-consumer builds before generating graph targets.
+   The versioned copied helper and standalone/workspace configure evidence have
+   landed for the compiled file-format and asset-resolver entries; full build
+   and clean-install evidence remains before this step is complete.
 5. Add the standalone `usd-schema-cpp` skeleton with pinned generation modes,
    contract baseline, downstream consumer fixture, and clean-install tests.
 6. Harden the `usd-asset-resolver-cpp` skeleton with identifier, cache,
