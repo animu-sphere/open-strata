@@ -88,13 +88,13 @@ const TfType &
 UsdAttribute
 {{Name}}ContractAPI::Get{{Ident}}ExampleAttr() const
 {
-    return GetPrim().GetAttribute({{Name}}Tokens->{{ident}}Example);
+    return GetPrim().GetAttribute({{Name}}Tokens->{{identCamel}}Example);
 }
 
 UsdAttribute
 {{Name}}ContractAPI::Create{{Ident}}ExampleAttr(VtValue const &defaultValue, bool writeSparsely) const
 {
-    return UsdSchemaBase::_CreateAttr({{Name}}Tokens->{{ident}}Example,
+    return UsdSchemaBase::_CreateAttr({{Name}}Tokens->{{identCamel}}Example,
                        SdfValueTypeNames->Token,
                        /* custom = */ false,
                        SdfVariabilityUniform,
@@ -119,7 +119,7 @@ const TfTokenVector&
 {{Name}}ContractAPI::GetSchemaAttributeNames(bool includeInherited)
 {
     static TfTokenVector localNames = {
-        {{Name}}Tokens->{{ident}}Example,
+        {{Name}}Tokens->{{identCamel}}Example,
     };
     static TfTokenVector allNames =
         _ConcatenateAttributeNames(

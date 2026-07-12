@@ -26,6 +26,12 @@ Set `OPENSTRATA_SCHEMA_GENERATION_MODE` at CMake configure time:
 - `VERIFY` regenerates and fails if C++ or registration outputs differ from the
   committed baseline. Use this mode for promotion and release CI.
 
+Any mode that runs the generator (`AUTO` with the generator present, `GENERATE`,
+`VERIFY`) rewrites the committed `generated/`, `plugInfo.json`, and
+`generatedSchema.usda` in the source tree, so a plain build can dirty your
+working tree. Configure with `PREGENERATED` for a read-only, committed-outputs
+build, and review/commit any regenerated deltas deliberately.
+
 The initial generated baseline was produced with OpenUSD 26.05 and the skeleton
 claims generator compatibility only for the manifest range `>=25.05,<27.0`.
 Review and recommit generated deltas when changing that range.

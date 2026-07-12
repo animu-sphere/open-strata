@@ -9,10 +9,10 @@
 PXR_NAMESPACE_OPEN_SCOPE
 
 {{Name}}TokensType::{{Name}}TokensType() :
-    {{ident}}Example("{{ident}}:example", TfToken::Immortal),
+    {{identCamel}}Example("{{ident}}:example", TfToken::Immortal),
     {{Name}}ContractAPI("{{Name}}ContractAPI", TfToken::Immortal),
     allTokens({
-        {{ident}}Example,
+        {{identCamel}}Example,
         {{Name}}ContractAPI
     })
 {

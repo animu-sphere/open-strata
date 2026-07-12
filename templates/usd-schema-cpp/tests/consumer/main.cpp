@@ -3,6 +3,8 @@
 
 int main()
 {
+    // Link/compile smoke check against the installed target only.
     pxr::{{Name}}ContractAPI schema;
-    return schema ? 0 : 0;
+    (void)schema;
+    return 0;
 }

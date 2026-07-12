@@ -126,7 +126,7 @@ target_compile_definitions(${PLUGIN_NAME} PRIVATE {{NAME}}_EXPORTS)
 target_include_directories(${PLUGIN_NAME}
     PUBLIC
         "$<BUILD_INTERFACE:${_schema_cpp}>"
-        "$<INSTALL_INTERFACE:include/{{name}}>"
+        "$<INSTALL_INTERFACE:include>"
     PRIVATE ${PXR_INCLUDE_DIRS})
 
 # Public because the installed generated headers include OpenUSD headers and

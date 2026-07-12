@@ -41,14 +41,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 /// Use {{Name}}Tokens like so:
 ///
 /// \code
-///     gprim.GetMyTokenValuedAttr().Set({{Name}}Tokens->{{ident}}Example);
+///     gprim.GetMyTokenValuedAttr().Set({{Name}}Tokens->{{identCamel}}Example);
 /// \endcode
 struct {{Name}}TokensType {
     {{NAME}}_API {{Name}}TokensType();
     /// \brief "{{ident}}:example"
     /// 
     /// {{Name}}ContractAPI
-    const TfToken {{ident}}Example;
+    const TfToken {{identCamel}}Example;
     /// \brief "{{Name}}ContractAPI"
     /// 
     /// Schema identifer and family for {{Name}}ContractAPI

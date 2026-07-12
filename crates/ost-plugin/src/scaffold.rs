@@ -266,10 +266,16 @@ struct Vars {
     /// `{{ident}}:example` — must match `[A-Za-z_][A-Za-z0-9_]*`, so a hyphenated
     /// plugin name (`vrm-schema`) cannot be used there verbatim.
     ident: String,
-    /// USD identifier with only its first character uppercased, matching the
-    /// accessor spelling usdGenSchema derives (`vrm_schema` -> `Vrm_schema`).
+    /// `ident` camelCased across `_` separators, matching the token-variable
+    /// spelling usdGenSchema derives for a property (`vrm_schema:example` ->
+    /// `vrmSchemaExample`). usdGenSchema proper-cases each word and drops the
+    /// separators, so `vrm_schema` -> `vrmSchema`, not `vrm_schema`.
+    ident_camel: String,
+    /// `ident` PascalCased across `_` separators, matching the accessor spelling
+    /// usdGenSchema derives (`vrm_schema` -> `VrmSchema`, not `Vrm_schema`).
     ident_title: String,
-    /// Uppercase USD identifier, preserving separators for generated comments.
+    /// `ident_title` uppercased, matching the doc section headers usdGenSchema
+    /// emits (`vrm_schema` -> `VRMSCHEMA`, not `VRM_SCHEMA`).
     ident_upper: String,
     extension: String,
     scheme: String,
@@ -282,6 +288,7 @@ impl Vars {
             .replace("{{NAME}}", &self.upper)
             .replace("{{Ident}}", &self.ident_title)
             .replace("{{IDENT}}", &self.ident_upper)
+            .replace("{{identCamel}}", &self.ident_camel)
             .replace("{{ident}}", &self.ident)
             .replace("{{extension}}", &self.extension)
             .replace("{{scheme}}", &self.scheme)
@@ -312,10 +319,10 @@ fn to_ident(name: &str) -> String {
         .collect()
 }
 
-fn uppercase_first(value: &str) -> String {
+fn lowercase_first(value: &str) -> String {
     let mut chars = value.chars();
     match chars.next() {
-        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+        Some(first) => first.to_ascii_lowercase().to_string() + chars.as_str(),
         None => String::new(),
     }
 }
@@ -477,12 +484,14 @@ pub fn scaffold_with_template(
     }
 
     let ident = to_ident(name);
+    let ident_title = to_pascal(&ident);
     let vars = Vars {
         name: name.to_string(),
         pascal: to_pascal(name),
         upper: to_pascal(name).to_ascii_uppercase(),
-        ident_title: uppercase_first(&ident),
-        ident_upper: ident.to_ascii_uppercase(),
+        ident_camel: lowercase_first(&ident_title),
+        ident_upper: ident_title.to_ascii_uppercase(),
+        ident_title,
         ident,
         extension,
         scheme,
@@ -725,12 +734,14 @@ pub fn add_cohosted_schema(
 
     // 1. The starter schema source.
     let ident = to_ident(manifest.name());
+    let ident_title = to_pascal(&ident);
     let vars = Vars {
         name: manifest.name().to_string(),
         pascal: pascal.clone(),
         upper: pascal.to_ascii_uppercase(),
-        ident_title: uppercase_first(&ident),
-        ident_upper: ident.to_ascii_uppercase(),
+        ident_camel: lowercase_first(&ident_title),
+        ident_upper: ident_title.to_ascii_uppercase(),
+        ident_title,
         ident,
         extension: String::new(),
         scheme: String::new(),
@@ -1224,8 +1235,20 @@ mod tests {
         let generated =
             std::fs::read_to_string(dir.join("generated/contractAPI.cpp").as_std_path()).unwrap();
         assert!(generated.contains("VrmSchemaContractAPI"));
-        assert!(generated.contains("vrm_schemaExample"));
         assert!(!generated.contains("{{"));
+        // For a multi-word name, generated C++ identifiers must match the casing
+        // usdGenSchema derives — it proper/camel-cases across `_`/`:` separators
+        // and drops them. The property namespace `vrm_schema:example` yields the
+        // accessor `GetVrmSchemaExampleAttr` and token var `vrmSchemaExample`, not
+        // the `Vrm_schema`/`vrm_schema` spellings a first-char-only cap produces.
+        // (The literal property string keeps the raw `vrm_schema:example`.)
+        assert!(generated.contains("GetVrmSchemaExampleAttr"));
+        assert!(generated.contains("vrmSchemaExample"));
+        assert!(!generated.contains("Vrm_schema"));
+        assert!(!generated.contains("vrm_schemaExample"));
+        let tokens =
+            std::fs::read_to_string(dir.join("generated/tokens.cpp").as_std_path()).unwrap();
+        assert!(tokens.contains("vrmSchemaExample(\"vrm_schema:example\""));
 
         let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
         for mode in ["AUTO", "GENERATE", "PREGENERATED", "VERIFY"] {
@@ -1233,6 +1256,16 @@ mod tests {
         }
         assert!(cmake.contains("EXPORT_SET VrmSchemaTargets"));
         assert!(cmake.contains("VrmSchema::Schema"));
+        // Headers install under `include/<name>` and the consumer includes
+        // `<name>/...`, so the exported interface dir must be `include`, not
+        // `include/<name>` — otherwise `<name>/contractAPI.h` resolves one level
+        // too deep and the installed consumer fails to compile.
+        assert!(cmake.contains("$<INSTALL_INTERFACE:include>"));
+        assert!(!cmake.contains("INSTALL_INTERFACE:include/"));
+        assert!(cmake.contains("DESTINATION \"include/vrm-schema\""));
+        let consumer =
+            std::fs::read_to_string(dir.join("tests/consumer/main.cpp").as_std_path()).unwrap();
+        assert!(consumer.contains("#include <vrm-schema/contractAPI.h>"));
 
         let provenance: ScaffoldProvenance = serde_yaml::from_str(
             &std::fs::read_to_string(dir.join(SCAFFOLD_PROVENANCE).as_std_path()).unwrap(),
