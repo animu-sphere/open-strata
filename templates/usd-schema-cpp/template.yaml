@@ -1,0 +1,43 @@
+schema: openstrata.template/v1alpha1
+template:
+  id: usd-schema-cpp
+  version: 0.1.0
+  maturity: skeleton
+  artifact_kind: plugin
+plugin_kind: usd-schema
+variables:
+  - name: name
+    type: portable-identifier
+    required: true
+outputs:
+  files:
+    - openstrata.plugin.yaml
+    - CMakeLists.txt
+    - README.md
+    - .gitignore
+    - cmake/OpenStrataPlugin.cmake
+    - cmake/{{Name}}Config.cmake.in
+    - schema.usda
+    - generated/api.h
+    - generated/contractAPI.h
+    - generated/contractAPI.cpp
+    - generated/tokens.h
+    - generated/tokens.cpp
+    - plugin/resources/{{name}}/plugInfo.json.in
+    - plugin/resources/{{name}}/plugInfo.json
+    - plugin/resources/{{name}}/generatedSchema.usda
+    - tests/fixtures/basic.usda
+    - tests/consumer/CMakeLists.txt
+    - tests/consumer/main.cpp
+    - openstrata.scaffold.yaml
+verification:
+  levels: [0, 1, 2, 3, 4, 5]
+  assertions:
+    - deterministic-generation
+    - schema-registration
+    - generated-source-verification
+    - install-tree-discovery
+    - installed-cpp-consumer
+compatibility:
+  ost: ">=0.13,<1.0"
+  openusd: ">=25.05,<27.0"

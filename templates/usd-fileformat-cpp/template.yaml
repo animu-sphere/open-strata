@@ -1,7 +1,7 @@
 schema: openstrata.template/v1alpha1
 template:
   id: usd-fileformat-cpp
-  version: 1.1.0
+  version: 1.2.0
   maturity: template
   artifact_kind: plugin
 plugin_kind: usd-fileformat

@@ -1,0 +1,7 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(pxr CONFIG)
+
+include("${CMAKE_CURRENT_LIST_DIR}/{{Name}}Targets.cmake")
+check_required_components({{Name}})

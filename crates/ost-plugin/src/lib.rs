@@ -41,7 +41,10 @@ pub use plug_info::{
 pub use report::{
     ci_evidence_from_env, environment_json, report_json, summary_text, write_report, REPORT_SCHEMA,
 };
-pub use scaffold::{add_cohosted_schema, scaffold, AddedSchema};
+pub use scaffold::{
+    add_cohosted_schema, default_template_id, scaffold, scaffold_with_template, template_ids,
+    AddedSchema,
+};
 pub use session::{bundle_vars, session_env, session_env_from, session_env_with};
 pub use version::{satisfies, RangeError};
 pub use workspace::{

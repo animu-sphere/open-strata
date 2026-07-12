@@ -1,0 +1,25 @@
+# OpenStrata plugin bundle manifest.
+manifest:
+  schema: openstrata.plugin/v1alpha1
+plugin:
+  name: {{name}}
+  version: 0.1.0
+  kind: usd-schema
+license: Apache-2.0
+runtime:
+  # Generated-source compatibility and VERIFY evidence cover this range.
+  openusd: ">=25.05,<27.0"
+schema:
+  codeless: false
+  source: schema.usda
+  # Authored-data contract version, independent from plugin.version.
+  contract: 1
+provides:
+  - usd-schema:{{Name}}ContractAPI
+requires:
+  capabilities: [usd-stage-read]
+usd:
+  plug_info: plugin/resources/{{name}}/plugInfo.json
+tests:
+  smoke: [tests/fixtures/basic.usda]
+  roundtrip: [tests/fixtures/basic.usda]

@@ -44,13 +44,14 @@ The next milestone (v0.14.0 — trust policy foundation) is detailed in
 
 - ⬜ **OpenUSD template catalog maturity and expansion.** Direction:
   [openusd-plugin-templates.md](../design/proposed/openusd-plugin-templates.md).
-  Versioned template descriptors, deterministic scaffold provenance, the asset
-  resolver skeleton, and read-only bundle dependency graph validation are in.
-  Next add clean-room generation/install/discovery gates and self-contained
-  copied CMake helpers around the templates already shipped. Extend the existing
-  `ost plugin new` lifecycle—do not create a parallel template repository, CLI,
-  renderer, bundle model, or artifact path. Add asset/package resolver, Exec,
-  Hydra, and tool candidates only at evidence-appropriate maturity.
+  Versioned descriptors, deterministic provenance, the asset-resolver and
+  compiled-schema skeletons, copied CMake helpers, and read-only bundle graph
+  validation are in. Next automate clean-install consumer gates, prove the
+  schema skeleton on a second supported platform/OpenUSD line, and harden the
+  asset resolver. Extend the existing `ost plugin new` lifecycle—do not create a
+  parallel template repository, CLI, renderer, bundle model, or artifact path.
+  Add package resolver, Exec, Hydra, and tool candidates only at
+  evidence-appropriate maturity.
 - ⬜ **Renderer project skeleton and Level 7 verification.** Direction:
   [renderer-templates.md](../design/proposed/renderer-templates.md). Add one
   composable `renderer` project scaffold (host-neutral core, project-owned

@@ -14,14 +14,16 @@ with the template id/version, generator version, and normalized inputs.
 
 ## Plugin templates
 
-`ost plugin new` currently selects the default template for each plugin kind.
-The stable template id is recorded in provenance even though the command accepts
-the kind.
+`ost plugin new` selects the default template for each plugin kind. When a kind
+has more than one implementation, pass `--template <id>`; the stable id is
+always recorded in scaffold provenance. `usd-schema-codeless` remains the
+backwards-compatible default for `usd-schema`.
 
 | Template id | Maturity | Plugin kind | Required input |
 | --- | --- | --- | --- |
 | `usd-fileformat-cpp` | template | `usd-fileformat` | `--extension <ext>` |
 | `usd-schema-codeless` | template | `usd-schema` | none |
+| `usd-schema-cpp` | skeleton | `usd-schema` | `--template usd-schema-cpp` |
 | `usd-asset-resolver-cpp` | skeleton | `usd-asset-resolver` | `--scheme <scheme>` |
 
 Skeletons have stable generation and lifecycle seams, but their domain
@@ -36,7 +38,14 @@ self-contained copy of the shared mechanics for:
 - linking the OpenUSD monolith or declared discrete components;
 - using a bundle-local, multi-config-safe shared-library output directory;
 - configuring `plugInfo.json` with the target platform's library name; and
-- installing the library, plugin resources, manifests, provenance, and fixtures.
+- installing the library, plugin resources, manifests, provenance, and fixtures;
+- optionally exporting a compiled target for installed C++ consumers.
+
+The compiled-schema skeleton additionally exposes `AUTO`, `GENERATE`,
+`PREGENERATED`, and `VERIFY` CMake generation modes, commits its OpenUSD 26.05
+baseline, exports `<Name>::Schema`, and includes an install-only consumer
+fixture. `VERIFY` is the release/CI mode; Python bindings are not claimed by the
+initial skeleton.
 
 The generated bundle never loads this helper from the OST source tree and does
 not require `ost` at CMake configure/build time. Bundle-specific targets,

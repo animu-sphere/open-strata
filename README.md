@@ -187,7 +187,7 @@ crates/
 platforms/        built-in VFX Reference Platform calendar-year manifests
 profiles/         capability bundles (core / dev / usd / lookdev)
 extensions/       controlled extension manifests (openusd / materialx)
-templates/        project scaffolds + plugin scaffolds (usd-fileformat-cpp, usd-schema-codeless)
+templates/        project + plugin scaffolds (including codeless/compiled USD schemas)
 schemas/          JSON schemas for platform / project / lock / plugin-report documents
 ```
 
