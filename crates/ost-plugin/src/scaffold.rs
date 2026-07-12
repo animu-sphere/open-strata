@@ -926,6 +926,14 @@ mod tests {
         assert_eq!(bundle.manifest.name(), "vrm-schema");
         assert_eq!(bundle.manifest.kind(), PluginKind::UsdSchema);
         assert!(bundle.manifest.is_codeless_schema());
+        assert_eq!(
+            bundle
+                .manifest
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.contract),
+            Some(1)
+        );
 
         // Direct CMake builds of the scaffold should protect usdGenSchema from
         // host locale encodings (notably Japanese Windows cp932) too.

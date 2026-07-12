@@ -25,13 +25,14 @@ mod report;
 mod scaffold;
 mod session;
 mod version;
+mod workspace;
 
 pub use bundle::Bundle;
 pub use doctor::{diagnose, Diagnostic, DoctorReport, RuntimeContext, Status};
 pub use levels::{run_levels, usdview_check, Probe, Session, ToolOutput};
 pub use model::{
-    CxxAbi, PluginIdentity, PluginKind, PluginManifest, Requires, RuntimeReq, SchemaSection, Tests,
-    UsdSection, PLUGIN_MANIFEST,
+    BundleDependency, CxxAbi, PluginIdentity, PluginKind, PluginManifest, PluginManifestHeader,
+    Requires, RuntimeReq, SchemaSection, Tests, UsdSection, PLUGIN_MANIFEST, PLUGIN_SCHEMA,
 };
 pub use plug_info::{
     contains_template_token, library_plugin_names, library_plugin_paths, merge_schema_types,
@@ -43,3 +44,6 @@ pub use report::{
 pub use scaffold::{add_cohosted_schema, scaffold, AddedSchema};
 pub use session::{bundle_vars, session_env, session_env_from, session_env_with};
 pub use version::{satisfies, RangeError};
+pub use workspace::{
+    validate_workspace, WorkspaceEdge, WorkspaceIssue, WorkspaceNode, WorkspaceValidation,
+};

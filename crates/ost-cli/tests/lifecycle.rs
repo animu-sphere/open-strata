@@ -654,6 +654,8 @@ fn workspace_test_discovers_and_tests_every_bundle() {
     assert_eq!(v["ok"], true, "workspace test passes: {v}");
     assert_eq!(v["data"]["total"], 2);
     assert_eq!(v["data"]["failed"], 0);
+    assert_eq!(v["data"]["graph"]["passed"], true);
+    assert_eq!(v["data"]["graph"]["nodes"].as_array().unwrap().len(), 2);
     let bundles = v["data"]["bundles"].as_array().unwrap();
     assert_eq!(bundles.len(), 2);
     for bundle in bundles {
@@ -669,6 +671,45 @@ fn workspace_test_discovers_and_tests_every_bundle() {
         Some(2)
     );
     assert_eq!(sb.ost(&["--json", "plugin", "test"]).status.code(), Some(2));
+}
+
+#[test]
+fn workspace_test_rejects_an_invalid_dependency_graph_before_bundle_tests() {
+    let sb = Sandbox::new("wsgraph");
+    init_and_pull(&sb);
+    for name in ["alpha", "beta"] {
+        let out = sb.ost(&["plugin", "new", "usd-schema", name]);
+        assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+    }
+    for (name, dependency) in [("alpha", "beta"), ("beta", "alpha")] {
+        let path = sb.work_file(&format!("{name}/openstrata.plugin.yaml"));
+        let source = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            path,
+            format!(
+                "{source}requires:\n  bundles:\n    - {{ id: {dependency}, version: '>=0.1,<0.2', contract: 1 }}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--up-to", "0"]);
+    assert_eq!(out.status.code(), Some(5), "{}", out_text(&out));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["data"]["graph"]["passed"], false);
+    let codes: Vec<_> = value["data"]["graph"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| issue["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"WORKSPACE_DEPENDENCY_DIRECTION_FORBIDDEN"));
+    assert!(codes.contains(&"WORKSPACE_DEPENDENCY_CYCLE"));
+    assert!(
+        !sb.work_file("alpha/.strata/reports").exists(),
+        "graph validation must run before bundle tests"
+    );
 }
 
 /// Inside a generated CI job the `OST_CI_*` variables travel into every

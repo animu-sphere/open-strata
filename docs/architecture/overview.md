@@ -1,6 +1,6 @@
 # Architecture
 
-*Last verified against: v0.12.0 (workspace version 0.12.0).* This document
+*Last verified against: v0.13.0 (workspace version 0.13.0).* This document
 describes the system as it exists on the default branch; historical alternatives
 belong in design notes, not here.
 
@@ -34,6 +34,7 @@ docs/             this documentation
 | **Extension** | A controlled VFX-adjacent component (OpenUSD, MaterialX). | implemented |
 | **Runtime** | Platform + variant + profile + resolved artifacts, with a digest and a backend source (`mock`/`local`/`build`). | implemented |
 | **Plugin bundle** | A self-describing OpenUSD plugin (`openstrata.plugin.yaml` + sources + `plugInfo.json` + fixtures), verified by levels 0–5. | implemented |
+| **Plugin workspace** | Deterministically discovered plugin bundles plus a read-only, version/contract-checked dependency graph; build ordering is not inferred yet. | implemented |
 | **Artifact** | An immutable, digest-addressed bundle (`tar.zst` + manifest + validation report) in the local registry, transportable over OCI. | implemented |
 | **Support matrix** | `openstrata.ci.yaml`: digest-pinned runtime×plugin support lines, runner profiles, and lanes, rendered to CI workflows. | implemented |
 | **Session** | A mutable workspace over an immutable runtime. | planned |

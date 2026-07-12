@@ -1,6 +1,8 @@
 # OpenStrata plugin bundle manifest.
 # A plugin is a self-describing bundle, not a bare shared library: this file is
 # the contract `ost plugin inspect|build|doctor|test` resolve against.
+manifest:
+  schema: openstrata.plugin/v1alpha1
 plugin:
   name: {{name}}
   version: 0.1.0
@@ -18,6 +20,8 @@ schema:
   # `Types` block + a generatedSchema.usda), no generated C++ and no shared
   # library. `ost plugin doctor` validates the `Types` block instead of a lib.
   codeless: true
+  # Authored-data contract version, independent from plugin.version.
+  contract: 1
 provides:
   - usd-schema:{{Name}}API
 usd:

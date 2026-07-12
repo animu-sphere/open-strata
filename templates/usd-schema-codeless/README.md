@@ -8,6 +8,11 @@ flattened `generatedSchema.usda`. Both are committed and correct out of the box,
 so the schema registers on a real runtime **without** a build step — `usdGenSchema`
 only *re*-generates them from `schema.usda` when you change the contract.
 
+`schema.contract: 1` identifies the authored type/property/token surface. Keep
+it stable for compatible implementation releases; increment it only with a
+breaking authored-data migration. Workspace consumers select it separately
+from this bundle's semantic `plugin.version`.
+
 ## Layout
 
 ```

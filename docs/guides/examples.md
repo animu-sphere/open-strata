@@ -237,6 +237,7 @@ ost plugin doctor toy --with ./plugins/other --target cy2026 --profile usd
 ost plugin test toy --target cy2026 --profile usd
 ost plugin test toy --up-to 3          # stop after usdcat read
 ost plugin test toy --json
+ost plugin test --workspace --up-to 1  # graph preflight, then every discovered bundle
 
 # launch any command inside the composed runtime session (real runtime)
 ost plugin run toy --target cy2026 --profile usd -- usdcat tests/fixtures/basic.toy

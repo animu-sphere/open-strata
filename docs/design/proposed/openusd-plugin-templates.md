@@ -1,6 +1,6 @@
 # OpenUSD plugin template policy
 
-> Status: proposed. This reconciles the 2026-07-12 OpenUSD plugin template
+> Status: proposed; delivery steps 1–3 are implemented. This reconciles the 2026-07-12 OpenUSD plugin template
 > report and the follow-up bundle/workspace implementation proposal with the
 > OpenStrata implementation that already ships embedded scaffolds, `ost plugin
 > new`, a multi-bundle workspace scaffold, plugin bundle manifests,
@@ -271,17 +271,18 @@ bundle-relative runtime libraries, plugin resources, schema source, notices,
 and tests. Bundle composition extends that document; it does not replace the
 current shape with the proposal's illustrative `kind: usd-plugin` form.
 
-The next manifest schema should add two distinct dependency classes:
+The composition model needs two distinct dependency classes:
 
 - **libraries** are link/build dependencies resolved as normal CMake packages or
   exported targets;
 - **bundles** are independently discoverable OpenUSD plugin bundles required at
   runtime or for integration testing.
 
-The exact versioned YAML is an implementation deliverable. Conceptually, it
-must be able to express:
+The bundle class is implemented as a versioned additive extension:
 
 ```yaml
+manifest:
+  schema: openstrata.plugin/v1alpha1
 plugin:
   name: usdVrmFileFormat
   version: 0.2.0
@@ -292,9 +293,6 @@ provides:
   - usd-fileformat:vrm
 requires:
   capabilities: [usd-stage-read]
-  libraries:
-    - id: vrmContainer
-      version: ">=0.2,<0.3"
   bundles:
     - id: vrmSchema
       version: ">=0.2,<0.3"
@@ -303,10 +301,11 @@ requires:
       version: ">=0.2,<0.3"
 ```
 
-This example is a target contract, not syntax accepted by the current parser.
-The schema implementation must choose explicit schema/version fields, reject
-unknown dependency keys once that schema is selected, and provide a migration
-period for existing manifests.
+`requires.bundles` and `schema.contract` require the explicit manifest schema;
+legacy manifests without composition fields remain accepted during migration.
+Dependency entries reject unknown keys. `requires.libraries` remains reserved
+until a portable library identity/discovery contract exists; inferring it from
+CMake target names would make missing-package validation unreliable.
 
 Semantic package version and authored-data contract version solve different
 problems. `version` selects a compatible bundle implementation. A schema
@@ -594,7 +593,7 @@ only if it actually ships a discoverable OpenUSD plugin.
 
 | Catalog entry | Current evidence | Policy state |
 | --- | --- | --- |
-| `usd-plugin-workspace` | shipped dual-mode scaffold and `plugin test --workspace` | template; dependency graph extension pending |
+| `usd-plugin-workspace` | shipped dual-mode scaffold, graph preflight, and `plugin test --workspace` | template; build-order generation pending |
 | `usd-fileformat-cpp` | shipped scaffold and L0-L5 lifecycle | template |
 | `usd-schema-codeless` | shipped scaffold, generation, registration lifecycle | template |
 | `usd-schema-cpp` | co-hosted compiled-schema path exists | skeleton candidate; also described as compiled schema |
@@ -655,12 +654,12 @@ path; existing generated source remains project-owned.
 
 ## Delivery order
 
-1. Define and validate the template descriptor, deterministic scaffold
+1. ✅ Define and validate the template descriptor, deterministic scaffold
    provenance, and a versioning strategy for plugin dependency extensions.
-2. Describe the shipped plugin templates and `usd-plugin-workspace`; make
+2. ✅ Describe the shipped plugin templates and `usd-plugin-workspace`; make
    generation tests descriptor driven without changing their output or current
    manifest acceptance unexpectedly.
-3. Add read-only dependency graph validation: deterministic discovery, duplicate
+3. ✅ Add read-only dependency graph validation: deterministic discovery, duplicate
    and missing ids, version/contract checks, forbidden directions, and cycles.
 4. Extract self-contained shared CMake mechanics, test copied helpers, and prove
    standalone plus workspace-consumer builds before generating graph targets.
