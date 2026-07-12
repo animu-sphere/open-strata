@@ -1,0 +1,22 @@
+schema: openstrata.template/v1alpha1
+template:
+  id: usd-plugin-workspace
+  version: 1.0.0
+  maturity: template
+  artifact_kind: workspace
+variables:
+  - name: name
+    type: portable-identifier
+    required: true
+outputs:
+  files:
+    - CMakeLists.txt
+    - CMakePresets.json
+    - README.md
+    - .gitignore
+    - openstrata.scaffold.yaml
+verification:
+  assertions: [configure, bundle-discovery, workspace-test]
+compatibility:
+  ost: ">=0.13,<1.0"
+  openusd: ">=25.05,<27.0"

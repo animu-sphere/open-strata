@@ -1,0 +1,22 @@
+schema: openstrata.template/v1alpha1
+template:
+  id: cpp-library
+  version: 1.0.0
+  maturity: template
+  artifact_kind: project
+variables:
+  - name: name
+    type: portable-identifier
+    required: true
+outputs:
+  files:
+    - CMakeLists.txt
+    - README.md
+    - .gitignore
+    - include/{{name}}/{{name}}.hpp
+    - src/{{name}}.cpp
+    - openstrata.scaffold.yaml
+verification:
+  assertions: [configure, build, install]
+compatibility:
+  ost: ">=0.13,<1.0"

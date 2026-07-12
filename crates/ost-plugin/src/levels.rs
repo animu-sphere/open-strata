@@ -21,7 +21,11 @@
 //!   `*API` schemas to a prim, and its authored attributes survive a flatten
 //!   round-trip unchanged (the analogue of `python.stage_open`).
 //!
-//! Both kinds share the format-agnostic upper levels:
+//! An **asset resolver** uses L2 `resolver.registration` to resolve the smoke
+//! fixture through its declared URI scheme, proving discovery, library loading,
+//! resolver construction, and dispatch before the normal stage-open levels.
+//!
+//! All kinds share the format-agnostic upper levels:
 //!
 //! - **L5 `golden.roundtrip`** — `usdcat --flatten` output matches a committed
 //!   golden, when one exists (else SKIP).
@@ -87,6 +91,9 @@ pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnost
     if bundle.manifest.kind() == PluginKind::UsdSchema {
         return run_schema_levels(bundle, session, up_to);
     }
+    if bundle.manifest.kind() == PluginKind::UsdAssetResolver {
+        return run_asset_resolver_levels(bundle, session, up_to);
+    }
 
     let mut diags = Vec::new();
     if up_to >= 2 {
@@ -111,6 +118,26 @@ pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnost
         if up_to >= 4 {
             diags.push(level4_schema_apply_roundtrip(bundle, session));
         }
+    }
+    if up_to >= 5 {
+        diags.push(level5_golden(bundle, session));
+    }
+    if up_to >= 6 {
+        diags.push(level6_usdview(bundle, session, None));
+    }
+    diags
+}
+
+fn run_asset_resolver_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    if up_to >= 2 {
+        diags.push(level2_resolver_registration(bundle, session));
+    }
+    if up_to >= 3 {
+        diags.push(level3_usdcat(bundle, session));
+    }
+    if up_to >= 4 {
+        diags.push(level4_stage_open(bundle, session));
     }
     if up_to >= 5 {
         diags.push(level5_golden(bundle, session));
@@ -218,6 +245,109 @@ fn schema_types_from_plug_info(bundle: &Bundle) -> Vec<String> {
         }
     }
     names
+}
+
+fn resolver_uri_schemes(bundle: &Bundle) -> Vec<String> {
+    let Ok(src) = std::fs::read_to_string(bundle.plug_info().as_std_path()) else {
+        return Vec::new();
+    };
+    let Ok(json) = crate::plug_info::parse_plug_info(&src) else {
+        return Vec::new();
+    };
+    let Some(plugins) = json.get("Plugins").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    let mut schemes = Vec::new();
+    for plugin in plugins {
+        let Some(types) = plugin
+            .get("Info")
+            .and_then(|info| info.get("Types"))
+            .and_then(|types| types.as_object())
+        else {
+            continue;
+        };
+        for metadata in types.values() {
+            if metadata
+                .get("bases")
+                .and_then(|bases| bases.as_array())
+                .is_some_and(|bases| bases.iter().any(|base| base.as_str() == Some("ArResolver")))
+            {
+                if let Some(uri_schemes) = metadata
+                    .get("uriSchemes")
+                    .and_then(|value| value.as_array())
+                {
+                    schemes.extend(
+                        uri_schemes
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string)),
+                    );
+                }
+            }
+        }
+    }
+    schemes.sort();
+    schemes.dedup();
+    schemes
+}
+
+fn level2_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnostic {
+    const ID: &str = "resolver.registration";
+    let schemes = resolver_uri_schemes(bundle);
+    let Some(scheme) = schemes.first() else {
+        return Diagnostic::fail(
+            ID,
+            2,
+            "plugInfo.json declares no ArResolver uriSchemes",
+            vec!["declare a resolver type with bases: [ArResolver] and uriSchemes".into()],
+        );
+    };
+    let Some(python) = &session.python else {
+        return Diagnostic::skip(ID, 2, "no python interpreter on the session PATH");
+    };
+    let Some(fixture) = smoke_fixture(bundle) else {
+        return Diagnostic::skip(ID, 2, "no smoke fixture declared");
+    };
+    if !fixture.as_std_path().is_file() {
+        return Diagnostic::fail(ID, 2, format!("fixture '{fixture}' is missing"), vec![]);
+    }
+
+    let path = fixture.to_string().replace('\\', "/");
+    let uri = format!("{scheme}:{path}");
+    let uri_literal = serde_json::to_string(&uri).unwrap_or_else(|_| "\"\"".into());
+    let script = format!(
+        "import sys\nfrom pxr import Ar\np = Ar.GetResolver().Resolve({uri_literal})\nsys.exit(0 if p else 7)"
+    );
+    let out = session
+        .probe
+        .run(python, &["-c", &with_dll_preamble(&script)]);
+    if out.unspawned() {
+        return Diagnostic::fail(
+            ID,
+            2,
+            format!("could not run python ({python})"),
+            vec!["ensure the runtime python is on PATH".into()],
+        );
+    }
+    if out.ok() {
+        Diagnostic::pass(
+            ID,
+            2,
+            format!("USD dispatched '{scheme}:' to the resolver and resolved the fixture"),
+        )
+    } else {
+        Diagnostic::fail(
+            ID,
+            2,
+            format!(
+                "resolver registration or dispatch failed: {}",
+                tail(&out.stderr)
+            ),
+            vec![
+                "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
+                "verify uriSchemes, LibraryPath, and AR_DEFINE_RESOLVER agree".into(),
+            ],
+        )
+    }
 }
 
 /// Render schema type names as a Python list literal, e.g. `['A', 'B']`.
@@ -768,6 +898,85 @@ tests: { smoke: ["tests/fixtures/basic.usda"] }
             manifest,
         };
         (dir, bundle)
+    }
+
+    fn resolver_bundle_with_fixture() -> (tempdir_like::Dir, Bundle) {
+        let dir = tempdir_like::Dir::new("levels-resolver");
+        std::fs::create_dir_all(dir.path.join("tests/fixtures").as_std_path()).unwrap();
+        std::fs::create_dir_all(dir.path.join("plugin/resources/assets").as_std_path()).unwrap();
+        std::fs::write(
+            dir.path.join("tests/fixtures/basic.usda").as_std_path(),
+            "#usda 1.0\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path
+                .join("plugin/resources/assets/plugInfo.json")
+                .as_std_path(),
+            r#"{
+  "Plugins": [{
+    "Info": {"Types": {"AssetsResolver": {
+      "bases": ["ArResolver"], "uriSchemes": ["assets"]
+    }}}
+  }]
+}"#,
+        )
+        .unwrap();
+        let manifest = PluginManifest::parse(
+            r#"
+plugin: { name: assets, version: 0.1.0, kind: usd-asset-resolver }
+runtime: { openusd: ">=25.05,<27.0" }
+provides: [usd-asset-resolver]
+usd: { plug_info: plugin/resources/assets/plugInfo.json }
+tests: { smoke: [tests/fixtures/basic.usda] }
+"#,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            root: dir.path.clone(),
+            manifest,
+        };
+        (dir, bundle)
+    }
+
+    #[test]
+    fn resolver_registration_dispatches_a_declared_scheme() {
+        let (_d, bundle) = resolver_bundle_with_fixture();
+        assert_eq!(resolver_uri_schemes(&bundle), vec!["assets"]);
+        let probe = FakeProbe::new().on("python", Some(0), "", "");
+        let session = Session {
+            probe: &probe,
+            usdcat: None,
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+        let diagnostic = &run_levels(&bundle, &session, 2)[0];
+        assert_eq!(diagnostic.id, "resolver.registration");
+        assert_eq!(diagnostic.status, Status::Pass);
+    }
+
+    #[test]
+    fn resolver_registration_fails_without_uri_scheme_metadata() {
+        let (_d, bundle) = resolver_bundle_with_fixture();
+        let plug_info = bundle.plug_info();
+        let source = std::fs::read_to_string(plug_info.as_std_path()).unwrap();
+        std::fs::write(
+            plug_info.as_std_path(),
+            source.replace(", \"uriSchemes\": [\"assets\"]", ""),
+        )
+        .unwrap();
+        let probe = FakeProbe::new();
+        let session = Session {
+            probe: &probe,
+            usdcat: None,
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+        let diagnostic = &run_levels(&bundle, &session, 2)[0];
+        assert_eq!(diagnostic.id, "resolver.registration");
+        assert_eq!(diagnostic.status, Status::Fail);
     }
 
     #[test]

@@ -1,0 +1,28 @@
+schema: openstrata.template/v1alpha1
+template:
+  id: usd-schema-codeless
+  version: 1.0.0
+  maturity: template
+  artifact_kind: plugin
+plugin_kind: usd-schema
+variables:
+  - name: name
+    type: portable-identifier
+    required: true
+outputs:
+  files:
+    - openstrata.plugin.yaml
+    - CMakeLists.txt
+    - README.md
+    - .gitignore
+    - schema.usda
+    - plugin/resources/{{name}}/plugInfo.json
+    - plugin/resources/{{name}}/generatedSchema.usda
+    - tests/fixtures/basic.usda
+    - openstrata.scaffold.yaml
+verification:
+  levels: [0, 1, 2, 3, 4, 5]
+  assertions: [deterministic-generation, schema-registration, install-tree-discovery]
+compatibility:
+  ost: ">=0.13,<1.0"
+  openusd: ">=25.05,<27.0"

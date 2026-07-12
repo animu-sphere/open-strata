@@ -1,0 +1,16 @@
+# OpenStrata plugin bundle manifest.
+plugin:
+  name: {{name}}
+  version: 0.1.0
+  kind: usd-asset-resolver
+license: Apache-2.0
+runtime:
+  openusd: ">=25.05,<27.0"
+provides:
+  - usd-asset-resolver
+requires:
+  capabilities: [usd-stage-read]
+usd:
+  plug_info: plugin/resources/{{name}}/plugInfo.json
+tests:
+  smoke: [tests/fixtures/basic.usda]

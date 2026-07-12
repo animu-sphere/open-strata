@@ -15,7 +15,8 @@ crates/           the ost-cli binary + nine ost-* domain libraries (see crates.m
 platforms/        built-in CY manifests, embedded into the binary
 profiles/         capability bundles (core / dev / usd / lookdev)
 extensions/       controlled extension manifests (openusd / materialx)
-templates/        project + plugin scaffolds (usd-fileformat-cpp, usd-schema-codeless, …)
+templates/        project + plugin scaffolds (usd-fileformat-cpp, usd-schema-codeless,
+                  usd-asset-resolver-cpp, …)
 schemas/          JSON schemas for platform / project / lock / plugin-report documents
 docs/             this documentation
 ```

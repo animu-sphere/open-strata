@@ -1,0 +1,33 @@
+schema: openstrata.template/v1alpha1
+template:
+  id: usd-fileformat-cpp
+  version: 1.0.0
+  maturity: template
+  artifact_kind: plugin
+plugin_kind: usd-fileformat
+variables:
+  - name: name
+    type: portable-identifier
+    required: true
+  - name: extension
+    type: file-extension
+    required: true
+outputs:
+  files:
+    - openstrata.plugin.yaml
+    - CMakeLists.txt
+    - README.md
+    - .gitignore
+    - src/{{Name}}FileFormat.h
+    - src/{{Name}}FileFormat.cpp
+    - plugin/resources/{{name}}/plugInfo.json.in
+    - plugin/resources/{{name}}/plugInfo.json
+    - tests/fixtures/basic.{{extension}}
+    - tests/fixtures/invalid.{{extension}}
+    - openstrata.scaffold.yaml
+verification:
+  levels: [0, 1, 2, 3, 4, 5]
+  assertions: [deterministic-generation, install-tree-discovery]
+compatibility:
+  ost: ">=0.13,<1.0"
+  openusd: ">=25.05,<26.0"

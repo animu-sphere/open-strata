@@ -603,6 +603,7 @@ Scaffold a new plugin bundle from a template
 | --- | --- |
 | `--dir <DIR>` | Destination directory. Defaults to ./<name> |
 | `--extension <EXTENSION>` | File extension the plugin reads (required for usd-fileformat) |
+| `--scheme <SCHEME>` | URI scheme the resolver handles (required for usd-asset-resolver) |
 
 #### `ost plugin package`
 

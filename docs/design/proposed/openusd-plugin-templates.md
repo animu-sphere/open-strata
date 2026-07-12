@@ -1,25 +1,30 @@
 # OpenUSD plugin template policy
 
 > Status: proposed. This reconciles the 2026-07-12 OpenUSD plugin template
-> report with the OpenStrata implementation that already ships embedded
-> scaffolds, `ost plugin new`, plugin bundle manifests, verification levels,
-> reports, packaging, and artifact transport.
+> report and the follow-up bundle/workspace implementation proposal with the
+> OpenStrata implementation that already ships embedded scaffolds, `ost plugin
+> new`, a multi-bundle workspace scaffold, plugin bundle manifests,
+> verification levels, reports, packaging, and artifact transport.
 
 ## Outcome
 
 OpenStrata should grow its existing template catalog rather than create a second
 template product. A scaffold is valuable only when the generated result can use
-the normal OST lifecycle:
+the normal OST lifecycle, both alone and in a composed workspace:
 
 ```text
-ost plugin new
-  -> inspect / build / doctor / test
+ost init --template usd-plugin-workspace
+  -> ost plugin new
+  -> inspect / build / doctor / test / test --workspace
   -> package / publish
-  -> artifact-backed CI verification
+  -> artifact-backed CI and clean-install verification
 ```
 
 Template work standardizes bundle boundaries, registration, installation,
-diagnostics, and evidence. It does not standardize domain algorithms.
+dependency declarations, diagnostics, and evidence. It does not standardize
+domain algorithms. A plugin bundle remains the independently buildable,
+testable, and publishable unit; a workspace composes bundles during development,
+and a product aggregate may compose their artifacts for distribution.
 
 ## Decisions from the report
 
@@ -36,6 +41,22 @@ diagnostics, and evidence. It does not standardize domain algorithms.
 | Exec and Hydra remain skeletons | adopt | Their architecture choices are not stable enough for formal templates. |
 | `generated_at` in committed metadata | reject | Wall-clock data breaks deterministic generation. Put timestamps in generation reports only. |
 | Tool package represented as a plugin bundle | reject | Tools use project/package scaffolding unless they also contain an OpenUSD plugin. |
+
+## Decisions from the bundle/workspace proposal
+
+| Proposal | Decision | OST interpretation |
+| --- | --- | --- |
+| Bundle, not repository, is the plugin identity boundary | adopt | One repository may contain several independently buildable and publishable bundles. Repository splitting remains an ownership/release decision. |
+| Extend `plugin-workspace` for multiple bundles | adopt | Build on the shipped `usd-plugin-workspace` scaffold and `ost plugin test --workspace`; do not introduce a second workspace product. |
+| Declare bundle-to-bundle dependencies in `openstrata.plugin.yaml` | adopt in stages | Add a versioned manifest extension, graph validation, cycle detection, contract checks, and only then build ordering. Preserve current manifest fields during migration. |
+| Keep schema, resolver, file format, and Exec in separate bundles | adopt as the composition default | Public/reusable contracts should be separate. Co-hosted schema remains supported for small or legacy bundles and is not silently split. |
+| Add a compiled-schema scaffold | adopt as a skeleton | Use the catalog id `usd-schema-cpp`; `usd-schema-compiled` describes the same candidate and must not become a competing id. |
+| One `usd-resolver-cpp` template selects asset or package resolver | modify | Keep `usd-asset-resolver-cpp` and `usd-package-resolver-cpp` separate because their interfaces, security tests, and promotion evidence differ. |
+| Commit generated schema sources with generation modes | adopt with constraints | Support pinned `AUTO`, `GENERATE`, `PREGENERATED`, and `VERIFY` behavior; CI promotion evidence uses `VERIFY`, and committed generated files carry generator compatibility policy. |
+| Shared non-plugin libraries under `libs/` | adopt | They are ordinary CMake packages/libraries, never fake plugin bundles, and cannot contain OpenUSD registration or stage-authoring policy. |
+| Product manifest and `ost product ...` | adopt as a future composition layer | Specify aggregate identity, bundle pins, outputs, and clean-install tests before adding commands. Preserve each member bundle's identity and provenance. |
+| Generate CMake dependency targets directly from manifests | defer mechanics | The manifest is the dependency source of truth, but plain-CMake standalone builds remain mandatory. Prove target naming/export and installed-package discovery before automating it. |
+| Add `ost template`, `ost plugin require`, `ost schema`, and `ost product` commands immediately | defer | First land the descriptors and schemas. New commands must orchestrate existing lifecycle operations rather than create parallel sources of truth. |
 
 ## Vocabulary and identity
 
@@ -90,6 +111,89 @@ Reference projects do not need to be copied into the OpenStrata repository. A
 catalog descriptor may record their repository, revision, report digest, and
 validated OST/OpenUSD versions. This avoids vendoring product code or blurring
 its license and ownership.
+
+## Composition model
+
+Repository, workspace, bundle, library, and product are deliberately different
+boundaries:
+
+```text
+repository
+└── OST workspace                     development and shared runtime selection
+    ├── plugin bundles                independent plugin identity/lifecycle
+    │   ├── schema
+    │   ├── asset or package resolver
+    │   ├── file format
+    │   └── Exec
+    ├── libraries                     ordinary link-time dependencies
+    ├── integration tests             cross-bundle behavior
+    └── product descriptors           distribution-time aggregation
+```
+
+A repository may contain one bundle or many. A workspace is not a publishable
+plugin and a product is not a larger plugin. Aggregation must not flatten member
+manifests, merge several plugin kinds into one identity, or make standalone
+bundle builds depend on the workspace source tree.
+
+For a multi-bundle composition, use these dependency directions:
+
+- a public schema bundle owns the authored data contract and has no dependency
+  on a file format, resolver, or Exec implementation;
+- a file-format bundle may consume a schema bundle and an ordinary parser
+  library, but owns parsing and stage mapping;
+- a resolver bundle may consume a container/access library, but does not author
+  the stage and does not depend on the file-format plugin;
+- an Exec bundle consumes authored schema contracts, not importer state;
+- shared parsing, buffer access, and format-independent data structures live in
+  an ordinary library when two bundles need them;
+- a product selects compatible bundle artifacts and tests them together without
+  changing their internal dependency direction.
+
+For example:
+
+```text
+container library
+  ├──> package resolver
+  └──> file format ──> schema <── Exec
+
+product = schema + package resolver + file format [+ Exec]
+```
+
+This is a composition default, not a migration mandate. The existing co-hosted
+schema workflow remains valid when the schema is private to one bundle or when
+splitting it would create a release boundary with no independent consumer.
+Promotion of a standalone compiled-schema template must nevertheless prove the
+separate consumer workflow.
+
+## Workspace contract
+
+The shipped `usd-plugin-workspace` already provides a dual-mode CMake root that
+discovers immediate child bundles and `plugins/*`, plus `ost plugin test
+--workspace`. Extend that path instead of replacing it. The current discovery
+behavior remains the backward-compatible baseline while the dependency schema
+is introduced.
+
+A mature workspace composition should provide:
+
+- deterministic discovery of bundle manifests without hand-maintained bundle
+  names in the root `CMakeLists.txt`;
+- one selected OpenUSD runtime/toolchain contract for the workspace, while each
+  bundle remains directly buildable with plain CMake;
+- dependency graph validation, missing-dependency diagnostics, version and
+  schema-contract checks, and cycle detection before any build;
+- workspace integration tests in addition to each bundle's own tests;
+- both whole-workspace and selected-bundle workflows;
+- no relative sibling paths encoded into generated bundle manifests or install
+  interfaces.
+
+Auto-discovery alone does not imply dependency order. Until the versioned graph
+contract lands, the workspace may discover and test bundles but must not infer
+semantic dependencies from directory names, CMake target names, or link errors.
+
+`libs/` is a recommended convention for shared non-plugin code, not a second
+plugin catalog. A future `openstrata.library.yaml` may describe exportable
+libraries, but ordinary CMake package config and target export remain the
+portable integration contract.
 
 ## Template descriptor and generated provenance
 
@@ -148,15 +252,82 @@ inputs:
   extension: sample
 ```
 
-The final filename and whether this is embedded into an existing domain manifest
-should be decided with the schema implementation. The invariant matters more:
-template id/version, generator version, and normalized non-secret inputs are
-committed; generation time, user paths, hostnames, and environment values are
-not. A timestamp belongs in the uncommitted/machine-readable generation report.
+The committed file is `openstrata.scaffold.yaml`, kept separate from runtime
+domain manifests. It records template id/version, generator version, and
+normalized non-secret inputs; generation time, user paths, hostnames, and
+environment values are excluded. A timestamp belongs only in the
+uncommitted/machine-readable generation report. Plugin packaging preserves this
+file when present while remaining compatible with adopted legacy bundles.
 
 `openstrata.plugin.yaml` remains the generated bundle contract. Template
 metadata must not duplicate its runtime requirements, capabilities, artifact
 paths, or tests as a second source of truth.
+
+## Bundle dependency and schema contract
+
+The current plugin manifest already owns plugin identity, the OpenUSD runtime
+range, provided capabilities, required runtime capabilities/components,
+bundle-relative runtime libraries, plugin resources, schema source, notices,
+and tests. Bundle composition extends that document; it does not replace the
+current shape with the proposal's illustrative `kind: usd-plugin` form.
+
+The next manifest schema should add two distinct dependency classes:
+
+- **libraries** are link/build dependencies resolved as normal CMake packages or
+  exported targets;
+- **bundles** are independently discoverable OpenUSD plugin bundles required at
+  runtime or for integration testing.
+
+The exact versioned YAML is an implementation deliverable. Conceptually, it
+must be able to express:
+
+```yaml
+plugin:
+  name: usdVrmFileFormat
+  version: 0.2.0
+  kind: usd-fileformat
+runtime:
+  openusd: ">=25.11,<27.0"
+provides:
+  - usd-fileformat:vrm
+requires:
+  capabilities: [usd-stage-read]
+  libraries:
+    - id: vrmContainer
+      version: ">=0.2,<0.3"
+  bundles:
+    - id: vrmSchema
+      version: ">=0.2,<0.3"
+      contract: 1
+    - id: vrmResolver
+      version: ">=0.2,<0.3"
+```
+
+This example is a target contract, not syntax accepted by the current parser.
+The schema implementation must choose explicit schema/version fields, reject
+unknown dependency keys once that schema is selected, and provide a migration
+period for existing manifests.
+
+Semantic package version and authored-data contract version solve different
+problems. `version` selects a compatible bundle implementation. A schema
+`contract` identifies the stable type/property/token surface used by authored
+stages and downstream code. Changing implementation version does not
+necessarily change the contract; breaking a contract requires a new baseline,
+migration notes, and consumer evidence. Contract identity must be provided by
+the schema bundle and checked against every consumer declaration, not merely
+copied into consumers.
+
+Graph validation happens before CMake configuration or packaging and reports at
+least duplicate ids, missing required bundles/libraries, incompatible versions,
+contract mismatch, forbidden dependency direction, and cycles. Optional
+dependencies must have explicit behavior and tests; absence cannot silently
+change the meaning of an authored schema.
+
+Manifests remain the source of dependency truth. Generated CMake may consume a
+validated graph and expose aliases such as `ost::<bundle-id>`, but a bundle must
+also support installed-package discovery and standalone plain-CMake use. It may
+not rely on `add_subdirectory(../sibling)` or a workspace-only target appearing
+by accident.
 
 ## Generated bundle requirements
 
@@ -164,7 +335,10 @@ All formal plugin templates and skeletons must generate:
 
 - a parseable `openstrata.plugin.yaml` using an existing or explicitly proposed
   plugin kind;
+- one primary plugin-kind boundary; cross-kind composition belongs in a
+  workspace/product, while documented legacy co-hosting remains supported;
 - a buildable, out-of-source CMake project;
+- standalone and workspace build paths with the same public install interface;
 - correct build-tree and install-tree plugin resources;
 - explicit install rules and runtime dependency declarations;
 - a README describing extension points, compatibility, and verification;
@@ -203,6 +377,58 @@ Helpers should encode mechanics, not hide policy. A template must still make its
 OpenUSD components, targets, resources, install destinations, and tests readable
 from its top-level CMake files.
 
+## Product aggregation
+
+A product aggregate is a distribution recipe over already valid bundle
+artifacts. It exists so users can install one tested product without forcing
+schema, resolver, file format, and Exec into one plugin bundle.
+
+A versioned product descriptor should declare:
+
+- product id and version;
+- member bundle ids plus exact or policy-resolved versions/artifact digests;
+- supported targets and required OpenUSD runtime range;
+- archive/install-tree outputs and release naming;
+- cross-bundle smoke tests and fixtures;
+- license/notice aggregation rules;
+- whether optional members such as Exec are included.
+
+Conceptually:
+
+```yaml
+schema: openstrata.product/v1alpha1
+product:
+  id: usd-vrm
+  version: 0.2.0
+bundles:
+  - id: vrmSchema
+  - id: vrmResolver
+  - id: usdVrmFileFormat
+outputs: [archive, install-tree]
+validation:
+  clean_install: true
+  smoke: [open-vrm-stage]
+```
+
+The descriptor references bundle contracts; it does not restate their plugin
+resources, runtime libraries, capabilities, or tests. Packaging preserves every
+member's manifest, provenance, license, and notices, and emits aggregate
+provenance that records the resolved artifact digests.
+
+Product validation must prove that:
+
+- every member is present, compatible, and discoverable;
+- the dependency graph and schema contracts are satisfied;
+- loader paths work without the workspace, source tree, or build tree;
+- install-tree-only integration tests can open the representative assets;
+- the packed archive passes the same checks after extraction elsewhere;
+- no file collision or ambiguous plugin identity is hidden by aggregation.
+
+Commands such as `ost product build|test|package|install` are reasonable after
+this descriptor and report schema exist. They should orchestrate the existing
+bundle build/test/package and artifact transport primitives. Until then,
+examples using `ost product` are design sketches, not supported CLI.
+
 ## Verification contract
 
 Template CI validates the template itself by generating representative bundles
@@ -228,6 +454,18 @@ pyramid.
 - package/security tests for archive and resolver boundaries;
 - machine-readable `PASS` / `FAIL` / `SKIP` with observed facts and artifacts.
 
+### Composition gates
+
+- deterministic workspace discovery and graph order;
+- missing, incompatible, duplicate, and cyclic dependencies rejected before
+  configure/build;
+- schema contract provider/consumer agreement;
+- selected-bundle and whole-workspace tests against one resolved runtime;
+- product member manifests and digests preserved;
+- archive extraction and clean-install smoke tests with no source/build paths;
+- ordinary shared libraries remain usable through exported/install targets and
+  do not acquire plugin discovery metadata.
+
 Compatibility is a declared support matrix, not an unconditional promise that
 every template runs on every host. A formal template needs two supported
 OpenUSD lines and every OS/configuration it claims. Missing infrastructure is a
@@ -251,6 +489,22 @@ Project-owned:
 Keep `usd-schema-codeless` and future `usd-schema-cpp` as different template ids.
 The shipped co-hosted compiled-schema workflow is evidence for the latter, but
 does not automatically prove a standalone compiled-schema scaffold.
+
+The compiled skeleton may commit generated C++ and `generatedSchema.usda` so a
+source archive remains buildable without an OST checkout. Its generation policy
+must be explicit:
+
+- `AUTO` regenerates with a compatible pinned generator and otherwise uses the
+  committed outputs;
+- `GENERATE` requires regeneration;
+- `PREGENERATED` uses only committed outputs;
+- `VERIFY` regenerates in a staging directory and fails on any difference.
+
+Formal promotion requires `VERIFY` in CI, a recorded compatible generator range,
+registration and contract baselines, clean-install C++ and Python consumer
+tests when bindings are claimed, and a downstream bundle that links only the
+installed schema package/target. Generated files are outputs, never a second
+hand-edited schema source.
 
 ### File format
 
@@ -278,8 +532,15 @@ Project-owned:
 - protocol, authentication, retry, path grammar, cache invalidation, and remote
   trust policy.
 
-The manifest already models `usd-asset-resolver`; the next step is a skeleton
-and kind-specific discovery checks, not a new CLI or artifact type.
+The manifest and embedded catalog now model `usd-asset-resolver`; the shipped
+skeleton establishes registration, a URI-scheme seam, deterministic provenance,
+and starter fixtures. The next step is identifier normalization, cache,
+concurrency, another supported platform, and broader clean-install evidence, not
+a new CLI or artifact type.
+
+Use the catalog id `usd-asset-resolver-cpp`. A generic `usd-resolver-cpp` id with
+a generation switch would make materially different security and verification
+contracts look interchangeable.
 
 ### Package resolver
 
@@ -295,12 +556,22 @@ containers, and decompression limits when compression exists.
 This remains a skeleton until at least two independent package backends prove
 the boundary. Architectural similarity alone is not promotion evidence.
 
+Use a distinct `usd-package-resolver-cpp` catalog id once the skeleton exists.
+It may share pinned CMake and test-harness mechanics with the asset-resolver
+scaffold, but it is not a mode of the same formal template.
+
 ### Exec
 
 Only registration, discovery, tokens, diagnostics, deterministic test seams,
 and a minimal evaluation-context boundary are skeleton candidates. Scheduling,
 graph construction, state ownership, invalidation semantics, solvers, mutation,
 and CPU/GPU execution remain reference policy.
+
+The provisional catalog id is `usd-exec-cpp`; `openexec-plugin-cpp` is not a
+second entry. Final naming and a new plugin kind wait for the OpenUSD extension
+point and manifest capability vocabulary to stabilize. In a composed product,
+the Exec bundle depends on the public schema contract and not on importer or
+file-format implementation state.
 
 ### Hydra and renderer
 
@@ -323,18 +594,22 @@ only if it actually ships a discoverable OpenUSD plugin.
 
 | Catalog entry | Current evidence | Policy state |
 | --- | --- | --- |
+| `usd-plugin-workspace` | shipped dual-mode scaffold and `plugin test --workspace` | template; dependency graph extension pending |
 | `usd-fileformat-cpp` | shipped scaffold and L0-L5 lifecycle | template |
 | `usd-schema-codeless` | shipped scaffold, generation, registration lifecycle | template |
-| `usd-schema-cpp` | co-hosted compiled-schema path exists | skeleton candidate |
-| `usd-asset-resolver-cpp` | manifest kind exists; no scaffold | skeleton candidate |
+| `usd-schema-cpp` | co-hosted compiled-schema path exists | skeleton candidate; also described as compiled schema |
+| `usd-asset-resolver-cpp` | embedded URI resolver scaffold, descriptor, provenance, and registration fixture | skeleton; promotion evidence pending |
 | `usd-package-resolver-cpp` | one format/reference report | reference, then skeleton |
 | `usd-exec-cpp` | architecture/reference reports | reference, then skeleton |
 | `hydra-render-delegate-cpp` | hdMerlin dogfood evidence | skeleton candidate |
 | `renderer-project` | hdMerlin end-to-end structure | skeleton candidate |
 | `usd-tool-cpp` | normal project/package substrate exists | project-template candidate |
+| product aggregate | existing package/artifact substrate; no composition descriptor | schema and lifecycle candidate, not a plugin template |
 
 This table describes policy maturity, not release status. A candidate is not
 available until its descriptor, source scaffold, tests, and CLI wiring land.
+`usd-schema-compiled`, `usd-resolver-cpp`, and `openexec-plugin-cpp` are proposal
+terms mapped above, not aliases that the CLI must accept.
 
 ## Promotion and deprecation
 
@@ -360,6 +635,8 @@ Required:
 - security review appropriate to the input and package boundary;
 - two supported OpenUSD lines and the complete claimed platform matrix;
 - versioning, migration, and breaking-change policy;
+- standalone, workspace-consumer, and clean-install product evidence when the
+  entry is intended for composition;
 - evidence that project code is added at documented extension points rather than
   by replacing most scaffold architecture.
 
@@ -378,21 +655,52 @@ path; existing generated source remains project-owned.
 
 ## Delivery order
 
-1. Define and validate template descriptor plus deterministic scaffold
-   provenance.
-2. Describe the two shipped templates and make generation tests descriptor
-   driven without changing their output unexpectedly.
-3. Extract self-contained shared CMake mechanics and test copied helpers.
-4. Add the asset-resolver skeleton and kind-specific registration evidence.
-5. Dogfood a package-resolver skeleton against a second package backend before
-   promotion.
-6. Add standalone compiled-schema and tool-project candidates as their distinct
-   lifecycle gaps are proven.
-7. Add Exec and Hydra/renderer skeletons; keep their algorithmic/reference code
-   outside the formal scaffold.
-8. Add an explicit template diff/gap report before any migration feature.
+1. Define and validate the template descriptor, deterministic scaffold
+   provenance, and a versioning strategy for plugin dependency extensions.
+2. Describe the shipped plugin templates and `usd-plugin-workspace`; make
+   generation tests descriptor driven without changing their output or current
+   manifest acceptance unexpectedly.
+3. Add read-only dependency graph validation: deterministic discovery, duplicate
+   and missing ids, version/contract checks, forbidden directions, and cycles.
+4. Extract self-contained shared CMake mechanics, test copied helpers, and prove
+   standalone plus workspace-consumer builds before generating graph targets.
+5. Add the standalone `usd-schema-cpp` skeleton with pinned generation modes,
+   contract baseline, downstream consumer fixture, and clean-install tests.
+6. Harden the `usd-asset-resolver-cpp` skeleton with identifier, cache,
+   concurrency, cross-platform, and broader clean-install evidence.
+7. Define the product descriptor and aggregate report, then compose existing
+   bundle packages by digest and run extraction/clean-install smoke tests.
+8. Dogfood `usd-package-resolver-cpp` against a second package backend before
+   promotion; do not fold it into the asset-resolver scaffold.
+9. Add tool-project, Exec, and Hydra/renderer candidates as their distinct
+   lifecycle gaps are proven; keep algorithmic/reference code outside formal
+   scaffolds.
+10. Add an explicit template diff/gap report before any migration or automatic
+    manifest-editing command.
 
 The first implementation slice should improve metadata and verification around
-the templates already shipped. It should not bootstrap a new repository, CLI,
-or general-purpose text templating engine.
+the templates and workspace already shipped, while specifying dependency fields
+without making them control builds yet. It should not bootstrap a new repository,
+parallel CLI, product command family, or general-purpose text templating engine.
 
+## Completion criteria for bundle composition
+
+The bundle/workspace proposal is complete when all of the following are proven
+without weakening the single-bundle lifecycle:
+
+- `usd-schema-cpp`, `usd-asset-resolver-cpp`, and `usd-fileformat-cpp` can be
+  generated as independent bundles and built both alone and in one workspace;
+- a file-format consumer can depend on installed schema and resolver bundles
+  without embedding their implementation or using sibling source paths;
+- bundle dependencies and schema contracts are resolved from versioned manifests
+  with actionable mismatch and cycle diagnostics;
+- an ordinary shared container/parser library can be consumed by two bundles
+  without becoming an OpenUSD plugin;
+- a product descriptor composes pinned member artifacts, preserves their
+  manifests/provenance/notices, and emits aggregate evidence;
+- plugin discovery and representative asset-open tests pass from only the
+  extracted install tree;
+- an Exec skeleton, when introduced, builds against the schema contract without
+  a dependency on the file-format/importer bundle;
+- an external dogfood repository such as `usd-vrm-plugins` can adopt the model
+  without OST-specific domain code entering the shared templates.

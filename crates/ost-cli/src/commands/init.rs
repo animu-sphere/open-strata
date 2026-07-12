@@ -84,8 +84,9 @@ pub fn run(args: InitArgs, fmt: Format) -> Result<()> {
     if template != Template::Bare {
         project_template::validate_name(&name)?;
     }
+    let template_conflicts = project_template::conflicts(template, &name, &root)?;
     if !args.force {
-        if let Some(first) = project_template::conflicts(template, &name, &root).first() {
+        if let Some(first) = template_conflicts.first() {
             return Err(Error::usage(format!(
                 "refusing to overwrite existing '{first}'; \
                  pass --force, or use --bare to skip template files"
