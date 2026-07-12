@@ -604,6 +604,7 @@ Scaffold a new plugin bundle from a template
 | `--dir <DIR>` | Destination directory. Defaults to ./<name> |
 | `--extension <EXTENSION>` | File extension the plugin reads (required for usd-fileformat) |
 | `--scheme <SCHEME>` | URI scheme the resolver handles (required for usd-asset-resolver) |
+| `--template <TEMPLATE>` | Catalog template id. usd-schema defaults to usd-schema-codeless; use usd-schema-cpp for the experimental compiled skeleton |
 
 #### `ost plugin package`
 
