@@ -16,6 +16,13 @@ Replace the filesystem mapping at the documented seams in
 invalidation, remote trust, and project-specific path grammar do not belong in
 the shared template.
 
+**Security:** the starter maps `{{scheme}}:<path>` straight onto the local
+filesystem and does not confine the result. A `{{scheme}}:../../secret` request
+normalizes and resolves to whatever real file it points at, and resolution is
+relative to the process working directory. Enforcing a trust root, rejecting
+path traversal, and pinning identifiers to an intended scope are the
+implementer's responsibility before this resolver handles untrusted input.
+
 The skeleton is deliberately read-only. Keep it that way until write semantics,
 atomicity, and authorization have explicit tests.
 

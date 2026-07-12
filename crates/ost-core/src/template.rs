@@ -149,7 +149,20 @@ impl TemplateDescriptor {
 }
 
 fn is_semantic_version(version: &str) -> bool {
-    let core = version.split(['-', '+']).next().unwrap_or_default();
+    // Peel optional build metadata (`+...`) then pre-release (`-...`); both, when
+    // their delimiter is present, must carry a non-empty identifier so trailing
+    // `1.0.0-` / `1.0.0+` do not slip through as valid.
+    let (rest, build) = match version.split_once('+') {
+        Some((rest, build)) => (rest, Some(build)),
+        None => (version, None),
+    };
+    let (core, pre) = match rest.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (rest, None),
+    };
+    if build.is_some_and(str::is_empty) || pre.is_some_and(str::is_empty) {
+        return false;
+    }
     let parts: Vec<&str> = core.split('.').collect();
     parts.len() == 3
         && parts
@@ -285,6 +298,31 @@ compatibility:
 
         let bad_version = DESCRIPTOR.replace("version: 1.0.0", "version: latest");
         assert!(TemplateDescriptor::parse(&bad_version).is_err());
+    }
+
+    #[test]
+    fn semantic_version_accepts_valid_and_rejects_malformed() {
+        for good in [
+            "1.0.0",
+            "0.13.2",
+            "1.2.3-alpha.1",
+            "1.2.3+build.5",
+            "1.2.3-rc.1+meta",
+        ] {
+            assert!(is_semantic_version(good), "expected '{good}' to be valid");
+        }
+        for bad in [
+            "1.0",
+            "1.0.0.0",
+            "v1.0.0",
+            "latest",
+            "1.0.0-",
+            "1.0.0+",
+            "1.0.0-+meta",
+            "1..0",
+        ] {
+            assert!(!is_semantic_version(bad), "expected '{bad}' to be invalid");
+        }
     }
 
     #[test]
