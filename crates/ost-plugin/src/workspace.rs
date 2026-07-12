@@ -461,14 +461,151 @@ mod tests {
             "requires:\n  bundles:\n    - { id: schema, version: '>=3.0,<4.0', contract: 1 }\n",
         ));
         let report = validate_workspace(&[schema, format]);
-        let codes: BTreeSet<_> = report
-            .issues
-            .iter()
-            .map(|issue| issue.code.as_str())
-            .collect();
+        let codes = codes(&report);
         assert!(codes.contains("WORKSPACE_DEPENDENCY_VERSION_MISMATCH"));
         assert!(codes.contains("WORKSPACE_SCHEMA_CONTRACT_MISMATCH"));
         assert!(codes.contains("WORKSPACE_DEPENDENCY_DIRECTION_FORBIDDEN"));
         assert!(codes.contains("WORKSPACE_DEPENDENCY_CYCLE"));
+    }
+
+    fn codes(report: &WorkspaceValidation) -> BTreeSet<&str> {
+        report
+            .issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn requires_and_reports_missing_schema_contract_selection() {
+        // Provider advertises a contract: the consumer must select it.
+        let required = validate_workspace(&[
+            bundle(&manifest(
+                "schema",
+                "1.0.0",
+                "usd-schema",
+                "schema:\n  contract: 3\n",
+            )),
+            bundle(&manifest(
+                "format",
+                "1.0.0",
+                "usd-fileformat",
+                "requires:\n  bundles:\n    - { id: schema, version: '>=1.0,<2.0' }\n",
+            )),
+        ]);
+        assert!(!required.passed);
+        assert!(codes(&required).contains("WORKSPACE_SCHEMA_CONTRACT_REQUIRED"));
+
+        // Consumer selects a contract the schema does not provide.
+        let missing = validate_workspace(&[
+            bundle(&manifest(
+                "schema",
+                "1.0.0",
+                "usd-schema",
+                "schema:\n  codeless: true\n",
+            )),
+            bundle(&manifest(
+                "format",
+                "1.0.0",
+                "usd-fileformat",
+                "requires:\n  bundles:\n    - { id: schema, version: '>=1.0,<2.0', contract: 2 }\n",
+            )),
+        ]);
+        assert!(codes(&missing).contains("WORKSPACE_SCHEMA_CONTRACT_MISSING"));
+    }
+
+    #[test]
+    fn rejects_inapplicable_and_zero_schema_contracts() {
+        // A contract attached to a non-schema dependency, and a non-schema
+        // bundle that declares its own schema.contract.
+        let not_applicable = validate_workspace(&[
+            bundle(&manifest("resolver", "1.0.0", "usd-asset-resolver", "schema:\n  contract: 1\n")),
+            bundle(&manifest(
+                "format",
+                "1.0.0",
+                "usd-fileformat",
+                "requires:\n  bundles:\n    - { id: resolver, version: '>=1.0,<2.0', contract: 1 }\n",
+            )),
+        ]);
+        assert!(codes(&not_applicable).contains("WORKSPACE_SCHEMA_CONTRACT_NOT_APPLICABLE"));
+
+        // Contract 0 is invalid on both the provider node and the selector.
+        let zero = validate_workspace(&[
+            bundle(&manifest(
+                "schema",
+                "1.0.0",
+                "usd-schema",
+                "schema:\n  contract: 0\n",
+            )),
+            bundle(&manifest(
+                "format",
+                "1.0.0",
+                "usd-fileformat",
+                "requires:\n  bundles:\n    - { id: schema, version: '>=1.0,<2.0', contract: 0 }\n",
+            )),
+        ]);
+        assert!(codes(&zero).contains("WORKSPACE_SCHEMA_CONTRACT_INVALID"));
+    }
+
+    #[test]
+    fn rejects_empty_and_unparseable_version_ranges() {
+        let empty = validate_workspace(&[
+            bundle(&manifest(
+                "schema",
+                "1.0.0",
+                "usd-schema",
+                "schema:\n  contract: 1\n",
+            )),
+            bundle(&manifest(
+                "format",
+                "1.0.0",
+                "usd-fileformat",
+                "requires:\n  bundles:\n    - { id: schema, version: '', contract: 1 }\n",
+            )),
+        ]);
+        assert!(codes(&empty).contains("WORKSPACE_DEPENDENCY_VERSION_INVALID"));
+
+        let unparseable = validate_workspace(&[
+            bundle(&manifest(
+                "schema",
+                "1.0.0",
+                "usd-schema",
+                "schema:\n  contract: 1\n",
+            )),
+            bundle(&manifest(
+                "format",
+                "1.0.0",
+                "usd-fileformat",
+                "requires:\n  bundles:\n    - { id: schema, version: '>=abc', contract: 1 }\n",
+            )),
+        ]);
+        assert!(codes(&unparseable).contains("WORKSPACE_DEPENDENCY_VERSION_INVALID"));
+    }
+
+    #[test]
+    fn rejects_non_portable_ids_and_duplicate_dependencies() {
+        let ids = validate_workspace(&[
+            bundle(&manifest("1bad", "1.0.0", "usd-fileformat", "")),
+            bundle(&manifest(
+                "good",
+                "1.0.0",
+                "usd-fileformat",
+                "requires:\n  bundles:\n    - { id: '1dep', version: '>=1.0,<2.0' }\n",
+            )),
+        ]);
+        let ids = codes(&ids);
+        assert!(ids.contains("WORKSPACE_BUNDLE_ID_INVALID"));
+        assert!(ids.contains("WORKSPACE_DEPENDENCY_ID_INVALID"));
+
+        let duplicate = validate_workspace(&[
+            bundle(&manifest("schema", "1.0.0", "usd-schema", "schema:\n  contract: 1\n")),
+            bundle(&manifest(
+                "format",
+                "1.0.0",
+                "usd-fileformat",
+                "requires:\n  bundles:\n    - { id: schema, version: '>=1.0,<2.0', contract: 1 }\n    - { id: schema, version: '>=1.0,<2.0', contract: 1 }\n",
+            )),
+        ]);
+        assert!(codes(&duplicate).contains("WORKSPACE_DUPLICATE_DEPENDENCY"));
     }
 }

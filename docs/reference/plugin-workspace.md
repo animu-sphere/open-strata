@@ -54,9 +54,11 @@ type, property, or token surface increments it and requires authored-data
 migration notes. Consumers of a versioned schema contract must select it
 explicitly.
 
-The proposed `requires.libraries` class is not accepted yet. Library identity
-and discovery need a separate portable contract before workspace validation can
-distinguish a missing package from an externally installed CMake dependency.
+The proposed `requires.libraries` class is not validated yet: unknown keys under
+`requires` are currently ignored rather than rejected, so a `libraries` block has
+no effect. Library identity and discovery need a separate portable contract
+before workspace validation can distinguish a missing package from an externally
+installed CMake dependency.
 
 ## Dependency directions
 
