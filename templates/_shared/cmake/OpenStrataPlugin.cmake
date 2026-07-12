@@ -7,8 +7,6 @@ include_guard(DIRECTORY)
 
 set(OPENSTRATA_PLUGIN_CMAKE_HELPER_VERSION "1.0.0")
 
-include(CMakeParseArguments)
-
 function(openstrata_default_build_type)
     get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
     if(NOT _is_multi_config AND NOT CMAKE_BUILD_TYPE)
@@ -68,8 +66,12 @@ function(openstrata_configure_plugin)
             "openstrata_configure_plugin requires PLUG_INFO_INPUT and PLUG_INFO_OUTPUT")
     endif()
 
-    # USD resolves LibraryPath relative to plugInfo.json; keep every generator
-    # configuration in the bundle-local lib/ directory named by the template.
+    # USD resolves LibraryPath relative to plugInfo.json, so stage the shared
+    # library into this bundle's lib/ for every generator configuration. Use
+    # CMAKE_CURRENT_SOURCE_DIR (this bundle), not CMAKE_SOURCE_DIR — when the
+    # bundle is consumed via add_subdirectory() the latter points at the parent
+    # workspace root and would stage the lib away from the committed
+    # plugInfo.json LibraryPath.
     set(OPENSTRATA_PLUGIN_LIBRARY_PREFIX "lib")
     set_target_properties(${ARG_TARGET} PROPERTIES
         PREFIX "${OPENSTRATA_PLUGIN_LIBRARY_PREFIX}"
