@@ -297,8 +297,10 @@ fn validate_direction(
     issues: &mut Vec<WorkspaceIssue>,
 ) {
     let forbidden = consumer_kind == PluginKind::UsdSchema
-        || (consumer_kind == PluginKind::UsdAssetResolver
-            && provider.manifest.kind() == PluginKind::UsdFileformat);
+        || (matches!(
+            consumer_kind,
+            PluginKind::UsdAssetResolver | PluginKind::UsdPackageResolver
+        ) && provider.manifest.kind() == PluginKind::UsdFileformat);
     if forbidden {
         issues.push(issue(
             "WORKSPACE_DEPENDENCY_DIRECTION_FORBIDDEN",

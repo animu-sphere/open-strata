@@ -326,6 +326,7 @@ hydra-preview
 usd-fileformat:<extension>
 usd-schema:<schema>
 usd-asset-resolver
+usd-package-resolver:<extension>
 headless-execution
 gpu-compute
 ```

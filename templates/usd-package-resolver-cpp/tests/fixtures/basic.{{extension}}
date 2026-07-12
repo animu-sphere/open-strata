@@ -1,0 +1,5 @@
+{{name}} package placeholder.
+
+The starter {{Name}}PackageResolver never reads this file: entries of
+`basic.{{extension}}` are the plain files under `basic.{{extension}}.contents/`.
+A real container format replaces both this file and the sidecar directory.

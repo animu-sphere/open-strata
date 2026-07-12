@@ -46,11 +46,13 @@ use crate::output::{self, Format};
 pub enum PluginCmd {
     /// Scaffold a new plugin bundle from a template.
     New {
-        /// Plugin kind: usd-fileformat | usd-asset-resolver | usd-schema.
+        /// Plugin kind: usd-fileformat | usd-asset-resolver |
+        /// usd-package-resolver | usd-schema.
         kind: String,
         /// Plugin name (becomes the bundle directory), e.g. `toy`.
         name: String,
-        /// File extension the plugin reads (required for usd-fileformat).
+        /// File extension the plugin handles (required for usd-fileformat and
+        /// usd-package-resolver).
         #[arg(long)]
         extension: Option<String>,
         /// URI scheme the resolver handles (required for usd-asset-resolver).

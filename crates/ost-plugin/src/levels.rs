@@ -25,6 +25,13 @@
 //! fixture through its declared URI scheme, proving discovery, library loading,
 //! resolver construction, and dispatch before the normal stage-open levels.
 //!
+//! A **package resolver** uses L2 `package_resolver.registration` to prove the
+//! plug registry discovers the plugin and its library loads (`ArPackageResolver`
+//! has no Python binding to dispatch through directly). Real extension dispatch
+//! is exercised by the normal L3/L4 levels: the scaffolded smoke fixture
+//! sublayers a packaged path (`basic.<ext>[content/inner.usda]`), so opening it
+//! goes through the package resolver.
+//!
 //! All kinds share the format-agnostic upper levels:
 //!
 //! - **L5 `golden.roundtrip`** — `usdcat --flatten` output matches a committed
@@ -94,6 +101,9 @@ pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnost
     if bundle.manifest.kind() == PluginKind::UsdAssetResolver {
         return run_asset_resolver_levels(bundle, session, up_to);
     }
+    if bundle.manifest.kind() == PluginKind::UsdPackageResolver {
+        return run_package_resolver_levels(bundle, session, up_to);
+    }
 
     let mut diags = Vec::new();
     if up_to >= 2 {
@@ -132,6 +142,29 @@ fn run_asset_resolver_levels(bundle: &Bundle, session: &Session, up_to: u8) -> V
     let mut diags = Vec::new();
     if up_to >= 2 {
         diags.push(level2_resolver_registration(bundle, session));
+    }
+    if up_to >= 3 {
+        diags.push(level3_usdcat(bundle, session));
+    }
+    if up_to >= 4 {
+        diags.push(level4_stage_open(bundle, session));
+    }
+    if up_to >= 5 {
+        diags.push(level5_golden(bundle, session));
+    }
+    if up_to >= 6 {
+        diags.push(level6_usdview(bundle, session, None));
+    }
+    diags
+}
+
+/// Execution levels for a package resolver: L2 proves plug-registry discovery
+/// and library load; the shared L3/L4 levels then open the smoke fixture, which
+/// sublayers a packaged path and so exercises real extension dispatch.
+fn run_package_resolver_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    if up_to >= 2 {
+        diags.push(level2_package_resolver_registration(bundle, session));
     }
     if up_to >= 3 {
         diags.push(level3_usdcat(bundle, session));
@@ -345,6 +378,137 @@ fn level2_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnosti
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
                 "verify uriSchemes, LibraryPath, and AR_DEFINE_RESOLVER agree".into(),
+            ],
+        )
+    }
+}
+
+/// The plugin `Name`s in the bundle's `plugInfo.json` that declare a type
+/// based on `ArPackageResolver`, with the package extensions they claim.
+/// Empty when the file is absent/unreadable or declares no package resolver.
+fn package_resolver_registrations(bundle: &Bundle) -> Vec<(String, Vec<String>)> {
+    let Ok(src) = std::fs::read_to_string(bundle.plug_info().as_std_path()) else {
+        return Vec::new();
+    };
+    let Ok(json) = crate::plug_info::parse_plug_info(&src) else {
+        return Vec::new();
+    };
+    let Some(plugins) = json.get("Plugins").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    let mut registrations = Vec::new();
+    for plugin in plugins {
+        let Some(types) = plugin
+            .get("Info")
+            .and_then(|info| info.get("Types"))
+            .and_then(|types| types.as_object())
+        else {
+            continue;
+        };
+        let mut extensions = Vec::new();
+        for metadata in types.values() {
+            if metadata
+                .get("bases")
+                .and_then(|bases| bases.as_array())
+                .is_some_and(|bases| {
+                    bases
+                        .iter()
+                        .any(|base| base.as_str() == Some("ArPackageResolver"))
+                })
+            {
+                if let Some(declared) = metadata
+                    .get("extensions")
+                    .and_then(|value| value.as_array())
+                {
+                    extensions.extend(
+                        declared
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string)),
+                    );
+                }
+            }
+        }
+        if extensions.is_empty() {
+            continue;
+        }
+        let Some(name) = plugin.get("Name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        extensions.sort();
+        extensions.dedup();
+        registrations.push((name.to_string(), extensions));
+    }
+    registrations
+}
+
+fn level2_package_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnostic {
+    const ID: &str = "package_resolver.registration";
+    let registrations = package_resolver_registrations(bundle);
+    let Some((plugin_name, extensions)) = registrations.first() else {
+        return Diagnostic::fail(
+            ID,
+            2,
+            "plugInfo.json declares no ArPackageResolver package extensions",
+            vec!["declare a resolver type with bases: [ArPackageResolver] and extensions".into()],
+        );
+    };
+    let Some(python) = &session.python else {
+        return Diagnostic::skip(ID, 2, "no python interpreter on the session PATH");
+    };
+
+    // `ArPackageResolver` is not bound to Python, so registration is proven at
+    // the plug-registry level: the plugin is discovered by name and its library
+    // loads. Dispatch through the extension is covered by L3/L4 opening the
+    // smoke fixture, which sublayers a packaged path.
+    // Bind the name once from its JSON-escaped literal (valid Python too), then
+    // reference the `name` variable everywhere so a plugInfo `Name` containing a
+    // quote or newline can never break — or inject into — the probe script.
+    let name_literal = serde_json::to_string(plugin_name).unwrap_or_else(|_| "\"\"".into());
+    let script = format!(
+        r#"import sys
+from pxr import Plug
+name = {name_literal}
+p = Plug.Registry().GetPluginWithName(name)
+if not p:
+    sys.stderr.write('plugin %s not found in the plug registry' % name)
+    sys.exit(7)
+if not p.Load():
+    sys.stderr.write('plugin %s found but its library failed to load' % name)
+    sys.exit(8)
+sys.exit(0)
+"#
+    );
+    let out = session
+        .probe
+        .run(python, &["-c", &with_dll_preamble(&script)]);
+    if out.unspawned() {
+        return Diagnostic::fail(
+            ID,
+            2,
+            format!("could not run python ({python})"),
+            vec!["ensure the runtime python is on PATH".into()],
+        );
+    }
+    if out.ok() {
+        Diagnostic::pass(
+            ID,
+            2,
+            format!(
+                "plug registry discovered '{plugin_name}' and loaded its library for .{} packages",
+                extensions.join("/.")
+            ),
+        )
+    } else {
+        Diagnostic::fail(
+            ID,
+            2,
+            format!(
+                "package resolver registration failed: {}",
+                tail(&out.stderr)
+            ),
+            vec![
+                "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
+                "verify Name, LibraryPath, and AR_DEFINE_PACKAGE_RESOLVER agree".into(),
             ],
         )
     }
@@ -937,6 +1101,123 @@ tests: { smoke: [tests/fixtures/basic.usda] }
             manifest,
         };
         (dir, bundle)
+    }
+
+    fn package_resolver_bundle_with_fixture() -> (tempdir_like::Dir, Bundle) {
+        let dir = tempdir_like::Dir::new("levels-pkg-resolver");
+        std::fs::create_dir_all(dir.path.join("tests/fixtures").as_std_path()).unwrap();
+        std::fs::create_dir_all(dir.path.join("plugin/resources/shot-pack").as_std_path()).unwrap();
+        std::fs::write(
+            dir.path.join("tests/fixtures/basic.usda").as_std_path(),
+            "#usda 1.0\n(\n    subLayers = [@./basic.pack[content/inner.usda]@]\n)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path
+                .join("plugin/resources/shot-pack/plugInfo.json")
+                .as_std_path(),
+            r#"{
+  "Plugins": [{
+    "Name": "ShotPackPackageResolver",
+    "Info": {"Types": {"ShotPackPackageResolver": {
+      "bases": ["ArPackageResolver"], "extensions": ["pack"]
+    }}}
+  }]
+}"#,
+        )
+        .unwrap();
+        let manifest = PluginManifest::parse(
+            r#"
+plugin: { name: shot-pack, version: 0.1.0, kind: usd-package-resolver }
+runtime: { openusd: ">=25.05,<27.0" }
+provides: ["usd-package-resolver:pack"]
+usd: { plug_info: plugin/resources/shot-pack/plugInfo.json }
+tests: { smoke: [tests/fixtures/basic.usda] }
+"#,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            root: dir.path.clone(),
+            manifest,
+        };
+        (dir, bundle)
+    }
+
+    #[test]
+    fn package_resolver_registration_discovers_and_loads_the_plugin() {
+        let (_d, bundle) = package_resolver_bundle_with_fixture();
+        assert_eq!(
+            package_resolver_registrations(&bundle),
+            vec![(
+                "ShotPackPackageResolver".to_string(),
+                vec!["pack".to_string()]
+            )]
+        );
+        let probe = FakeProbe::new().on("python", Some(0), "", "");
+        let session = Session {
+            probe: &probe,
+            usdcat: None,
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+        let diagnostic = &run_levels(&bundle, &session, 2)[0];
+        assert_eq!(diagnostic.id, "package_resolver.registration");
+        assert_eq!(diagnostic.status, Status::Pass);
+    }
+
+    #[test]
+    fn package_resolver_registration_fails_without_extension_metadata() {
+        let (_d, bundle) = package_resolver_bundle_with_fixture();
+        let plug_info = bundle.plug_info();
+        let source = std::fs::read_to_string(plug_info.as_std_path()).unwrap();
+        std::fs::write(
+            plug_info.as_std_path(),
+            source.replace(", \"extensions\": [\"pack\"]", ""),
+        )
+        .unwrap();
+        let probe = FakeProbe::new();
+        let session = Session {
+            probe: &probe,
+            usdcat: None,
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+        let diagnostic = &run_levels(&bundle, &session, 2)[0];
+        assert_eq!(diagnostic.id, "package_resolver.registration");
+        assert_eq!(diagnostic.status, Status::Fail);
+    }
+
+    #[test]
+    fn package_resolver_runs_the_shared_read_levels() {
+        // Dispatch is proven by the shared L3/L4 levels reading the smoke
+        // fixture (it sublayers a packaged path), so they must run for this
+        // kind rather than the schema replacements.
+        let (_d, bundle) = package_resolver_bundle_with_fixture();
+        let probe =
+            FakeProbe::new()
+                .on("python", Some(0), "", "")
+                .on("usdcat", Some(0), "#usda 1.0\n", "");
+        let session = Session {
+            probe: &probe,
+            usdcat: Some("usdcat".into()),
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+        let ids: Vec<String> = run_levels(&bundle, &session, 4)
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "package_resolver.registration",
+                "usdcat.read",
+                "python.stage_open"
+            ]
+        );
     }
 
     #[test]

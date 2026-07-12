@@ -594,7 +594,7 @@ Scaffold a new plugin bundle from a template
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `<KIND>` | yes | Plugin kind: usd-fileformat \| usd-asset-resolver \| usd-schema |
+| `<KIND>` | yes | Plugin kind: usd-fileformat \| usd-asset-resolver \| usd-package-resolver \| usd-schema |
 | `<NAME>` | yes | Plugin name (becomes the bundle directory), e.g. `toy` |
 
 **Options:**
@@ -602,7 +602,7 @@ Scaffold a new plugin bundle from a template
 | Option | Description |
 | --- | --- |
 | `--dir <DIR>` | Destination directory. Defaults to ./<name> |
-| `--extension <EXTENSION>` | File extension the plugin reads (required for usd-fileformat) |
+| `--extension <EXTENSION>` | File extension the plugin handles (required for usd-fileformat and usd-package-resolver) |
 | `--scheme <SCHEME>` | URI scheme the resolver handles (required for usd-asset-resolver) |
 | `--template <TEMPLATE>` | Catalog template id. usd-schema defaults to usd-schema-codeless; use usd-schema-cpp for the experimental compiled skeleton |
 
