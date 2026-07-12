@@ -44,9 +44,10 @@ The next milestone (v0.14.0 — trust policy foundation) is detailed in
 
 - ⬜ **OpenUSD template catalog maturity and expansion.** Direction:
   [openusd-plugin-templates.md](../design/proposed/openusd-plugin-templates.md).
-  Add versioned template descriptors, deterministic scaffold provenance,
-  clean-room generation/install/discovery gates, and self-contained copied CMake
-  helpers around the templates already shipped. Extend the existing
+  Versioned template descriptors, deterministic scaffold provenance, the asset
+  resolver skeleton, and read-only bundle dependency graph validation are in.
+  Next add clean-room generation/install/discovery gates and self-contained
+  copied CMake helpers around the templates already shipped. Extend the existing
   `ost plugin new` lifecycle—do not create a parallel template repository, CLI,
   renderer, bundle model, or artifact path. Add asset/package resolver, Exec,
   Hydra, and tool candidates only at evidence-appropriate maturity.

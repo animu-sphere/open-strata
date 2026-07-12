@@ -162,8 +162,8 @@ pub enum PluginCmd {
     Test {
         /// Path to the bundle directory (omit with --workspace).
         bundle: Option<String>,
-        /// Discover and test every bundle in the workspace: immediate
-        /// subdirectories and plugins/* holding an openstrata.plugin.yaml.
+        /// Validate the dependency graph, then test every discovered bundle:
+        /// immediate subdirectories and plugins/* with a plugin manifest.
         #[arg(long)]
         workspace: bool,
         /// Additional plugin bundle(s) to include in the session env.
@@ -1359,6 +1359,42 @@ fn test_workspace(
         )
         .with_hint("run from the workspace root, or pass a bundle path instead of --workspace"));
     }
+    let bundles = roots
+        .iter()
+        .map(|root| Bundle::load(root))
+        .collect::<Result<Vec<_>>>()?;
+    let graph = ost_plugin::validate_workspace(&bundles);
+    if !graph.passed {
+        if fmt.is_json() {
+            output::report(
+                false,
+                &serde_json::json!({
+                    "workspace": true,
+                    "graph": graph,
+                    "total": bundles.len(),
+                    "failed": 0,
+                }),
+            );
+        } else {
+            println!(
+                "Workspace dependency graph: {} bundle(s), {} issue(s)",
+                graph.nodes.len(),
+                graph.issues.len()
+            );
+            for issue in &graph.issues {
+                println!("  FAIL [{}] {}", issue.code, issue.message);
+            }
+        }
+        std::process::exit(ost_core::Category::Validation.exit_code() as i32);
+    }
+    if !fmt.is_json() {
+        println!(
+            "Workspace dependency graph: {} bundle(s), {} edge(s), valid\n",
+            graph.nodes.len(),
+            graph.edges.len()
+        );
+    }
+
     let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
     // One resolution for the whole workspace: every bundle tests against the
@@ -1366,8 +1402,7 @@ fn test_workspace(
     let resolved = resolve_runtime(target, profile)?;
 
     let mut results: Vec<(Bundle, DoctorReport, Utf8PathBuf)> = Vec::new();
-    for root in &roots {
-        let bundle = Bundle::load(root)?;
+    for (root, bundle) in roots.iter().zip(bundles) {
         let (report, report_dir) =
             test_bundle(&bundle, &with_bundles, resolved.as_ref(), &host, up_to)?;
         if !fmt.is_json() {
@@ -1398,6 +1433,7 @@ fn test_workspace(
             all_passed,
             &serde_json::json!({
                 "workspace": true,
+                "graph": graph,
                 "bundles": bundles,
                 "total": results.len(),
                 "failed": failed,

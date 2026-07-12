@@ -14,6 +14,16 @@ use serde::{Deserialize, Serialize};
 /// Filename of the plugin bundle manifest at a bundle root.
 pub const PLUGIN_MANIFEST: &str = "openstrata.plugin.yaml";
 
+/// Schema identifier required by manifests that opt into bundle composition.
+pub const PLUGIN_SCHEMA: &str = "openstrata.plugin/v1alpha1";
+
+/// Version header for additive plugin-manifest extensions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginManifestHeader {
+    pub schema: String,
+}
+
 /// The kind of OpenUSD plugin a bundle ships. The MVP covers three kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -133,6 +143,21 @@ pub struct Requires {
     /// Extra bundle-relative directories containing runtime shared libraries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_libs: Vec<String>,
+    /// Independently discoverable plugin bundles required by this bundle.
+    /// Workspace validation resolves these by plugin identity before any build.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bundles: Vec<BundleDependency>,
+}
+
+/// A versioned dependency on another plugin bundle in the same composition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleDependency {
+    pub id: String,
+    pub version: String,
+    /// Authored-data contract required from a schema bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<u64>,
 }
 
 /// Where the bundle's USD `plugInfo.json` lives, relative to the bundle root.
@@ -160,6 +185,10 @@ pub struct SchemaSection {
     /// `provides: usd-schema:<Type>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Version of the authored type/property/token surface exported by a public
+    /// schema bundle. Independent from the plugin implementation version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<u64>,
 }
 
 /// Fixtures consumed by each verification level. All optional.
@@ -176,6 +205,10 @@ pub struct Tests {
 /// The full `openstrata.plugin.yaml` document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
+    /// Optional for legacy standalone manifests. Required when
+    /// `requires.bundles` opts into the versioned composition extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<PluginManifestHeader>,
     pub plugin: PluginIdentity,
     /// SPDX license expression for the plugin's own code, e.g. `Apache-2.0`.
     /// Surfaced by `ost plugin inspect` and recorded in `ost plugin package`'s
@@ -302,6 +335,7 @@ tests:
             Some(">=1.39,<1.40")
         );
         assert_eq!(m.requires.runtime_libs, vec!["third_party/lib"]);
+        assert!(m.requires.bundles.is_empty());
         assert_eq!(m.license.as_deref(), Some("Apache-2.0"));
         assert_eq!(m.notices, vec!["third_party/NOTICES.md"]);
     }
@@ -381,5 +415,38 @@ tests:
             assert_eq!(PluginKind::from_tag(k.as_str()), Some(k));
         }
         assert_eq!(PluginKind::from_tag("bogus"), None);
+    }
+
+    #[test]
+    fn parses_versioned_bundle_dependencies_and_schema_contract() {
+        let source = r#"
+manifest:
+  schema: openstrata.plugin/v1alpha1
+plugin: { name: consumer, version: 1.2.0, kind: usd-fileformat }
+runtime: { openusd: ">=25.05,<27.0" }
+requires:
+  bundles:
+    - { id: publicSchema, version: ">=2.0,<3.0", contract: 4 }
+usd: { plug_info: resources/plugInfo.json }
+schema: { contract: 4 }
+"#;
+        let manifest = PluginManifest::parse(source).expect("composition manifest parses");
+        assert_eq!(manifest.manifest.unwrap().schema, PLUGIN_SCHEMA);
+        assert_eq!(manifest.requires.bundles[0].id, "publicSchema");
+        assert_eq!(manifest.requires.bundles[0].contract, Some(4));
+        assert_eq!(manifest.schema.unwrap().contract, Some(4));
+    }
+
+    #[test]
+    fn dependency_entries_reject_unknown_keys() {
+        let source = r#"
+plugin: { name: consumer, version: 1.0.0, kind: usd-fileformat }
+runtime: { openusd: ">=25.05,<27.0" }
+requires:
+  bundles:
+    - { id: schema, version: ">=1.0,<2.0", typo: true }
+usd: { plug_info: resources/plugInfo.json }
+"#;
+        assert!(PluginManifest::parse(source).is_err());
     }
 }

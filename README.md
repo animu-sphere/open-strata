@@ -109,7 +109,7 @@ ost build [--check] [--dry-run] [--jobs N]          preflight, then cmake build 
 ost package                                         install + tar.zst artifact + manifest
 ost validate                                        validate a built/packaged target
 ost extension  list | why <id> | add <id>           inspect/request controlled extensions
-ost plugin     new | inspect | build | doctor | run | test | view | test-view | schema add | package | publish   OpenUSD plugin bundles
+ost plugin     new | inspect | build | doctor | run | test | view | test-view | schema add | package | publish   OpenUSD plugin bundles + workspace graph validation
 ost artifact   import | list | show | verify | export | extract   local digest-addressed artifact registry
 ost ci         init | validate | plan | generate github    runtime×plugin support matrix -> CI workflow
 ost lock [--check]                                  generate/verify strata.lock
@@ -161,6 +161,7 @@ $ost uv sync --locked
 $ost plugin new usd-fileformat toy --extension toy
 $ost plugin build toy --target cy2026 --profile usd
 $ost plugin test  toy --target cy2026 --profile usd   # L0..L5 + report
+$ost plugin test --workspace --up-to 1                # validate graph, then test every bundle
 $ost plugin package toy --target cy2026 --profile usd
 $ost plugin publish toy --target cy2026 --profile usd   # register by digest
 $ost artifact list                                       # what the registry holds

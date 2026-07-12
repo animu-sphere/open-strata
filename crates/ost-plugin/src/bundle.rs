@@ -10,7 +10,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use ost_core::{Error, Result};
 
-use crate::model::{PluginManifest, PLUGIN_MANIFEST};
+use crate::model::{PluginManifest, PLUGIN_MANIFEST, PLUGIN_SCHEMA};
 
 /// A loaded plugin bundle: its manifest plus the root it was loaded from.
 #[derive(Debug, Clone)]
@@ -42,6 +42,27 @@ impl Bundle {
             .map_err(|e| Error::io(manifest_path.to_string(), e))?;
         let manifest = PluginManifest::parse(&src)
             .map_err(|e| Error::parse(PLUGIN_MANIFEST, anyhow::Error::new(e)))?;
+
+        let uses_composition = !manifest.requires.bundles.is_empty()
+            || manifest
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.contract)
+                .is_some();
+        match (&manifest.manifest, uses_composition) {
+            (Some(header), _) if header.schema != PLUGIN_SCHEMA => {
+                return Err(Error::config(format!(
+                    "manifest.schema '{}' is unsupported (expected '{PLUGIN_SCHEMA}')",
+                    header.schema
+                )));
+            }
+            (None, true) => {
+                return Err(Error::config(format!(
+                    "bundle composition fields need manifest.schema: {PLUGIN_SCHEMA}"
+                )));
+            }
+            _ => {}
+        }
 
         // Every filesystem path a manifest can name must stay inside the bundle.
         // Validate them once, here, so all downstream resolution (`plug_info`,
@@ -308,6 +329,32 @@ mod tests {
         .unwrap();
         let err = Bundle::load(&root).expect_err("escaping notices must be rejected");
         assert_eq!(err.code(), "INVALID_CONFIG");
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn bundle_dependencies_require_the_supported_manifest_schema() {
+        let root = write_bundle("resources/plugInfo.json");
+        let manifest_path = root.join(PLUGIN_MANIFEST);
+        let legacy = std::fs::read_to_string(manifest_path.as_std_path()).unwrap();
+        std::fs::write(
+            manifest_path.as_std_path(),
+            format!(
+                "{legacy}requires:\n  bundles:\n    - {{ id: schema, version: '>=1.0,<2.0' }}\n"
+            ),
+        )
+        .unwrap();
+        let err = Bundle::load(&root).expect_err("dependencies need a schema header");
+        assert_eq!(err.code(), "INVALID_CONFIG");
+
+        std::fs::write(
+            manifest_path.as_std_path(),
+            format!(
+                "manifest:\n  schema: {PLUGIN_SCHEMA}\n{legacy}requires:\n  bundles:\n    - {{ id: schema, version: '>=1.0,<2.0' }}\n"
+            ),
+        )
+        .unwrap();
+        assert!(Bundle::load(&root).is_ok());
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

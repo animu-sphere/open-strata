@@ -719,7 +719,7 @@ Orchestrate the verification pyramid (L0..L6) and write a report
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 | `--up-to <UP_TO>` | Highest verification level to run (0..=6). Default 5; 6 adds usdview |
 | `--with <WITH>` | Additional plugin bundle(s) to include in the session env |
-| `--workspace` | Discover and test every bundle in the workspace: immediate subdirectories and plugins/* holding an openstrata.plugin.yaml |
+| `--workspace` | Validate the dependency graph, then test every discovered bundle: immediate subdirectories and plugins/* with a plugin manifest |
 
 #### `ost plugin test-view`
 

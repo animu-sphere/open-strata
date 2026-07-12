@@ -13,6 +13,7 @@ drift in CI — do not edit them by hand.
 | [support-matrix.md](support-matrix.md) | generated (`support/platforms.toml`) | Per-feature, per-platform support levels. |
 | [json-output.md](json-output.md) | hand-written | The `--json` output contract: envelope, error codes, and compatibility policy. |
 | [artifact-policy.md](artifact-policy.md) | hand-written | Artifact trust levels, policy TOML schema, matching rules, and stable errors. |
+| [plugin-workspace.md](plugin-workspace.md) | hand-written | Bundle dependency declarations, schema contracts, graph validation, and stable issue codes. |
 
 To regenerate the generated pages, from the repository root:
 
