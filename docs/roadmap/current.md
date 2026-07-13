@@ -3,82 +3,60 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## Next milestone: v0.17.0 — renderer build truth and one-command Hydra inspection
+## Next milestone: v0.18.0 - DCC host integration
 
-**Status:** 🚧 active · **Depends on:** v0.16.0 renderer composition,
-runtime-session, evidence, and trusted-release contracts (shipped). The local
-implementation is underway; real hdMerlin/OpenUSD acceptance remains a release
-gate.
+**Status:** ⬜ not started · **Depends on:** v0.17.0 renderer build/session,
+runtime fingerprint, installed Hydra product, and evidence chain (shipped).
 
-The hdMerlin adoption pass proved the renderer ownership and report contracts,
-then exposed lifecycle seams around them. v0.17.0 makes build completion fail
-closed, makes external CMake failures bounded and diagnosable, and turns
-`ost renderer view` into the normal configure → build → install → usdview loop
-without inventing a second renderer build lifecycle. Explicit external build
-trees remain supported and are labeled as manual evidence.
+v0.18.0 extends OpenStrata beyond runtime-native OpenUSD applications without
+redistributing DCC SDKs or inventing one false cross-DCC API. Host integration
+must consume the renderer identity and evidence model established in v0.17.0
+rather than introduce a parallel DCC renderer contract.
 
-### P0 — atomic build completion and recoverable external tools
+### P0 - host records and read-only discovery
 
-- Replace build-directory existence as the generic `built` check with an atomic
-  completion record written only after configure, build, and output verification
-  succeed. Bind it to the target id, runtime digest, compiler fingerprint,
-  generator, source project, build directory, and effective build intent.
-- Invalidate the previous completion record before starting a new build; an
-  interrupted configure/compile, stale cache, or copied renderer report must not
-  pass `ost validate` as a completed OST build.
-- Report active child phase, elapsed time, PID, log path, and bounded output tail.
-  Add configurable configure/build timeouts, process-tree cancellation/cleanup,
-  and an explicit generator escape hatch while keeping Ninja the default.
-- Make dry-run and execution share one generated-file plan; the default build
-  must name tool-owned `CMakeUserPresets.json`, not root `CMakePresets.json`.
+- Add an `ost-host` model with a versioned host record: product, version,
+  install root, executable/API locations, Python ABI, platform fingerprint, and
+  discovery evidence.
+- Add `ost host discover|list|inspect` with deterministic Maya and Houdini
+  detectors first.
+- Discovery must not mutate a host installation or silently accept ambient PATH
+  guesses.
 
-### P0 — managed Hydra adapter view loop
+### P0 - headless compatibility probes
 
-- Make `ost renderer view [scene]` resolve a compatible pulled real OpenUSD
-  runtime, request the `hydra2` build intent through the common build service,
-  incrementally build a fingerprinted managed tree, stage its install tree, and
-  launch usdview with the installed renderer selected.
-- Define one project-facing CMake intent (for example
-  `OST_RENDERER_ADAPTERS=hydra2`) that generated and adopted renderers map to
-  their project-owned adapter option. Do not serialize a project's complete
-  target graph or private CMake policy into the renderer manifest.
-- Keep `--build-dir` as the opt-in external/prebuilt escape hatch. Validate and
-  label that tree without claiming `ost build` produced it, and retain explicit
-  `--profile`, `--config`, renderer, scene, and camera overrides.
-- Fingerprint the OpenUSD SDK/runtime relationship beyond optional `pxr_DIR`
-  cache entries so CMake discovery through `CMAKE_PREFIX_PATH`, imported targets,
-  or package registries cannot silently launch against a different runtime.
+- Add a host adapter boundary for launch/session composition, not a shared DCC
+  scene API.
+- Run a minimal headless plugin load/open/validate probe and preserve stdout,
+  stderr, exit status, host fingerprint, renderer/runtime/plugin digests, and
+  normalized evidence.
+- Treat unavailable licenses, display, or host capability as explained SKIP
+  rather than plugin/ABI failure.
 
-### P1 — honest renderer adoption and portable evidence
+### P1 - DCC support-matrix integration
 
-- Add a dry-run-first renderer adoption flow that writes the common project and
-  strict renderer manifests without overwriting project source/CMake files.
-  Record adopted/migrated provenance rather than generated scaffold provenance.
-- Allow validation against an explicit external build/evidence directory, or
-  import it only after schema, renderer identity, target identity, runtime, and
-  provenance checks pass.
-- Provide deterministic renderer-report merge semantics: duplicate assertion
-  ids require explicit replacement, FAIL cannot be silently downgraded, and
-  conflicting device/runtime identities are errors.
-- Preserve project-owned release version sources through an explicit version-file
-  or synchronization policy instead of requiring an unqualified second static
-  source of truth.
+- Extend explicit support cells with pinned host records/capabilities.
+- Define stable/nightly/release/legacy tiers and prove the first Maya/Houdini
+  hosted cells.
+- Feed trusted release candidates into host verification without weakening the
+  artifact publisher boundary.
 
-### P2 — bounded backlog closures
+Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md).
 
-- Generate `docs/reference/environment-variables.md` from one structured source
-  for supported `OST_*` inputs and generated session/CI variables; keep the
-  reference freshness check in the existing docs-generation CI gate.
-- Reuse `support/platforms.toml` to validate that generated hosted CI cells do
-  not exceed declared feature/platform support. Report omissions and unsupported
-  claims before workflow generation.
-- Publish a first-class portable-Linux runtime build guide, including a reference
-  container recipe, Python 3.13/venv and X/GL prerequisites, and the rule that the
-  build container's glibc must not exceed the oldest target runner.
+## v0.17 environment-dependent acceptance
 
-The DCC host milestone now follows as v0.18.0. It must consume the same renderer
-identity, installed Hydra product, runtime fingerprint, and renderer evidence
-chain established here rather than introduce a parallel DCC renderer contract.
+The lifecycle, managed-view, adoption, and renderer evidence contracts shipped
+in v0.17.0; these checks require hosted operating systems, real OpenUSD
+installations, or downstream renderer repositories:
+
+- Apply the managed `ost renderer view` loop to hdMerlin without changing its
+  ownership boundaries.
+- Prove renderer core-only, Vulkan, and Hydra paths across the hosted
+  OS/OpenUSD matrix.
+- Validate external/prebuilt `--build-dir` evidence with a real adopted renderer
+  project.
+- Exercise renderer report merge conflict policy against independently produced
+  CPU/GPU/runtime evidence.
 
 ## v0.16 environment-dependent acceptance
 

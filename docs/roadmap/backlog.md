@@ -8,33 +8,8 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.17.0 — renderer build truth and one-command Hydra
-inspection) is detailed in
+The next milestone (v0.18.0 - DCC host integration) is detailed in
 [current.md](current.md).
-
-- ⬜ **v0.18.0 — DCC host integration.** Depends on the fingerprinted renderer
-  build/session/evidence chain from v0.17.0. Extend support beyond runtime-native
-  OpenUSD applications without redistributing DCC SDKs or inventing one false
-  cross-DCC API.
-
-  - **P0 — host records and read-only discovery.** Add an `ost-host` model with a
-    versioned host record: product, version, install root, executable/API
-    locations, Python ABI, platform fingerprint, and discovery evidence. Add
-    `ost host discover|list|inspect` with deterministic Maya and Houdini
-    detectors first; discovery must not mutate a host installation or silently
-    accept ambient PATH guesses.
-  - **P0 — headless compatibility probes.** Add a host adapter boundary for
-    launch/session composition, not a shared DCC scene API. Run a minimal
-    headless plugin load/open/validate probe and preserve stdout, stderr, exit
-    status, host fingerprint, renderer/runtime/plugin digests, and normalized
-    evidence. Treat unavailable licenses, display, or host capability as
-    explained SKIP rather than plugin/ABI failure.
-  - **P1 — DCC support-matrix integration.** Extend explicit support cells with
-    pinned host records/capabilities, define stable/nightly/release/legacy tiers,
-    prove the first Maya/Houdini hosted cells, and feed trusted release candidates
-    into host verification without weakening the artifact publisher boundary.
-
-  Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md).
 
 - ⬜ **v1.0.0 (after v0.18.0).** Cut once the produce → trust → provenance →
   trusted-CI arc and the initial DCC host matrix are shipped and dogfooded — i.e.
