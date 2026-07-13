@@ -126,9 +126,20 @@ pub struct ArtifactRecord {
     /// `imported` artifact; a `published` one is required to carry at least one).
     #[serde(default)]
     pub licenses: Vec<String>,
-    /// Object-relative path of a generated SBOM, once SBOM generation lands.
+    /// Object-relative path of the attached SPDX SBOM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sbom: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sbom_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sbom_size: Option<u64>,
+    /// Object-relative path and content identity of SLSA/in-toto provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance_size: Option<u64>,
     /// Runtime the artifact was built/validated against (provenance link).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
@@ -259,6 +270,11 @@ impl ArtifactRecord {
             validation,
             licenses,
             sbom: None,
+            sbom_digest: None,
+            sbom_size: None,
+            provenance: None,
+            provenance_digest: None,
+            provenance_size: None,
             runtime_id,
             runtime_digest,
         })

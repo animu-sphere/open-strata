@@ -42,6 +42,57 @@ pub struct WorkspaceValidation {
     pub issues: Vec<WorkspaceIssue>,
 }
 
+impl WorkspaceValidation {
+    /// Return the selected bundle's transitive dependency closure in
+    /// deterministic build order (deepest dependencies first).
+    ///
+    /// The result excludes `bundle_id` itself. A closure is only meaningful for
+    /// a graph which passed validation; callers must not compose a graph with a
+    /// missing, duplicate, incompatible, or cyclic provider.
+    pub fn dependency_order(&self, bundle_id: &str) -> Option<Vec<String>> {
+        if !self.passed || !self.nodes.iter().any(|node| node.id == bundle_id) {
+            return None;
+        }
+
+        let mut adjacency: BTreeMap<&str, Vec<&str>> = self
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), Vec::new()))
+            .collect();
+        for edge in &self.edges {
+            adjacency
+                .entry(edge.from.as_str())
+                .or_default()
+                .push(edge.to.as_str());
+        }
+        for dependencies in adjacency.values_mut() {
+            dependencies.sort_unstable();
+            dependencies.dedup();
+        }
+
+        fn visit<'a>(
+            id: &'a str,
+            adjacency: &BTreeMap<&'a str, Vec<&'a str>>,
+            visited: &mut BTreeSet<&'a str>,
+            ordered: &mut Vec<String>,
+        ) {
+            if let Some(dependencies) = adjacency.get(id) {
+                for dependency in dependencies {
+                    if visited.insert(dependency) {
+                        visit(dependency, adjacency, visited, ordered);
+                        ordered.push((*dependency).to_string());
+                    }
+                }
+            }
+        }
+
+        let mut visited = BTreeSet::new();
+        let mut ordered = Vec::new();
+        visit(bundle_id, &adjacency, &mut visited, &mut ordered);
+        Some(ordered)
+    }
+}
+
 /// Validate bundle identity and dependency contracts without changing build
 /// order or invoking CMake. Input order does not affect the report.
 pub fn validate_workspace(bundles: &[Bundle]) -> WorkspaceValidation {
@@ -421,6 +472,41 @@ mod tests {
         assert!(report.passed, "{:?}", report.issues);
         assert_eq!(report.nodes[0].id, "format");
         assert_eq!(report.edges[0].to, "schema");
+    }
+
+    #[test]
+    fn dependency_order_is_transitive_stable_and_excludes_the_primary() {
+        let base = bundle(&manifest("base", "1.0.0", "usd-asset-resolver", ""));
+        let schema = bundle(&manifest(
+            "schema",
+            "1.0.0",
+            "usd-schema",
+            "schema:\n  contract: 1\n",
+        ));
+        let middle = bundle(&manifest(
+            "middle",
+            "1.0.0",
+            "usd-fileformat",
+            "requires:\n  bundles:\n    - { id: base, version: '>=1.0,<2.0' }\n    - { id: schema, version: '>=1.0,<2.0', contract: 1 }\n",
+        ));
+        let consumer = bundle(&manifest(
+            "consumer",
+            "1.0.0",
+            "usd-fileformat",
+            "requires:\n  bundles:\n    - { id: middle, version: '>=1.0,<2.0' }\n    - { id: schema, version: '>=1.0,<2.0', contract: 1 }\n",
+        ));
+
+        let report = validate_workspace(&[consumer, middle, schema, base]);
+        assert!(report.passed, "{:?}", report.issues);
+        assert_eq!(
+            report.dependency_order("consumer").unwrap(),
+            vec!["base", "schema", "middle"]
+        );
+        assert_eq!(
+            report.dependency_order("schema").unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(report.dependency_order("missing"), None);
     }
 
     #[test]

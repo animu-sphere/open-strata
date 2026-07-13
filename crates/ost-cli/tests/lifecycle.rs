@@ -735,7 +735,6 @@ fn workspace_test_discovers_and_tests_every_bundle() {
         let out = sb.ost(&args);
         assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
     }
-
     let v: serde_json::Value = serde_json::from_slice(
         &sb.ost(&["--json", "plugin", "test", "--workspace", "--up-to", "1"])
             .stdout,
@@ -799,6 +798,99 @@ fn workspace_test_rejects_an_invalid_dependency_graph_before_bundle_tests() {
     assert!(
         !sb.work_file("alpha/.strata/reports").exists(),
         "graph validation must run before bundle tests"
+    );
+}
+
+#[test]
+fn selected_and_workspace_tests_compose_manifest_dependencies_without_with() {
+    let sb = Sandbox::new("wsclosure");
+    init_and_pull(&sb);
+    for args in [
+        vec!["plugin", "new", "usd-schema", "schema"],
+        vec![
+            "plugin",
+            "new",
+            "usd-fileformat",
+            "consumer",
+            "--extension",
+            "toy",
+        ],
+    ] {
+        let out = sb.ost(&args);
+        assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+    }
+    let lib = sb.work_file(&format!(
+        "consumer/lib/{}ConsumerFileFormat{}",
+        "lib",
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+    std::fs::write(lib, b"test library marker").unwrap();
+
+    let path = sb.work_file("consumer/openstrata.plugin.yaml");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let source = source.replace(
+        "requires:\n  capabilities: [usd-stage-read]\n",
+        "requires:\n  capabilities: [usd-stage-read]\n  bundles:\n    - { id: schema, version: '>=0.1,<0.2', contract: 1 }\n",
+    );
+    std::fs::write(
+        &path,
+        format!("manifest:\n  schema: openstrata.plugin/v1alpha1\n{source}"),
+    )
+    .unwrap();
+
+    let build = sb.ost(&["plugin", "build", "consumer", "--dry-run"]);
+    assert!(build.status.success(), "{}", out_text(&build));
+    let plan = out_text(&build);
+    assert!(plan.contains("workspace-prefix"), "{plan}");
+    assert!(plan.contains("== build dependency schema =="), "{plan}");
+    assert!(plan.contains("cmake --install"), "{plan}");
+    assert!(plan.contains("-DCMAKE_INSTALL_PREFIX="), "{plan}");
+    assert!(
+        !plan.contains("add_subdirectory") && !plan.contains("OPENSTRATA_SCHEMA_SOURCES_FILE"),
+        "composition uses installed package discovery and plain bundles render no stale schema fragment: {plan}"
+    );
+
+    // No --with: the selected command finds the containing source workspace
+    // and injects the provider from requires.bundles.
+    let out = sb.ost(&["--json", "plugin", "doctor", "consumer"]);
+    assert!(out.status.success(), "{}", out_text(&out));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let plugin_paths = value["data"]["environment"]["vars"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["key"] == "PXR_PLUGINPATH_NAME")
+        .filter_map(|item| item["value"].as_str())
+        .collect::<Vec<_>>();
+    assert!(plugin_paths.iter().any(|path| path.contains("consumer")));
+    assert!(plugin_paths.iter().any(|path| path.contains("schema")));
+
+    // The whole-workspace path computes a distinct closure for each bundle and
+    // still needs no duplicated --with declaration.
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--up-to", "1"]);
+    assert!(out.status.success(), "{}", out_text(&out));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["data"]["graph"]["edges"][0]["from"], "consumer");
+    assert_eq!(value["data"]["graph"]["edges"][0]["to"], "schema");
+
+    // A broken sibling only matters to bundles that declare dependencies: the
+    // schema (empty closure) skips workspace discovery entirely, while the
+    // consumer legitimately fails closed on the unloadable workspace.
+    let broken = sb.work_file("broken/openstrata.plugin.yaml");
+    std::fs::create_dir_all(broken.parent().unwrap()).unwrap();
+    std::fs::write(&broken, "plugin: [not: a manifest").unwrap();
+    let out = sb.ost(&["--json", "plugin", "doctor", "schema"]);
+    assert!(
+        out.status.success(),
+        "a dependency-free bundle must ignore unrelated siblings:\n{}",
+        out_text(&out)
+    );
+    let out = sb.ost(&["--json", "plugin", "doctor", "consumer"]);
+    assert!(
+        !out.status.success(),
+        "a declared closure fails closed on an unloadable workspace:\n{}",
+        out_text(&out)
     );
 }
 

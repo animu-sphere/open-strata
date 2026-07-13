@@ -166,8 +166,8 @@ OCI manifest
   - layer: canonical artifact archive
   - layer: artifact manifest JSON
   - layer: validation report JSON (optional / required by artifact type)
-  - layer: provenance JSON (optional initially; required in release lane later)
-  - layer: SBOM JSON (future required for release lane)
+  - layer: SLSA/in-toto provenance JSONL (optional; required in release lane later)
+  - layer: SPDX SBOM JSON (optional; required in release lane later)
 ```
 
 ### Required metadata
@@ -532,8 +532,9 @@ Done when:
 Goal: support/release lanes only use verified, trustable artifacts.
 
 - Add trust levels to the manifest / CI contract.
-- Add publisher identity / provenance attach.
-- Introduce SBOM attach and the release policy.
+- ✅ Add publisher identity / provenance attach and verification.
+- ✅ Introduce SPDX SBOM attach and presence verification; release-lane policy
+  remains the next phase.
 - Introduce a trusted runtime allowlist for support lines.
 
 Done when:
@@ -633,7 +634,7 @@ implementation changes.
 
 ### P2
 
-1. provenance / SBOM attach
+1. ✅ provenance / SBOM attach
 2. trust allowlist
 3. registry mirroring / air-gapped sync
 4. multi-registry failover

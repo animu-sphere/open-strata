@@ -105,6 +105,12 @@ actual and required levels. JSON output adds `data.trust` and a `data.policy`
 object containing `path`, `minimum_trust`, `passed`, and any policy error code.
 A trust failure exits with validation status `5`.
 
+With `--require-provenance`, the same policy's `allowed_publishers` also gates
+the builder identity embedded in the SLSA/in-toto sidecar. This is distinct
+from the live OIDC identity used at push time: verification proves the recorded
+build, while protected publishing authorizes the current registry mutation.
+See [artifact-evidence.md](artifact-evidence.md).
+
 ## Stable errors
 
 | Code | Category | Meaning |

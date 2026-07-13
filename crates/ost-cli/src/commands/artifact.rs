@@ -23,7 +23,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
 
 use ost_artifact::{
-    ArtifactKind, ArtifactPolicy, ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport,
+    verify_evidence_digest, verify_provenance, verify_sbom, ArtifactKind, ArtifactPolicy,
+    ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport, EvidenceDigest,
     FileTransport, OciTransport, PublisherIdentity, PullEvidence, PullPolicy, PushOutcome,
     RemoteReference, TrustLevel, VerifyReport,
 };
@@ -57,6 +58,12 @@ pub enum ArtifactCmd {
         /// Enforce minimum trust from an artifact policy TOML file.
         #[arg(long, value_name = "FILE")]
         policy: Option<Utf8PathBuf>,
+        /// Fail unless a valid SPDX SBOM is attached to the artifact.
+        #[arg(long)]
+        require_sbom: bool,
+        /// Fail unless valid SLSA/in-toto provenance is attached.
+        #[arg(long)]
+        require_provenance: bool,
     },
     /// Export an artifact's files into a directory (CI handoff).
     Export {
@@ -136,7 +143,19 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
         ArtifactCmd::Import { path } => import(&store, &path, fmt),
         ArtifactCmd::List { kind } => list(&store, kind.as_deref(), fmt),
         ArtifactCmd::Show { digest } => show(&store, &digest, fmt),
-        ArtifactCmd::Verify { digest, policy } => verify(&store, &digest, policy.as_deref(), fmt),
+        ArtifactCmd::Verify {
+            digest,
+            policy,
+            require_sbom,
+            require_provenance,
+        } => verify(
+            &store,
+            &digest,
+            policy.as_deref(),
+            require_sbom,
+            require_provenance,
+            fmt,
+        ),
         ArtifactCmd::Export { digest, dest } => export(&store, &digest, &dest, fmt),
         ArtifactCmd::Extract { digest, dest, into } => {
             let dest = dest.or(into).ok_or_else(|| {
@@ -548,6 +567,12 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     if let (Some(id), Some(dg)) = (&r.runtime_id, &r.runtime_digest) {
         println!("  runtime:     {id} ({dg})");
     }
+    if let (Some(path), Some(digest)) = (&r.sbom, &r.sbom_digest) {
+        println!("  SBOM:        {path} ({digest})");
+    }
+    if let (Some(path), Some(digest)) = (&r.provenance, &r.provenance_digest) {
+        println!("  provenance:  {path} ({digest})");
+    }
     println!("  producer:    {}", r.producer);
     println!("  store:       {}", store.object_dir(r.digest_hex()));
     Ok(())
@@ -557,6 +582,8 @@ fn verify(
     store: &ArtifactStore,
     digest: &str,
     policy_path: Option<&camino::Utf8Path>,
+    require_sbom: bool,
+    require_provenance: bool,
     fmt: Format,
 ) -> Result<()> {
     let report = store.verify(digest)?;
@@ -566,7 +593,19 @@ fn verify(
         .as_ref()
         .and_then(|value| value.verify_trust(record.trust).err());
     let policy_passed = policy_error.is_none();
-    let passed = report.passed() && policy_passed;
+    let object_dir = store.object_dir(record.digest_hex());
+    let manifest = store.producer_manifest(&record)?;
+    let (sbom, provenance) = store.evidence(&record)?;
+    let sbom = verify_sbom_check(&object_dir, &record.digest, sbom, require_sbom);
+    let provenance = verify_provenance_check(
+        &object_dir,
+        &manifest,
+        &record.digest,
+        provenance,
+        require_provenance,
+        policy.as_ref(),
+    );
+    let passed = report.passed() && policy_passed && sbom.passed() && provenance.passed();
     if fmt.is_json() {
         output::report(
             passed,
@@ -586,6 +625,10 @@ fn verify(
                     "error_code": policy_error.as_ref().map(|e| e.code()),
                     "message": policy_error.as_ref().map(ToString::to_string),
                 })),
+                "evidence": {
+                    "sbom": sbom.json(),
+                    "provenance": provenance.json(),
+                },
             }),
         );
     } else {
@@ -594,6 +637,8 @@ fn verify(
             policy.as_ref(),
             record.trust,
             policy_error.as_ref(),
+            &sbom,
+            &provenance,
         );
     }
     // The report above is this command's single document (§14.3); a failed
@@ -604,13 +649,103 @@ fn verify(
     Ok(())
 }
 
+struct EvidenceCheck {
+    required: bool,
+    descriptor: Option<EvidenceDigest>,
+    matched_publisher: Option<String>,
+    error: Option<Error>,
+}
+
+impl EvidenceCheck {
+    fn passed(&self) -> bool {
+        self.error.is_none()
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "required": self.required,
+            "present": self.descriptor.is_some(),
+            "path": self.descriptor.as_ref().map(|value| value.path.as_str()),
+            "digest": self.descriptor.as_ref().map(|value| value.digest.as_str()),
+            "size": self.descriptor.as_ref().map(|value| value.size),
+            "matched_publisher": self.matched_publisher,
+            "passed": self.passed(),
+            "error_code": self.error.as_ref().map(|error| error.code()),
+            "message": self.error.as_ref().map(ToString::to_string),
+        })
+    }
+}
+
+fn verify_sbom_check(
+    object_dir: &Utf8Path,
+    artifact_digest: &str,
+    descriptor: Option<EvidenceDigest>,
+    required: bool,
+) -> EvidenceCheck {
+    let error = match descriptor.as_ref() {
+        Some(evidence) => verify_evidence_digest(object_dir, evidence)
+            .and_then(|()| verify_sbom(&object_dir.join(&evidence.path), artifact_digest))
+            .err(),
+        None if required => Some(Error::coded(
+            "ARTIFACT_SBOM_REQUIRED",
+            ost_core::Category::Validation,
+            "artifact has no attached SPDX SBOM",
+        )),
+        None => None,
+    };
+    EvidenceCheck {
+        required,
+        descriptor,
+        matched_publisher: None,
+        error,
+    }
+}
+
+fn verify_provenance_check(
+    object_dir: &Utf8Path,
+    manifest: &serde_json::Value,
+    artifact_digest: &str,
+    descriptor: Option<EvidenceDigest>,
+    required: bool,
+    policy: Option<&ArtifactPolicy>,
+) -> EvidenceCheck {
+    let result = match descriptor.as_ref() {
+        Some(evidence) => verify_evidence_digest(object_dir, evidence).and_then(|()| {
+            verify_provenance(
+                &object_dir.join(&evidence.path),
+                manifest,
+                artifact_digest,
+                policy.filter(|_| required),
+            )
+        }),
+        None if required => Err(Error::coded(
+            "ARTIFACT_PROVENANCE_REQUIRED",
+            ost_core::Category::Validation,
+            "artifact has no attached SLSA/in-toto provenance",
+        )),
+        None => Ok(None),
+    };
+    let (matched_publisher, error) = match result {
+        Ok(publisher) => (publisher, None),
+        Err(error) => (None, Some(error)),
+    };
+    EvidenceCheck {
+        required,
+        descriptor,
+        matched_publisher,
+        error,
+    }
+}
+
 fn render_verify(
     report: &VerifyReport,
     policy: Option<&ArtifactPolicy>,
     trust: ost_artifact::TrustLevel,
     policy_error: Option<&Error>,
+    sbom: &EvidenceCheck,
+    provenance: &EvidenceCheck,
 ) {
-    let passed = report.passed() && policy_error.is_none();
+    let passed = report.passed() && policy_error.is_none() && sbom.passed() && provenance.passed();
     println!("Verify {}", report.digest);
     println!(
         "  archive digest: {}",
@@ -643,7 +778,26 @@ fn render_verify(
             println!("  {}: {error}", error.code());
         }
     }
+    render_evidence("SBOM", sbom);
+    render_evidence("provenance", provenance);
     println!("  result: {}", if passed { "PASS" } else { "FAIL" });
+}
+
+fn render_evidence(label: &str, check: &EvidenceCheck) {
+    let status = if check.descriptor.is_none() && !check.required {
+        "not present"
+    } else if check.passed() {
+        "OK"
+    } else {
+        "FAIL"
+    };
+    println!("  {label}: {status}");
+    if let Some(error) = &check.error {
+        println!("  {}: {error}", error.code());
+    }
+    if let Some(publisher) = &check.matched_publisher {
+        println!("  provenance publisher: {publisher}");
+    }
 }
 
 fn export(store: &ArtifactStore, digest: &str, dest: &str, fmt: Format) -> Result<()> {

@@ -862,15 +862,33 @@ fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
         );
     }
     let expected = std::fs::read_to_string(golden.as_std_path()).unwrap_or_default();
-    if normalize(&out.stdout) == normalize(&expected) {
+    let actual = normalize(&out.stdout);
+    let expected = normalize(&expected);
+    if actual == expected {
         Diagnostic::pass(ID, 5, "flattened output matches the golden")
     } else {
-        Diagnostic::fail(
-            ID,
-            5,
-            "flattened output differs from the golden",
-            vec!["review the diff; update the golden if the change is intended".into()],
-        )
+        let crlf_only = normalize(&out.stdout.replace("\r\n", "\n"))
+            == normalize(&expected.replace("\r\n", "\n"));
+        let observed = if crlf_only {
+            format!(
+                "flattened output differs only by CRLF embedded in a USDA string value; {}",
+                bounded_diff(&expected, &actual)
+            )
+        } else {
+            format!(
+                "flattened output differs from the golden; {}",
+                bounded_diff(&expected, &actual)
+            )
+        };
+        let mut actions =
+            vec!["review the diff; update the golden if the change is intended".into()];
+        if crlf_only {
+            actions.push(
+                "pin USDA checkout line endings in .gitattributes (normally `*.usda text eol=lf`; use `-text` only when intentional CRLF must remain byte-stable); do not normalize semantic CRLF during comparison"
+                    .into(),
+            );
+        }
+        Diagnostic::fail(ID, 5, observed, actions)
     }
 }
 
@@ -928,9 +946,10 @@ fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> 
     }
 }
 
-/// Normalize USDA text for comparison: trim trailing whitespace per line,
-/// ignore leading/trailing blank lines and line-ending differences, and
-/// canonicalize host-specific content so a golden is portable across machines.
+/// Normalize USDA text for comparison: trim trailing whitespace and normalize
+/// physical line endings *outside string values*, ignore leading/trailing blank
+/// lines, and canonicalize host-specific content so a golden is portable across
+/// machines. Literal CRLF inside a USDA string is authored data and is retained.
 ///
 /// `usdcat --flatten` stamps the *absolute* root-layer path into the flattened
 /// stage's `doc` ("Generated from Composed Stage of root layer <path>"). That
@@ -939,21 +958,121 @@ fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> 
 /// that produced it. Collapse that line to a path-free form on both sides.
 fn normalize(s: &str) -> String {
     const FLATTEN_DOC: &str = "Generated from Composed Stage of root layer ";
-    s.replace("\r\n", "\n")
-        .lines()
-        .map(|l| {
-            let t = l.trim_end();
-            match t.find(FLATTEN_DOC) {
-                // Keep everything up to and including the marker (indentation and
-                // any opening `doc = """`); drop the host-specific path tail.
-                Some(i) => t[..i + FLATTEN_DOC.len()].to_string(),
-                None => t.to_string(),
+    let mut portable = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(index) = rest.find(FLATTEN_DOC) {
+        let keep = index + FLATTEN_DOC.len();
+        portable.push_str(&rest[..keep]);
+        rest = &rest[keep..];
+        let end = rest.find(['\r', '\n']).unwrap_or(rest.len());
+        // If the doc string closes on the same line as the path, keep the
+        // closing quotes: dropping them would leave the string-aware layout
+        // pass below inside an unterminated triple string for the rest of
+        // the document.
+        if rest[..end].trim_end().ends_with("\"\"\"") {
+            portable.push_str("\"\"\"");
+        }
+        rest = &rest[end..];
+    }
+    portable.push_str(rest);
+    normalize_usda_layout(&portable)
+}
+
+fn normalize_usda_layout(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    let mut in_string = false;
+    let mut in_triple = false;
+    let mut in_comment = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let triple_quote = index + 2 < bytes.len()
+            && bytes[index] == b'"'
+            && bytes[index + 1] == b'"'
+            && bytes[index + 2] == b'"';
+
+        if in_triple && triple_quote && !escaped {
+            out.extend_from_slice(b"\"\"\"");
+            in_triple = false;
+            index += 3;
+            continue;
+        }
+        if !in_string && !in_triple && !in_comment && triple_quote {
+            out.extend_from_slice(b"\"\"\"");
+            in_triple = true;
+            index += 3;
+            continue;
+        }
+        if !in_triple && !in_comment && byte == b'"' && !escaped {
+            in_string = !in_string;
+            out.push(byte);
+            index += 1;
+            continue;
+        }
+        if !in_string && !in_triple && byte == b'#' {
+            in_comment = true;
+        }
+
+        let newline = byte == b'\n' || (byte == b'\r' && bytes.get(index + 1) == Some(&b'\n'));
+        if newline {
+            if in_string || in_triple {
+                if byte == b'\r' {
+                    out.extend_from_slice(b"\r\n");
+                    index += 2;
+                } else {
+                    out.push(b'\n');
+                    index += 1;
+                }
+            } else {
+                while matches!(out.last(), Some(b' ' | b'\t')) {
+                    out.pop();
+                }
+                out.push(b'\n');
+                index += if byte == b'\r' { 2 } else { 1 };
+                in_comment = false;
             }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
+            escaped = false;
+            continue;
+        }
+
+        out.push(byte);
+        escaped = (in_string || in_triple) && byte == b'\\' && !escaped;
+        if byte != b'\\' {
+            escaped = false;
+        }
+        index += 1;
+    }
+    String::from_utf8(out)
+        .expect("normalization preserves UTF-8")
+        .trim_matches([' ', '\t', '\r', '\n'])
         .to_string()
+}
+
+/// A bounded, JSON-safe first-difference summary. Reports carry this in the
+/// diagnostic's `observed` field instead of embedding an unbounded golden.
+fn bounded_diff(expected: &str, actual: &str) -> String {
+    const LIMIT: usize = 180;
+    let expected_lines = expected.split('\n').collect::<Vec<_>>();
+    let actual_lines = actual.split('\n').collect::<Vec<_>>();
+    let line = (0..expected_lines.len().max(actual_lines.len()))
+        .find(|index| expected_lines.get(*index) != actual_lines.get(*index))
+        .unwrap_or(0);
+    let clip = |value: Option<&&str>| {
+        let value = value.copied().unwrap_or("<missing>");
+        let mut clipped = value.chars().take(LIMIT).collect::<String>();
+        if value.chars().count() > LIMIT {
+            clipped.push('…');
+        }
+        format!("{clipped:?}")
+    };
+    format!(
+        "first difference at line {}: expected {}, actual {}",
+        line + 1,
+        clip(expected_lines.get(line)),
+        clip(actual_lines.get(line))
+    )
 }
 
 /// The last non-empty line of tool stderr, for a compact failure summary.
@@ -1520,6 +1639,55 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         // The path is dropped, but the surrounding structure is preserved.
         assert!(normalize(on_windows).contains("Generated from Composed Stage of root layer"));
         assert!(!normalize(on_windows).contains("basic.toy"));
+    }
+
+    #[test]
+    fn normalize_keeps_layout_portable_after_a_single_line_flatten_doc() {
+        // A doc string that closes on the same line as the stamped path must
+        // not leave the layout pass inside an unterminated triple string —
+        // physical line endings after it would silently stop normalizing.
+        let lf = "#usda 1.0\n(\n    doc = \"\"\"Generated from Composed Stage of root layer C:\\dev\\x\\basic.toy\"\"\"\n)\ndef X \"Root\"\n{\n}\n";
+        let crlf = lf.replace('\n', "\r\n");
+        assert_eq!(normalize(lf), normalize(&crlf));
+        assert!(!normalize(lf).contains("basic.toy"));
+        assert!(normalize(lf).contains("\"\"\""));
+    }
+
+    #[test]
+    fn normalize_does_not_close_a_triple_string_on_an_escaped_quote() {
+        // `\"""` inside a triple string is an escaped quote followed by two
+        // literal quotes, not a terminator; the CRLF after it is still
+        // authored string data.
+        let text = "#usda 1.0\nx = \"\"\"a\\\"\"\"b\r\nc\"\"\"\n";
+        assert!(normalize(text).contains("b\r\nc"), "{:?}", normalize(text));
+    }
+
+    #[test]
+    fn normalize_preserves_semantic_crlf_inside_usda_strings() {
+        let lf_file = "#usda 1.0\n(\n)\ndef X \"Root\"\n{\n}\n";
+        let crlf_file = lf_file.replace('\n', "\r\n");
+        assert_eq!(
+            normalize(lf_file),
+            normalize(&crlf_file),
+            "physical file line endings outside strings are portable"
+        );
+
+        let authored_lf = "#usda 1.0\n(\n    customData = { string note = \"\"\"a\nb\"\"\" }\n)\n";
+        let authored_crlf =
+            "#usda 1.0\n(\n    customData = { string note = \"\"\"a\r\nb\"\"\" }\n)\n";
+        assert_ne!(
+            normalize(authored_lf),
+            normalize(authored_crlf),
+            "CRLF inside a multiline USDA string is authored data"
+        );
+        assert_eq!(
+            normalize(&authored_lf.replace("\r\n", "\n")),
+            normalize(&authored_crlf.replace("\r\n", "\n")),
+            "the mismatch is identifiable as CRLF-only for the actionable hint"
+        );
+        let diff = bounded_diff(&normalize(authored_lf), &normalize(authored_crlf));
+        assert!(diff.contains("first difference at line"), "{diff}");
+        assert!(diff.len() < 512, "bounded diff must stay report-sized");
     }
 
     #[test]

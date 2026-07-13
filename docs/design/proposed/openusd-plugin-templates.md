@@ -49,7 +49,7 @@ and a product aggregate may compose their artifacts for distribution.
 | --- | --- | --- |
 | Bundle, not repository, is the plugin identity boundary | adopt | One repository may contain several independently buildable and publishable bundles. Repository splitting remains an ownership/release decision. |
 | Extend `plugin-workspace` for multiple bundles | adopt | Build on the shipped `usd-plugin-workspace` scaffold and `ost plugin test --workspace`; do not introduce a second workspace product. |
-| Declare bundle-to-bundle dependencies in `openstrata.plugin.yaml` | adopt in stages | The versioned extension and read-only graph checks shipped in v0.14.0; real split evidence now qualifies deterministic source-workspace session/build composition as the next stage. Preserve standalone and packaged boundaries. |
+| Declare bundle-to-bundle dependencies in `openstrata.plugin.yaml` | adopt in stages | The versioned extension and read-only graph checks shipped in v0.14.0; v0.15 consumes that graph for deterministic source-workspace session/build composition. Preserve standalone and packaged boundaries. |
 | Keep schema, resolver, file format, and Exec in separate bundles | adopt as the composition default | Public/reusable contracts should be separate. Co-hosted schema remains supported for small or legacy bundles and is not silently split. |
 | Add a compiled-schema scaffold | adopt as a skeleton | Use the catalog id `usd-schema-cpp`; `usd-schema-compiled` describes the same candidate and must not become a competing id. |
 | One `usd-resolver-cpp` template selects asset or package resolver | modify | Keep `usd-asset-resolver-cpp` and `usd-package-resolver-cpp` separate because their interfaces, security tests, and promotion evidence differ. |
@@ -196,7 +196,7 @@ The shipped graph now permits ordering only from validated `requires.bundles`
 edges; those other inference sources remain forbidden.
 
 The graph contract has now landed and survived a real schema/file-format split.
-The next stage consumes that validated graph for source workspaces:
+v0.15 consumes that validated graph for source workspaces:
 
 - test/run/doctor sessions include the primary bundle's transitive dependency
   closure automatically; explicit `--with` remains additive for external or
@@ -703,10 +703,11 @@ path; existing generated source remains project-owned.
    manifest acceptance unexpectedly.
 3. ✅ Add read-only dependency graph validation: deterministic discovery, duplicate
    and missing ids, version/contract checks, forbidden directions, and cycles.
-4. ⏳ Compose validated source-workspace dependencies for build, doctor, test,
-   run, and generated source CI. The first real split proved graph/schema
-   contracts and explicit `--with`; completion removes consumer-owned sibling
-   bootstrap glue and restores the consumer's full hosted verification pyramid.
+4. 🚧 Compose validated source-workspace dependencies for build, doctor, test,
+   run, and generated source CI. The implementation resolves transitive
+   closures, installs dependency builds into a target-specific private prefix,
+   and keeps `--with` additive. The remaining acceptance item is the first real
+   split's full hosted verification pyramid without sibling bootstrap glue.
 5. ⏳ Extract self-contained shared CMake mechanics, test copied helpers, and prove
    standalone plus workspace-consumer builds before generating graph targets.
    The versioned copied helper and standalone/workspace configure evidence have
@@ -716,7 +717,7 @@ path; existing generated source remains project-owned.
    contract baseline, downstream consumer fixture, and clean-install tests. The
    embedded skeleton, `VERIFY` baseline, CMake export, and fixture have landed;
    automated clean-install and second-platform/OpenUSD-line evidence remain;
-   the MSVC consumer and repeated-`pxrConfig` defects are immediate fixes.
+   v0.15 fixes the MSVC `NOMINMAX` consumer and repeated-`pxrConfig` defects.
 7. Harden the `usd-asset-resolver-cpp` skeleton with identifier, cache,
    concurrency, cross-platform, and broader clean-install evidence.
 8. Define the product descriptor and aggregate report, then compose existing

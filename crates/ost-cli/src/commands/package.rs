@@ -140,7 +140,7 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
 
     // manifest.json
     let files_json: Vec<_> = packed.files.iter().map(|f| f.manifest_json()).collect();
-    let manifest = serde_json::json!({
+    let mut manifest = serde_json::json!({
         "schema": 1,
         "name": name,
         "version": version,
@@ -161,6 +161,7 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         },
         "files": files_json,
     });
+    let evidence = ost_artifact::generate_evidence(&dist_dir, &mut manifest)?;
     let manifest_path = dist_dir.join("manifest.json");
     write(&manifest_path, &pretty(&manifest)?)?;
 
@@ -169,10 +170,18 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         .archive_digest
         .strip_prefix("sha256:")
         .unwrap_or(&packed.archive_digest);
-    write(
-        &dist_dir.join("SHA256SUMS"),
-        &format!("{bare}  {archive_name}"),
-    )?;
+    let mut sums = vec![format!("{bare}  {archive_name}")];
+    sums.extend(evidence.iter().map(|layer| {
+        format!(
+            "{}  {}",
+            layer
+                .digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&layer.digest),
+            layer.path
+        )
+    }));
+    write(&dist_dir.join("SHA256SUMS"), &sums.join("\n"))?;
 
     report(
         &id,

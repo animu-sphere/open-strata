@@ -271,6 +271,25 @@ fn runner_profiles_and_lanes_render_source_and_support_workflows() {
     assert!(names.iter().any(|n| n.starts_with("Bootstrap ost 0.9.0")));
     assert!(names.iter().any(|n| n.contains("registry cache")));
     assert!(names.iter().any(|n| n.contains("remote reference")));
+    for step_name in [
+        "Build the plugin from source",
+        "Run the verification pyramid",
+    ] {
+        let run = steps
+            .iter()
+            .find(|step| step["name"] == step_name)
+            .and_then(|step| step["run"].as_str())
+            .expect("source-CI step has a command");
+        assert!(run.contains("${{ matrix.bundle }}"), "{run}");
+        assert!(
+            !run.contains("--with"),
+            "manifest closure is not duplicated: {run}"
+        );
+    }
+    assert!(
+        entries[0].get("with").is_none(),
+        "source cells have no dependency list"
+    );
     assert_eq!(doc["permissions"]["contents"], "read");
     let text = std::fs::read_to_string(&source).unwrap();
     assert!(!text.contains("plugin publish"));

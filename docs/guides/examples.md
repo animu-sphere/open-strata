@@ -271,7 +271,9 @@ Reports land under `<bundle>/.strata/reports/<plugin>/<UTC>/`
 [plugin-report schema](../../schemas/plugin-report.schema.json).
 Plugin package artifacts land under
 `<bundle>/dist/plugins/<name>/<version>/<target>/` with a `tar.zst`,
-`manifest.json`, and `SHA256SUMS`.
+`manifest.json`, `SHA256SUMS`, `sbom.spdx.json`, and—when complete build
+metadata is available—`provenance.intoto.jsonl`. See
+[artifact evidence](../reference/artifact-evidence.md).
 
 ### Golden USDA line endings
 

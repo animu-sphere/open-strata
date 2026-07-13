@@ -17,6 +17,7 @@
 //! The CLI stays thin: it resolves paths and the runtime, then calls into
 //! `ost-plugin` for the model, checks, execution levels, and report shapes.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -468,7 +469,9 @@ fn doctor(
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
-    let with_bundles = load_with_bundles(with_paths)?;
+    let dependencies = selected_workspace_dependencies(&bundle)?;
+    let explicit = load_with_bundles(with_paths)?;
+    let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     let host = Host::detect();
 
     // Resolve the runtime if we can (enclosing project or explicit flags). When
@@ -524,6 +527,114 @@ fn build(
     compiler_opts: CompilerOpts,
     fmt: Format,
 ) -> Result<()> {
+    let primary = load_bundle(bundle_path)?;
+    let Some(workspace) = source_workspace_for(&primary)? else {
+        return build_one(
+            bundle_path,
+            target,
+            profile,
+            dry_run,
+            ninja,
+            compiler_opts,
+            None,
+            false,
+            true,
+            fmt,
+        );
+    };
+    let dependencies = dependencies_from_workspace(&primary, &workspace)?;
+    if dependencies.is_empty() {
+        return build_one(
+            bundle_path,
+            target,
+            profile,
+            dry_run,
+            ninja,
+            compiler_opts,
+            None,
+            false,
+            true,
+            fmt,
+        );
+    }
+
+    let (platform, selected_profile) =
+        selection(target.clone(), profile.clone()).ok_or_else(|| {
+            Error::usage(
+                "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
+            )
+        })?;
+    let (tgt, _) = build_target(&platform, &selected_profile)?;
+    let prefix = workspace
+        .root
+        .join(STATE_DIR)
+        .join("targets")
+        .join(tgt.id())
+        .join("workspace-prefix");
+    if !dry_run {
+        if prefix.as_std_path().exists() {
+            std::fs::remove_dir_all(prefix.as_std_path())
+                .map_err(|e| Error::io(prefix.to_string(), e))?;
+        }
+        std::fs::create_dir_all(prefix.as_std_path())
+            .map_err(|e| Error::io(prefix.to_string(), e))?;
+    }
+
+    if !fmt.is_json() {
+        println!(
+            "Workspace composition: {} dependenc{} -> {}",
+            dependencies.len(),
+            if dependencies.len() == 1 { "y" } else { "ies" },
+            prefix
+        );
+    }
+    for dependency in &dependencies {
+        if !fmt.is_json() {
+            println!("\n== build dependency {} ==", dependency.manifest.name());
+        }
+        build_one(
+            dependency.root.as_str(),
+            target.clone(),
+            profile.clone(),
+            dry_run,
+            ninja.clone(),
+            compiler_opts.clone(),
+            Some(&prefix),
+            true,
+            false,
+            fmt,
+        )?;
+    }
+    if !fmt.is_json() {
+        println!("\n== build primary {} ==", primary.manifest.name());
+    }
+    build_one(
+        primary.root.as_str(),
+        target,
+        profile,
+        dry_run,
+        ninja,
+        compiler_opts,
+        Some(&prefix),
+        false,
+        true,
+        fmt,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_one(
+    bundle_path: &str,
+    target: Option<String>,
+    profile: Option<String>,
+    dry_run: bool,
+    ninja: Option<String>,
+    compiler_opts: CompilerOpts,
+    workspace_prefix: Option<&Utf8Path>,
+    install_to_workspace: bool,
+    emit_result: bool,
+    fmt: Format,
+) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
 
     // A build needs a concrete runtime to compile against.
@@ -552,14 +663,16 @@ fn build(
     // the runtime prefix, unchanged from before.
     let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &tgt.python_version);
     crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
-    std::fs::write(
-        toolchain.as_std_path(),
-        format!(
-            "{}\n",
-            ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref())
-        ),
-    )
-    .map_err(|e| Error::io(toolchain.to_string(), e))?;
+    let mut toolchain_text =
+        ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref());
+    if let Some(prefix) = workspace_prefix {
+        toolchain_text.push_str(&format!(
+            "\n# Source-workspace dependency install prefix.\nlist(PREPEND CMAKE_PREFIX_PATH \"{}\")\n",
+            cmake_path(prefix)
+        ));
+    }
+    std::fs::write(toolchain.as_std_path(), format!("{toolchain_text}\n"))
+        .map_err(|e| Error::io(toolchain.to_string(), e))?;
 
     let build_dir = target_build_dir(&bundle.root, &id);
     let cmake = tools::which("cmake");
@@ -580,11 +693,30 @@ fn build(
         // ships/adopts are Release, so default the build type to match.
         "-DCMAKE_BUILD_TYPE=Release".to_string(),
     ];
+    // Only a dependency being installed into the workspace prefix configures
+    // with it; the primary consumes the prefix (via CMAKE_PREFIX_PATH in the
+    // toolchain) but keeps its own install destination untouched.
+    let install_prefix = workspace_prefix.filter(|_| install_to_workspace);
+    if let Some(prefix) = install_prefix {
+        configure_args.push(format!("-DCMAKE_INSTALL_PREFIX={}", cmake_path(prefix)));
+    }
     let schema_sources_file = target_dir.join("schema-sources.cmake");
-    configure_args.push(format!(
-        "-DOPENSTRATA_SCHEMA_SOURCES_FILE={}",
-        cmake_path(&schema_sources_file)
-    ));
+    let cohosts_schema = bundle.manifest.kind() != PluginKind::UsdSchema
+        && !bundle.manifest.schema_provides().is_empty();
+    if cohosts_schema {
+        configure_args.push(format!(
+            "-DOPENSTRATA_SCHEMA_SOURCES_FILE={}",
+            cmake_path(&schema_sources_file)
+        ));
+    } else if !dry_run {
+        // A bundle may have changed shape since the last configure. Remove both
+        // the generated fragment and sources so a stale CMake cache cannot keep
+        // compiling a schema the manifest no longer owns/co-hosts.
+        clear_cohosted_schema_compile_state(
+            &schema_sources_dir(&target_dir),
+            &schema_sources_file,
+        )?;
+    }
     if let Some(n) = &ninja {
         configure_args.push(format!(
             "-DCMAKE_MAKE_PROGRAM={}",
@@ -595,6 +727,16 @@ fn build(
         "--build".to_string(),
         build_dir.to_string().replace('\\', "/"),
     ];
+    let install_args = install_prefix.map(|prefix| {
+        vec![
+            "--install".to_string(),
+            build_dir.to_string().replace('\\', "/"),
+            "--prefix".to_string(),
+            cmake_path(prefix),
+            "--config".to_string(),
+            "Release".to_string(),
+        ]
+    });
 
     if dry_run {
         println!("# dry run — would generate {toolchain} then:");
@@ -603,6 +745,9 @@ fn build(
         }
         println!("cmake {}", configure_args.join(" "));
         println!("cmake {}", build_args.join(" "));
+        if let Some(args) = &install_args {
+            println!("cmake {}", args.join(" "));
+        }
         return Ok(());
     }
 
@@ -642,8 +787,7 @@ fn build(
     // runtime *session* env (`PXR_PLUGINPATH_NAME`, `PYTHONPATH`, the USD bin on
     // the loader path) — not just the MSVC delta a compile needs. Compose both for
     // a schema or schema-co-hosting build; a plain file-format build is unchanged.
-    let is_schema_build = bundle.manifest.kind() == PluginKind::UsdSchema
-        || !bundle.manifest.schema_provides().is_empty();
+    let is_schema_build = bundle.manifest.kind() == PluginKind::UsdSchema || cohosts_schema;
     let build_env = if is_schema_build {
         let session = session_env_with(&r.env, &bundle, &[], tgt.os());
         compose_build_env(&msvc_env, &session)
@@ -664,9 +808,7 @@ fn build(
     // sources can be included in the same plugin library. The plugInfo merge is
     // delayed until after configure because the template regenerates
     // plugInfo.json from plugInfo.json.in during configure.
-    let cohosted_schema = if bundle.manifest.kind() != PluginKind::UsdSchema
-        && !bundle.manifest.schema_provides().is_empty()
-    {
+    let cohosted_schema = if cohosts_schema {
         prepare_cohosted_schema(
             &bundle,
             &r.artifact_prefix,
@@ -678,15 +820,14 @@ fn build(
         )
         .map_err(|e| in_phase(PHASE_SCHEMA_GENERATE, e))?
     } else {
-        clear_cohosted_schema_compile_state(
-            &schema_sources_dir(&target_dir),
-            &schema_sources_file,
-        )?;
         None
     };
 
     run_step(PHASE_CONFIGURE, &cmake, &configure_args, &build_env)?;
     run_step(PHASE_COMPILE_LINK, &cmake, &build_args, &build_env)?;
+    if let Some(args) = &install_args {
+        run_step("workspace-install", &cmake, args, &build_env)?;
+    }
 
     if let Some(schema) = &cohosted_schema {
         merge_cohosted_schema_resources(&bundle, schema)
@@ -708,6 +849,10 @@ fn build(
         let _ = std::fs::write(record.as_std_path(), json);
     }
 
+    if !emit_result {
+        return Ok(());
+    }
+
     // plugInfo.json is shipped in the bundle (staged at scaffold time); confirm it.
     let plug_info = bundle.plug_info();
     if fmt.is_json() {
@@ -718,6 +863,7 @@ fn build(
             "build_dir": build_dir.to_string(),
             "lib_dir": bundle.lib_dir().to_string(),
             "plug_info": plug_info.to_string(),
+            "workspace_prefix": workspace_prefix.map(ToString::to_string),
         }));
         return Ok(());
     }
@@ -911,6 +1057,7 @@ fn package(
     if let Some(debug_json) = &debug_json {
         manifest["debug"] = debug_json.clone();
     }
+    let evidence = ost_artifact::generate_evidence(&dist_dir, &mut manifest)?;
     write_text(&dist_dir.join("manifest.json"), &pretty_json(&manifest)?)?;
 
     // One SHA256SUMS line per shipped archive (main, then any sibling `*-debug`),
@@ -921,6 +1068,9 @@ fn package(
     )];
     if let Some((debug_name, dp)) = &debug_pack {
         sha_lines.push(format!("{}  {debug_name}", bare_sha256(&dp.archive_digest)));
+    }
+    for layer in &evidence {
+        sha_lines.push(format!("{}  {}", bare_sha256(&layer.digest), layer.path));
     }
     write_text(&dist_dir.join("SHA256SUMS"), &sha_lines.join("\n"))?;
 
@@ -1144,7 +1294,13 @@ fn run_session(
     _fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
-    let with_bundles = load_with_bundles(with_paths)?;
+    let dependencies = if no_inject {
+        Vec::new()
+    } else {
+        selected_workspace_dependencies(&bundle)?
+    };
+    let explicit = load_with_bundles(with_paths)?;
+    let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     // An external installed/extracted tree is itself a bundle (same layout +
     // openstrata.plugin.yaml), so it composes through the same bundle_vars.
     let plugin_path_bundles = load_with_bundles(plugin_paths)?;
@@ -1286,7 +1442,9 @@ fn test(
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
-    let with_bundles = load_with_bundles(with_paths)?;
+    let dependencies = selected_workspace_dependencies(&bundle)?;
+    let explicit = load_with_bundles(with_paths)?;
+    let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     let host = Host::detect();
     let resolved = resolve_runtime(target, profile)?;
 
@@ -1511,16 +1669,34 @@ fn test_workspace(
         );
     }
 
-    let with_bundles = load_with_bundles(with_paths)?;
+    let explicit_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
     // One resolution for the whole workspace: every bundle tests against the
     // same runtime session base.
     let resolved = resolve_runtime(target, profile)?;
 
+    let by_id: BTreeMap<String, Bundle> = bundles
+        .iter()
+        .cloned()
+        .map(|bundle| (bundle.manifest.name().to_string(), bundle))
+        .collect();
     let mut results: Vec<(Bundle, DoctorReport, Utf8PathBuf)> = Vec::new();
     for (root, bundle) in roots.iter().zip(bundles) {
+        let dependencies = graph
+            .dependency_order(bundle.manifest.name())
+            .expect("the workspace graph passed and contains every loaded bundle")
+            .into_iter()
+            .map(|id| {
+                by_id.get(&id).cloned().ok_or_else(|| {
+                    Error::validation(format!(
+                        "validated workspace provider '{id}' could not be loaded"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let composed = merge_composed_bundles(&bundle, dependencies, explicit_bundles.clone())?;
         let (report, report_dir) =
-            test_bundle(&bundle, &with_bundles, resolved.as_ref(), &host, up_to)?;
+            test_bundle(&bundle, &composed, resolved.as_ref(), &host, up_to)?;
         if !fmt.is_json() {
             println!("== {} ({root}) ==", bundle.manifest.plugin.name);
             print_report(&bundle, &report);
@@ -1589,6 +1765,164 @@ fn discover_workspace_bundles(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
     scan(&root.join("plugins"), &mut found)?;
     found.sort();
     Ok(found)
+}
+
+#[derive(Debug)]
+struct SourceWorkspace {
+    root: Utf8PathBuf,
+    bundles: BTreeMap<String, Bundle>,
+    graph: ost_plugin::WorkspaceValidation,
+}
+
+/// Identify the conventional workspace containing `primary`. A bundle directly
+/// below `<root>/` belongs to `<root>`; one below `<root>/plugins/` belongs to
+/// `<root>`. Requiring at least two discovered bundles prevents an extracted
+/// standalone package from being mistaken for a source composition.
+///
+/// A primary with no `requires.bundles` has an empty closure by definition, so
+/// discovery is skipped entirely: unrelated sibling bundles (a broken
+/// manifest, a stale backup copy) must not fail a command that needs nothing
+/// from them.
+fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
+    if primary.manifest.requires.bundles.is_empty() {
+        return Ok(None);
+    }
+    let parent = match primary.root.parent() {
+        Some(parent) => parent,
+        None => return Ok(None),
+    };
+    let root = if parent.file_name() == Some("plugins") {
+        match parent.parent() {
+            Some(root) => root,
+            None => return Ok(None),
+        }
+    } else {
+        parent
+    };
+    let roots = discover_workspace_bundles(root)?;
+    if roots.len() < 2 {
+        return Ok(None);
+    }
+    let loaded = roots
+        .iter()
+        .map(|path| Bundle::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    if !loaded.iter().any(|bundle| bundle.root == primary.root) {
+        return Ok(None);
+    }
+
+    let graph = ost_plugin::validate_workspace(&loaded);
+    if !graph.passed {
+        let details = graph
+            .issues
+            .iter()
+            .take(8)
+            .map(|issue| format!("[{}] {}", issue.code, issue.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(Error::coded(
+            "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+            Category::Validation,
+            format!(
+                "workspace dependency graph at '{root}' is invalid: {details}"
+            ),
+        )
+        .with_hint("run `ost plugin test --workspace --up-to 1` from the workspace root for the complete graph report"));
+    }
+    let bundles = loaded
+        .into_iter()
+        .map(|bundle| (bundle.manifest.name().to_string(), bundle))
+        .collect();
+    Ok(Some(SourceWorkspace {
+        root: root.to_owned(),
+        bundles,
+        graph,
+    }))
+}
+
+fn dependencies_from_workspace(
+    primary: &Bundle,
+    workspace: &SourceWorkspace,
+) -> Result<Vec<Bundle>> {
+    let order = workspace
+        .graph
+        .dependency_order(primary.manifest.name())
+        .ok_or_else(|| {
+            Error::coded(
+                "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+                Category::Validation,
+                format!(
+                    "bundle '{}' is absent from the validated workspace graph at '{}'",
+                    primary.manifest.name(),
+                    workspace.root
+                ),
+            )
+        })?;
+    order
+        .into_iter()
+        .map(|id| {
+            workspace.bundles.get(&id).cloned().ok_or_else(|| {
+                Error::coded(
+                    "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+                    Category::Validation,
+                    format!("validated workspace provider '{id}' could not be loaded"),
+                )
+            })
+        })
+        .collect()
+}
+
+fn selected_workspace_dependencies(primary: &Bundle) -> Result<Vec<Bundle>> {
+    match source_workspace_for(primary)? {
+        Some(workspace) => dependencies_from_workspace(primary, &workspace),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Merge graph-resolved dependencies with explicit `--with` bundles. Identity
+/// is never selected by path order: an exact identity/version/kind/contract
+/// duplicate is harmless and deduplicated; any disagreement is a hard error.
+fn merge_composed_bundles(
+    primary: &Bundle,
+    resolved: Vec<Bundle>,
+    explicit: Vec<Bundle>,
+) -> Result<Vec<Bundle>> {
+    type Signature = (String, PluginKind, Option<u64>);
+    let signature = |bundle: &Bundle| -> Signature {
+        (
+            bundle.manifest.plugin.version.clone(),
+            bundle.manifest.kind(),
+            bundle
+                .manifest
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.contract),
+        )
+    };
+    let mut seen = BTreeMap::new();
+    seen.insert(primary.manifest.name().to_string(), signature(primary));
+    let mut merged = Vec::new();
+    for bundle in resolved.into_iter().chain(explicit) {
+        let id = bundle.manifest.name().to_string();
+        let actual = signature(&bundle);
+        if let Some(expected) = seen.get(&id) {
+            if expected == &actual {
+                continue;
+            }
+            return Err(Error::coded(
+                "WORKSPACE_DUPLICATE_BUNDLE_ID",
+                Category::Validation,
+                format!(
+                    "bundle id '{id}' resolves to conflicting identities: {:?} and {:?}",
+                    expected, actual
+                ),
+            )
+            .with_hint("remove the duplicate --with entry or make its version, kind, and schema contract agree with the workspace provider"));
+        }
+        seen.insert(id, actual);
+        merged.push(bundle);
+    }
+    Ok(merged)
 }
 
 /// `ost plugin view` — open a fixture in usdview inside the runtime session.

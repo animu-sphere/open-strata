@@ -2,14 +2,10 @@
 
 `ost plugin test --workspace` discovers bundle manifests in immediate child
 directories and `plugins/*`, sorts them by path, validates their dependency
-graph, and only then resolves a runtime or runs per-bundle verification. Graph
-validation is read-only and does not control CMake build order.
-
-That last sentence describes the released v0.14.0 behavior. The planned
-v0.15.0 source-workspace composition contract is specified below; until it
-lands, use `--with <bundle>` for a consumer's runtime session and normal
-installed-package discovery or repository-owned build glue for its CMake
-dependency.
+graph, and only then resolves a runtime or runs per-bundle verification. In the
+v0.15.0 source-workspace contract, the validated graph also supplies each
+bundle's transitive runtime/test closure and deterministic dependency build
+order.
 
 ## Versioned manifest extension
 
@@ -60,17 +56,13 @@ type, property, or token surface increments it and requires authored-data
 migration notes. Consumers of a versioned schema contract must select it
 explicitly.
 
-In v0.14.0 the proposed `requires.libraries` class is not validated: unknown
-keys under `requires` are ignored rather than rejected, so a `libraries` block
-has no effect. This is a known fail-open gap, not an extension mechanism.
-
-The v0.15.0 strictness target is recursive unknown-field rejection below
-`requires:` for manifests that opt into `openstrata.plugin/v1alpha1`.
-`requires.libraries` remains reserved and must be rejected until library
+Versioned manifests recursively reject unknown keys below `requires:`.
+`requires.libraries` is reserved and rejected explicitly until library
 identity, version selection, ABI, CMake package discovery, and artifact/prefix
 ownership have a separate portable contract. Workspace validation must not
 infer it from CMake target names or mistake an externally installed dependency
-for a missing workspace-owned package.
+for a missing workspace-owned package. Legacy manifests retain their previous
+permissive parsing for compatibility.
 
 ## Dependency directions
 
@@ -80,13 +72,13 @@ for a missing workspace-owned package.
 - A file-format bundle may consume schema and resolver bundles.
 - Every cycle, including a self-cycle, is invalid.
 
-These checks preserve standalone bundle ownership. They do not synthesize
-`add_subdirectory` order or link targets.
+These checks preserve standalone bundle ownership. Composition does not
+synthesize `add_subdirectory` links or link targets.
 
-## Planned v0.15.0 source-workspace composition
+## Source-workspace composition
 
-After graph validation succeeds, source-workspace commands will consume the
-same graph rather than asking each caller to restate it:
+After graph validation succeeds, source-workspace commands consume the same
+graph rather than asking each caller to restate it:
 
 - `plugin test --workspace` composes each primary bundle with its transitive
   dependency closure before running L2 and above;
@@ -99,6 +91,17 @@ same graph rather than asking each caller to restate it:
   do not gain a second, manually maintained `with:` list;
 - explicit `--with` remains additive for external or ad-hoc bundles and keeps
   its existing caller-defined ordering.
+
+A selected primary bundle that declares no `requires.bundles` has an empty
+closure and skips workspace discovery entirely: unrelated sibling bundles (a
+broken manifest, a stale copy) cannot fail its commands. Once a bundle declares
+dependencies, an unloadable or invalid workspace graph fails closed.
+
+Dependency builds install, deepest dependency first, into
+`.strata/targets/<target-id>/workspace-prefix`. OpenStrata prepends that private
+prefix to `CMAKE_PREFIX_PATH`, so consumers use normal installed CMake package
+discovery. The prefix is target-specific and rebuilt for a composed build; it
+is not part of a bundle's installed interface.
 
 The primary bundle keeps priority in the plugin and loader search paths;
 resolved dependencies follow in a stable order, then the runtime. Duplicate

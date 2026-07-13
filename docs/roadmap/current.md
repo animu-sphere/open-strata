@@ -5,8 +5,8 @@ The next milestone and active carry-over work. Shipped detail is in
 
 ## Next milestone: v0.15.0 — workspace composition + provenance / SBOM bundle
 
-**Status:** not started · **Depends on:** v0.14.0 trust policy foundation
-(shipped).
+**Status:** implementation complete; downstream hosted acceptance and release
+preparation pending · **Depends on:** v0.14.0 trust policy foundation (shipped).
 
 The v0.14.0 workspace graph and schema-contract model held through the first
 real bundle split, but the run also exposed the missing second half of that
@@ -64,6 +64,25 @@ build metadata.
 
 **Tracks:** licensing per-artifact SBOM, Phase 6 content attribution, and the
 future-policy provenance requirements for trusted release lanes.
+
+### Implementation checkpoint (2026-07-13)
+
+- Source commands resolve the validated transitive bundle closure. Builds use a
+  deterministic dependency order and a target-specific private install prefix;
+  selected and workspace tests exercise composition without a duplicated
+  `--with` list.
+- Versioned `requires` parsing is fail-closed, including an explicit reserved
+  error for `requires.libraries`. The schema CMake consumer, L5 USDA string/CRLF
+  comparison, and stale co-hosted-schema state are hardened with regressions.
+- Plugin, project-package, and runtime producers generate SPDX SBOM evidence;
+  complete build metadata additionally emits SLSA/in-toto provenance. Store,
+  import/export, pull, OCI push/fetch, checksum, human output, and JSON output
+  preserve and verify both sidecars. Required-evidence flags enforce artifact
+  subject, manifest source, and allowed-builder bindings.
+- Local Rust unit and CLI integration suites cover the new contracts. The
+  release acceptance item still requiring external infrastructure is the real
+  schema/file-format split on generated hosted source CI (plus any live-registry
+  round-trip chosen for release evidence).
 
 ## Just shipped: v0.14.0 — artifact trust policy foundation
 

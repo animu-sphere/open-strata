@@ -123,6 +123,12 @@ set_target_properties(${PLUGIN_NAME} PROPERTIES EXPORT_NAME Schema)
 
 target_compile_features(${PLUGIN_NAME} PUBLIC cxx_std_17)
 target_compile_definitions(${PLUGIN_NAME} PRIVATE {{NAME}}_EXPORTS)
+if(MSVC)
+    # OpenUSD headers include Windows headers through arch. Export NOMINMAX to
+    # installed consumers too, otherwise std::min/std::max in generated schema
+    # headers are macro-expanded by <windows.h>.
+    target_compile_definitions(${PLUGIN_NAME} PUBLIC NOMINMAX)
+endif()
 target_include_directories(${PLUGIN_NAME}
     PUBLIC
         "$<BUILD_INTERFACE:${_schema_cpp}>"

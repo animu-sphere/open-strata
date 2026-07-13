@@ -10,6 +10,8 @@
 //!     record.json                 # the registry's identity record
 //!     manifest.json               # the producer manifest, byte-for-byte
 //!     <name>-<version>-<target>.tar.zst
+//!     sbom.spdx.json              # optional SPDX evidence sidecar
+//!     provenance.intoto.jsonl     # optional SLSA/in-toto evidence sidecar
 //!     SHA256SUMS
 //! ```
 //!
@@ -27,6 +29,9 @@ use serde::{Deserialize, Serialize};
 use ost_core::paths::Store;
 use ost_core::{digest, fs::write_atomic, Category, Error, Result};
 
+use crate::evidence::{
+    record_evidence, verify_provenance, verify_sbom, EvidenceDigest, PROVENANCE_FILE, SBOM_FILE,
+};
 use crate::record::{
     manifest_debug_archive, manifest_files, ArtifactRecord, ArtifactSource, DebugArchive,
     MANIFEST_FILE, RECORD_FILE, RECORD_SCHEMA,
@@ -116,6 +121,30 @@ impl ArtifactStore {
             .map_err(|e| Error::parse(path.to_string(), anyhow::Error::new(e)))
     }
 
+    /// Evidence descriptors recorded with an artifact, in SBOM/provenance
+    /// order. Old records with no evidence remain valid.
+    pub fn evidence(
+        &self,
+        record: &ArtifactRecord,
+    ) -> Result<(Option<EvidenceDigest>, Option<EvidenceDigest>)> {
+        Ok((
+            record_evidence(
+                record.sbom.as_deref(),
+                record.sbom_digest.as_deref(),
+                record.sbom_size,
+                "SBOM",
+                SBOM_FILE,
+            )?,
+            record_evidence(
+                record.provenance.as_deref(),
+                record.provenance_digest.as_deref(),
+                record.provenance_size,
+                "provenance",
+                PROVENANCE_FILE,
+            )?,
+        ))
+    }
+
     /// Import the producer output at `path` (a dist directory containing
     /// `manifest.json`, or the `manifest.json` itself) into the store.
     ///
@@ -134,8 +163,28 @@ impl ArtifactStore {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let producer = format!("ost {}", env!("CARGO_PKG_VERSION"));
-        let record = ArtifactRecord::from_producer_manifest(&manifest, source, created, &producer)?;
+        let mut record =
+            ArtifactRecord::from_producer_manifest(&manifest, source, created, &producer)?;
         let debug = manifest_debug_archive(&manifest)?;
+        let sbom = evidence_in_dist(&dist_dir, SBOM_FILE)?;
+        if let Some(evidence) = &sbom {
+            verify_sbom(&dist_dir.join(SBOM_FILE), &record.digest)?;
+            record.sbom = Some(evidence.path.clone());
+            record.sbom_digest = Some(evidence.digest.clone());
+            record.sbom_size = Some(evidence.size);
+        }
+        let provenance = evidence_in_dist(&dist_dir, PROVENANCE_FILE)?;
+        if let Some(evidence) = &provenance {
+            verify_provenance(
+                &dist_dir.join(PROVENANCE_FILE),
+                &manifest,
+                &record.digest,
+                None,
+            )?;
+            record.provenance = Some(evidence.path.clone());
+            record.provenance_digest = Some(evidence.digest.clone());
+            record.provenance_size = Some(evidence.size);
+        }
 
         // Re-hash the archive: the manifest's digest is a claim, the bytes are
         // the truth. Import refuses to register bytes it cannot vouch for.
@@ -178,7 +227,7 @@ impl ArtifactStore {
             // record (its provenance reflects the first entry). If this exact
             // producer manifest was imported by a pre-sidecar-aware version,
             // repair the promised debug archive and checksum file in place.
-            let existing = self.read_record(&object_dir)?;
+            let mut existing = self.read_record(&object_dir)?;
             let stored_manifest_path = object_dir.join(MANIFEST_FILE);
             let stored_manifest = std::fs::read(stored_manifest_path.as_std_path())
                 .map_err(|e| Error::io(stored_manifest_path.to_string(), e))?;
@@ -201,6 +250,45 @@ impl ArtifactStore {
                     write_atomic(
                         object_dir.join("SHA256SUMS").as_std_path(),
                         checksum_contents(&existing, Some(debug)).as_bytes(),
+                    )?;
+                }
+                for evidence in [&sbom, &provenance].into_iter().flatten() {
+                    let destination = object_dir.join(&evidence.path);
+                    if !destination.as_std_path().is_file() {
+                        let source = dist_dir.join(&evidence.path);
+                        let temp = object_dir.join(format!(
+                            ".tmp-evidence-{}-{}",
+                            std::process::id(),
+                            evidence.path
+                        ));
+                        std::fs::copy(source.as_std_path(), temp.as_std_path())
+                            .map_err(|error| Error::io(source.to_string(), error))?;
+                        std::fs::rename(temp.as_std_path(), destination.as_std_path())
+                            .map_err(|error| Error::io(destination.to_string(), error))?;
+                    }
+                    crate::evidence::verify_evidence_digest(&object_dir, evidence)?;
+                }
+                if sbom.is_some() || provenance.is_some() {
+                    if sbom.is_some() {
+                        existing.sbom = record.sbom.clone();
+                        existing.sbom_digest = record.sbom_digest.clone();
+                        existing.sbom_size = record.sbom_size;
+                    }
+                    if provenance.is_some() {
+                        existing.provenance = record.provenance.clone();
+                        existing.provenance_digest = record.provenance_digest.clone();
+                        existing.provenance_size = record.provenance_size;
+                    }
+                    let record_json = serde_json::to_string_pretty(&existing).map_err(|error| {
+                        Error::parse("artifact record", anyhow::Error::new(error))
+                    })?;
+                    write_atomic(
+                        object_dir.join(RECORD_FILE).as_std_path(),
+                        format!("{record_json}\n").as_bytes(),
+                    )?;
+                    write_atomic(
+                        object_dir.join("SHA256SUMS").as_std_path(),
+                        checksum_contents(&existing, debug.as_ref()).as_bytes(),
                     )?;
                 }
             }
@@ -241,6 +329,14 @@ impl ArtifactStore {
                     staging.join(&debug.archive).as_std_path(),
                 )
                 .map_err(|e| Error::io(debug_src.to_string(), e))?;
+            }
+            for evidence in [&sbom, &provenance].into_iter().flatten() {
+                let source = dist_dir.join(&evidence.path);
+                std::fs::copy(
+                    source.as_std_path(),
+                    staging.join(&evidence.path).as_std_path(),
+                )
+                .map_err(|error| Error::io(source.to_string(), error))?;
             }
             write_atomic(
                 staging.join("SHA256SUMS").as_std_path(),
@@ -327,6 +423,7 @@ impl ArtifactStore {
         let object_dir = self.object_dir(record.digest_hex());
         let manifest = self.producer_manifest(&record)?;
         let debug = manifest_debug_archive(&manifest)?;
+        let (sbom, provenance) = self.evidence(&record)?;
 
         std::fs::create_dir_all(dest.as_std_path()).map_err(|e| Error::io(dest.to_string(), e))?;
 
@@ -334,6 +431,12 @@ impl ArtifactStore {
         let mut names = vec![record.archive.as_str()];
         if let Some(debug) = &debug {
             names.push(debug.archive.as_str());
+        }
+        if let Some(sbom) = &sbom {
+            names.push(sbom.path.as_str());
+        }
+        if let Some(provenance) = &provenance {
+            names.push(provenance.path.as_str());
         }
         names.extend([MANIFEST_FILE, "SHA256SUMS", RECORD_FILE]);
         for name in names {
@@ -369,6 +472,9 @@ impl ArtifactStore {
         }
         if let Some(debug) = &debug {
             verify_archive_claim(dest, debug)?;
+        }
+        for evidence in [&sbom, &provenance].into_iter().flatten() {
+            crate::evidence::verify_evidence_digest(dest, evidence)?;
         }
 
         Ok((record, written))
@@ -478,6 +584,21 @@ impl ArtifactStore {
     }
 }
 
+fn evidence_in_dist(dist: &Utf8Path, name: &str) -> Result<Option<EvidenceDigest>> {
+    let path = dist.join(name);
+    if !path.as_std_path().exists() {
+        return Ok(None);
+    }
+    if !path.as_std_path().is_file() {
+        return Err(Error::coded(
+            "ARTIFACT_EVIDENCE_INVALID",
+            Category::Validation,
+            format!("evidence path '{path}' is not a regular file"),
+        ));
+    }
+    EvidenceDigest::from_file(&path, name).map(Some)
+}
+
 /// Re-hash one optional archive against the producer-manifest claim before it
 /// enters or leaves the store.
 pub(crate) fn verify_archive_claim(dist_dir: &Utf8Path, archive: &DebugArchive) -> Result<()> {
@@ -510,6 +631,18 @@ fn checksum_contents(record: &ArtifactRecord, debug: Option<&DebugArchive>) -> S
                 .strip_prefix("sha256:")
                 .unwrap_or(&debug.digest),
             debug.archive
+        ));
+    }
+    if let (Some(path), Some(digest)) = (&record.sbom, &record.sbom_digest) {
+        sums.push_str(&format!(
+            "{}  {path}\n",
+            digest.strip_prefix("sha256:").unwrap_or(digest)
+        ));
+    }
+    if let (Some(path), Some(digest)) = (&record.provenance, &record.provenance_digest) {
+        sums.push_str(&format!(
+            "{}  {path}\n",
+            digest.strip_prefix("sha256:").unwrap_or(digest)
         ));
     }
     sums
@@ -992,6 +1125,31 @@ mod tests {
         archive_name.to_string()
     }
 
+    fn add_evidence(dist: &Utf8Path) {
+        let manifest_path = dist.join(MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest_path.as_std_path()).unwrap()).unwrap();
+        manifest["build"] = serde_json::json!({
+            "source": { "repository": "owner/repo", "revision": "deadbeef" },
+            "builder": {
+                "id": "https://github.com/owner/repo/.github/workflows/release.yml@refs/tags/v1",
+                "identity": {
+                    "repository": "owner/repo",
+                    "workflow_path": ".github/workflows/release.yml",
+                    "git_ref": "refs/tags/v1",
+                    "actor": "release-bot",
+                    "event": "push"
+                }
+            }
+        });
+        crate::generate_evidence(dist, &mut manifest).unwrap();
+        std::fs::write(
+            manifest_path.as_std_path(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
     fn tmp_root(tag: &str) -> Utf8PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1237,6 +1395,65 @@ mod tests {
             .join(&debug_name)
             .as_std_path()
             .is_file());
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn evidence_sidecars_import_export_and_reimport_with_the_artifact() {
+        let root = tmp_root("evidence-roundtrip");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+        add_evidence(&dist);
+
+        let out = store.import(&dist, ArtifactSource::Published).unwrap();
+        assert_eq!(out.record.sbom.as_deref(), Some(SBOM_FILE));
+        assert_eq!(out.record.provenance.as_deref(), Some(PROVENANCE_FILE));
+        let object = store.object_dir(out.record.digest_hex());
+        let (sbom, provenance) = store.evidence(&out.record).unwrap();
+        crate::verify_evidence_digest(&object, sbom.as_ref().unwrap()).unwrap();
+        crate::verify_evidence_digest(&object, provenance.as_ref().unwrap()).unwrap();
+        let sums = std::fs::read_to_string(object.join("SHA256SUMS").as_std_path()).unwrap();
+        assert_eq!(sums.lines().count(), 3);
+
+        let dest = root.join("handoff");
+        let (_, written) = store.export(&out.record.digest, &dest).unwrap();
+        assert_eq!(written.len(), 6);
+        assert!(dest.join(SBOM_FILE).as_std_path().is_file());
+        assert!(dest.join(PROVENANCE_FILE).as_std_path().is_file());
+
+        let store2 = ArtifactStore::at(root.join("store2"));
+        let imported = store2.import(&dest, ArtifactSource::Imported).unwrap();
+        assert_eq!(imported.record.sbom_digest, out.record.sbom_digest);
+        assert_eq!(
+            imported.record.provenance_digest,
+            out.record.provenance_digest
+        );
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn import_rejects_an_sbom_that_does_not_bind_the_archive() {
+        let root = tmp_root("evidence-tamper");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+        add_evidence(&dist);
+        let sbom_path = dist.join(SBOM_FILE);
+        let mut sbom: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(sbom_path.as_std_path()).unwrap()).unwrap();
+        sbom["packages"][0]["checksums"][0]["checksumValue"] = "00".repeat(32).into();
+        std::fs::write(
+            sbom_path.as_std_path(),
+            serde_json::to_string_pretty(&sbom).unwrap(),
+        )
+        .unwrap();
+
+        let error = store
+            .import(&dist, ArtifactSource::Imported)
+            .expect_err("an unrelated SBOM must be refused");
+        assert_eq!(error.code(), "ARTIFACT_SBOM_SUBJECT_MISMATCH");
+        assert!(store.list().unwrap().is_empty());
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
