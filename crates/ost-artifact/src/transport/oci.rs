@@ -33,7 +33,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use ost_core::{digest, Category, Error, Result};
 
-use crate::evidence::{EvidenceDigest, PROVENANCE_FILE, SBOM_FILE};
+use crate::evidence::{record_evidence, PROVENANCE_FILE, SBOM_FILE};
 use crate::record::{is_sha256_ref, manifest_debug_archive, MANIFEST_FILE};
 use crate::reference::{OciReference, RemoteReference};
 use crate::transport::{ArtifactTransport, ResolvedRemote};
@@ -1013,35 +1013,6 @@ impl ArtifactTransport for OciTransport {
             already_present,
             auth_mode: self.auth_mode.borrow().to_string(),
         })
-    }
-}
-
-fn record_evidence(
-    path: Option<&str>,
-    digest: Option<&str>,
-    size: Option<u64>,
-    label: &str,
-    expected_path: &str,
-) -> Result<Option<EvidenceDigest>> {
-    match (path, digest, size) {
-        (None, None, None) => Ok(None),
-        (Some(path), Some(digest), Some(size)) if path == expected_path => {
-            Ok(Some(EvidenceDigest {
-                path: path.to_string(),
-                digest: digest.to_string(),
-                size,
-            }))
-        }
-        (Some(path), Some(_), Some(_)) => Err(Error::coded(
-            "ARTIFACT_EVIDENCE_INVALID",
-            Category::Validation,
-            format!("artifact record {label} path must be '{expected_path}', got '{path}'"),
-        )),
-        _ => Err(Error::coded(
-            "ARTIFACT_EVIDENCE_INVALID",
-            Category::Validation,
-            format!("artifact record has incomplete {label} path/digest/size metadata"),
-        )),
     }
 }
 

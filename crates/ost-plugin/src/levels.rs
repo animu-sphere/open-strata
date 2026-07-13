@@ -965,6 +965,13 @@ fn normalize(s: &str) -> String {
         portable.push_str(&rest[..keep]);
         rest = &rest[keep..];
         let end = rest.find(['\r', '\n']).unwrap_or(rest.len());
+        // If the doc string closes on the same line as the path, keep the
+        // closing quotes: dropping them would leave the string-aware layout
+        // pass below inside an unterminated triple string for the rest of
+        // the document.
+        if rest[..end].trim_end().ends_with("\"\"\"") {
+            portable.push_str("\"\"\"");
+        }
         rest = &rest[end..];
     }
     portable.push_str(rest);
@@ -986,7 +993,7 @@ fn normalize_usda_layout(source: &str) -> String {
             && bytes[index + 1] == b'"'
             && bytes[index + 2] == b'"';
 
-        if in_triple && triple_quote {
+        if in_triple && triple_quote && !escaped {
             out.extend_from_slice(b"\"\"\"");
             in_triple = false;
             index += 3;
@@ -1632,6 +1639,27 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         // The path is dropped, but the surrounding structure is preserved.
         assert!(normalize(on_windows).contains("Generated from Composed Stage of root layer"));
         assert!(!normalize(on_windows).contains("basic.toy"));
+    }
+
+    #[test]
+    fn normalize_keeps_layout_portable_after_a_single_line_flatten_doc() {
+        // A doc string that closes on the same line as the stamped path must
+        // not leave the layout pass inside an unterminated triple string —
+        // physical line endings after it would silently stop normalizing.
+        let lf = "#usda 1.0\n(\n    doc = \"\"\"Generated from Composed Stage of root layer C:\\dev\\x\\basic.toy\"\"\"\n)\ndef X \"Root\"\n{\n}\n";
+        let crlf = lf.replace('\n', "\r\n");
+        assert_eq!(normalize(lf), normalize(&crlf));
+        assert!(!normalize(lf).contains("basic.toy"));
+        assert!(normalize(lf).contains("\"\"\""));
+    }
+
+    #[test]
+    fn normalize_does_not_close_a_triple_string_on_an_escaped_quote() {
+        // `\"""` inside a triple string is an escaped quote followed by two
+        // literal quotes, not a terminator; the CRLF after it is still
+        // authored string data.
+        let text = "#usda 1.0\nx = \"\"\"a\\\"\"\"b\r\nc\"\"\"\n";
+        assert!(normalize(text).contains("b\r\nc"), "{:?}", normalize(text));
     }
 
     #[test]

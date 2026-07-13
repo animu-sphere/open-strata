@@ -26,7 +26,8 @@ GitHub Actions packaging records build metadata only when all of
 `GITHUB_REPOSITORY`, `GITHUB_SHA`, `GITHUB_WORKFLOW_REF`, `GITHUB_REF`,
 `GITHUB_ACTOR`, and `GITHUB_EVENT_NAME` are present and non-empty. A partial
 environment does not produce provenance. Other producers may supply the same
-`build.source` and `build.builder` manifest shape explicitly.
+`build.source` and `build.builder` manifest shape explicitly; explicit build
+metadata always wins and is never replaced by the ambient CI environment.
 
 ## Verification
 

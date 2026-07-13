@@ -693,7 +693,11 @@ fn build_one(
         // ships/adopts are Release, so default the build type to match.
         "-DCMAKE_BUILD_TYPE=Release".to_string(),
     ];
-    if let Some(prefix) = workspace_prefix {
+    // Only a dependency being installed into the workspace prefix configures
+    // with it; the primary consumes the prefix (via CMAKE_PREFIX_PATH in the
+    // toolchain) but keeps its own install destination untouched.
+    let install_prefix = workspace_prefix.filter(|_| install_to_workspace);
+    if let Some(prefix) = install_prefix {
         configure_args.push(format!("-DCMAKE_INSTALL_PREFIX={}", cmake_path(prefix)));
     }
     let schema_sources_file = target_dir.join("schema-sources.cmake");
@@ -723,14 +727,16 @@ fn build_one(
         "--build".to_string(),
         build_dir.to_string().replace('\\', "/"),
     ];
-    let install_args = vec![
-        "--install".to_string(),
-        build_dir.to_string().replace('\\', "/"),
-        "--prefix".to_string(),
-        workspace_prefix.map(cmake_path).unwrap_or_default(),
-        "--config".to_string(),
-        "Release".to_string(),
-    ];
+    let install_args = install_prefix.map(|prefix| {
+        vec![
+            "--install".to_string(),
+            build_dir.to_string().replace('\\', "/"),
+            "--prefix".to_string(),
+            cmake_path(prefix),
+            "--config".to_string(),
+            "Release".to_string(),
+        ]
+    });
 
     if dry_run {
         println!("# dry run — would generate {toolchain} then:");
@@ -739,8 +745,8 @@ fn build_one(
         }
         println!("cmake {}", configure_args.join(" "));
         println!("cmake {}", build_args.join(" "));
-        if install_to_workspace {
-            println!("cmake {}", install_args.join(" "));
+        if let Some(args) = &install_args {
+            println!("cmake {}", args.join(" "));
         }
         return Ok(());
     }
@@ -819,8 +825,8 @@ fn build_one(
 
     run_step(PHASE_CONFIGURE, &cmake, &configure_args, &build_env)?;
     run_step(PHASE_COMPILE_LINK, &cmake, &build_args, &build_env)?;
-    if install_to_workspace {
-        run_step("workspace-install", &cmake, &install_args, &build_env)?;
+    if let Some(args) = &install_args {
+        run_step("workspace-install", &cmake, args, &build_env)?;
     }
 
     if let Some(schema) = &cohosted_schema {
@@ -1772,7 +1778,15 @@ struct SourceWorkspace {
 /// below `<root>/` belongs to `<root>`; one below `<root>/plugins/` belongs to
 /// `<root>`. Requiring at least two discovered bundles prevents an extracted
 /// standalone package from being mistaken for a source composition.
+///
+/// A primary with no `requires.bundles` has an empty closure by definition, so
+/// discovery is skipped entirely: unrelated sibling bundles (a broken
+/// manifest, a stale backup copy) must not fail a command that needs nothing
+/// from them.
 fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
+    if primary.manifest.requires.bundles.is_empty() {
+        return Ok(None);
+    }
     let parent = match primary.root.parent() {
         Some(parent) => parent,
         None => return Ok(None),

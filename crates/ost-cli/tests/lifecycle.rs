@@ -873,6 +873,25 @@ fn selected_and_workspace_tests_compose_manifest_dependencies_without_with() {
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(value["data"]["graph"]["edges"][0]["from"], "consumer");
     assert_eq!(value["data"]["graph"]["edges"][0]["to"], "schema");
+
+    // A broken sibling only matters to bundles that declare dependencies: the
+    // schema (empty closure) skips workspace discovery entirely, while the
+    // consumer legitimately fails closed on the unloadable workspace.
+    let broken = sb.work_file("broken/openstrata.plugin.yaml");
+    std::fs::create_dir_all(broken.parent().unwrap()).unwrap();
+    std::fs::write(&broken, "plugin: [not: a manifest").unwrap();
+    let out = sb.ost(&["--json", "plugin", "doctor", "schema"]);
+    assert!(
+        out.status.success(),
+        "a dependency-free bundle must ignore unrelated siblings:\n{}",
+        out_text(&out)
+    );
+    let out = sb.ost(&["--json", "plugin", "doctor", "consumer"]);
+    assert!(
+        !out.status.success(),
+        "a declared closure fails closed on an unloadable workspace:\n{}",
+        out_text(&out)
+    );
 }
 
 /// Inside a generated CI job the `OST_CI_*` variables travel into every

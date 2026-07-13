@@ -29,7 +29,9 @@ use serde::{Deserialize, Serialize};
 use ost_core::paths::Store;
 use ost_core::{digest, fs::write_atomic, Category, Error, Result};
 
-use crate::evidence::{verify_provenance, verify_sbom, EvidenceDigest, PROVENANCE_FILE, SBOM_FILE};
+use crate::evidence::{
+    record_evidence, verify_provenance, verify_sbom, EvidenceDigest, PROVENANCE_FILE, SBOM_FILE,
+};
 use crate::record::{
     manifest_debug_archive, manifest_files, ArtifactRecord, ArtifactSource, DebugArchive,
     MANIFEST_FILE, RECORD_FILE, RECORD_SCHEMA,
@@ -595,35 +597,6 @@ fn evidence_in_dist(dist: &Utf8Path, name: &str) -> Result<Option<EvidenceDigest
         ));
     }
     EvidenceDigest::from_file(&path, name).map(Some)
-}
-
-fn record_evidence(
-    path: Option<&str>,
-    digest: Option<&str>,
-    size: Option<u64>,
-    label: &str,
-    expected_path: &str,
-) -> Result<Option<EvidenceDigest>> {
-    match (path, digest, size) {
-        (None, None, None) => Ok(None),
-        (Some(path), Some(digest), Some(size)) if path == expected_path => {
-            Ok(Some(EvidenceDigest {
-                path: path.to_string(),
-                digest: digest.to_string(),
-                size,
-            }))
-        }
-        (Some(path), Some(_), Some(_)) => Err(Error::coded(
-            "ARTIFACT_EVIDENCE_INVALID",
-            Category::Validation,
-            format!("artifact record {label} path must be '{expected_path}', got '{path}'"),
-        )),
-        _ => Err(Error::coded(
-            "ARTIFACT_EVIDENCE_INVALID",
-            Category::Validation,
-            format!("artifact record has incomplete {label} path/digest/size metadata"),
-        )),
-    }
 }
 
 /// Re-hash one optional archive against the producer-manifest claim before it

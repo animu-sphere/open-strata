@@ -92,6 +92,11 @@ graph rather than asking each caller to restate it:
 - explicit `--with` remains additive for external or ad-hoc bundles and keeps
   its existing caller-defined ordering.
 
+A selected primary bundle that declares no `requires.bundles` has an empty
+closure and skips workspace discovery entirely: unrelated sibling bundles (a
+broken manifest, a stale copy) cannot fail its commands. Once a bundle declares
+dependencies, an unloadable or invalid workspace graph fails closed.
+
 Dependency builds install, deepest dependency first, into
 `.strata/targets/<target-id>/workspace-prefix`. OpenStrata prepends that private
 prefix to `CMAKE_PREFIX_PATH`, so consumers use normal installed CMake package

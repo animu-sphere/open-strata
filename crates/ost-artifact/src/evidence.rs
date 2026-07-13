@@ -78,8 +78,13 @@ pub fn generate_evidence(
     manifest: &mut serde_json::Value,
 ) -> Result<Vec<EvidenceDigest>> {
     std::fs::create_dir_all(dist.as_std_path()).map_err(|e| Error::io(dist.to_string(), e))?;
-    if let Some(build) = github_build_metadata() {
-        manifest["build"] = build;
+    // Explicit build metadata wins: a producer that already recorded its
+    // source/builder must not have it silently replaced by whatever CI
+    // environment this process happens to run inside.
+    if manifest.get("build").is_none() {
+        if let Some(build) = github_build_metadata() {
+            manifest["build"] = build;
+        }
     }
 
     let sbom = spdx_document(manifest)?;
@@ -244,6 +249,38 @@ fn write_json(path: &Utf8Path, value: &serde_json::Value) -> Result<()> {
         .map_err(|source| Error::parse(path.to_string(), anyhow::Error::new(source)))?;
     std::fs::write(path.as_std_path(), format!("{json}\n"))
         .map_err(|source| Error::io(path.to_string(), source))
+}
+
+/// Reconstruct an evidence descriptor from an artifact record's optional
+/// path/digest/size triple. All three fields must be present together and the
+/// path must be the fixed sidecar name; anything else fails closed.
+pub(crate) fn record_evidence(
+    path: Option<&str>,
+    digest: Option<&str>,
+    size: Option<u64>,
+    label: &str,
+    expected_path: &str,
+) -> Result<Option<EvidenceDigest>> {
+    match (path, digest, size) {
+        (None, None, None) => Ok(None),
+        (Some(path), Some(digest), Some(size)) if path == expected_path => {
+            Ok(Some(EvidenceDigest {
+                path: path.to_string(),
+                digest: digest.to_string(),
+                size,
+            }))
+        }
+        (Some(path), Some(_), Some(_)) => Err(Error::coded(
+            "ARTIFACT_EVIDENCE_INVALID",
+            Category::Validation,
+            format!("artifact record {label} path must be '{expected_path}', got '{path}'"),
+        )),
+        _ => Err(Error::coded(
+            "ARTIFACT_EVIDENCE_INVALID",
+            Category::Validation,
+            format!("artifact record has incomplete {label} path/digest/size metadata"),
+        )),
+    }
 }
 
 pub fn verify_evidence_digest(root: &Utf8Path, evidence: &EvidenceDigest) -> Result<()> {
