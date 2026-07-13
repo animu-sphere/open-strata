@@ -49,14 +49,10 @@ The lifecycle, managed-view, adoption, and renderer evidence contracts shipped
 in v0.17.0; these checks require hosted operating systems, real OpenUSD
 installations, or downstream renderer repositories:
 
-- Apply the managed `ost renderer view` loop to hdMerlin without changing its
-  ownership boundaries.
-- Prove renderer core-only, Vulkan, and Hydra paths across the hosted
-  OS/OpenUSD matrix.
-- Validate external/prebuilt `--build-dir` evidence with a real adopted renderer
-  project.
-- Exercise renderer report merge conflict policy against independently produced
-  CPU/GPU/runtime evidence.
+- Repeat renderer core-only, Vulkan, and Hydra acceptance across the remaining
+  hosted OS/OpenUSD matrix. The Windows cy2026 cell, managed hdMerlin view,
+  external build validation, and report merge policy are recorded in the
+  [v0.17.0 acceptance report](../reports/2026-07-14-v0.17.0-managed-renderer-view-hydra-merlin.md).
 
 ## v0.16 environment-dependent acceptance
 
@@ -89,3 +85,7 @@ real OpenUSD installations, downstream repositories, or live registry identity:
 - **Generated-CI maintenance ergonomics.** Add `ost ci pin bootstrap --version
   <V>` and a reusable bootstrap/runtime-pull fragment derived from the same
   matrix pins.
+- **Renderer host evidence capture.** Define how project-owned discovery,
+  delegate, render-buffer, and host-smoke results become mergeable canonical
+  renderer evidence. A successful process launch or downstream CTest run must
+  not silently turn explained host `SKIP` checks into `PASS`.
