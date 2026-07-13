@@ -713,7 +713,7 @@ mod tests {
         std::fs::create_dir_all(fake.parent().unwrap().as_std_path()).unwrap();
         std::fs::write(
             fake.as_std_path(),
-            b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"-c\" ]; then printf '3.10\\n'; exit 0; fi\nexit 1\n",
+            b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'Python 3.10.0\\n'; exit 0; fi\nif [ \"$1\" = \"-c\" ]; then printf '3.10\\n'; exit 0; fi\nexit 1\n",
         )
         .unwrap();
         let mut perms = std::fs::metadata(fake.as_std_path()).unwrap().permissions();
