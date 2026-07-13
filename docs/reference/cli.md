@@ -32,6 +32,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost platform`](#ost-platform) — Inspect VFX Reference Platform calendar-year definitions
 - [`ost plugin`](#ost-plugin) — Scaffold, inspect, build, and diagnose OpenUSD plugin bundles
 - [`ost presets`](#ost-presets) — Manage OpenStrata's CMake preset includes in CMakePresets.json
+- [`ost renderer`](#ost-renderer) — Inspect renderer projects in host applications
 - [`ost runtime`](#ost-runtime) — Pull, list, and inspect runtimes in the local store
 - [`ost uv`](#ost-uv) — Run `uv` pinned to the project's runtime Python
 - [`ost validate`](#ost-validate) — Validate a built/packaged target
@@ -812,6 +813,39 @@ Remove OpenStrata-managed includes from the project CMakePresets.json
 | --- | --- |
 | `--backup` | Back up CMakePresets.json to CMakePresets.json.bak before writing |
 | `--dry-run` | Show the planned changes without writing |
+
+### `ost renderer`
+
+Inspect renderer projects in host applications
+
+**Usage:** `ost renderer <COMMAND>`
+
+**Subcommands:**
+
+- [`ost renderer view`](#ost-renderer-view) — Open a scene in usdview with the built Hydra renderer selected
+
+#### `ost renderer view`
+
+Open a scene in usdview with the built Hydra renderer selected
+
+**Usage:** `ost renderer view [OPTIONS] [<SCENE>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<SCENE>` | no | USD scene to open. Defaults to the installed usdview smoke scene |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--build-dir <BUILD_DIR>` | Hydra-enabled CMake build tree, relative to the project root |
+| `--camera <CAMERA>` | Camera prim passed to usdview |
+| `--config <CONFIG>` | CMake configuration to install and inspect |
+| `--profile <PROFILE>` | Runtime profile. Defaults to `lookdev` for Hydra/usdview capability |
+| `--renderer <RENDERER>` | Override the renderer display name read from installed plugInfo.json |
+| `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 
 ### `ost runtime`
 

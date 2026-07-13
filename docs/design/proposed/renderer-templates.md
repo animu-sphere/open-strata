@@ -37,9 +37,17 @@ ost init --template renderer --name sample-renderer
 ```
 
 Backend and adapter selection may become explicit flags after the committed
-renderer manifest is defined. A separate `ost renderer` command is not justified
-until renderer projects need a lifecycle distinct from `ost init`, `ost build`,
-`ost package`, and `ost validate`.
+renderer manifest is defined. Renderer projects do not need a distinct build or
+package lifecycle. They do need one narrow host-session bridge:
+
+```text
+ost renderer view [scene] [--build-dir out-hydra]
+```
+
+This mirrors `ost plugin view`: it installs an already-built Hydra adapter,
+derives discovery and display-name metadata from the install tree, composes the
+matching real OpenUSD runtime session, and launches usdview. It does not turn a
+co-built adapter into a bundle or duplicate `ost build`.
 
 ### 2026-07-13 dogfood and application decision
 
@@ -356,6 +364,9 @@ promotion or broader support claims.
   color/depth/id RenderBuffer, and install-tree usdview first-frame/stable-update
   evidence. A successful host test merges those facts into the renderer report;
   absent OpenUSD, testusdview, Python, GPU, or display capability stays SKIP.
+- ✅ Add `ost renderer view` as an install-tree developer loop: the command
+  selects the generated Hydra plugin in the matching real runtime's usdview
+  without requiring developers to assemble plugin/Python/loader paths manually.
 - 🚧 The bootstrap observes mesh presence, visibility, dirty points/topology,
   and camera prim creation while deliberately rendering the deterministic
   backend triangle. Renderer-owned authored geometry and camera-matrix

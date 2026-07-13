@@ -39,6 +39,10 @@ generated validator renders a deterministic Vulkan bootstrap triangle when the
 capability exists and reports unavailable GPU/OpenUSD/host work as explained
 skips. With Hydra enabled, install-tree tests separate plugin discovery, delegate
 creation, CPU RenderBuffer presentation, usdview first frame, and stable update.
+After a Hydra-enabled build, `ost renderer view` stages that install tree and
+opens its smoke scene (or a supplied scene) in the matching runtime's usdview
+with the generated renderer selected. Developers do not need to hand-compose
+OpenUSD discovery, Python, or dynamic-loader paths.
 The bootstrap proves the seam; generated rendering policy becomes project-owned
 source.
 

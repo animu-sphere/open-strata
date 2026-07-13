@@ -69,6 +69,9 @@ renderer source pack.
   isolated install-tree usdview first-frame/stable-update evidence. Successful
   host testing merges the checks into `renderer-report.json`; unavailable
   OpenUSD/usdview/display capability remains an explained skip.
+- ✅ Add `ost renderer view` to refresh the Hydra install tree, compose the
+  matching real OpenUSD runtime session, select the generated renderer, and
+  open the smoke scene or a developer-supplied scene in usdview.
 - ⬜ Run the generated core-only and Vulkan paths on the hosted OS matrix and
   apply the manifest/report contract to hydra-merlin without restructuring its
   package or adapter ownership.

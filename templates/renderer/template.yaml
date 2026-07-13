@@ -1,7 +1,7 @@
 schema: openstrata.template/v1alpha1
 template:
   id: renderer
-  version: 0.3.0
+  version: 0.4.0
   maturity: skeleton
   artifact_kind: project
 variables:

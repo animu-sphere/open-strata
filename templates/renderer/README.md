@@ -50,8 +50,39 @@ writes `renderer-hydra-report.json` and merges those PASS results into
 `renderer-report.json`. It also retains `usdview-first-frame.png` and
 `usdview-stable-update.png` under the staged test prefix.
 
-For interactive inspection after installing to `<stage>`, launch the matching
-OpenUSD Python and usdview with these session values:
+## View in usdview
+
+After the Hydra build above succeeds, open its installed smoke scene with the
+adapter selected:
+
+```bash
+ost renderer view
+```
+
+`ost renderer view` installs the current `out-hydra` build into a private
+`.strata/renderer-view/` tree, reads the renderer display name and discovery
+directory from the installed `plugInfo.json`, composes the selected real
+OpenUSD runtime environment, and launches that runtime's usdview. The renderer
+project itself can keep the host-neutral `core` profile; this command defaults
+to the same platform with the Hydra-capable `lookdev` profile. Pass
+`--profile usd` when a full imaging SDK was adopted under that profile instead.
+
+Open another scene, build tree, configuration, or camera explicitly when needed:
+
+```bash
+ost renderer view scenes/shot.usda \
+  --build-dir out-hydra --config Release --camera /Camera --profile lookdev
+```
+
+The command expects a prior Hydra-enabled CMake build, just as
+`ost plugin view` expects a prior plugin build. If the runtime has not been
+adopted yet, register the OpenUSD installation used for the build first:
+
+```bash
+ost runtime pull <platform> --profile lookdev --from-usd <openusd-root>
+```
+
+For manual diagnosis, the equivalent install-tree session is:
 
 ```powershell
 $env:PXR_PLUGINPATH_NAME = "<stage>/lib/usd/hd{{Name}}/resources"

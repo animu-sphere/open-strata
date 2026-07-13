@@ -187,6 +187,31 @@ ost package --clean-stage              # reclaim a stuck stage + sweep stale fal
 ost validate                           # configured / built / runtime / artifact checks
 ```
 
+### renderer — inspect a Hydra adapter in usdview
+
+The renderer template's default build is host-neutral. Configure and build its
+optional Hydra adapter against the same OpenUSD installation adopted by the
+project's `lookdev` runtime, then let OST compose the interactive session:
+
+```bash
+cmake -S . -B out-hydra \
+  -DSAMPLE_RENDERER_ENABLE_HYDRA2=ON \
+  -DCMAKE_PREFIX_PATH=<openusd-root> \
+  -DPython3_EXECUTABLE=<openusd-python>
+cmake --build out-hydra --config Release
+
+ost runtime pull cy2026 --profile lookdev --from-usd <openusd-root>
+ost renderer view                       # installed smoke scene, /Camera
+ost renderer view scenes/shot.usda      # project-relative or absolute scene
+ost renderer view --build-dir other-build --config Debug --profile lookdev
+```
+
+The view command refreshes a private install tree, discovers the generated
+`HdRendererPlugin` metadata there, selects its display name in usdview, and
+overlays the runtime environment only on the child process. It does not mutate
+the current shell or imply that the co-built Hydra adapter is a standalone OST
+plugin bundle.
+
 If a previous run's stage tree is briefly held open (a scanner, or another
 `ost`), packaging stages into a fresh `stage-<hex>` sibling and warns
 (`STAGE_FALLBACK`) instead of failing. The warning names how many stale
