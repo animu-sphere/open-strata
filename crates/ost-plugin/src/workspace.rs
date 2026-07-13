@@ -799,7 +799,7 @@ mod tests {
         );
 
         let report = validate_workspace_with_libraries(
-            &[consumer.clone()],
+            std::slice::from_ref(&consumer),
             &[a.clone(), duplicate_a, b.clone()],
         );
         let codes = report
