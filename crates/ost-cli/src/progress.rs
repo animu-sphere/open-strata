@@ -646,32 +646,69 @@ fn terminate_process_tree(child: &mut std::process::Child) -> String {
 
 #[cfg(unix)]
 fn terminate_process_tree(child: &mut std::process::Child) -> String {
-    let group = format!("-{}", child.id());
-    let term = Command::new("kill")
-        .args(["-TERM", &group])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let Some(group) = child_process_group(child) else {
+        return terminate_child(child);
+    };
+    let term = signal_process_group(group, SIGTERM);
     for _ in 0..20 {
         if child.try_wait().ok().flatten().is_some() {
             return "process group terminated".into();
         }
         thread::sleep(Duration::from_millis(50));
     }
-    let kill = Command::new("kill")
-        .args(["-KILL", &group])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    if !matches!(&kill, Ok(status) if status.success()) {
+    let kill = signal_process_group(group, SIGKILL);
+    if kill.is_err() {
         let _ = child.kill();
     }
     let _ = child.wait();
     match (term, kill) {
-        (_, Ok(status)) if status.success() => "process group killed".into(),
-        (Ok(status), _) if status.success() => "process group terminated".into(),
+        (_, Ok(())) => "process group killed".into(),
+        (Ok(()), _) => "process group terminated".into(),
         (_, Err(error)) => format!("process-group cleanup failed: {error}"),
-        _ => "process-group cleanup returned unsuccessfully".into(),
+    }
+}
+
+#[cfg(unix)]
+const SIGTERM: std::os::raw::c_int = 15;
+
+#[cfg(unix)]
+const SIGKILL: std::os::raw::c_int = 9;
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn getpgrp() -> std::os::raw::c_int;
+    fn getpgid(pid: std::os::raw::c_int) -> std::os::raw::c_int;
+    fn kill(pid: std::os::raw::c_int, sig: std::os::raw::c_int) -> std::os::raw::c_int;
+}
+
+#[cfg(unix)]
+fn child_process_group(child: &std::process::Child) -> Option<std::os::raw::c_int> {
+    let pid: std::os::raw::c_int = child.id().try_into().ok()?;
+    let group = unsafe { getpgid(pid) };
+    let current_group = unsafe { getpgrp() };
+    (group > 0 && group == pid && group != current_group).then_some(group)
+}
+
+#[cfg(unix)]
+fn signal_process_group(
+    group: std::os::raw::c_int,
+    signal: std::os::raw::c_int,
+) -> std::io::Result<()> {
+    if unsafe { kill(-group, signal) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
+fn terminate_child(child: &mut std::process::Child) -> String {
+    match child.kill() {
+        Ok(()) => {
+            let _ = child.wait();
+            "child terminated".into()
+        }
+        Err(error) => format!("child cleanup failed: {error}"),
     }
 }
 
