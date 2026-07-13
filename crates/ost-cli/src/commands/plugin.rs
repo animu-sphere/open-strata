@@ -79,6 +79,10 @@ pub enum PluginCmd {
     Inspect {
         /// Path to the bundle directory (containing openstrata.plugin.yaml).
         bundle: String,
+        /// Fail unless the manifest declares exactly this plugin version
+        /// (generated release gates pin the tag's version here).
+        #[arg(long)]
+        expect_version: Option<String>,
     },
     /// Build the plugin's shared library against the resolved runtime.
     Build {
@@ -264,7 +268,10 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             },
             fmt,
         ),
-        PluginCmd::Inspect { bundle } => inspect(&bundle, fmt),
+        PluginCmd::Inspect {
+            bundle,
+            expect_version,
+        } => inspect(&bundle, expect_version.as_deref(), fmt),
         PluginCmd::Build {
             bundle,
             target,
@@ -488,8 +495,20 @@ fn new(args: NewPluginArgs<'_>, fmt: Format) -> Result<()> {
     Ok(())
 }
 
-fn inspect(bundle_path: &str, fmt: Format) -> Result<()> {
+fn inspect(bundle_path: &str, expect_version: Option<&str>, fmt: Format) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
+    // A typed release gate: generated trusted-release workflows compare the
+    // tag's version against the manifest here instead of scraping JSON output.
+    if let Some(expected) = expect_version {
+        let declared = &bundle.manifest.plugin.version;
+        if declared != expected {
+            return Err(Error::coded(
+                "PLUGIN_VERSION_MISMATCH",
+                Category::Validation,
+                format!("bundle declares version '{declared}', expected '{expected}'"),
+            ));
+        }
+    }
     // Level 0 only: bundle structure, no runtime resolution.
     let report = diagnose(&bundle, &RuntimeContext::default(), 0);
     let libraries = selected_workspace_library_evidence(&bundle, None)?;

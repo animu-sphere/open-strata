@@ -8,17 +8,10 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.16.0 — generated trusted CI) is detailed in
+The next milestone (v0.17.0 — DCC host integration) is detailed in
 [current.md](current.md).
 
-- ⬜ **v0.17.0 — DCC host integration.** Extend the support matrix beyond
-  runtime-native apps to external DCC hosts (future-policy §9/§11; Phase 10
-  [dcc-hosts.md](../design/proposed/dcc-hosts.md)). Read-only host discovery +
-  fingerprint (`ost dcc discover`, host record schema, Maya/Houdini detectors
-  first), headless plugin compatibility test, and DCC support-matrix + CI-annotation
-  integration — *without* a DCC API abstraction or SDK redistribution
-  (future-policy §13 non-goals).
-- ⬜ **v1.0.0 (after v0.17.0).** Cut once the produce → trust → provenance →
+- ⬜ **v1.0.0 (after the next milestone).** Cut once the produce → trust → provenance →
   trusted-CI arc and the initial DCC host matrix are shipped and dogfooded — i.e.
   "build it, publish it, verify its provenance, pull it in trusted CI, run it
   against a DCC host" is a single supported, digest-addressed arc.
@@ -132,10 +125,3 @@ pieces of the documentation reorganization.
   reach), including the deadsnakes-py3.13 + venv + `libxt-dev` / X-GL dev
   prerequisites; consider shipping a reference Dockerfile. (The `glibc228`-vs-real-floor
   trap from v0.10.0/v0.12.0 is easy to fall into.)
-- ⬜ **Generated release lanes.** Matrix-level `source_checks` already preserves
-  repo-specific corpus smoke in generated pull-request/main lanes. The remaining
-  gap is a typed, tag-triggered release model: version/ref agreement,
-  package-twice reproducibility, `--from-package`, artifact staging, trust and
-  provenance gates, and a separately permissioned draft/publish job. Do not use
-  raw per-cell `extra_steps` as a substitute. Direction:
-  [release-lane-ci.md](../design/proposed/release-lane-ci.md).

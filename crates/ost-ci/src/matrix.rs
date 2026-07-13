@@ -125,6 +125,56 @@ pub enum Publish {
     Candidate,
 }
 
+/// Whether a generated release workflow stops after producing verified
+/// candidates or may publish them to the configured OCI namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReleaseMode {
+    /// Build, verify, and upload immutable candidate handoffs only.
+    #[default]
+    Draft,
+    /// Run the separate OIDC-authorized publisher job after verification.
+    Publish,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Typed contract for the tag-triggered trusted release workflow.
+///
+/// Cells opt in with `publish: candidate`; the release block owns behavior
+/// that must never be hidden in arbitrary shell snippets: exact version/tag
+/// agreement, reproducibility and installed-package gates, and the isolated
+/// publisher identity/namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseLane {
+    /// Bare SemVer expected in both the tag (`v<version>`) and plugin bundle.
+    pub version: String,
+    #[serde(default)]
+    pub mode: ReleaseMode,
+    /// OCI repository without a tag or digest. The publisher adds
+    /// `<version>-<cell>` as the immutable release tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+    /// Named runner profile used only by the isolated publisher job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_runner: Option<String>,
+    /// Optional protected GitHub environment for the publisher job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    /// Package the same staged tree twice and require identical checksums.
+    #[serde(default = "default_true")]
+    pub reproducible: bool,
+    /// Exercise the clean extracted package before candidate staging.
+    #[serde(default = "default_true")]
+    pub from_package: bool,
+    /// Release-only repository checks, still constrained and secret-free.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<SourceCheck>,
+}
+
 /// Trust floors applied by generated CI. The optional policy path is
 /// repository-relative and is passed to artifact verification so provenance
 /// builder identities are checked against the same allowed-publisher contract
@@ -358,6 +408,13 @@ fn is_kebab(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+fn is_ci_atom(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// A bare `<major>.<minor>` CPython version (e.g. `3.13`) — the only form
 /// `setup-python`'s `python-version` and the runtime Python-ABI contract accept
 /// here (no patch, no range, no wildcard, so the rendered pin is exact).
@@ -394,6 +451,10 @@ pub struct SupportMatrix {
     /// verification pyramid. Empty by default; see [`SourceCheck`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_checks: Vec<SourceCheck>,
+    /// Tag-triggered trusted publication contract. Absent matrices retain the
+    /// source/support-only behavior from earlier schema-1 documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleaseLane>,
     pub cells: Vec<SupportCell>,
 }
 
@@ -430,6 +491,12 @@ impl SupportMatrix {
         for (i, check) in self.source_checks.iter().enumerate() {
             validate_source_check(i, check)?;
         }
+        if let Some(release) = &self.release {
+            validate_release(release)?;
+            for (i, check) in release.checks.iter().enumerate() {
+                validate_named_check("release.checks", i, check)?;
+            }
+        }
         for (name, profile) in &self.runners {
             if !is_kebab(name) {
                 return Err(Error::InvalidManifest(format!(
@@ -438,10 +505,14 @@ impl SupportMatrix {
             }
             match profile.kind {
                 RunnerKind::GithubHosted => {
-                    if profile.image.as_deref().unwrap_or("").is_empty() {
+                    if profile
+                        .image
+                        .as_deref()
+                        .is_none_or(|image| !is_ci_atom(image))
+                    {
                         return Err(Error::InvalidManifest(format!(
                             "runner '{name}': github-hosted profiles require an image \
-                             (e.g. ubuntu-24.04, windows-2022)"
+                             using [A-Za-z0-9._-] (e.g. ubuntu-24.04, windows-2022)"
                         )));
                     }
                     if !profile.labels.is_empty() {
@@ -459,6 +530,11 @@ impl SupportMatrix {
                     if profile.image.is_some() {
                         return Err(Error::InvalidManifest(format!(
                             "runner '{name}': self-hosted profiles use labels, not an image"
+                        )));
+                    }
+                    if profile.labels.iter().any(|label| !is_ci_atom(label)) {
+                        return Err(Error::InvalidManifest(format!(
+                            "runner '{name}': self-hosted labels must use [A-Za-z0-9._-]"
                         )));
                     }
                 }
@@ -492,6 +568,11 @@ impl SupportMatrix {
                          the profile owns the runs-on mapping"
                     )));
                 }
+            }
+            if cell.host.labels.iter().any(|label| !is_ci_atom(label)) {
+                return Err(Error::InvalidManifest(format!(
+                    "cell '{name}': host.labels must use [A-Za-z0-9._-]"
+                )));
             }
 
             // CI pins exact bytes: a full digest is required, a prefix is
@@ -537,15 +618,20 @@ impl SupportMatrix {
                     "cell '{name}': the pull_request lane must never publish (fork-PR safety)"
                 )));
             }
+            if cell.publish != Publish::Never && cell.lane != Lane::Main {
+                return Err(Error::InvalidManifest(format!(
+                    "cell '{name}': publish candidates must use the 'main' source lane"
+                )));
+            }
             if cell.publish != Publish::Never && cell.trust < self.trust.release_min_trust {
                 return Err(Error::InvalidManifest(format!(
                     "cell '{name}': publish-capable target trust '{}' is below release_min_trust '{}'",
                     cell.trust, self.trust.release_min_trust
                 )));
             }
-            if cell.platform.is_empty() || cell.profile.is_empty() {
+            if !is_ci_atom(&cell.platform) || !is_ci_atom(&cell.profile) {
                 return Err(Error::InvalidManifest(format!(
-                    "cell '{name}': platform and profile must be non-empty"
+                    "cell '{name}': platform and profile must use [A-Za-z0-9._-]"
                 )));
             }
             if cell.up_to > MAX_LEVEL {
@@ -594,6 +680,83 @@ impl SupportMatrix {
                 }
             }
         }
+        let candidates = self.candidate_cells();
+        match (&self.release, candidates.is_empty()) {
+            (None, false) => {
+                return Err(Error::InvalidManifest(
+                    "publish candidates require a matrix-level release block".to_string(),
+                ));
+            }
+            (Some(_), true) => {
+                return Err(Error::InvalidManifest(
+                    "the release block declares no cells with publish: candidate".to_string(),
+                ));
+            }
+            _ => {}
+        }
+        if let Some(release) = &self.release {
+            if self.trust.policy.is_none() {
+                return Err(Error::InvalidManifest(
+                    "release workflows require trust.policy for provenance and publisher identity"
+                        .to_string(),
+                ));
+            }
+            if self.trust.release_min_trust < TrustLevel::Verified {
+                return Err(Error::InvalidManifest(format!(
+                    "release_min_trust '{}' is too weak for a generated release workflow (minimum verified)",
+                    self.trust.release_min_trust
+                )));
+            }
+            if matches!(release.mode, ReleaseMode::Publish) {
+                let runner = release.publisher_runner.as_deref().ok_or_else(|| {
+                    Error::InvalidManifest(
+                        "release.mode publish requires release.publisher_runner".to_string(),
+                    )
+                })?;
+                if !self.runners.contains_key(runner) {
+                    return Err(Error::InvalidManifest(format!(
+                        "release.publisher_runner references unknown runner profile '{runner}'"
+                    )));
+                }
+                if release.destination.is_none() {
+                    return Err(Error::InvalidManifest(
+                        "release.mode publish requires release.destination".to_string(),
+                    ));
+                }
+                if self
+                    .runners
+                    .get(runner)
+                    .is_some_and(RunnerProfile::is_hosted)
+                {
+                    let bootstrap = self.bootstrap.as_ref().ok_or_else(|| {
+                        Error::InvalidManifest(
+                            "a GitHub-hosted release publisher requires matrix-level bootstrap"
+                                .to_string(),
+                        )
+                    })?;
+                    if bootstrap.ost.sha256.is_empty() {
+                        return Err(Error::InvalidManifest(
+                            "a GitHub-hosted release publisher requires exact bootstrap.ost.sha256 pins"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            if self
+                .candidate_cells()
+                .iter()
+                .any(|cell| self.is_hosted(cell))
+                && self
+                    .bootstrap
+                    .as_ref()
+                    .is_none_or(|bootstrap| bootstrap.ost.sha256.is_empty())
+            {
+                return Err(Error::InvalidManifest(
+                    "GitHub-hosted release candidates require exact bootstrap.ost.sha256 pins"
+                        .to_string(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -623,6 +786,14 @@ impl SupportMatrix {
     /// Cells that re-validate pinned artifacts (`scheduled` / dispatch).
     pub fn support_cells(&self) -> Vec<&SupportCell> {
         self.cells.iter().filter(|c| !c.lane.is_source()).collect()
+    }
+
+    /// Source cells selected for the tag-triggered release workflow.
+    pub fn candidate_cells(&self) -> Vec<&SupportCell> {
+        self.cells
+            .iter()
+            .filter(|cell| cell.publish == Publish::Candidate)
+            .collect()
     }
 
     /// Effective trust floor for one cell: the target-level requirement or the
@@ -663,6 +834,22 @@ impl SupportMatrix {
                 names.push(name.to_string());
             }
         }
+        // Draft mode renders no publisher job, so its runner is not metered.
+        if let Some(name) = self
+            .release
+            .as_ref()
+            .filter(|release| release.mode == ReleaseMode::Publish)
+            .and_then(|release| release.publisher_runner.as_deref())
+        {
+            if let Some(profile) = self.runners.get(name) {
+                if profile.is_hosted()
+                    && !profile.billing_acknowledged()
+                    && !names.iter().any(|existing| existing == name)
+                {
+                    names.push(name.to_string());
+                }
+            }
+        }
         names
     }
 
@@ -683,6 +870,17 @@ impl SupportMatrix {
             };
             if profile.is_hosted() && !profile.billing_acknowledged() {
                 hits.push(format!("{}: runner '{name}'", cell.name));
+            }
+        }
+        if let Some(release) = &self.release {
+            if release.mode == ReleaseMode::Publish {
+                if let Some(name) = release.publisher_runner.as_deref() {
+                    if self.runners.get(name).is_some_and(|profile| {
+                        profile.is_hosted() && !profile.billing_acknowledged()
+                    }) {
+                        hits.push(format!("release publisher: runner '{name}'"));
+                    }
+                }
             }
         }
         hits
@@ -802,13 +1000,72 @@ fn validate_bootstrap(bootstrap: &Bootstrap) -> Result<()> {
     Ok(())
 }
 
+fn validate_release(release: &ReleaseLane) -> Result<()> {
+    let core = release
+        .version
+        .split_once('-')
+        .map_or(release.version.as_str(), |v| v.0);
+    let parts = core.split('.').collect::<Vec<_>>();
+    let version_ok = parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        && !release.version.starts_with('v')
+        && release
+            .version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'));
+    if !version_ok {
+        return Err(Error::InvalidManifest(format!(
+            "release.version '{}' must be a bare SemVer like 1.2.3 (no leading 'v')",
+            release.version
+        )));
+    }
+    if let Some(destination) = &release.destination {
+        let parsed = ost_artifact::RemoteReference::parse(destination).map_err(|error| {
+            Error::InvalidManifest(format!("release.destination '{destination}': {error}"))
+        })?;
+        match parsed {
+            ost_artifact::RemoteReference::Oci(reference)
+                if reference.tag.is_none() && reference.digest.is_none() => {}
+            ost_artifact::RemoteReference::Oci(_) => {
+                return Err(Error::InvalidManifest(format!(
+                    "release.destination '{destination}' must be an OCI repository without a tag or digest"
+                )));
+            }
+            ost_artifact::RemoteReference::File(_) => {
+                return Err(Error::InvalidManifest(
+                    "release.destination must be an oci:// repository".to_string(),
+                ));
+            }
+        }
+    }
+    if let Some(environment) = &release.environment {
+        let safe = !environment.is_empty()
+            && environment.len() <= 64
+            && environment
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'));
+        if !safe {
+            return Err(Error::InvalidManifest(format!(
+                "release.environment '{environment}' must use [A-Za-z0-9_-] (maximum 64 characters)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validate one source-CI check. Both fields are spliced into generated
 /// workflow YAML — the `name` into a quoted `- name:` scalar and the `run` into
 /// a literal block scalar — so the charset rules double as injection hardening
 /// and preserve source CI's fork-PR safety invariant (no secrets, no structural
 /// breakout).
 fn validate_source_check(index: usize, check: &SourceCheck) -> Result<()> {
-    let at = format!("source_checks[{index}]");
+    validate_named_check("source_checks", index, check)
+}
+
+fn validate_named_check(group: &str, index: usize, check: &SourceCheck) -> Result<()> {
+    let at = format!("{group}[{index}]");
     // Keep names to a readable, printable step-title subset. They render quoted
     // in generated YAML, but a narrow charset avoids surprising control or
     // expression syntax in a field humans scan in the Actions UI.
@@ -1016,6 +1273,25 @@ pub fn starter_matrix() -> String {
 #       run: |
 #         set -euo pipefail
 #         ctest --test-dir build/corpus --output-on-failure
+#
+# A tag-triggered trusted release is a separate typed contract. Mark main-lane
+# source cells with `publish: candidate`, require exact bootstrap sha256 pins,
+# and choose `draft` (verified handoffs only) or `publish` (isolated OIDC + OCI
+# publisher). `release_min_trust` must be at least verified and `trust.policy`
+# must authorize the generated `.github/workflows/ost-release.yml` identity:
+#
+#   release:
+#     version: 1.2.3                 # exact tag is v1.2.3
+#     mode: publish                  # or draft
+#     destination: oci://ghcr.io/<owner>/<plugin-repo>
+#     publisher_runner: linux-hosted # a named runners: profile
+#     environment: release
+#     reproducible: true
+#     from_package: true
+#     checks: []                     # constrained, secret-free release checks
+#
+# The candidate jobs stay read-only. Only the final publisher receives
+# `id-token: write` + `packages: write`, after candidate evidence is rechecked.
 #
 # Generate GitHub Actions workflows from this file:
 #   ost ci generate github
@@ -1359,11 +1635,9 @@ cells:
 
         // A publish-capable cell on an unacknowledged hosted profile is an
         // error (the pull_request lane cannot publish at all, so use main).
-        let publishing = lanes_yaml().replace(
-            "        lane: pull_request\n",
-            "        lane: main\n        publish: candidate\n",
-        );
-        let m = SupportMatrix::from_yaml(&publishing).unwrap();
+        let mut m = SupportMatrix::from_yaml(&lanes_yaml()).unwrap();
+        m.cells[0].lane = Lane::Main;
+        m.cells[0].publish = Publish::Candidate;
         assert_eq!(
             m.hosted_ack_errors(),
             vec!["plugin-pr-windows: runner 'windows-hosted'"]
@@ -1632,5 +1906,159 @@ cells:
         );
         let err = SupportMatrix::from_yaml(&support).expect_err("host_python on support lane");
         assert!(err.to_string().contains("source lanes"), "{err}");
+    }
+
+    /// `lanes_yaml()` with a minimal valid draft release contract: a policy,
+    /// a `verified` release floor, exact hosted bootstrap pins, and the first
+    /// cell promoted to a `main` publish candidate.
+    fn release_yaml() -> String {
+        lanes_yaml()
+            .replace(
+                "schema: 1\n",
+                "schema: 1\n\
+                 trust:\n\
+                 \x20   policy: openstrata-artifact-policy.toml\n\
+                 \x20   release_min_trust: verified\n\
+                 release:\n\
+                 \x20   version: 1.2.3\n\
+                 \x20   mode: draft\n",
+            )
+            .replace(
+                "        version: \"0.9.0\"\n",
+                &format!(
+                    "        version: \"0.9.0\"\n        sha256:\n            x86_64-pc-windows-msvc: {}\n",
+                    "ef".repeat(32)
+                ),
+            )
+            .replace(
+                "        lane: pull_request\n",
+                "        lane: main\n        publish: candidate\n        trust: verified\n",
+            )
+    }
+
+    #[test]
+    fn release_contract_structural_errors_are_rejected() {
+        // The draft baseline itself is valid and selects one candidate.
+        let m = SupportMatrix::from_yaml(&release_yaml()).unwrap();
+        assert_eq!(m.candidate_cells().len(), 1);
+
+        let cases = [
+            (
+                release_yaml().replace(
+                    "release:\n    version: 1.2.3\n    mode: draft\n",
+                    "",
+                ),
+                "require a matrix-level release block",
+            ),
+            (
+                release_yaml().replace("        publish: candidate\n", ""),
+                "declares no cells with publish: candidate",
+            ),
+            (
+                release_yaml().replace("    version: 1.2.3\n", "    version: v1.2.3\n"),
+                "bare SemVer",
+            ),
+            (
+                release_yaml().replace(
+                    "    release_min_trust: verified\n",
+                    "    release_min_trust: attested\n",
+                ),
+                "too weak",
+            ),
+            (
+                release_yaml().replace("    policy: openstrata-artifact-policy.toml\n", ""),
+                "trust.policy",
+            ),
+            (
+                release_yaml().replace(
+                    "    mode: draft\n",
+                    "    mode: draft\n    environment: \"bad env!\"\n",
+                ),
+                "release.environment",
+            ),
+            (
+                release_yaml().replace(
+                    "    mode: draft\n",
+                    "    mode: publish\n    destination: oci://ghcr.io/owner/plugin\n",
+                ),
+                "requires release.publisher_runner",
+            ),
+            (
+                release_yaml().replace(
+                    "    mode: draft\n",
+                    "    mode: publish\n    destination: oci://ghcr.io/owner/plugin\n    publisher_runner: nope\n",
+                ),
+                "unknown runner profile",
+            ),
+            (
+                release_yaml().replace(
+                    "    mode: draft\n",
+                    "    mode: publish\n    publisher_runner: windows-hosted\n",
+                ),
+                "requires release.destination",
+            ),
+            (
+                release_yaml().replace(
+                    "    mode: draft\n",
+                    "    mode: publish\n    destination: oci://ghcr.io/owner/plugin:latest\n    publisher_runner: windows-hosted\n",
+                ),
+                "without a tag or digest",
+            ),
+            (
+                release_yaml().replace(
+                    &format!(
+                        "        sha256:\n            x86_64-pc-windows-msvc: {}\n",
+                        "ef".repeat(32)
+                    ),
+                    "",
+                ),
+                "bootstrap.ost.sha256",
+            ),
+        ];
+        for (yaml, needle) in cases {
+            let err = SupportMatrix::from_yaml(&yaml).expect_err(needle);
+            assert!(
+                err.to_string().contains(needle),
+                "expected '{needle}' in: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn draft_publisher_runner_is_not_billing_material() {
+        // linux-hosted is referenced only as the publisher runner; the
+        // candidate cell stays on windows-hosted.
+        let with_runner = release_yaml().replace(
+            "runners:\n",
+            "runners:\n    linux-hosted:\n        kind: github-hosted\n        image: ubuntu-24.04\n",
+        );
+
+        // Draft mode renders no publisher job, so only the candidate's
+        // hosted runner is billing material.
+        let draft = with_runner.replace(
+            "    mode: draft\n",
+            "    mode: draft\n    publisher_runner: linux-hosted\n",
+        );
+        let m = SupportMatrix::from_yaml(&draft).unwrap();
+        assert_eq!(m.hosted_ack_missing(), vec!["windows-hosted"]);
+        assert!(!m
+            .hosted_ack_errors()
+            .iter()
+            .any(|hit| hit.contains("release publisher")));
+
+        // Publish mode adds the publisher runner to both lists.
+        let publish = with_runner.replace(
+            "    mode: draft\n",
+            "    mode: publish\n    destination: oci://ghcr.io/owner/plugin\n    publisher_runner: linux-hosted\n",
+        );
+        let m = SupportMatrix::from_yaml(&publish).unwrap();
+        assert_eq!(
+            m.hosted_ack_missing(),
+            vec!["windows-hosted", "linux-hosted"]
+        );
+        assert!(m
+            .hosted_ack_errors()
+            .iter()
+            .any(|hit| hit.contains("release publisher: runner 'linux-hosted'")));
     }
 }

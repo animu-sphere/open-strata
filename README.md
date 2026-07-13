@@ -31,14 +31,15 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.15.0** — source-workspace composition and artifact
-evidence bundles (`requires.bundles` closure, SPDX SBOM + SLSA/in-toto
-provenance sidecars, and `ost artifact verify --require-*`).
+The current release is **v0.16.0** — executable plain-library composition,
+renderer/Hydra bootstrap contracts, and generated trusted release CI with
+reproducibility, clean-package, evidence, policy, and isolated-publisher gates.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-Generated trusted CI, sessions, GPU/AI, and broader DCC matrices are still ahead.
+Live downstream release-lane dogfood, sessions, GPU/AI, and broader DCC matrices
+are still ahead.
 Linux x86_64 is the first-class target; other OS targets are modeled and
 partially working — these examples were exercised on Windows.
 

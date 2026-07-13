@@ -601,14 +601,6 @@ fn verify(
         .map(|value| value.minimum_trust)
         .unwrap_or_default();
     let effective_minimum = std::cmp::max(minimum_trust.unwrap_or_default(), policy_minimum);
-    let trust_requirement = ArtifactPolicy {
-        schema: ost_artifact::ARTIFACT_POLICY_SCHEMA,
-        minimum_trust: effective_minimum,
-        protected_namespaces: Vec::new(),
-        allowed_publishers: Vec::new(),
-    };
-    let policy_error = trust_requirement.verify_trust(record.trust).err();
-    let policy_passed = policy_error.is_none();
     let object_dir = store.object_dir(record.digest_hex());
     let manifest = store.producer_manifest(&record)?;
     let (sbom, provenance) = store.evidence(&record)?;
@@ -621,6 +613,23 @@ fn verify(
         require_provenance,
         policy.as_ref(),
     );
+    // A candidate handed to a separate publisher is imported into a fresh
+    // local store, so the record's transport trust is intentionally local.
+    // Valid, subject-bound provenance raises it to attested; when that
+    // provenance matches an allowed publisher and a valid SBOM is present,
+    // the policy's publisher trust becomes the effective assurance. This is
+    // computed for this verification only — importing a record never grants
+    // sticky trust by itself.
+    let evidence_trust = evidence_trust(policy.as_ref(), &sbom, &provenance);
+    let effective_trust = std::cmp::max(record.trust, evidence_trust);
+    let trust_requirement = ArtifactPolicy {
+        schema: ost_artifact::ARTIFACT_POLICY_SCHEMA,
+        minimum_trust: effective_minimum,
+        protected_namespaces: Vec::new(),
+        allowed_publishers: Vec::new(),
+    };
+    let policy_error = trust_requirement.verify_trust(effective_trust).err();
+    let policy_passed = policy_error.is_none();
     let passed = report.passed() && policy_passed && sbom.passed() && provenance.passed();
     if fmt.is_json() {
         output::report(
@@ -633,7 +642,9 @@ fn verify(
                 "files_mismatched": report.files_mismatched,
                 "files_missing": report.files_missing,
                 "files_extra": report.files_extra,
-                "trust": record.trust,
+                "trust": effective_trust,
+                "record_trust": record.trust,
+                "evidence_trust": evidence_trust,
                 "policy": (policy.is_some() || minimum_trust.is_some()).then(|| serde_json::json!({
                     "path": policy_path.map(ToString::to_string),
                     "minimum_trust": effective_minimum,
@@ -651,7 +662,7 @@ fn verify(
         render_verify(
             &report,
             policy.as_ref(),
-            record.trust,
+            effective_trust,
             (policy.is_some() || minimum_trust.is_some()).then_some(effective_minimum),
             policy_error.as_ref(),
             &sbom,
@@ -664,6 +675,26 @@ fn verify(
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
     Ok(())
+}
+
+fn evidence_trust(
+    policy: Option<&ArtifactPolicy>,
+    sbom: &EvidenceCheck,
+    provenance: &EvidenceCheck,
+) -> TrustLevel {
+    if provenance.descriptor.is_none() || !provenance.passed() {
+        return TrustLevel::Local;
+    }
+    let Some(publisher_id) = provenance.matched_publisher.as_deref() else {
+        return TrustLevel::Attested;
+    };
+    if sbom.descriptor.is_none() || !sbom.passed() {
+        return TrustLevel::Attested;
+    }
+    policy
+        .and_then(|policy| policy.publisher(publisher_id))
+        .map(|publisher| std::cmp::max(TrustLevel::Attested, publisher.trust))
+        .unwrap_or(TrustLevel::Attested)
 }
 
 struct EvidenceCheck {

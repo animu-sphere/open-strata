@@ -399,6 +399,49 @@ fn verify_can_require_and_validate_attached_evidence() {
     ]));
     assert_eq!(verified["data"]["evidence"]["sbom"]["passed"], true);
     assert_eq!(verified["data"]["evidence"]["provenance"]["passed"], true);
+    assert_eq!(verified["data"]["record_trust"], "local");
+    assert_eq!(verified["data"]["evidence_trust"], "attested");
+    assert_eq!(verified["data"]["trust"], "attested");
+
+    // A separate publisher imports a candidate with conservative local record
+    // trust. Subject-bound provenance that matches an allowed publisher plus
+    // the valid SBOM raises only this verification's effective trust, allowing
+    // the generated release gate without making imported trust sticky.
+    let policy = sb.base.join("candidate-policy.toml");
+    std::fs::write(
+        &policy,
+        r#"schema = 1
+
+[[allowed_publishers]]
+id = "release"
+trust = "trusted"
+repository = "owner/repo"
+workflow_path = ".github/workflows/release.yml"
+git_refs = ["refs/tags/v*"]
+actors = ["release-bot"]
+events = ["push"]
+"#,
+    )
+    .unwrap();
+    let trusted = stdout_json(&sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--minimum-trust",
+        "trusted",
+        "--require-sbom",
+        "--require-provenance",
+        "--policy",
+        path_str(&policy),
+    ]));
+    assert_eq!(trusted["data"]["record_trust"], "local");
+    assert_eq!(trusted["data"]["evidence_trust"], "trusted");
+    assert_eq!(trusted["data"]["trust"], "trusted");
+    assert_eq!(
+        trusted["data"]["evidence"]["provenance"]["matched_publisher"],
+        "release"
+    );
 
     let stored_provenance = sb
         .home
