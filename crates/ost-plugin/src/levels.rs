@@ -42,7 +42,9 @@
 //! Process execution is behind the [`Probe`] trait so the level logic is unit
 //! testable without a real runtime: tests inject canned tool results.
 
-use camino::Utf8PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::bundle::Bundle;
 use crate::doctor::Diagnostic;
@@ -72,6 +74,36 @@ impl ToolOutput {
 pub trait Probe {
     /// Run `program` with `args`, returning its captured output.
     fn run(&self, program: &str, args: &[&str]) -> ToolOutput;
+
+    /// Run a tool that supports `--out <path>` and return its output without
+    /// routing the authored payload through stdout.
+    ///
+    /// Windows C/C++ tools commonly open stdout in text mode. Capturing that
+    /// pipe can therefore translate every LF to CRLF, including newlines which
+    /// are *inside* a triple-quoted USDA string and are semantic data. A real
+    /// probe writes through the tool's file output instead. The default keeps
+    /// fake probes source-compatible by materializing their canned stdout at
+    /// `output` when the tool did not create a file itself.
+    fn run_to_file(&self, program: &str, args: &[&str], output: &Utf8Path) -> ToolOutput {
+        let mut owned = args
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>();
+        owned.push("--out".into());
+        owned.push(output.to_string());
+        let borrowed = owned.iter().map(String::as_str).collect::<Vec<_>>();
+        let result = self.run(program, &borrowed);
+        if result.ok() && !output.as_std_path().is_file() {
+            if let Err(error) = std::fs::write(output.as_std_path(), result.stdout.as_bytes()) {
+                return ToolOutput {
+                    code: None,
+                    stdout: String::new(),
+                    stderr: format!("could not materialize tool output at '{output}': {error}"),
+                };
+            }
+        }
+        result
+    }
 }
 
 /// What tool executables to invoke and where the session points. The CLI builds
@@ -849,11 +881,16 @@ fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
         return Diagnostic::fail(ID, 5, "usdcat not found in the runtime", vec![]);
     };
 
-    let out = session.probe.run(usdcat, &["--flatten", fixture.as_str()]);
+    let output = flatten_capture_path();
+    let out = session
+        .probe
+        .run_to_file(usdcat, &["--flatten", fixture.as_str()], &output);
     if out.unspawned() {
+        let _ = std::fs::remove_file(output.as_std_path());
         return Diagnostic::fail(ID, 5, format!("could not run usdcat ({usdcat})"), vec![]);
     }
     if !out.ok() {
+        let _ = std::fs::remove_file(output.as_std_path());
         return Diagnostic::fail(
             ID,
             5,
@@ -861,13 +898,26 @@ fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
             vec![],
         );
     }
+    let flattened = match std::fs::read(output.as_std_path()) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(error) => {
+            let _ = std::fs::remove_file(output.as_std_path());
+            return Diagnostic::fail(
+                ID,
+                5,
+                format!("could not read usdcat --out result: {error}"),
+                vec![],
+            );
+        }
+    };
+    let _ = std::fs::remove_file(output.as_std_path());
     let expected = std::fs::read_to_string(golden.as_std_path()).unwrap_or_default();
-    let actual = normalize(&out.stdout);
+    let actual = normalize(&flattened);
     let expected = normalize(&expected);
     if actual == expected {
         Diagnostic::pass(ID, 5, "flattened output matches the golden")
     } else {
-        let crlf_only = normalize(&out.stdout.replace("\r\n", "\n"))
+        let crlf_only = normalize(&flattened.replace("\r\n", "\n"))
             == normalize(&expected.replace("\r\n", "\n"));
         let observed = if crlf_only {
             format!(
@@ -884,12 +934,23 @@ fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
             vec!["review the diff; update the golden if the change is intended".into()];
         if crlf_only {
             actions.push(
-                "pin USDA checkout line endings in .gitattributes (normally `*.usda text eol=lf`; use `-text` only when intentional CRLF must remain byte-stable); do not normalize semantic CRLF during comparison"
+                "the flatten payload was captured through `usdcat --out`, so the CR is not stdout translation; inspect the authored fixture and generated values, pin checkout line endings when appropriate, and do not normalize semantic CRLF during comparison"
                     .into(),
             );
         }
         Diagnostic::fail(ID, 5, observed, actions)
     }
+}
+
+/// A unique temporary destination for `usdcat --out`. The process id keeps
+/// independent OST invocations apart and the counter keeps concurrent L5
+/// checks in one process apart. The caller removes the file on every path.
+fn flatten_capture_path() -> Utf8PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+    let name = format!("openstrata-usdcat-{}-{sequence}.usda", std::process::id());
+    Utf8PathBuf::from_path_buf(std::env::temp_dir().join(name))
+        .unwrap_or_else(|path| Utf8PathBuf::from(path.to_string_lossy().into_owned()))
 }
 
 fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> Diagnostic {
@@ -1122,8 +1183,10 @@ mod tests {
     }
 
     impl Probe for FakeProbe {
-        fn run(&self, program: &str, _args: &[&str]) -> ToolOutput {
-            self.calls.borrow_mut().push(program.to_string());
+        fn run(&self, program: &str, args: &[&str]) -> ToolOutput {
+            self.calls
+                .borrow_mut()
+                .push(format!("{program} {}", args.join(" ")));
             self.responses.get(program).cloned().unwrap_or(ToolOutput {
                 code: None,
                 stdout: String::new(),
@@ -1626,6 +1689,59 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         assert!(
             recipe.contains("usdcat --flatten") && recipe.contains("--out"),
             "skip should print the generation recipe: {recipe}"
+        );
+    }
+
+    #[test]
+    fn golden_uses_file_transport_for_multiline_usda_values() {
+        let (_d, bundle) = bundle_with_fixture();
+        let flattened = "#usda 1.0\n(\n    comment = \"\"\"authored\nvalue\"\"\"\n    doc = \"\"\"Generated from Composed Stage of root layer C:\\work\\basic.toy\ngenerated value\"\"\"\n)\n";
+        let golden = bundle.path("tests/fixtures/basic.toy.golden.usda");
+        std::fs::write(golden.as_std_path(), flattened).unwrap();
+        let probe = FakeProbe::new().on("usdcat", Some(0), flattened, "");
+        let session = Session {
+            probe: &probe,
+            usdcat: Some("usdcat".into()),
+            python: None,
+            usdview: None,
+            has_display: false,
+        };
+
+        let diagnostic = level5_golden(&bundle, &session);
+
+        assert_eq!(diagnostic.status, Status::Pass);
+        let calls = probe.calls.borrow().join("\n");
+        assert!(calls.contains("--flatten"), "{calls}");
+        assert!(calls.contains("--out"), "L5 must bypass stdout: {calls}");
+    }
+
+    #[test]
+    fn golden_file_transport_still_preserves_authored_cr() {
+        let (_d, bundle) = bundle_with_fixture();
+        let golden_text = "#usda 1.0\n(\n    comment = \"\"\"authored\nvalue\"\"\"\n)\n";
+        let actual = golden_text.replacen("authored\nvalue", "authored\r\nvalue", 1);
+        let golden = bundle.path("tests/fixtures/basic.toy.golden.usda");
+        std::fs::write(golden.as_std_path(), golden_text).unwrap();
+        let probe = FakeProbe::new().on("usdcat", Some(0), &actual, "");
+        let session = Session {
+            probe: &probe,
+            usdcat: Some("usdcat".into()),
+            python: None,
+            usdview: None,
+            has_display: false,
+        };
+
+        let diagnostic = level5_golden(&bundle, &session);
+
+        assert_eq!(diagnostic.status, Status::Fail);
+        assert!(diagnostic.observed.contains("CRLF embedded"));
+        assert!(
+            diagnostic
+                .suggested_actions
+                .iter()
+                .any(|action| action.contains("not stdout translation")),
+            "{:?}",
+            diagnostic.suggested_actions
         );
     }
 

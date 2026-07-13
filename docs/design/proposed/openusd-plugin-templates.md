@@ -214,9 +214,11 @@ multiple bundles only after a product/artifact descriptor pins every member by
 digest and can prove clean-install discovery without the workspace tree.
 
 `libs/` is a recommended convention for shared non-plugin code, not a second
-plugin catalog. A future `openstrata.library.yaml` may describe exportable
-libraries, but ordinary CMake package config and target export remain the
-portable integration contract.
+plugin catalog. `openstrata.library.yaml` now describes the portable identity,
+version, installed CMake package/target, dependency edges, and runtime
+directories OST needs to execute the closure. Ordinary CMake package config and
+target export remain the actual consumer integration contract; the descriptor
+does not synthesize targets or require sibling `add_subdirectory()` coupling.
 
 ## Template descriptor and generated provenance
 
@@ -324,13 +326,23 @@ requires:
       version: ">=0.2,<0.3"
 ```
 
-`requires.bundles` and `schema.contract` require the explicit manifest schema;
-legacy manifests without composition fields remain accepted during migration.
-Dependency entries reject unknown keys. `requires.libraries` remains reserved
-until a portable library identity/discovery contract exists; inferring it from
-CMake target names would make missing-package validation unreliable. A
-versioned manifest must reject that reserved key (and every other unknown
-`requires:` key) rather than accept a declaration that has no effect.
+`requires.bundles`, `requires.libraries`, and `schema.contract` require the
+explicit manifest schema; legacy manifests without composition fields remain
+accepted during migration. Dependency entries reject unknown keys. A library
+consumer declares only `id` and compatible `version`; the producer's
+`openstrata.library.yaml` owns its CMake package, exported target, transitive
+library edges, and installed runtime directories. OST never infers identity
+from a CMake target name. Every other unknown `requires:` key still fails
+closed.
+
+The v0.16 source/package slice builds libraries deepest-first into the same
+target-specific private workspace prefix used by bundle composition, prepends
+that prefix to normal CMake package discovery, injects materialized library
+directories into test/run loader paths, and records the resolved id, version,
+descriptor, package/target, prefix, and runtime paths in inspect/test evidence.
+Plugin packaging copies the selected library runtime into the archive and
+records the closure. Digest-pinned composition of multiple independently
+packaged plugin bundles remains the future product contract.
 
 Semantic package version and authored-data contract version solve different
 problems. `version` selects a compatible bundle implementation. A schema
@@ -711,31 +723,36 @@ path; existing generated source remains project-owned.
    manifest acceptance unexpectedly.
 3. ✅ Add read-only dependency graph validation: deterministic discovery, duplicate
    and missing ids, version/contract checks, forbidden directions, and cycles.
-4. 🚧 Compose validated source-workspace dependencies for build, doctor, test,
+4. ✅ Compose validated source-workspace dependencies for build, doctor, test,
    run, and generated source CI. The implementation resolves transitive
    closures, installs dependency builds into a target-specific private prefix,
-   and keeps `--with` additive. The remaining acceptance item is the first real
-   split's full hosted verification pyramid without sibling bootstrap glue.
-5. ⏳ Extract self-contained shared CMake mechanics, test copied helpers, and prove
+   and keeps `--with` additive. The vrmSchema split passed the real hosted
+   verification pyramid without sibling bootstrap glue.
+5. 🚧 Execute ordinary `requires.libraries` closure through a separate
+   `openstrata.library.yaml` producer contract. Parser, graph validation,
+   producer-first install, CMake discovery, loader paths, evidence, package
+   runtime materialization, and the exported `cpp-library` scaffold have
+   landed; the concrete `vrmContainer` three-OS dogfood is the promotion gate.
+6. ⏳ Extract self-contained shared CMake mechanics, test copied helpers, and prove
    standalone plus workspace-consumer builds before generating graph targets.
    The versioned copied helper and standalone/workspace configure evidence have
    landed for the compiled file-format and asset-resolver entries; full build
    and clean-install evidence remains before this step is complete.
-6. ⏳ Add the standalone `usd-schema-cpp` skeleton with pinned generation modes,
+7. ⏳ Add the standalone `usd-schema-cpp` skeleton with pinned generation modes,
    contract baseline, downstream consumer fixture, and clean-install tests. The
    embedded skeleton, `VERIFY` baseline, CMake export, and fixture have landed;
    automated clean-install and second-platform/OpenUSD-line evidence remain;
    v0.15 fixes the MSVC `NOMINMAX` consumer and repeated-`pxrConfig` defects.
-7. Harden the `usd-asset-resolver-cpp` skeleton with identifier, cache,
+8. Harden the `usd-asset-resolver-cpp` skeleton with identifier, cache,
    concurrency, cross-platform, and broader clean-install evidence.
-8. Define the product descriptor and aggregate report, then compose existing
+9. Define the product descriptor and aggregate report, then compose existing
    bundle packages by digest and run extraction/clean-install smoke tests.
-9. Dogfood `usd-package-resolver-cpp` against a second package backend before
+10. Dogfood `usd-package-resolver-cpp` against a second package backend before
    promotion; do not fold it into the asset-resolver scaffold.
-10. Add tool-project, Exec, and Hydra/renderer candidates as their distinct
+11. Add tool-project, Exec, and Hydra/renderer candidates as their distinct
    lifecycle gaps are proven; keep algorithmic/reference code outside formal
    scaffolds.
-11. Add an explicit template diff/gap report before any migration or automatic
+12. Add an explicit template diff/gap report before any migration or automatic
     manifest-editing command.
 
 The next implementation slice makes already validated source dependency fields

@@ -292,7 +292,9 @@ literal carriage return into the parsed string value; `usdcat --flatten` then
 preserves it and L5 correctly reports a real golden mismatch. Do not fix that by
 normalizing carriage returns inside string values. Re-normalize the working tree
 after adding the attribute, regenerate the golden only if authored data changed,
-and inspect the flattened diff before accepting it.
+and inspect the flattened diff before accepting it. OST captures the flatten
+payload with `usdcat --out` rather than stdout, so a remaining semantic-CRLF
+diagnostic is authored/generated tool output, not Windows pipe translation.
 
 ## artifact — the local digest-addressed registry
 

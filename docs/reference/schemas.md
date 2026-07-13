@@ -4,6 +4,20 @@
 
 The JSON Schemas that `ost` validates its documents against. Sourced from [`schemas/`](../../schemas/).
 
+## `library.schema.json`
+
+OpenStrata Plain Library Manifest
+
+The openstrata.library.yaml descriptor for an ordinary installed CMake package participating in a source workspace closure.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cmake` | object | yes |  |
+| `library` | object | yes |  |
+| `requires` | object | no |  |
+| `runtime` | object | no |  |
+| `schema` | string | yes |  |
+
 ## `lock.schema.json`
 
 OpenStrata Lockfile
@@ -39,9 +53,11 @@ report.json written under .strata/reports/<plugin>/<UTC-timestamp>/ by `ost plug
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `ci` | object | no | CI evidence, present only when the run happened inside a generated CI job (the job exports OST_CI_* variables): which support cell this report proves, on which lane and runner, against which pinned artifacts and effective trust floor. Fields other than `cell` are null when the job did not export them. |
+| `dependencies_file` | string | no | Only on test JSON stdout when a plain-library closure exists: path to dependencies.json in the report directory. |
 | `diagnostics` | array | yes |  |
 | `environment` | object | no | Only on `doctor --json` stdout: the session env preview (mirrors environment.json). Absent from the on-disk report.json. |
 | `kind` | string | yes |  |
+| `libraries` | array | no | Resolved plain-library closure on inspect/test JSON stdout. The on-disk companion is dependencies.json. |
 | `license` | ["string","null"] | no | SPDX license expression for the plugin's own code, from the bundle manifest. Null when the manifest declares none. |
 | `passed` | boolean | yes |  |
 | `plugin` | string | yes |  |

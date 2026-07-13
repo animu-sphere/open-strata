@@ -1,0 +1,9 @@
+schema: openstrata.library/v1alpha1
+library:
+  id: {{name}}
+  version: 0.1.0
+cmake:
+  package: {{Name}}
+  target: {{Name}}::{{name}}
+runtime:
+  directories: [bin, lib]

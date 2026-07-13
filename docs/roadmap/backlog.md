@@ -102,11 +102,6 @@ Shipped context for each area is in the
   `dlopen`; (c) reconcile `ost artifact push` vs `oras push` OCI manifests —
   document the canonical producer path (prefer `ost artifact push`) or reproduce
   the `oras` manifest byte-for-byte so CI pins don't drift.
-- ⬜ **Portable ordinary-library dependency contract.** Versioned plugin
-  manifests fail on an unknown `requires.libraries` key until library identity,
-  version selection, ABI, CMake package discovery, and artifact/prefix ownership
-  have a portable contract. Do not infer library dependencies from CMake target
-  names or turn shared libraries into fake plugin bundles.
 - ⬜ **Packaged workspace/product composition.** Source-workspace closure is
   separate from clean-install artifact composition. Define member bundle
   digests, extraction layout, dependency closure, and aggregate evidence before

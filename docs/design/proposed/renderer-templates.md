@@ -1,7 +1,8 @@
 # Renderer template direction
 
-> Status: proposed skeleton direction. Based on the hdMerlin dogfooding report
-> dated 2026-07-11. This is the renderer specialization of the common
+> Status: proposed skeleton direction. Based on the hdMerlin dogfooding report,
+> the 2026-07-13 VRM workspace reports, and an application review against the
+> hdMerlin source tree. This is the renderer specialization of the common
 > [OpenUSD plugin template policy](openusd-plugin-templates.md). The first
 > objective is to preserve proven boundaries and executable evidence, not to
 > standardize a renderer implementation from a single example.
@@ -9,7 +10,9 @@
 ## Decision summary
 
 OpenStrata should provide one user-facing `renderer` project scaffold assembled
-from small source packs. Its initial maturity is **skeleton**, even though
+from small source packs. A source pack is a logical source/CMake target boundary,
+not automatically an independently versioned or installed package. The initial
+maturity is **skeleton**, even though
 `--template renderer` remains natural CLI wording. It should not provide a
 monolithic renderer framework or five unrelated top-level templates.
 
@@ -36,6 +39,55 @@ Backend and adapter selection may become explicit flags after the committed
 renderer manifest is defined. A separate `ost renderer` command is not justified
 until renderer projects need a lifecycle distinct from `ost init`, `ost build`,
 `ost package`, and `ost validate`.
+
+### 2026-07-13 dogfood and application decision
+
+The `vrmContainer` Phase 2 report settles a narrower question than renderer
+composition: when one independently buildable project consumes another ordinary
+CMake project, the producer needs a plain-library identity and the consumer needs
+an executable `requires.libraries` edge. That contract must not turn ordinary
+C++ code into a fake OpenUSD plugin bundle.
+
+It does **not** imply that every renderer source pack is a separate CMake
+package. The hdMerlin application review provides the counterexample that the
+initial scaffold must accommodate: one root project builds host-neutral scene,
+extraction, and Vulkan targets; installs them as components of one `Merlin`
+CMake package; and builds `hdMerlin` as an optional runtime-only product from the
+same target graph. Those are useful architectural boundaries without being
+independent source-workspace members.
+
+The default generated layout should therefore expose boundaries without forcing
+distribution granularity:
+
+```text
+sample-renderer/
+├─ CMakeLists.txt                         one project-level build/install graph
+├─ openstrata.renderer.yaml               selected renderer composition
+├─ core/render-world/                     internal CMake target
+├─ core/render-extraction/                internal CMake target
+├─ backend/vulkan/                        internal CMake target
+├─ adapters/headless/                     runtime product
+├─ adapters/hydra2/                       optional runtime plugin product
+└─ validation/                            project-level evidence
+```
+
+`openstrata.library.yaml` applies only at an independently buildable installed
+package boundary. If a Hydra adapter is later extracted into its own plugin
+project, it can depend on the renderer package through `requires.libraries` and
+normal `find_package` discovery. A co-built adapter does not need a synthetic
+library descriptor per internal target or a pretend standalone plugin bundle.
+
+The current `openstrata.library/v1alpha1` remains the deliberately small contract
+proven by `vrmContainer`: one producer identity/version, one CMake package/target
+contract, transitive library edges, and runtime directories. hdMerlin's multiple
+package components are evidence that a future renderer adoption may need more,
+not sufficient reason to add a component/target matrix to the common schema now.
+The installed CMake package remains authoritative for component availability.
+
+The same dogfood report also tightens validation transport: authored or
+generated multiline values must be captured without Windows stdout newline
+translation. Fix transport (for example `usdcat --out`), never semantic output
+by globally replacing CRLF.
 
 ## What OST owns
 
@@ -119,6 +171,12 @@ renderer:
 composition:
   backend: vulkan
   scene_inputs: [headless, hydra2]
+  units:
+    core: sample-render-core
+    extraction: sample-render-extraction
+    backend: sample-render-vulkan
+  adapters:
+    hydra2: sample-hydra2
   extraction_target: sample-render-extraction
 render_products:
   required: [color, depth]
@@ -134,10 +192,12 @@ openusd:
   version: "26.05"
 ```
 
-The manifest records selected composition and template provenance; it must not
-attempt to serialize renderer algorithms. `openstrata.toml` remains the runtime
-contract, while `openstrata.renderer.yaml` describes renderer source composition
-and validation intent.
+The names under `units` and `adapters` identify logical scaffold units, not
+library or bundle ids. The manifest records selected composition and template
+provenance; it must not attempt to serialize renderer algorithms or restate the
+complete CMake target graph. `openstrata.toml` remains the runtime contract,
+while `openstrata.renderer.yaml` describes renderer source composition and
+validation intent.
 
 The first release is a one-shot scaffold. Re-running it must refuse to overwrite
 project files. Later upgrade support should be an explicit diff/migration command
@@ -147,15 +207,19 @@ future migrations can avoid rewriting project code.
 
 ## OpenUSD and plugin integration
 
-The Hydra adapter is both a renderer adapter and an OpenUSD plugin. It should use
-the existing runtime, session, plugin bundle, artifact, and report machinery
-instead of creating a parallel renderer package system.
+The Hydra adapter participates in OpenUSD plugin discovery, but that does not by
+itself make it an independently publishable OpenStrata plugin bundle. hdMerlin's
+current adapter is a project-owned runtime product built from the root renderer
+graph. The renderer lifecycle should reuse existing runtime, session, report,
+artifact-layout, and diagnostic primitives without falsifying that ownership.
 
-The likely model change is a future `hydra-renderer` plugin kind with renderer
-specific test declarations and a `hydra-renderer:<name>` capability. It should
-retain the existing plugin pyramid:
+If dogfooding later proves a standalone adapter lifecycle, a `hydra-renderer`
+plugin kind with renderer-specific test declarations and a
+`hydra-renderer:<name>` capability may be appropriate. That extracted bundle
+would use `requires.libraries` for its installed renderer dependency. Both the
+co-built and extracted forms must retain the existing verification pyramid:
 
-- Level 0: bundle, resources, shaders, and relative paths;
+- Level 0: plugin product, resources, shaders, and relative install paths;
 - Level 1: OpenUSD version, build configuration, C++ runtime ABI, and target;
 - Level 2: plugin discovery and actual delegate creation as separate assertions;
 - Level 7: GPU render, RenderBuffer/presentation, first frame, and stable updates.
@@ -227,11 +291,31 @@ names such as `presentation: cpu-readback` and `interop: vulkan-hgi`.
 
 ## Delivery slices
 
+### Foundation — shared composition substrate
+
+- ✅ Add `openstrata.library/v1alpha1` identity, CMake package/target, transitive
+  library requirements, and installed runtime-directory modeling.
+- ✅ Make versioned `requires.libraries` participate in fail-closed workspace
+  validation, deterministic source builds, normal `CMAKE_PREFIX_PATH`
+  discovery, test/run loader paths, inspect/report evidence, and plugin package
+  runtime materialization.
+- ✅ Make `cpp-library` export a config package and emit the plain-library
+  descriptor so independently packaged renderer support libraries can use the
+  same contract without OpenUSD.
+- ✅ Capture L5 flatten output through `usdcat --out`, preserving genuinely
+  authored CR while avoiding stdout text-mode translation.
+
+Hosted Windows/macOS/Linux dogfood of the concrete `vrmContainer` producer and
+consumer remains the acceptance gate for declaring this foundation shipped in
+v0.16. Digest-pinned composition of multiple plugin bundle packages remains a
+product layer, not a renderer-template prerequisite.
+
 ### Slice A — renderer scaffold and headless evidence
 
 - Add the renderer manifest schema and parser.
-- Add the composed renderer project scaffold with core, extraction seam, Vulkan
-  offscreen backend, headless adapter, and validation pack.
+- Add one project-level renderer scaffold with internal core/extraction/backend
+  target boundaries, a Vulkan offscreen backend, headless adapter, and validation
+  pack. Do not require one install package per source pack.
 - Add core-only, GPU capability, color/depth, persistent-frame, and install-tree
   checks.
 - Record template composition and validation results in machine-readable form.
@@ -241,8 +325,9 @@ scene when Vulkan is available, and truthfully skip GPU checks when it is not.
 
 ### Slice B — Hydra 2 adapter and Level 7
 
-- Add `hydra-renderer` bundle modeling or an equivalent renderer capability without
-  bypassing the existing plugin bundle lifecycle.
+- Add a co-built Hydra 2 runtime product and reuse common plugin discovery/report
+  assertions. Extract a `hydra-renderer` bundle model only if an independent
+  build/install/package lifecycle is also proven.
 - Add ABI/configuration and runtime path helpers.
 - Add discovery, delegate creation, basic mesh/camera Sync, color/depth CPU
   RenderBuffer, install-tree usdview first-frame, and stable-update assertions.

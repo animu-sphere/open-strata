@@ -50,6 +50,32 @@
         }
       }
     },
+    "libraries": {
+      "type": "array",
+      "description": "Resolved plain-library closure on inspect/test JSON stdout. The on-disk companion is dependencies.json.",
+      "items": {
+        "type": "object",
+        "required": ["id", "version", "descriptor", "cmake_package", "cmake_target", "prefix", "runtime_directories", "provenance"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "minLength": 1 },
+          "descriptor": { "type": "string", "minLength": 1 },
+          "cmake_package": { "type": "string", "minLength": 1 },
+          "cmake_target": { "type": "string", "minLength": 1 },
+          "prefix": { "type": ["string", "null"] },
+          "runtime_directories": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "provenance": { "type": "string", "enum": ["source-workspace"] }
+        }
+      }
+    },
+    "dependencies_file": {
+      "type": "string",
+      "description": "Only on test JSON stdout when a plain-library closure exists: path to dependencies.json in the report directory."
+    },
     "ci": {
       "type": "object",
       "description": "CI evidence, present only when the run happened inside a generated CI job (the job exports OST_CI_* variables): which support cell this report proves, on which lane and runner, against which pinned artifacts and effective trust floor. Fields other than `cell` are null when the job did not export them.",

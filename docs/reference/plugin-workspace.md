@@ -1,17 +1,17 @@
 # Plugin workspace dependency contract
 
 `ost plugin test --workspace` discovers bundle manifests in immediate child
-directories and `plugins/*`, sorts them by path, validates their dependency
-graph, and only then resolves a runtime or runs per-bundle verification. In the
-v0.15.0 source-workspace contract, the validated graph also supplies each
-bundle's transitive runtime/test closure and deterministic dependency build
-order.
+directories and `plugins/*`, plus plain-library descriptors in immediate child
+directories and `libs/*`. It sorts them by path, validates their dependency
+graph, and only then resolves a runtime or runs per-bundle verification. The
+validated graph supplies each bundle's transitive runtime/test closure and
+deterministic bundle and library build order.
 
 ## Versioned manifest extension
 
-Legacy manifests without bundle composition fields remain valid. A manifest
-that declares `requires.bundles` or provides `schema.contract` must opt into the
-extension explicitly:
+Legacy manifests without composition fields remain valid. A manifest that
+declares `requires.bundles`, `requires.libraries`, or provides
+`schema.contract` must opt into the extension explicitly:
 
 ```yaml
 manifest:
@@ -56,13 +56,38 @@ type, property, or token surface increments it and requires authored-data
 migration notes. Consumers of a versioned schema contract must select it
 explicitly.
 
-Versioned manifests recursively reject unknown keys below `requires:`.
-`requires.libraries` is reserved and rejected explicitly until library
-identity, version selection, ABI, CMake package discovery, and artifact/prefix
-ownership have a separate portable contract. Workspace validation must not
-infer it from CMake target names or mistake an externally installed dependency
-for a missing workspace-owned package. Legacy manifests retain their previous
-permissive parsing for compatibility.
+Versioned manifests recursively reject unknown keys below `requires:`. Plain
+libraries use a separate producer descriptor while the plugin consumer names
+only identity and compatible version:
+
+```yaml
+# plugins/usdVrm/openstrata.plugin.yaml
+requires:
+  libraries:
+    - id: vrmContainer
+      version: ">=0.1,<0.2"
+```
+
+```yaml
+# libs/vrmContainer/openstrata.library.yaml
+schema: openstrata.library/v1alpha1
+library:
+  id: vrmContainer
+  version: 0.1.0
+cmake:
+  package: vrmContainer
+  target: vrmContainer::vrmContainer
+runtime:
+  directories: [bin, lib]
+```
+
+The library may itself declare `requires.libraries` for a transitive closure.
+OST validates missing, duplicate, incompatible, malformed, and cyclic library
+edges. It never infers identity from CMake target names; consumers continue to
+use `find_package(vrmContainer CONFIG REQUIRED)`. A library descriptor carries
+no plugin kind, `plugInfo.json`, registration, or OpenUSD dependency. Legacy
+plugin manifests retain their previous permissive parsing for compatibility,
+but using either composition field requires the versioned plugin header.
 
 ## Dependency directions
 
@@ -87,12 +112,18 @@ graph rather than asking each caller to restate it:
 - `plugin build <bundle>` builds source dependencies in deterministic
   topological order, installs them to an OST-owned target-specific prefix, and
   passes that prefix through normal CMake package discovery;
+- plain-library runtime directories materialized below that prefix are added to
+  the loader environment for selected test/run/view sessions;
+- `plugin inspect --json` and test report `dependencies.json` expose selected
+  library identity, version, descriptor, CMake package/target, prefix, runtime
+  paths, and source-workspace provenance;
 - generated source-CI cells use the manifest closure selected by `bundle:` and
   do not gain a second, manually maintained `with:` list;
 - explicit `--with` remains additive for external or ad-hoc bundles and keeps
   its existing caller-defined ordering.
 
-A selected primary bundle that declares no `requires.bundles` has an empty
+A selected primary bundle that declares neither `requires.bundles` nor
+`requires.libraries` has an empty
 closure and skips workspace discovery entirely: unrelated sibling bundles (a
 broken manifest, a stale copy) cannot fail its commands. Once a bundle declares
 dependencies, an unloadable or invalid workspace graph fails closed.
@@ -108,10 +139,12 @@ resolved dependencies follow in a stable order, then the runtime. Duplicate
 bundle identities are rejected or deduplicated only after identity/version/
 contract agreement—path order must not silently pick a provider.
 
-This source-tree contract does not make a single packaged artifact contain its
-dependencies. Multi-package clean-install verification and support-lane
-composition require a future product/artifact-closure descriptor that pins
-every member by digest. They must not fall back to sibling source paths.
+A plugin package materializes its selected plain-library runtime under
+`runtime/libraries/`, adds those directories to the packaged manifest's loader
+paths, and records the library closure in `dependencies.json` and the artifact
+manifest. Multi-plugin-package clean-install verification still requires a
+future product/artifact-closure descriptor that pins every member by digest; it
+must not fall back to sibling source paths.
 
 ## Graph result
 
@@ -122,6 +155,8 @@ With `--json`, the normal workspace result includes `data.graph`:
   "passed": true,
   "nodes": [{"id":"vrmFormat","version":"0.2.0","kind":"usd-fileformat"}],
   "edges": [{"from":"vrmFormat","to":"vrmSchema","version":">=0.2,<0.3","contract":1}],
+  "libraries": [{"id":"vrmContainer","version":"0.1.0","package":"vrmContainer","target":"vrmContainer::vrmContainer"}],
+  "library_edges": [{"from":"vrmFormat","from_kind":"bundle","to":"vrmContainer","version":">=0.1,<0.2"}],
   "issues": []
 }
 ```
@@ -145,3 +180,11 @@ written. Issues use stable codes:
 | `WORKSPACE_SCHEMA_CONTRACT_NOT_APPLICABLE` | A contract is attached to a non-schema dependency or bundle. |
 | `WORKSPACE_DEPENDENCY_DIRECTION_FORBIDDEN` | The dependency violates the bundle ownership direction. |
 | `WORKSPACE_DEPENDENCY_CYCLE` | The directed bundle graph contains a cycle. |
+| `WORKSPACE_DUPLICATE_LIBRARY_ID` | More than one descriptor provides the same library id. |
+| `WORKSPACE_DUPLICATE_LIBRARY_DEPENDENCY` | A bundle or library repeats one library edge. |
+| `WORKSPACE_LIBRARY_DEPENDENCY_ID_INVALID` | A library dependency id is not portable. |
+| `WORKSPACE_LIBRARY_DEPENDENCY_MISSING` | No unique descriptor provides the required library. |
+| `WORKSPACE_LIBRARY_DEPENDENCY_VERSION_INVALID` | A library version range cannot be parsed. |
+| `WORKSPACE_LIBRARY_DEPENDENCY_VERSION_MISMATCH` | The provider version does not satisfy the range. |
+| `WORKSPACE_LIBRARY_DEPENDENCY_CYCLE` | The directed plain-library graph contains a cycle. |
+| `WORKSPACE_LIBRARY_RUNTIME_MISSING` | Build/package/test/run needs an installed library runtime directory which is absent. |

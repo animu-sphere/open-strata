@@ -3,7 +3,7 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## Next milestone: v0.16.0 — generated trusted CI
+## Next milestone: v0.16.0 — dogfood closure + generated trusted CI
 
 **Status:** 🚧 in progress · **Depends on:** v0.15.0 workspace
 composition and artifact evidence bundles (shipped).
@@ -13,6 +13,41 @@ produced artifacts carry SBOM/provenance evidence and made generated source-CI
 consume workspace dependency closures. v0.16.0 pushes that trust chain into the
 generated CI contract so trusted publication lanes are generated, policy-gated,
 and separate from ordinary PR/source validation lanes.
+
+The 2026-07-13 `vrmContainer` Phase 2 dogfood adds two release-front acceptance
+items. They are shared substrate for independently composed renderer packages as
+well as the VRM workspace; they do not prescribe one package per internal
+renderer source pack.
+
+### P0 — Windows L5 transport regression ✅ implementation
+
+- ✅ Capture `usdcat --flatten` through `--out <temporary-file>` instead of a
+  Windows text-mode stdout pipe.
+- ✅ Preserve genuine CR inside USDA strings; do not normalize semantic values.
+- ✅ Distinguish a remaining authored/generated CR mismatch from stdout
+  translation in the diagnostic and cover authored multiline comments plus the
+  generated multiline `doc` shape.
+- ⬜ Re-run the concrete `vrmSchema` L5 fixture on Windows, macOS, and Linux and
+  restore the temporarily capped Windows hosted cell from L4 to L5.
+
+### P1 — executable plain-library closure 🚧
+
+- ✅ Add `openstrata.library/v1alpha1` with library identity/version, installed
+  CMake package and exported target, transitive library edges, and runtime dirs.
+- ✅ Accept versioned `requires.libraries`; reject missing, duplicate,
+  incompatible, malformed, and cyclic closures before CMake.
+- ✅ Build/install libraries deepest-first into the target workspace prefix and
+  let consumers continue to use normal `find_package(... CONFIG REQUIRED)`.
+- ✅ Add materialized runtime dirs to source test/run/view sessions and expose
+  identity, version, descriptor, prefix, package/target, runtime paths, and
+  provenance through inspect/test evidence.
+- ✅ Materialize selected library runtime directories into plugin packages and
+  record the closure; keep digest-pinned multi-bundle package composition in the
+  future product layer.
+- ✅ Make the `cpp-library` scaffold emit the descriptor and a consumable CMake
+  config package.
+- ⬜ Dogfood the real `vrmContainer -> usdVrm` producer/consumer on all three
+  hosted OSes, then delete the downstream bootstrap/runtime-copy adapter.
 
 ### P0 — trust-aware support matrix 🚧
 

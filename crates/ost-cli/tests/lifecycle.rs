@@ -945,6 +945,128 @@ fn selected_and_workspace_tests_compose_manifest_dependencies_without_with() {
     );
 }
 
+#[test]
+fn plain_library_dependencies_validate_inspect_and_render_build_order() {
+    let sb = Sandbox::new("wslibrary");
+    init_and_pull(&sb);
+    let scaffold = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "consumer",
+        "--extension",
+        "toy",
+    ]);
+    assert!(scaffold.status.success(), "{}", out_text(&scaffold));
+
+    let manifest_path = sb.work_file("consumer/openstrata.plugin.yaml");
+    let source = std::fs::read_to_string(&manifest_path).unwrap();
+    let source = source.replace(
+        "requires:\n  capabilities: [usd-stage-read]\n",
+        "requires:\n  capabilities: [usd-stage-read]\n  libraries:\n    - { id: container, version: '>=1.0,<2.0' }\n",
+    );
+    std::fs::write(
+        &manifest_path,
+        format!("manifest:\n  schema: openstrata.plugin/v1alpha1\n{source}"),
+    )
+    .unwrap();
+
+    let library_root = sb.work_file("libs/container");
+    std::fs::create_dir_all(&library_root).unwrap();
+    std::fs::write(
+        library_root.join("openstrata.library.yaml"),
+        "schema: openstrata.library/v1alpha1\nlibrary: { id: container, version: 1.2.0 }\ncmake: { package: container, target: 'container::container' }\nruntime: { directories: [bin, lib] }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        library_root.join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.23)\nproject(container LANGUAGES CXX)\nadd_library(container SHARED container.cpp)\ninstall(TARGETS container EXPORT containerTargets)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        library_root.join("container.cpp"),
+        "int container() { return 1; }\n",
+    )
+    .unwrap();
+    let plugin_library = sb.work_file(&format!(
+        "consumer/lib/{}ConsumerFileFormat{}",
+        "lib",
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::create_dir_all(plugin_library.parent().unwrap()).unwrap();
+    std::fs::write(plugin_library, b"test library marker").unwrap();
+
+    let inspect = sb.ost(&["--json", "plugin", "inspect", "consumer"]);
+    assert!(inspect.status.success(), "{}", out_text(&inspect));
+    let value: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(value["data"]["libraries"][0]["id"], "container");
+    assert_eq!(value["data"]["libraries"][0]["version"], "1.2.0");
+    assert_eq!(
+        value["data"]["libraries"][0]["cmake_target"],
+        "container::container"
+    );
+
+    let build = sb.ost(&["plugin", "build", "consumer", "--dry-run"]);
+    assert!(build.status.success(), "{}", out_text(&build));
+    let plan = out_text(&build);
+    assert!(plan.contains("== build library container =="), "{plan}");
+    assert!(plan.contains("libs/container"), "{plan}");
+    assert!(plan.contains("workspace-prefix"), "{plan}");
+    assert!(
+        plan.find("== build library container ==") < plan.find("== build primary consumer =="),
+        "library must install before the consumer configures: {plan}"
+    );
+
+    let workspace = sb.ost(&["--json", "plugin", "test", "--workspace", "--up-to", "1"]);
+    assert!(workspace.status.success(), "{}", out_text(&workspace));
+    let value: serde_json::Value = serde_json::from_slice(&workspace.stdout).unwrap();
+    assert_eq!(value["data"]["graph"]["libraries"][0]["id"], "container");
+    assert_eq!(
+        value["data"]["graph"]["library_edges"][0]["from"],
+        "consumer"
+    );
+
+    // Model the install result of the dry-run plan and prove packaging carries
+    // the declared runtime closure instead of relying on a mutable sibling.
+    let consumer_target = single_target_dir(&sb.work_file("consumer"));
+    let target_id = consumer_target.file_name().unwrap();
+    let installed_bin = sb
+        .work_file(".strata/targets")
+        .join(target_id)
+        .join("workspace-prefix/bin");
+    std::fs::create_dir_all(&installed_bin).unwrap();
+    std::fs::write(
+        installed_bin.join(format!("container{}", std::env::consts::DLL_SUFFIX)),
+        b"plain library runtime marker",
+    )
+    .unwrap();
+    let package = sb.ost(&["plugin", "package", "consumer"]);
+    assert!(package.status.success(), "{}", out_text(&package));
+    let package_manifest = find_first(&sb.work_file("consumer/dist"), "manifest.json").unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(package_manifest).unwrap()).unwrap();
+    assert_eq!(value["dependencies"]["libraries"][0]["id"], "container");
+    assert!(value["files"].as_array().unwrap().iter().any(|file| {
+        file["path"]
+            .as_str()
+            .is_some_and(|path| path.contains("runtime/libraries/bin/container"))
+    }));
+    let packaged_test = sb.ost(&[
+        "--json",
+        "plugin",
+        "test",
+        "consumer",
+        "--from-package",
+        "--up-to",
+        "1",
+    ]);
+    assert!(
+        packaged_test.status.success(),
+        "{}",
+        out_text(&packaged_test)
+    );
+}
+
 /// Inside a generated CI job the `OST_CI_*` variables travel into every
 /// written report as a `ci` evidence block, so the report records which
 /// support cell it proves; outside CI the block is absent.

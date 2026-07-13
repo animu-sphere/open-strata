@@ -20,4 +20,10 @@ drives CMake. Your `CMakePresets.json` (if any) is never modified; run
 include/{{name}}/{{name}}.hpp   public header
 src/{{name}}.cpp                implementation
 CMakeLists.txt                  build + install rules
+openstrata.library.yaml         package identity and runtime layout for workspace closure
 ```
+
+The install exports `{{Name}}::{{name}}` through
+`find_package({{Name}} CONFIG REQUIRED)`. A versioned plugin workspace can
+consume it with `requires.libraries` without adding this source directory as a
+CMake subdirectory.

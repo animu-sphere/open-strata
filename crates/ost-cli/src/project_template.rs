@@ -112,6 +112,14 @@ const CPP_LIBRARY: &[TemplateFile] = &[
         "src/{{name}}.cpp",
         include_str!("../../../templates/cpp-library/src/{{name}}.cpp"),
     ),
+    tf(
+        "cmake/{{Name}}Config.cmake.in",
+        include_str!("../../../templates/cpp-library/cmake/{{Name}}Config.cmake.in"),
+    ),
+    tf(
+        "openstrata.library.yaml",
+        include_str!("../../../templates/cpp-library/openstrata.library.yaml"),
+    ),
 ];
 
 const CPP_LIBRARY_DESCRIPTOR: &str = include_str!("../../../templates/cpp-library/template.yaml");

@@ -155,10 +155,15 @@ pub struct Requires {
     /// Workspace validation resolves these by plugin identity before any build.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bundles: Vec<BundleDependency>,
+    /// Ordinary installed CMake packages required at configure, link, and
+    /// runtime. Providers are described by `openstrata.library.yaml`; they do
+    /// not become OpenUSD plugin bundles.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub libraries: Vec<LibraryDependency>,
     /// Unknown keys are retained only long enough for [`crate::Bundle::load`] to apply
     /// the versioned-manifest compatibility rule. Legacy manifests keep their
     /// historical fail-open behavior; `openstrata.plugin/v1alpha1` manifests
-    /// reject every key not modeled above (including reserved `libraries`).
+    /// reject every key not modeled above.
     #[serde(flatten, default, skip_serializing)]
     unknown: IndexMap<String, serde_yaml::Value>,
 }
@@ -178,6 +183,14 @@ pub struct BundleDependency {
     /// Authored-data contract required from a schema bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<u64>,
+}
+
+/// A versioned dependency on a plain CMake library/package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryDependency {
+    pub id: String,
+    pub version: String,
 }
 
 /// Where the bundle's USD `plugInfo.json` lives, relative to the bundle root.
