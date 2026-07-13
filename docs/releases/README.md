@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.15.0 | [v0.15.0.md](v0.15.0.md) | Workspace composition + artifact evidence bundles |
 | v0.14.0 | [v0.14.0.md](v0.14.0.md) | Artifact trust policy foundation |
 | v0.13.0 | [v0.13.0.md](v0.13.0.md) | Release-quality packaging (reproducible + lean + testable-from-package) |
 | v0.12.0 | [v0.12.0.md](v0.12.0.md) | Hosted macOS CI + runtime-contract hardening |

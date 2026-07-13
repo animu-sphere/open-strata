@@ -31,16 +31,16 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.14.0** — artifact trust policy foundation
-(`openstrata-artifact-policy.toml`, protected publisher enforcement, and
-`ost artifact verify --policy`).
+The current release is **v0.15.0** — source-workspace composition and artifact
+evidence bundles (`requires.bundles` closure, SPDX SBOM + SLSA/in-toto
+provenance sidecars, and `ost artifact verify --require-*`).
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-Provenance/SBOM, generated trusted CI, sessions, GPU/AI, and broader DCC matrices
-are still ahead. Linux x86_64 is the first-class target; other OS targets are
-modeled and partially working — these examples were exercised on Windows.
+Generated trusted CI, sessions, GPU/AI, and broader DCC matrices are still ahead.
+Linux x86_64 is the first-class target; other OS targets are modeled and
+partially working — these examples were exercised on Windows.
 
 ## Install
 

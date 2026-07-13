@@ -8,17 +8,9 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.15.0 — source-workspace composition plus the provenance /
-SBOM bundle) is detailed in [current.md](current.md).
+The next milestone (v0.16.0 — generated trusted CI) is detailed in
+[current.md](current.md).
 
-- ⬜ **v0.16.0 — generated trusted CI.** Push the trust chain up into the CI
-  contract (future-policy §7/§8/§13): a `trust` field on support-matrix targets, a
-  minimum-trust requirement per lane (`pr_min_trust` / `main_min_trust` /
-  `release_min_trust`), and lane-specific generated workflows — the PR / source-CI
-  lanes stay publish-free, and a separate **trusted runtime-publish lane**
-  (protected branch/tag, OIDC, SBOM + provenance + validation report required,
-  protected-namespace policy enforced) is generated distinctly from the release
-  lane. Release workflows refuse untrusted artifacts.
 - ⬜ **v0.17.0 — DCC host integration.** Extend the support matrix beyond
   runtime-native apps to external DCC hosts (future-policy §9/§11; Phase 10
   [dcc-hosts.md](../design/proposed/dcc-hosts.md)). Read-only host discovery +
@@ -36,9 +28,9 @@ SBOM bundle) is detailed in [current.md](current.md).
 - ⬜ **OpenUSD template catalog maturity and expansion.** Direction:
   [openusd-plugin-templates.md](../design/proposed/openusd-plugin-templates.md).
   Versioned descriptors, deterministic provenance, the asset-resolver and
-  compiled-schema skeletons, copied CMake helpers, and read-only bundle graph
-  validation are in. Source-workspace dependency composition is the v0.15.0
-  correctness gate. Beyond it, automate clean-install consumer gates, prove the
+  compiled-schema skeletons, copied CMake helpers, read-only bundle graph
+  validation, and source-workspace dependency composition are in. Next, automate
+  clean-install consumer gates, prove the
   schema skeleton on a second supported platform/OpenUSD line, and harden the
   asset resolver. Extend the existing `ost plugin new` lifecycle—do not create
   a parallel template repository, CLI, renderer, bundle model, or artifact
@@ -86,13 +78,15 @@ Shipped context for each area is in the
 - ⬜ **Licensing — runtime/extension content attribution.** Runtime/extension
   manifests record upstream license metadata; built/adopted runtimes collect
   upstream `LICENSE`/`NOTICE` files; a runtime's licenses are inspectable
-  (e.g. `ost runtime licenses <cy> --profile <p>`). Per-artifact SBOM lands with
-  v0.15.0. No artifact ships without complete third-party attribution.
+  (e.g. `ost runtime licenses <cy> --profile <p>`). Per-artifact SBOM evidence
+  landed with v0.15.0. No artifact ships without complete third-party
+  attribution.
 - ⬜ **SEC-005 (P1) — installer & release-asset verification.** Publish per-release
   checksums, signature/Sigstore material, SBOM, and provenance; the installer pins
   a version, verifies the checksum, and aborts on mismatch. Tracks Distribution →
-  signing/provenance. Reproducible packaging + stable checksums land with v0.13.0;
-  SBOM/provenance with v0.15.0.
+  signing/provenance. Reproducible packaging + stable checksums landed with
+  v0.13.0, and artifact SBOM/provenance evidence landed with v0.15.0; remaining
+  work is release-asset signing material plus installer-side verification.
 - ⬜ **SEC-006 (P2) — runtime trust policy.** Runtime trust levels (`local` /
   `verified` / `trusted`) recorded in the manifest and lock; warn on
   world-writable runtime roots; `ost build` / `ost plugin test` can require a
