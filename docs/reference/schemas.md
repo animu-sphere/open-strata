@@ -76,3 +76,30 @@ The openstrata.toml authored at a project root.
 | --- | --- | --- | --- |
 | `project` | object | yes |  |
 | `requires` | object | yes |  |
+
+## `renderer-report.schema.json`
+
+OpenStrata Renderer Report
+
+Deterministic PASS/FAIL/SKIP evidence emitted by a renderer project.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `checks` | array | yes |  |
+| `renderer` | object | yes |  |
+| `schema` | string | yes |  |
+
+## `renderer.schema.json`
+
+OpenStrata Renderer Manifest
+
+Logical renderer source composition and validation intent. Units are project-owned labels, not necessarily packages or artifacts.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `composition` | object | yes |  |
+| `frame` | object | yes |  |
+| `render_products` | object | yes |  |
+| `renderer` | object | yes |  |
+| `schema` | string | yes |  |
+| `validation` | object | yes |  |

@@ -49,6 +49,20 @@ renderer source pack.
 - ⬜ Dogfood the real `vrmContainer -> usdVrm` producer/consumer on all three
   hosted OSes, then delete the downstream bootstrap/runtime-copy adapter.
 
+### P2 — renderer Slice A 🚧
+
+- ✅ Add `openstrata.renderer/v1alpha1` and
+  `openstrata.renderer-report/v1alpha1` with strict parsing and required
+  PASS/FAIL/SKIP assertion matching.
+- ✅ Add `ost init --template renderer` as one project-level CMake graph with
+  host-neutral core, extraction seam, Vulkan capability target, headless runtime
+  product, config-package install, and install-tree CTest.
+- ✅ Generate `renderer-report.json` and surface each check through generic
+  `ost validate`; unavailable GPU work is an explained skip.
+- ⬜ Replace the generated GPU-frame skip with a deterministic Vulkan offscreen
+  frame, color/depth contract checks, persistent-frame evidence, validation
+  callback capture, and the 1,000-frame clean loop.
+
 ### P0 — trust-aware support matrix 🚧
 
 - ✅ Add trust requirements to support-matrix targets and lanes: a target-level

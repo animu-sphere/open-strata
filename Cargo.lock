@@ -518,9 +518,11 @@ name = "ost-manifest"
 version = "0.15.0"
 dependencies = [
  "anyhow",
+ "camino",
  "ost-core",
  "serde",
  "serde_json",
+ "serde_yaml",
  "thiserror",
  "toml",
  "toml_edit",

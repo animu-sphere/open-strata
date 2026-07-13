@@ -437,7 +437,7 @@ Initialise an OpenStrata project in the current directory
 | `--force` | Overwrite an existing manifest and template files if present |
 | `--name <NAME>` | Project name. Defaults to the current directory name |
 | `--platform <PLATFORM>` | Platform calendar-year to target, e.g. `cy2026`. Defaults to the latest |
-| `--template <TEMPLATE>` | Project template: `cpp-library` (default), `usd-plugin`, or `usd-plugin-workspace` (dual-mode root for `ost plugin new` bundles) |
+| `--template <TEMPLATE>` | Project template: `cpp-library` (default), `renderer`, `usd-plugin`, or `usd-plugin-workspace` (dual-mode root for `ost plugin new` bundles) |
 
 ### `ost lock`
 

@@ -37,6 +37,7 @@ ost platform show cy2026 --json      # machine-readable
 
 ```bash
 ost init                                      # cpp-library template, dir name + latest platform
+ost init --template renderer --name my-renderer # renderer skeleton + headless evidence
 ost init --template usd-plugin                # scaffold a USD plugin project
 ost init --template usd-plugin-workspace      # root for one repo with many plugin bundles
 ost init --name my-show --platform cy2026     # explicit name + platform

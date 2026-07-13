@@ -38,15 +38,14 @@ The next milestone (v0.16.0 — generated trusted CI) is detailed in
   a parallel template repository, CLI, renderer, bundle model, or artifact
   path. Add Hydra and tool candidates only at
   evidence-appropriate maturity.
-- ⬜ **Renderer project skeleton and Level 7 verification.** Direction:
-  [renderer-templates.md](../design/proposed/renderer-templates.md). Add one
-  composable `renderer` project scaffold (host-neutral core, project-owned
-  extraction seam, Vulkan offscreen backend, validation pack, optional Hydra 2
-  adapter), a committed renderer composition manifest, and independently
-  reported discovery/delegate/GPU/RenderBuffer/usdview stable-update evidence.
-  Keep it at skeleton maturity until a second independent implementation;
-  instancing, materials, upload policy, and zero-copy interop remain
-  renderer-owned until separately proven.
+- ⬜ **Renderer Slice B/Level 7 and skeleton promotion.** Direction:
+  [renderer-templates.md](../design/proposed/renderer-templates.md). Slice A's
+  project scaffold, manifest, capability report, and install-tree seam are
+  active in the current milestone. Next add the optional co-built Hydra 2
+  adapter and independently reported discovery/delegate/GPU/RenderBuffer/
+  usdview stable-update evidence. Keep skeleton maturity until a second
+  independent implementation; instancing, materials, upload policy, and
+  zero-copy interop remain renderer-owned until separately proven.
 - ⬜ **Phase 7 — Sessions / sandbox.** Session metadata; `ost session start | fork
   | diff | discard | promote`. Workspace isolation; optional Linux namespace /
   overlayfs.

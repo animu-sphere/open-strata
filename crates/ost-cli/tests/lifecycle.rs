@@ -415,6 +415,121 @@ fn full_lifecycle_init_build_package() {
 }
 
 #[test]
+fn renderer_template_scaffolds_one_project_and_a_strict_manifest() {
+    let sb = Sandbox::new("renderer-template");
+    let init = sb.ost(&[
+        "--json",
+        "init",
+        "--platform",
+        "cy2026",
+        "--template",
+        "renderer",
+        "--name",
+        "sample-renderer",
+    ]);
+    assert!(init.status.success(), "init failed:\n{}", out_text(&init));
+    let output: serde_json::Value = serde_json::from_slice(&init.stdout).unwrap();
+    assert_eq!(output["data"]["template"], "renderer");
+
+    for path in [
+        "openstrata.renderer.yaml",
+        "core/render-world/CMakeLists.txt",
+        "core/render-extraction/CMakeLists.txt",
+        "backend/vulkan/CMakeLists.txt",
+        "adapters/headless/CMakeLists.txt",
+        "validation/CMakeLists.txt",
+    ] {
+        assert!(
+            sb.work_file(path).is_file(),
+            "missing renderer output {path}"
+        );
+    }
+
+    let source = std::fs::read_to_string(sb.work_file("openstrata.renderer.yaml")).unwrap();
+    let manifest = ost_manifest::RendererManifest::parse(&source).unwrap();
+    assert_eq!(manifest.renderer.name, "sample-renderer");
+    assert_eq!(
+        manifest.composition.units["core"],
+        "sample-renderer-render-core"
+    );
+    assert!(manifest
+        .validation
+        .assertions
+        .iter()
+        .any(|id| id == "renderer.render_product.color"));
+
+    // Internal packs are target boundaries in one project, not generated
+    // workspace package descriptors.
+    assert!(!sb.work_file("openstrata.library.yaml").exists());
+    assert!(!sb.work_file("openstrata.plugin.yaml").exists());
+}
+
+#[test]
+fn validate_surfaces_renderer_pass_fail_skip_evidence() {
+    let sb = Sandbox::new("renderer-validate");
+    let init = sb.ost(&[
+        "init",
+        "--platform",
+        "cy2026",
+        "--template",
+        "renderer",
+        "--name",
+        "sample-renderer",
+    ]);
+    assert!(init.status.success(), "init failed:\n{}", out_text(&init));
+    let project = std::fs::read_to_string(sb.work_file("openstrata.toml")).unwrap();
+    assert!(project.contains("profile = \"core\""));
+    let pull = sb.ost(&["runtime", "pull", "cy2026", "--profile", "core"]);
+    assert!(pull.status.success(), "pull failed:\n{}", out_text(&pull));
+    let configure = sb.ost(&["configure"]);
+    assert!(
+        configure.status.success(),
+        "configure failed:\n{}",
+        out_text(&configure)
+    );
+
+    let target = single_target_dir(&sb.work);
+    let id = target.file_name().unwrap().to_string_lossy().into_owned();
+    let build = sb.work.join("build").join(id);
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::write(
+        build.join("renderer-report.json"),
+        r#"{
+          "schema":"openstrata.renderer-report/v1alpha1",
+          "renderer":{"name":"sample-renderer"},
+          "checks":[
+            {"id":"renderer.core.boundary","status":"pass"},
+            {"id":"renderer.backend.capability","status":"skip","detail":"GPU unavailable"},
+            {"id":"renderer.gpu.frame","status":"skip","detail":"GPU unavailable"},
+            {"id":"renderer.render_product.color","status":"skip","detail":"GPU frame skipped"},
+            {"id":"renderer.render_product.depth","status":"skip","detail":"GPU frame skipped"},
+            {"id":"renderer.frame.persistence","status":"skip","detail":"GPU frame skipped"},
+            {"id":"renderer.install_tree","status":"pass"}
+          ]
+        }"#,
+    )
+    .unwrap();
+
+    let validate = sb.ost(&["--json", "validate"]);
+    assert!(
+        validate.status.success(),
+        "validate failed:\n{}",
+        out_text(&validate)
+    );
+    let output: serde_json::Value = serde_json::from_slice(&validate.stdout).unwrap();
+    let checks = output["data"]["checks"].as_array().unwrap();
+    assert!(checks
+        .iter()
+        .any(|check| { check["name"] == "renderer-manifest" && check["status"] == "pass" }));
+    assert!(checks.iter().any(|check| {
+        check["name"] == "renderer.backend.capability" && check["status"] == "skip"
+    }));
+    assert!(checks
+        .iter()
+        .any(|check| { check["name"] == "renderer.install_tree" && check["status"] == "pass" }));
+}
+
+#[test]
 fn build_failure_names_the_phase_and_log() {
     if let Err(reason) = native_lifecycle_ready() {
         eprintln!("skipping build_failure: {reason}");

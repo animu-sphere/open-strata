@@ -9,6 +9,7 @@ with the template id/version, generator version, and normalized inputs.
 | Template id | Maturity | Command | Purpose |
 | --- | --- | --- | --- |
 | `cpp-library` | template | `ost init --template cpp-library` | Minimal installable C++ library. |
+| `renderer` | skeleton | `ost init --template renderer` | One-project renderer boundaries and headless PASS/FAIL/SKIP evidence. |
 | `usd-plugin` | skeleton | `ost init --template usd-plugin` | Minimal generic OpenUSD plugin project. |
 | `usd-plugin-workspace` | template | `ost init --template usd-plugin-workspace` | Dual-mode root that discovers immediate bundles and `plugins/*`. |
 
@@ -30,6 +31,12 @@ backwards-compatible default for `usd-schema`.
 
 Skeletons have stable generation and lifecycle seams, but their domain
 architecture has not met the promotion evidence required of a template.
+
+The renderer skeleton emits one project-level CMake build/install graph. Its
+core, extraction, backend, and headless directories are internal target
+boundaries, not separate package or plugin artifacts. The generated validator
+passes only checks it actually executes and leaves GPU frame/product assertions
+as explained skips until project-owned rendering code replaces the seam.
 
 The OpenExec skeleton targets OpenUSD 26.05's schema-computation registration
 contract. It emits `Info.Exec.Schemas` discovery metadata,

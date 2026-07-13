@@ -170,26 +170,29 @@ renderer:
   name: sample-renderer
 composition:
   backend: vulkan
-  scene_inputs: [headless, hydra2]
+  scene_inputs: [headless]
   units:
     core: sample-render-core
     extraction: sample-render-extraction
     backend: sample-render-vulkan
   adapters:
-    hydra2: sample-hydra2
-  extraction_target: sample-render-extraction
+    headless: sample-render-headless
 render_products:
   required: [color, depth]
 frame:
   contexts: 3
-  completion: timeline
+  completion: explicit
 validation:
   gpu_smoke: true
   validation_messages_are_errors: true
-  host_smoke: usdview
-openusd:
-  api: hydra2
-  version: "26.05"
+  assertions:
+    - renderer.core.boundary
+    - renderer.backend.capability
+    - renderer.gpu.frame
+    - renderer.render_product.color
+    - renderer.render_product.depth
+    - renderer.frame.persistence
+    - renderer.install_tree
 ```
 
 The names under `units` and `adapters` identify logical scaffold units, not
@@ -312,16 +315,23 @@ product layer, not a renderer-template prerequisite.
 
 ### Slice A — renderer scaffold and headless evidence
 
-- Add the renderer manifest schema and parser.
-- Add one project-level renderer scaffold with internal core/extraction/backend
-  target boundaries, a Vulkan offscreen backend, headless adapter, and validation
-  pack. Do not require one install package per source pack.
-- Add core-only, GPU capability, color/depth, persistent-frame, and install-tree
-  checks.
-- Record template composition and validation results in machine-readable form.
+- ✅ Add strict renderer manifest/report schemas and parsers, with logical unit
+  labels that do not imply package or bundle boundaries.
+- 🚧 Add one project-level renderer skeleton with internal core/extraction/backend
+  targets, a Vulkan capability pack, headless adapter, and validation pack. The
+  generated build/install graph and core-only path work; the real offscreen draw
+  implementation remains project work.
+- 🚧 Add core contract, GPU capability, color/depth, persistent-frame, and
+  install-tree checks. Core, capability, and install-tree execution are wired;
+  frame/product/persistence remain reasoned `SKIP` until a GPU frame exists.
+- ✅ Record template composition and PASS/FAIL/SKIP validation results in
+  `renderer-report.json`, and surface them through generic `ost validate`.
 
 Done when a fresh scaffold can build without OpenUSD, render the deterministic
 scene when Vulkan is available, and truthfully skip GPU checks when it is not.
+The current skeleton satisfies generation, core-only build, capability, report,
+and install-tree seams; deterministic Vulkan rendering is the remaining Slice A
+completion gate.
 
 ### Slice B — Hydra 2 adapter and Level 7
 

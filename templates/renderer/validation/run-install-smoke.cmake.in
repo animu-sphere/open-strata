@@ -1,0 +1,24 @@
+if(NOT DEFINED BUILD_DIR OR NOT DEFINED PREFIX)
+  message(FATAL_ERROR "BUILD_DIR and PREFIX are required")
+endif()
+
+file(REMOVE_RECURSE "${PREFIX}")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" --install "${BUILD_DIR}"
+    --config "${CONFIG}" --prefix "${PREFIX}"
+  RESULT_VARIABLE install_result)
+if(NOT install_result EQUAL 0)
+  message(FATAL_ERROR "renderer install failed: ${install_result}")
+endif()
+
+set(headless "${PREFIX}/@CMAKE_INSTALL_BINDIR@/{{name}}-headless@CMAKE_EXECUTABLE_SUFFIX@")
+if(NOT EXISTS "${headless}")
+  message(FATAL_ERROR "installed headless product is missing: ${headless}")
+endif()
+execute_process(
+  COMMAND "${headless}" --install-tree
+    --report "${PREFIX}/renderer-install-report.json"
+  RESULT_VARIABLE smoke_result)
+if(NOT smoke_result EQUAL 0)
+  message(FATAL_ERROR "installed headless smoke failed: ${smoke_result}")
+endif()

@@ -29,7 +29,7 @@ pub struct InitArgs {
     #[arg(long)]
     platform: Option<String>,
 
-    /// Project template: `cpp-library` (default), `usd-plugin`, or
+    /// Project template: `cpp-library` (default), `renderer`, `usd-plugin`, or
     /// `usd-plugin-workspace` (dual-mode root for `ost plugin new` bundles).
     #[arg(long, default_value = "cpp-library", conflicts_with = "bare")]
     template: String,
@@ -94,7 +94,8 @@ pub fn run(args: InitArgs, fmt: Format) -> Result<()> {
         }
     }
 
-    let project = Project::scaffold(&name, &platform);
+    let mut project = Project::scaffold(&name, &platform);
+    project.requires.profile = template.default_profile().into();
     let toml = project.to_toml()?;
     std::fs::write(&manifest_path, toml)
         .map_err(|e| Error::io(manifest_path.display().to_string(), e))?;

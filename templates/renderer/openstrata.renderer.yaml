@@ -1,0 +1,28 @@
+schema: openstrata.renderer/v1alpha1
+renderer:
+  name: {{name}}
+composition:
+  backend: vulkan
+  scene_inputs: [headless]
+  units:
+    core: {{name}}-render-core
+    extraction: {{name}}-render-extraction
+    backend: {{name}}-render-vulkan
+  adapters:
+    headless: {{name}}-headless
+render_products:
+  required: [color, depth]
+frame:
+  contexts: 3
+  completion: explicit
+validation:
+  gpu_smoke: true
+  validation_messages_are_errors: true
+  assertions:
+    - renderer.core.boundary
+    - renderer.backend.capability
+    - renderer.gpu.frame
+    - renderer.render_product.color
+    - renderer.render_product.depth
+    - renderer.frame.persistence
+    - renderer.install_tree
