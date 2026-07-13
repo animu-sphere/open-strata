@@ -15,11 +15,12 @@ ost build
 ost validate --json
 ```
 
-The build writes `renderer-report.json`. The generated skeleton proves its
-commit/extraction seam and reports Vulkan availability. GPU frame, color/depth,
-and persistence checks remain explicit `SKIP` results until this project adds a
-real backend implementation; the skeleton never reports a rendered frame it did
-not produce.
+The build writes `renderer-report.json`. With Vulkan 1.3 plus `glslc`, the
+generated bootstrap path renders a 64x64 offscreen triangle for 1,000 frames,
+reads back RGBA8 and depth32 products, captures renderer validation messages,
+and records structured device/API/driver identity. Without that capability the
+same checks are explicit, explained `SKIP` results; the skeleton never reports a
+rendered frame it did not produce.
 
 Run CTest for build-tree and install-tree evidence:
 

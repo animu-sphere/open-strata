@@ -35,8 +35,9 @@ architecture has not met the promotion evidence required of a template.
 The renderer skeleton emits one project-level CMake build/install graph. Its
 core, extraction, backend, and headless directories are internal target
 boundaries, not separate package or plugin artifacts. The generated validator
-passes only checks it actually executes and leaves GPU frame/product assertions
-as explained skips until project-owned rendering code replaces the seam.
+renders a deterministic Vulkan bootstrap triangle when the capability exists,
+and reports unavailable GPU/validation work as explained skips. The bootstrap
+proves the seam; generated rendering policy becomes project-owned source.
 
 The OpenExec skeleton targets OpenUSD 26.05's schema-computation registration
 contract. It emits `Info.Exec.Schemas` discovery metadata,

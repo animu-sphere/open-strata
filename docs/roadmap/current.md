@@ -59,9 +59,12 @@ renderer source pack.
   product, config-package install, and install-tree CTest.
 - ✅ Generate `renderer-report.json` and surface each check through generic
   `ost validate`; unavailable GPU work is an explained skip.
-- ⬜ Replace the generated GPU-frame skip with a deterministic Vulkan offscreen
-  frame, color/depth contract checks, persistent-frame evidence, validation
-  callback capture, and the 1,000-frame clean loop.
+- ✅ Replace the generated GPU-frame skip with a deterministic Vulkan offscreen
+  triangle, RGBA8/depth32 contract checks, repeated explicit completion,
+  renderer validation callback capture, and a 1,000-frame clean loop.
+- ⬜ Run the generated core-only and Vulkan paths on the hosted OS matrix and
+  apply the manifest/report contract to hydra-merlin without restructuring its
+  package or adapter ownership.
 
 ### P0 — trust-aware support matrix 🚧
 

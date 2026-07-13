@@ -86,6 +86,7 @@ Deterministic PASS/FAIL/SKIP evidence emitted by a renderer project.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `checks` | array | yes |  |
+| `device` | object | no |  |
 | `renderer` | object | yes |  |
 | `schema` | string | yes |  |
 

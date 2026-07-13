@@ -189,6 +189,7 @@ validation:
     - renderer.core.boundary
     - renderer.backend.capability
     - renderer.gpu.frame
+    - renderer.validation.messages
     - renderer.render_product.color
     - renderer.render_product.depth
     - renderer.frame.persistence
@@ -234,6 +235,7 @@ code. Initial stable ids should include:
 renderer.core.boundary
 renderer.backend.capability
 renderer.gpu.frame
+renderer.validation.messages
 renderer.render_product.color
 renderer.render_product.depth
 renderer.plugin.discovery
@@ -317,21 +319,21 @@ product layer, not a renderer-template prerequisite.
 
 - ✅ Add strict renderer manifest/report schemas and parsers, with logical unit
   labels that do not imply package or bundle boundaries.
-- 🚧 Add one project-level renderer skeleton with internal core/extraction/backend
-  targets, a Vulkan capability pack, headless adapter, and validation pack. The
-  generated build/install graph and core-only path work; the real offscreen draw
-  implementation remains project work.
-- 🚧 Add core contract, GPU capability, color/depth, persistent-frame, and
-  install-tree checks. Core, capability, and install-tree execution are wired;
-  frame/product/persistence remain reasoned `SKIP` until a GPU frame exists.
+- ✅ Add one project-level renderer skeleton with internal core/extraction/backend
+  targets, a Vulkan offscreen bootstrap path, headless adapter, and validation
+  pack. The generated build/install graph and core-only path remain independent
+  of OpenUSD.
+- ✅ Add core contract, GPU capability, 64x64 color/depth readback, 1,000-frame
+  explicit completion, renderer validation-message capture, and install-tree
+  checks. Missing Vulkan/device/validation capabilities remain reasoned `SKIP`.
 - ✅ Record template composition and PASS/FAIL/SKIP validation results in
   `renderer-report.json`, and surface them through generic `ost validate`.
 
 Done when a fresh scaffold can build without OpenUSD, render the deterministic
 scene when Vulkan is available, and truthfully skip GPU checks when it is not.
-The current skeleton satisfies generation, core-only build, capability, report,
-and install-tree seams; deterministic Vulkan rendering is the remaining Slice A
-completion gate.
+The current skeleton satisfies this gate on the local Windows reference path.
+Hosted Windows/macOS/Linux capability dogfood remains the evidence gate before
+promotion or broader support claims.
 
 ### Slice B — Hydra 2 adapter and Level 7
 

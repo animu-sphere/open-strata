@@ -22,6 +22,7 @@ validation:
     - renderer.core.boundary
     - renderer.backend.capability
     - renderer.gpu.frame
+    - renderer.validation.messages
     - renderer.render_product.color
     - renderer.render_product.depth
     - renderer.frame.persistence

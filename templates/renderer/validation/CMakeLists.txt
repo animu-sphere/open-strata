@@ -2,6 +2,14 @@ configure_file(
   run-install-smoke.cmake.in
   "${CMAKE_CURRENT_BINARY_DIR}/run-install-smoke.cmake"
   @ONLY)
+configure_file(
+  check-core-boundary.cmake.in
+  "${CMAKE_CURRENT_BINARY_DIR}/check-core-boundary.cmake"
+  @ONLY)
+
+add_test(NAME {{name}}-renderer-core-boundary
+  COMMAND "${CMAKE_COMMAND}"
+    -P "${CMAKE_CURRENT_BINARY_DIR}/check-core-boundary.cmake")
 
 add_test(NAME {{name}}-renderer-evidence
   COMMAND "$<TARGET_FILE:{{name}}-headless>"

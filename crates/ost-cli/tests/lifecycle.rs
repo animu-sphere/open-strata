@@ -501,6 +501,7 @@ fn validate_surfaces_renderer_pass_fail_skip_evidence() {
             {"id":"renderer.core.boundary","status":"pass"},
             {"id":"renderer.backend.capability","status":"skip","detail":"GPU unavailable"},
             {"id":"renderer.gpu.frame","status":"skip","detail":"GPU unavailable"},
+            {"id":"renderer.validation.messages","status":"skip","detail":"validation layer unavailable"},
             {"id":"renderer.render_product.color","status":"skip","detail":"GPU frame skipped"},
             {"id":"renderer.render_product.depth","status":"skip","detail":"GPU frame skipped"},
             {"id":"renderer.frame.persistence","status":"skip","detail":"GPU frame skipped"},

@@ -161,9 +161,22 @@ pub struct RendererReportIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RendererDevice {
+    pub backend: String,
+    pub name: String,
+    pub api_version: String,
+    pub driver_version: String,
+    pub vendor_id: u32,
+    pub device_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RendererReport {
     pub schema: String,
     pub renderer: RendererReportIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<RendererDevice>,
     pub checks: Vec<RendererCheck>,
 }
 
@@ -192,6 +205,17 @@ impl RendererReport {
                 "renderer report names '{}', but the manifest names '{}'",
                 self.renderer.name, manifest.renderer.name
             )));
+        }
+        if let Some(device) = &self.device {
+            validate_portable_id("renderer report device.backend", &device.backend)?;
+            if device.name.trim().is_empty()
+                || device.api_version.trim().is_empty()
+                || device.driver_version.trim().is_empty()
+            {
+                return Err(invalid(
+                    "renderer report device name/API/driver must not be empty",
+                ));
+            }
         }
         let mut observed = BTreeSet::new();
         for check in &self.checks {
@@ -363,6 +387,7 @@ validation:
         let source = r#"{
           "schema":"openstrata.renderer-report/v1alpha1",
           "renderer":{"name":"sample-renderer"},
+          "device":{"backend":"vulkan","name":"Example GPU","api_version":"1.3.0","driver_version":"42","vendor_id":1,"device_id":2},
           "checks":[
             {"id":"renderer.core.boundary","status":"pass"},
             {"id":"renderer.backend.capability","status":"skip","detail":"Vulkan loader unavailable"},
@@ -372,6 +397,7 @@ validation:
         let report = RendererReport::parse(source).unwrap();
         report.validate_against(&manifest).unwrap();
         assert!(report.passed());
+        assert_eq!(report.device.as_ref().unwrap().backend, "vulkan");
 
         let missing = RendererReport::parse(&source.replace(
             ",\n            {\"id\":\"renderer.gpu.frame\",\"status\":\"skip\",\"detail\":\"backend implementation is project-owned\"}",

@@ -108,7 +108,15 @@ pub fn run(args: InitArgs, fmt: Format) -> Result<()> {
 
     let scaffolded = project_template::scaffold(template, &name, &root, args.force)?;
 
-    report(&manifest_path, &name, &platform, template, &scaffolded, fmt);
+    report(
+        &manifest_path,
+        &name,
+        &platform,
+        template.default_profile(),
+        template,
+        &scaffolded,
+        fmt,
+    );
     Ok(())
 }
 
@@ -134,6 +142,7 @@ fn report(
     manifest_path: &Path,
     name: &str,
     platform: &str,
+    profile: &str,
     template: Template,
     scaffolded: &[Utf8PathBuf],
     fmt: Format,
@@ -144,6 +153,7 @@ fn report(
             "manifest": manifest_path.display().to_string(),
             "name": name,
             "platform": platform,
+            "profile": profile,
             "template": template.as_str(),
             "files": scaffolded.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
         }));
@@ -163,6 +173,6 @@ fn report(
     if template == Template::Bare {
         println!("  (bare) ensure your project has a CMakeLists.txt, then:");
     }
-    println!("  ost runtime pull {platform} --profile <profile>");
+    println!("  ost runtime pull {platform} --profile {profile}");
     println!("  ost build");
 }

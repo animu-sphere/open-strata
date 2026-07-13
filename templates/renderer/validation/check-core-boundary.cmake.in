@@ -1,0 +1,14 @@
+set(core_headers
+  "@PROJECT_SOURCE_DIR@/include/{{name}}/render_world.hpp"
+  "@PROJECT_SOURCE_DIR@/include/{{name}}/extraction.hpp")
+set(forbidden_tokens "vulkan/" "pxr/" "Qt" "windows.h" "d3d" "Metal/")
+
+foreach(header IN LISTS core_headers)
+  file(READ "${header}" source)
+  foreach(token IN LISTS forbidden_tokens)
+    string(FIND "${source}" "${token}" found)
+    if(NOT found EQUAL -1)
+      message(FATAL_ERROR "core boundary violation: ${header} contains '${token}'")
+    endif()
+  endforeach()
+endforeach()

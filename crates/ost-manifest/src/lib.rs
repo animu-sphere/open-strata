@@ -16,6 +16,7 @@ pub use lock::{Lock, LockExtension, LockPython, LockRuntime, Validation};
 pub use project::{add_extension, BuildConfig, Project, ProjectMeta, Requires};
 pub use renderer::{
     FrameContract, RenderProducts, RendererCheck, RendererCheckStatus, RendererComposition,
-    RendererIdentity, RendererManifest, RendererReport, RendererReportIdentity, RendererValidation,
-    RENDERER_MANIFEST, RENDERER_REPORT_FILE, RENDERER_REPORT_SCHEMA, RENDERER_SCHEMA,
+    RendererDevice, RendererIdentity, RendererManifest, RendererReport, RendererReportIdentity,
+    RendererValidation, RENDERER_MANIFEST, RENDERER_REPORT_FILE, RENDERER_REPORT_SCHEMA,
+    RENDERER_SCHEMA,
 };

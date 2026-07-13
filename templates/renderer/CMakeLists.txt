@@ -24,7 +24,7 @@ endif()
 
 set({{NAME}}_WITH_VULKAN OFF)
 if({{NAME}}_ENABLE_VULKAN)
-  find_package(Vulkan 1.3 QUIET)
+  find_package(Vulkan 1.3 QUIET COMPONENTS glslc)
   if(Vulkan_FOUND)
     set({{NAME}}_WITH_VULKAN ON)
   else()
@@ -54,6 +54,10 @@ install(TARGETS
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(TARGETS {{name}}-headless
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+if({{NAME}}_WITH_VULKAN)
+  install(FILES "${{{NAME}}_VERTEX_SPV}" "${{{NAME}}_FRAGMENT_SPV}"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}/shaders")
+endif()
 install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
 set({{Name}}_CONFIG_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/{{Name}}")

@@ -199,6 +199,14 @@ const RENDERER: &[TemplateFile] = &[
         include_str!("../../../templates/renderer/backend/vulkan/vulkan_backend.cpp"),
     ),
     tf(
+        "backend/vulkan/shaders/triangle.vert",
+        include_str!("../../../templates/renderer/backend/vulkan/shaders/triangle.vert"),
+    ),
+    tf(
+        "backend/vulkan/shaders/triangle.frag",
+        include_str!("../../../templates/renderer/backend/vulkan/shaders/triangle.frag"),
+    ),
+    tf(
         "adapters/headless/CMakeLists.txt",
         include_str!("../../../templates/renderer/adapters/headless/CMakeLists.txt"),
     ),
@@ -209,6 +217,10 @@ const RENDERER: &[TemplateFile] = &[
     tf(
         "validation/CMakeLists.txt",
         include_str!("../../../templates/renderer/validation/CMakeLists.txt"),
+    ),
+    tf(
+        "validation/check-core-boundary.cmake.in",
+        include_str!("../../../templates/renderer/validation/check-core-boundary.cmake.in"),
     ),
     tf(
         "validation/run-install-smoke.cmake.in",
