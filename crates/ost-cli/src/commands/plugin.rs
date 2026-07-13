@@ -2113,6 +2113,11 @@ struct SourceWorkspace {
 /// A primary with no bundle or library requirements has an empty closure, so
 /// discovery is skipped entirely: unrelated sibling bundles or libraries (a
 /// broken manifest, a stale backup copy) cannot fail a command that needs none.
+///
+/// A packaged manifest keeps its declared edges, so an extracted package
+/// standing alone still reaches discovery. With no sibling bundles and no
+/// plain libraries there is no source composition to validate: such a tree
+/// keeps behaving like a plain bundle instead of failing graph validation.
 fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
     let needs_library_workspace = !primary.manifest.requires.libraries.is_empty()
         && !has_materialized_package_library_closure(primary);
@@ -2132,6 +2137,10 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
         parent
     };
     let roots = discover_workspace_bundles(root)?;
+    let library_roots = discover_workspace_libraries(root)?;
+    if roots.len() < 2 && library_roots.is_empty() {
+        return Ok(None);
+    }
     let loaded = roots
         .iter()
         .map(|path| Bundle::load(path))
@@ -2140,7 +2149,6 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
         return Ok(None);
     }
 
-    let library_roots = discover_workspace_libraries(root)?;
     let loaded_libraries = library_roots
         .iter()
         .map(|path| Library::load(path))

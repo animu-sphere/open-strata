@@ -90,8 +90,14 @@ foreach(index RANGE 0 ${check_last})
   if(check_id IN_LIST required_host_checks)
     string(JSON report_json SET "${report_json}"
       checks ${index} status "\"pass\"")
-    string(JSON report_json REMOVE "${report_json}"
-      checks ${index} detail)
+    # A rerun reads an already-merged report whose SKIP detail is gone, so the
+    # removal must stay idempotent instead of failing on the missing member.
+    string(JSON check_detail ERROR_VARIABLE check_detail_error
+      GET "${report_json}" checks ${index} detail)
+    if(NOT check_detail_error)
+      string(JSON report_json REMOVE "${report_json}"
+        checks ${index} detail)
+    endif()
     list(APPEND observed_host_checks "${check_id}")
   endif()
 endforeach()

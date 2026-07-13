@@ -29,7 +29,7 @@
       "additionalProperties": false,
       "properties": {
         "package": { "type": "string", "minLength": 1 },
-        "target": { "type": "string", "pattern": "^[^:]+::[^:]+$" }
+        "target": { "type": "string", "pattern": "^[^:]+(::[^:]+)+$" }
       }
     },
     "requires": {

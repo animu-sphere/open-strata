@@ -29,7 +29,11 @@
           "items": { "$ref": "#/definitions/portableId" }
         },
         "units": { "$ref": "#/definitions/labelMap" },
-        "adapters": { "$ref": "#/definitions/labelMap" }
+        "adapters": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/definitions/portableId" },
+          "additionalProperties": { "$ref": "#/definitions/portableId" }
+        }
       }
     },
     "render_products": {

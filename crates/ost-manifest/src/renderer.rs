@@ -304,8 +304,11 @@ fn validate_portable_id(label: &str, value: &str) -> Result<()> {
 }
 
 fn validate_evidence_id(value: &str) -> Result<()> {
-    let valid = !value.is_empty()
-        && value.split('.').all(|segment| {
+    // Match schemas/renderer.schema.json: at least two segments, so every
+    // evidence id carries a namespace (`renderer.gpu.frame`, never `frame`).
+    let segments: Vec<&str> = value.split('.').collect();
+    let valid = segments.len() >= 2
+        && segments.iter().all(|segment| {
             segment
                 .chars()
                 .next()
@@ -321,7 +324,7 @@ fn validate_evidence_id(value: &str) -> Result<()> {
         Ok(())
     } else {
         Err(invalid(format!(
-            "evidence id '{value}' must be lowercase dot-separated portable segments"
+            "evidence id '{value}' must be at least two lowercase dot-separated portable segments"
         )))
     }
 }
@@ -379,6 +382,9 @@ validation:
             "    - renderer.gpu.frame\n    - renderer.gpu.frame"
         ))
         .is_err());
+        // Single-segment ids carry no namespace; the JSON schema also rejects
+        // them, so the Rust validation must agree.
+        assert!(RendererManifest::parse(&MANIFEST.replace("renderer.gpu.frame", "frame")).is_err());
     }
 
     #[test]

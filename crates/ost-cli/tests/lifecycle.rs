@@ -1188,6 +1188,52 @@ fn plain_library_dependencies_validate_inspect_and_render_build_order() {
     );
 }
 
+/// A packaged manifest keeps its `requires.bundles` edges, so a bundle
+/// standing alone (an extracted package, a single-bundle checkout) must not
+/// fail workspace graph validation for siblings that are not there.
+#[test]
+fn bundle_with_dependencies_but_no_siblings_stays_standalone() {
+    let sb = Sandbox::new("standalone-deps");
+    init_and_pull(&sb);
+    let scaffold = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "consumer",
+        "--extension",
+        "toy",
+    ]);
+    assert!(scaffold.status.success(), "{}", out_text(&scaffold));
+
+    let manifest_path = sb.work_file("consumer/openstrata.plugin.yaml");
+    let source = std::fs::read_to_string(&manifest_path).unwrap();
+    let source = source.replace(
+        "requires:\n  capabilities: [usd-stage-read]\n",
+        "requires:\n  capabilities: [usd-stage-read]\n  bundles:\n    - { id: companion, version: '>=1.0,<2.0' }\n",
+    );
+    std::fs::write(
+        &manifest_path,
+        format!("manifest:\n  schema: openstrata.plugin/v1alpha1\n{source}"),
+    )
+    .unwrap();
+    let plugin_library = sb.work_file(&format!(
+        "consumer/lib/{}ConsumerFileFormat{}",
+        "lib",
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::create_dir_all(plugin_library.parent().unwrap()).unwrap();
+    std::fs::write(plugin_library, b"test library marker").unwrap();
+
+    let inspect = sb.ost(&["--json", "plugin", "inspect", "consumer"]);
+    assert!(
+        inspect.status.success(),
+        "a lone bundle with declared edges must stay inspectable:\n{}",
+        out_text(&inspect)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert!(value["data"]["libraries"].is_null());
+}
+
 /// Inside a generated CI job the `OST_CI_*` variables travel into every
 /// written report as a `ci` evidence block, so the report records which
 /// support cell it proves; outside CI the block is absent.

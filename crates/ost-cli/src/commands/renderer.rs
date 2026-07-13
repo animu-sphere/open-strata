@@ -246,10 +246,14 @@ fn validate_hydra_build(build_dir: &Utf8Path, runtime_root: &Utf8Path) -> Result
             )
             .with_phase("renderer-view-preflight")
     })?;
+    // A `-D<RENDERER>_ENABLE_HYDRA2=YES` configure stores an UNINITIALIZED
+    // cache entry, so accept any entry type and the CMake truthy value set.
     let enabled = source.lines().any(|line| {
-        let upper = line.to_ascii_uppercase();
-        upper.contains("_ENABLE_HYDRA2:BOOL=")
-            && (upper.ends_with("=ON") || upper.ends_with("=TRUE") || upper.ends_with("=1"))
+        let Some((entry, value)) = line.split_once('=') else {
+            return false;
+        };
+        let name = entry.split_once(':').map_or(entry, |(name, _)| name);
+        name.to_ascii_uppercase().ends_with("_ENABLE_HYDRA2") && cmake_cache_truthy(value)
     });
     if !enabled {
         return Err(Error::precondition(format!(
@@ -277,6 +281,15 @@ fn validate_hydra_build(build_dir: &Utf8Path, runtime_root: &Utf8Path) -> Result
         }
     }
     Ok(())
+}
+
+fn cmake_cache_truthy(value: &str) -> bool {
+    let value = value.trim();
+    value.eq_ignore_ascii_case("on")
+        || value.eq_ignore_ascii_case("true")
+        || value.eq_ignore_ascii_case("yes")
+        || value.eq_ignore_ascii_case("y")
+        || value.parse::<i64>().is_ok_and(|number| number != 0)
 }
 
 fn cache_path<'a>(source: &'a str, key: &str) -> Option<&'a str> {
@@ -524,9 +537,18 @@ mod tests {
         .unwrap();
         assert!(validate_hydra_build(&build, &runtime).is_ok());
 
+        // A plain `-D` configure stores UNINITIALIZED entries with any CMake
+        // truthy spelling; the advanced marker must never count as enabled.
         std::fs::write(
             build.join("CMakeCache.txt").as_std_path(),
-            "SAMPLE_RENDERER_ENABLE_HYDRA2:BOOL=OFF\n",
+            "SAMPLE_RENDERER_ENABLE_HYDRA2:UNINITIALIZED=YES\n",
+        )
+        .unwrap();
+        assert!(validate_hydra_build(&build, &runtime).is_ok());
+
+        std::fs::write(
+            build.join("CMakeCache.txt").as_std_path(),
+            "SAMPLE_RENDERER_ENABLE_HYDRA2:BOOL=OFF\nSAMPLE_RENDERER_ENABLE_HYDRA2-ADVANCED:INTERNAL=1\n",
         )
         .unwrap();
         assert!(validate_hydra_build(&build, &runtime).is_err());
