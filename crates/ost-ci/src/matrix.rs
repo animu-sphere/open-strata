@@ -323,6 +323,17 @@ impl RuntimeRemote {
     }
 }
 
+/// Public platform/feature support claimed by a generated CI cell. The
+/// `platform` here is the host platform id from `support/platforms.toml`, not
+/// the VFX Reference Platform calendar-year stored in [`SupportCell::platform`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupportClaim {
+    pub platform: String,
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+
 /// One explicit support line: runtime digest × plugin digest × target/profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -336,6 +347,10 @@ pub struct SupportCell {
     /// `runs-on` mapping and the legacy `host.labels` must stay empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner: Option<String>,
+    /// Optional public support claim checked by `ost ci validate --support`.
+    /// Hosted cells must declare it when that validation gate is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support: Option<SupportClaim>,
     /// Full `sha256:<hex>` digest of the runtime artifact to materialize.
     pub runtime_artifact: String,
     /// Remote transport reference for the runtime artifact. Required for
@@ -567,6 +582,31 @@ impl SupportMatrix {
                         "cell '{name}': declares both a runner profile and host.labels — \
                          the profile owns the runs-on mapping"
                     )));
+                }
+            }
+            if let Some(claim) = &cell.support {
+                if !is_ci_atom(&claim.platform) {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': support.platform must use [A-Za-z0-9._-]"
+                    )));
+                }
+                if claim.features.iter().any(|feature| !is_ci_atom(feature)) {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': support.features must use [A-Za-z0-9._-]"
+                    )));
+                }
+                if claim.features.is_empty() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': support.features must name at least one workload feature"
+                    )));
+                }
+                let mut support_features = std::collections::BTreeSet::new();
+                for feature in &claim.features {
+                    if !support_features.insert(feature) {
+                        return Err(Error::InvalidManifest(format!(
+                            "cell '{name}': duplicate support feature '{feature}'"
+                        )));
+                    }
                 }
             }
             if cell.host.labels.iter().any(|label| !is_ci_atom(label)) {
@@ -1247,6 +1287,9 @@ pub fn starter_matrix() -> String {
 #       bundle: plugins/myPlugin
 #       platform: cy2026
 #       profile: usd
+#       support:
+#         platform: windows_x86_64
+#         features: [plugin_build, plugin_test]
 #       up_to: 4
 #       # host_python: \"3.13\"   # see below
 #

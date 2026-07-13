@@ -17,18 +17,24 @@
 //!   6. CMake configure, then CMake build
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::Args;
 
-use ost_build::Target;
+use ost_build::{
+    BuildCompletion, BuildIntent, BuildProjectIdentity, Target, TargetLock, BUILD_COMPLETION_FILE,
+};
+use ost_core::fs::write_atomic;
 use ost_core::host::Os;
+use ost_core::paths::STATE_DIR;
 use ost_core::{tools, Error, Result};
 use ost_runtime::EnvSet;
 
 use crate::commands::compiler::CompilerOpts;
 use crate::commands::configure::{
-    build_target, generate, resolve_compiler, resolve_selection, target_output_paths,
+    build_target_with_generator, generate_with_generator, load_project, resolve_compiler,
+    resolve_selection, target_output_paths,
 };
 use crate::output::{self, Format};
 use crate::progress::{ProgressMode, Reporter};
@@ -42,6 +48,14 @@ pub struct BuildArgs {
     /// Profile to build. Defaults to the project's profile.
     #[arg(long)]
     profile: Option<String>,
+
+    /// CMake generator. Ninja remains the default.
+    #[arg(long, default_value = "Ninja")]
+    generator: String,
+
+    /// Build configuration (CMAKE_BUILD_TYPE and multi-config --config).
+    #[arg(long, default_value = "Release")]
+    config: String,
 
     /// Run preflight checks only, without generating files or building.
     #[arg(long)]
@@ -78,16 +92,61 @@ pub struct BuildArgs {
     #[arg(long)]
     notify: bool,
 
+    /// Configure timeout in seconds; 0 disables it.
+    #[arg(long, default_value_t = 600)]
+    configure_timeout: u64,
+
+    /// Build timeout in seconds; 0 disables it.
+    #[arg(long, default_value_t = 7200)]
+    build_timeout: u64,
+
     #[command(flatten)]
     compiler: CompilerOpts,
 }
 
+impl BuildArgs {
+    /// Internal managed-build request used by domain workflows such as
+    /// `renderer view`. It deliberately shares the ordinary build lifecycle
+    /// instead of spawning another `ost` process or inventing a second builder.
+    pub(crate) fn managed(
+        target: String,
+        profile: String,
+        generator: Option<String>,
+        config: String,
+    ) -> Self {
+        Self {
+            target: Some(target),
+            profile: Some(profile),
+            generator: generator.unwrap_or_else(|| "Ninja".into()),
+            config,
+            check: false,
+            dry_run: false,
+            jobs: None,
+            ninja: None,
+            no_vcvars: false,
+            progress: ProgressMode::Auto,
+            quiet: false,
+            notify: false,
+            configure_timeout: 600,
+            build_timeout: 7200,
+            compiler: CompilerOpts::default(),
+        }
+    }
+}
+
 pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
+    run_with_intent(args, fmt, BuildIntent::default())
+}
+
+pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent) -> Result<()> {
     // 1. Resolve the project and the effective target. `build_target` resolves
     //    the runtime without writing anything, so checks and dry-run stay free
     //    of side effects.
     let (root, platform, profile) = resolve_selection(args.target.clone(), args.profile.clone())?;
-    let (target, resolved) = build_target(&platform, &profile)?;
+    if args.generator.trim().is_empty() {
+        return Err(Error::usage("--generator must not be empty"));
+    }
+    let (target, resolved) = build_target_with_generator(&platform, &profile, &args.generator)?;
     let id = target.id();
 
     // Resolve the compiler policy early so an invalid one fails before any work.
@@ -117,17 +176,32 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
 
     let cmake_prog = pre.cmake.clone().unwrap_or_else(|| PathBuf::from("cmake"));
     // CMake wants forward slashes even on Windows.
-    let ninja_arg = pre
-        .ninja
-        .as_ref()
-        .map(|p| p.display().to_string().replace('\\', "/"));
+    let ninja_arg = generator_uses_ninja(&args.generator)
+        .then(|| {
+            pre.ninja
+                .as_ref()
+                .map(|p| p.display().to_string().replace('\\', "/"))
+        })
+        .flatten();
 
     let mut configure_args = vec!["--preset".to_string(), id.clone()];
     if let Some(np) = &ninja_arg {
         configure_args.push(format!("-DCMAKE_MAKE_PROGRAM={np}"));
     }
+    let mut intent = intent;
+    intent
+        .cache
+        .insert("CMAKE_BUILD_TYPE".into(), args.config.clone());
+    for (key, value) in &intent.cache {
+        configure_args.push(format!("-D{key}={value}"));
+    }
 
-    let mut build_args = vec!["--build".to_string(), format!("build/{id}")];
+    let mut build_args = vec![
+        "--build".to_string(),
+        format!("build/{id}"),
+        "--config".to_string(),
+        args.config.clone(),
+    ];
     if let Some(jobs) = &args.jobs {
         if let Ok(n) = jobs.parse::<u32>() {
             build_args.push("-j".to_string());
@@ -140,7 +214,8 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     if args.dry_run {
         let configure_cmd = render_cmd(&cmake_prog, &configure_args);
         let build_cmd = render_cmd(&cmake_prog, &build_args);
-        let files = target_output_paths(&id);
+        let mut files = target_output_paths(&id);
+        files.push(format!("build/{id}/{BUILD_COMPLETION_FILE}"));
 
         // Surface the runtime env additions (the OpenStrata-managed prepends,
         // not the inherited environment) so they can be inspected without a run.
@@ -160,6 +235,7 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
                 "target": id,
                 "root": root.to_string(),
                 "bootstrap_msvc": pre.will_bootstrap_msvc,
+                "build_intent": intent,
                 "commands": [configure_cmd, build_cmd],
                 "would_generate": files,
                 "runtime_env": env_pairs,
@@ -192,7 +268,9 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
 
     // 5. Generate the target's `.strata/` files now that checks have passed.
     rep.phase("Generating toolchain and presets");
-    let g = generate(&root, &platform, &profile, &compiler)?;
+    let build_dir = root.join("build").join(&id);
+    invalidate_completion(&build_dir)?;
+    let g = generate_with_generator(&root, &platform, &profile, &compiler, &args.generator)?;
     debug_assert_eq!(g.id, id);
     // Subprocess output from here on is teed to a per-target build log.
     let log = root
@@ -236,18 +314,82 @@ pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
     // 8. Configure, then build — each a phase whose subprocess streams through
     //    the reporter (heartbeat while quiet, log capture, failure reporting).
     rep.phase("Configuring CMake");
-    rep.run(&cmake_prog, &configure_args, &root, &extra_env)?;
+    rep.run(
+        &cmake_prog,
+        &configure_args,
+        &root,
+        &extra_env,
+        timeout(args.configure_timeout),
+    )?;
     rep.phase("Building targets");
-    rep.run(&cmake_prog, &build_args, &root, &extra_env)?;
+    rep.run(
+        &cmake_prog,
+        &build_args,
+        &root,
+        &extra_env,
+        timeout(args.build_timeout),
+    )?;
 
     // 9. Verify the build produced outputs — a successful build with an empty
     //    tree means the preset built nothing useful.
     rep.phase("Verifying outputs");
     verify_build(&root, &id)?;
+    write_completion(&root, &id, &intent)?;
 
     rep.done();
     rep.note(&format!("Built target {id}"));
     Ok(())
+}
+
+fn timeout(seconds: u64) -> Option<Duration> {
+    (seconds > 0).then(|| Duration::from_secs(seconds))
+}
+
+fn generator_uses_ninja(generator: &str) -> bool {
+    generator.eq_ignore_ascii_case("Ninja") || generator.eq_ignore_ascii_case("Ninja Multi-Config")
+}
+
+fn invalidate_completion(build_dir: &Utf8Path) -> Result<()> {
+    let path = build_dir.join(BUILD_COMPLETION_FILE);
+    match std::fs::remove_file(path.as_std_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::io(path.to_string(), error)),
+    }
+}
+
+fn write_completion(root: &Utf8Path, id: &str, intent: &BuildIntent) -> Result<()> {
+    let lock_path = root
+        .join(STATE_DIR)
+        .join("targets")
+        .join(id)
+        .join("target.lock.json");
+    let source = std::fs::read_to_string(lock_path.as_std_path())
+        .map_err(|error| Error::io(lock_path.to_string(), error))?;
+    let lock: TargetLock = serde_json::from_str(&source)
+        .map_err(|error| Error::parse(lock_path.to_string(), anyhow::Error::new(error)))?;
+    let project = load_project(root)?;
+    let project_version = project.effective_version(root)?;
+    let relative_build = Utf8PathBuf::from(format!("build/{id}"));
+    let completed_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let completion = BuildCompletion::from_lock(
+        &lock,
+        BuildProjectIdentity {
+            name: project.project.name,
+            version: project_version,
+        },
+        relative_build.as_str(),
+        intent.clone(),
+        completed_unix,
+    );
+    let body = completion
+        .to_json()
+        .map_err(|error| Error::parse(BUILD_COMPLETION_FILE, anyhow::Error::new(error)))?;
+    let path = root.join(&relative_build).join(BUILD_COMPLETION_FILE);
+    write_atomic(path.as_std_path(), format!("{body}\n").as_bytes())
 }
 
 /// Confirm `build/<id>` exists and is non-empty after a successful build, so a
@@ -378,24 +520,33 @@ fn preflight(root: &Utf8Path, target: &Target, pulled: bool, args: &BuildArgs) -
 
     // Ninja. On Windows the MSVC developer environment we auto-load also puts a
     // Ninja on PATH, so an explicit one is not strictly required there.
-    let ninja = locate(
-        "ninja",
-        args.ninja
-            .clone()
-            .or_else(|| std::env::var("OST_NINJA").ok()),
-    );
+    let wants_ninja = generator_uses_ninja(&args.generator);
+    let ninja = wants_ninja
+        .then(|| {
+            locate(
+                "ninja",
+                args.ninja
+                    .clone()
+                    .or_else(|| std::env::var("OST_NINJA").ok()),
+            )
+        })
+        .flatten();
     let will_bootstrap_msvc =
         target.os() == Os::Windows && !args.no_vcvars && tools::which("cl").is_none();
-    match &ninja {
-        Some(p) => checks.push(Check::ok("ninja", p.display().to_string())),
-        None if will_bootstrap_msvc => checks.push(Check::ok(
+    match (&ninja, wants_ninja) {
+        (Some(p), _) => checks.push(Check::ok("ninja", p.display().to_string())),
+        (None, true) if will_bootstrap_msvc => checks.push(Check::ok(
             "ninja",
             "not on PATH; expected from the MSVC developer environment (vcvars64.bat)",
         )),
-        None => checks.push(Check::failed(
+        (None, true) => checks.push(Check::failed(
             "ninja",
             "`ninja` not found",
             "add it to PATH, set OST_NINJA, or pass --ninja <path>",
+        )),
+        (None, false) => checks.push(Check::info(
+            "generator",
+            format!("{} (selected explicitly)", args.generator),
         )),
     }
 
@@ -575,7 +726,16 @@ mod tests {
             .iter()
             .any(|f| f == ".strata/targets/cy2026-linux-x86_64-py313-usd/toolchain.cmake"));
         // The root-level outputs a build would touch must be listed too.
-        assert!(files.iter().any(|f| f == "CMakePresets.json"));
+        assert!(files.iter().any(|f| f == "CMakeUserPresets.json"));
+        assert!(!files.iter().any(|f| f == "CMakePresets.json"));
         assert!(files.iter().any(|f| f == "strata.lock"));
+    }
+
+    #[test]
+    fn ninja_multi_config_uses_the_ninja_tool_path() {
+        assert!(generator_uses_ninja("Ninja"));
+        assert!(generator_uses_ninja("Ninja Multi-Config"));
+        assert!(generator_uses_ninja("ninja multi-config"));
+        assert!(!generator_uses_ninja("Visual Studio 17 2022"));
     }
 }

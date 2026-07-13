@@ -8,10 +8,35 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.17.0 — DCC host integration) is detailed in
+The next milestone (v0.17.0 — renderer build truth and one-command Hydra
+inspection) is detailed in
 [current.md](current.md).
 
-- ⬜ **v1.0.0 (after the next milestone).** Cut once the produce → trust → provenance →
+- ⬜ **v0.18.0 — DCC host integration.** Depends on the fingerprinted renderer
+  build/session/evidence chain from v0.17.0. Extend support beyond runtime-native
+  OpenUSD applications without redistributing DCC SDKs or inventing one false
+  cross-DCC API.
+
+  - **P0 — host records and read-only discovery.** Add an `ost-host` model with a
+    versioned host record: product, version, install root, executable/API
+    locations, Python ABI, platform fingerprint, and discovery evidence. Add
+    `ost host discover|list|inspect` with deterministic Maya and Houdini
+    detectors first; discovery must not mutate a host installation or silently
+    accept ambient PATH guesses.
+  - **P0 — headless compatibility probes.** Add a host adapter boundary for
+    launch/session composition, not a shared DCC scene API. Run a minimal
+    headless plugin load/open/validate probe and preserve stdout, stderr, exit
+    status, host fingerprint, renderer/runtime/plugin digests, and normalized
+    evidence. Treat unavailable licenses, display, or host capability as
+    explained SKIP rather than plugin/ABI failure.
+  - **P1 — DCC support-matrix integration.** Extend explicit support cells with
+    pinned host records/capabilities, define stable/nightly/release/legacy tiers,
+    prove the first Maya/Houdini hosted cells, and feed trusted release candidates
+    into host verification without weakening the artifact publisher boundary.
+
+  Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md).
+
+- ⬜ **v1.0.0 (after v0.18.0).** Cut once the produce → trust → provenance →
   trusted-CI arc and the initial DCC host matrix are shipped and dogfooded — i.e.
   "build it, publish it, verify its provenance, pull it in trusted CI, run it
   against a DCC host" is a single supported, digest-addressed arc.
@@ -31,14 +56,15 @@ The next milestone (v0.17.0 — DCC host integration) is detailed in
   a parallel template repository, CLI, renderer, bundle model, or artifact
   path. Add Hydra and tool candidates only at
   evidence-appropriate maturity.
-- ⬜ **Renderer Hydra dogfood and skeleton promotion.** Direction:
+- ⬜ **Renderer skeleton promotion after the v0.17 lifecycle slice.** Direction:
   [renderer-templates.md](../design/proposed/renderer-templates.md). The optional
   co-built Hydra 2 bootstrap now separates discovery, delegate creation, CPU
   RenderBuffer, and install-tree usdview first-frame/stable-update evidence.
-  Next dogfood authored mesh/camera translation and the hosted OS/OpenUSD matrix,
-  then apply the contract to a second independent renderer. Keep skeleton
-  maturity until that evidence exists; instancing, materials, upload policy,
-  and zero-copy interop remain renderer-owned until separately proven.
+  v0.17 owns build truth, managed view, adoption, and evidence transport. After
+  that, finish the hosted OS/OpenUSD matrix and apply the contract to a second
+  independent renderer. Keep skeleton maturity until that evidence exists;
+  instancing, materials, upload policy, and zero-copy interop remain
+  renderer-owned until separately proven.
 - ⬜ **Phase 7 — Sessions / sandbox.** Session metadata; `ost session start | fork
   | diff | discard | promote`. Workspace isolation; optional Linux namespace /
   overlayfs.
@@ -52,13 +78,6 @@ The next milestone (v0.17.0 — DCC host integration) is detailed in
   collection → matrix → GPU → Jenkins bridge; digest-pinned tasks, safe-by-default
   manifests, `ost doctor kubernetes`. `local` stays first-class; Kubernetes is
   opt-in, starting from `batch/v1 Job`, not an Operator.
-- ⬜ **Phase 10 — DCC host support.** Direction:
-  [dcc-hosts.md](../design/proposed/dcc-hosts.md). An `ost-host` crate (host record
-  model, discovery providers, `HostValidator` / `HostAdapter`); discovery +
-  validation + fingerprints (Maya, then Houdini + Nuke); `ost host
-  discover|list|inspect|probe|run|test`; host-standard packaging; matrix cells /
-  tiers and cross-DCC USD compatibility; fleet inventory and `ost compat` /
-  `ost reproduce`. (Delivered incrementally via the v0.17.0 milestone.)
 
 ## Cross-cutting open items
 
@@ -113,15 +132,3 @@ pieces of the documentation reorganization.
   — no manually duplicated CLI/schema content. A framework (Astro/Starlight,
   Docusaurus, MkDocs, …) will be chosen when this is picked up; framework choice
   is secondary to content ownership, which is already in place.
-- ⬜ **Generated `environment-variables.md`.** Centralize the scattered `OST_*`
-  environment variables into a single source and generate the reference page from
-  it (the last reference page not yet generated).
-- ⬜ **CI matrix validation from `support/platforms.toml`.** Reuse the support
-  declaration that drives the support matrix to validate the generated CI matrix
-  against declared support levels (§10).
-- ⬜ **Portable-Linux runtime build guide.** Document, as a first-class recipe,
-  building Linux runtimes in a container whose glibc ≤ the lowest target runner
-  (e.g. `ubuntu:24.04` for hosted `ubuntu-24.04`, or `manylinux_2_28` for broader
-  reach), including the deadsnakes-py3.13 + venv + `libxt-dev` / X-GL dev
-  prerequisites; consider shipping a reference Dockerfile. (The `glibc228`-vs-real-floor
-  trap from v0.10.0/v0.12.0 is easy to fall into.)

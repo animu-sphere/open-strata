@@ -10,7 +10,22 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option({{NAME}}_ENABLE_VULKAN "Probe and link the Vulkan backend capability" ON)
-option({{NAME}}_ENABLE_HYDRA2 "Build the optional co-built OpenUSD Hydra 2 adapter" OFF)
+
+# OST-facing build intent. The renderer keeps its project-owned option while
+# `ost renderer view` can request the co-built adapter without knowing that
+# private option name.
+set(OST_RENDERER_ADAPTERS "" CACHE STRING
+  "Semicolon-separated renderer adapters requested by OpenStrata")
+set(_{{NAME}}_HYDRA2_DEFAULT OFF)
+if("hydra2" IN_LIST OST_RENDERER_ADAPTERS)
+  set(_{{NAME}}_HYDRA2_DEFAULT ON)
+endif()
+option({{NAME}}_ENABLE_HYDRA2 "Build the optional co-built OpenUSD Hydra 2 adapter"
+  ${_{{NAME}}_HYDRA2_DEFAULT})
+if("hydra2" IN_LIST OST_RENDERER_ADAPTERS)
+  set({{NAME}}_ENABLE_HYDRA2 ON CACHE BOOL
+    "Build the optional co-built OpenUSD Hydra 2 adapter" FORCE)
+endif()
 option({{NAME}}_BUILD_TESTS "Build renderer contract and install-tree tests" ON)
 
 set(CMAKE_CXX_STANDARD 20)

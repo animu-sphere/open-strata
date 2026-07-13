@@ -65,9 +65,9 @@ jobs:
       - name: cargo test (workspace)
         run: cargo test --workspace --locked
 
-  # The generated reference docs (docs/reference/cli.md, exit-codes.md,
-  # schemas.md) must match their sources. Regenerate and fail on any diff so a
-  # CLI/schema/exit-code change cannot silently leave the docs stale.
+  # The generated reference docs (CLI, exits, schemas, OST variables, support)
+  # must match their sources. Regenerate and fail on any diff so a contract
+  # change cannot silently leave the docs stale.
   docs-generated:
     runs-on: ubuntu-22.04
     steps:

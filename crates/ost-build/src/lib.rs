@@ -10,6 +10,7 @@
 //!
 //! This crate renders those artifacts as strings/values; the CLI owns the I/O.
 
+mod completion;
 pub mod glibc;
 mod lock;
 pub mod msvc;
@@ -19,8 +20,12 @@ pub mod python;
 mod target;
 mod toolchain;
 
+pub use completion::{
+    BuildCompletion, BuildIntent, BuildProjectIdentity, BUILD_COMPLETION_FILE,
+    BUILD_COMPLETION_SCHEMA,
+};
 pub use glibc::{max_glibc_floor, GlibcVersion};
-pub use lock::{LockCompiler, TargetLock};
+pub use lock::{LockCompiler, LockRuntime, TargetLock};
 pub use package::{
     is_sdk_path, pack_dir, pack_dir_with, sdk_stage_files, source_date_epoch,
     source_date_epoch_opt, stage_files, FileEntry, PackOptions, PackProgress, PackResult,

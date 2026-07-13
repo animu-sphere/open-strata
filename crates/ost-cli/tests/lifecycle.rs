@@ -277,6 +277,16 @@ fn build_dry_run_writes_nothing_and_plans_commands() {
         text.contains("would generate"),
         "should list planned files:\n{text}"
     );
+    assert!(
+        text.contains("CMakeUserPresets.json"),
+        "should name the tool-owned root presets file:\n{text}"
+    );
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.trim_end() == "#   CMakePresets.json"),
+        "must not claim the user's root CMakePresets.json is generated:\n{text}"
+    );
 }
 
 #[test]
@@ -415,6 +425,43 @@ fn full_lifecycle_init_build_package() {
 }
 
 #[test]
+fn multi_config_package_uses_the_completed_configuration_and_generator() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping multi_config_package: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("multi-config-package");
+    init_and_pull(&sb);
+
+    let build = sb.ost(&[
+        "build",
+        "--generator",
+        "Ninja Multi-Config",
+        "--config",
+        "Debug",
+        "--progress",
+        "plain",
+    ]);
+    assert!(
+        build.status.success(),
+        "multi-config build failed:\n{}",
+        out_text(&build)
+    );
+
+    let package = sb.ost(&["package"]);
+    assert!(
+        package.status.success(),
+        "multi-config package failed:\n{}",
+        out_text(&package)
+    );
+    let manifest_path =
+        find_first(&sb.work.join("dist"), "manifest.json").expect("package manifest");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["provenance"]["generator"], "Ninja Multi-Config");
+}
+
+#[test]
 fn renderer_template_scaffolds_one_project_and_a_strict_manifest() {
     let sb = Sandbox::new("renderer-template");
     let init = sb.ost(&[
@@ -465,6 +512,70 @@ fn renderer_template_scaffolds_one_project_and_a_strict_manifest() {
 }
 
 #[test]
+fn renderer_adopt_is_dry_run_first_and_idempotent() {
+    let sb = Sandbox::new("renderer-adopt");
+    std::fs::write(
+        sb.work_file("CMakeLists.txt"),
+        r#"cmake_minimum_required(VERSION 3.24)
+project(hdExisting)
+add_library(existing-core INTERFACE)
+add_library(existing-extraction INTERFACE)
+add_library(existing-vulkan INTERFACE)
+add_executable(existing-headless main.cpp)
+add_library(hdExisting MODULE adapter.cpp)
+"#,
+    )
+    .unwrap();
+
+    let args = [
+        "renderer",
+        "adopt",
+        "--name",
+        "hdExisting",
+        "--core",
+        "existing-core",
+        "--extraction",
+        "existing-extraction",
+        "--backend",
+        "vulkan=existing-vulkan",
+        "--headless",
+        "existing-headless",
+        "--hydra2",
+        "hdExisting",
+        "--platform",
+        "cy2026",
+    ];
+    let dry = sb.ost(&args);
+    assert!(dry.status.success(), "dry run failed:\n{}", out_text(&dry));
+    assert!(!sb.work_file("openstrata.toml").exists());
+    assert!(!sb.work_file("openstrata.renderer.yaml").exists());
+
+    let mut write_args = args.to_vec();
+    write_args.push("--write");
+    let write = sb.ost(&write_args);
+    assert!(
+        write.status.success(),
+        "adoption write failed:\n{}",
+        out_text(&write)
+    );
+    let manifest = ost_manifest::RendererManifest::load(
+        camino::Utf8Path::from_path(sb.work.as_path()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest.composition.units["core"], "existing-core");
+    assert_eq!(manifest.composition.adapters["hydra2"], "hdExisting");
+    assert!(sb.work_file("openstrata.renderer-adoption.json").is_file());
+    assert!(!sb.work_file("openstrata.scaffold.yaml").exists());
+
+    let rerun = sb.ost(&write_args);
+    assert!(
+        rerun.status.success(),
+        "idempotent rerun failed:\n{}",
+        out_text(&rerun)
+    );
+}
+
+#[test]
 fn validate_surfaces_renderer_pass_fail_skip_evidence() {
     let sb = Sandbox::new("renderer-validate");
     let init = sb.ost(&[
@@ -490,8 +601,26 @@ fn validate_surfaces_renderer_pass_fail_skip_evidence() {
 
     let target = single_target_dir(&sb.work);
     let id = target.file_name().unwrap().to_string_lossy().into_owned();
-    let build = sb.work.join("build").join(id);
+    let build = sb.work.join("build").join(&id);
     std::fs::create_dir_all(&build).unwrap();
+    let lock: ost_build::TargetLock =
+        serde_json::from_str(&std::fs::read_to_string(target.join("target.lock.json")).unwrap())
+            .unwrap();
+    let completion = ost_build::BuildCompletion::from_lock(
+        &lock,
+        ost_build::BuildProjectIdentity {
+            name: "sample-renderer".into(),
+            version: "0.1.0".into(),
+        },
+        format!("build/{}", lock.target),
+        ost_build::BuildIntent::default(),
+        1,
+    );
+    std::fs::write(
+        build.join(ost_build::BUILD_COMPLETION_FILE),
+        completion.to_json().unwrap(),
+    )
+    .unwrap();
     std::fs::write(
         build.join("renderer-report.json"),
         r#"{
@@ -533,6 +662,51 @@ fn validate_surfaces_renderer_pass_fail_skip_evidence() {
     assert!(checks
         .iter()
         .any(|check| { check["name"] == "renderer.install_tree" && check["status"] == "pass" }));
+
+    let external_dir = format!("build/{id}");
+    let external = sb.ost(&["--json", "validate", "--build-dir", &external_dir]);
+    assert!(
+        external.status.success(),
+        "external evidence validation failed:\n{}",
+        out_text(&external)
+    );
+    let output: serde_json::Value = serde_json::from_slice(&external.stdout).unwrap();
+    let checks = output["data"]["checks"].as_array().unwrap();
+    assert!(checks
+        .iter()
+        .any(|check| check["name"] == "built" && check["status"] == "skip"));
+    assert!(checks
+        .iter()
+        .any(|check| check["name"] == "external-build" && check["status"] == "pass"));
+}
+
+#[test]
+fn validate_rejects_a_partial_build_directory() {
+    let sb = Sandbox::new("partial-build");
+    init_and_pull(&sb);
+    let configure = sb.ost(&["configure"]);
+    assert!(
+        configure.status.success(),
+        "configure failed:\n{}",
+        out_text(&configure)
+    );
+
+    let target = single_target_dir(&sb.work);
+    let id = target.file_name().unwrap().to_string_lossy().into_owned();
+    let build = sb.work.join("build").join(id);
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::write(build.join("CMakeCache.txt"), "partial configure\n").unwrap();
+
+    let validate = sb.ost(&["--json", "validate"]);
+    assert!(
+        !validate.status.success(),
+        "a partial directory must not pass validation"
+    );
+    let output: serde_json::Value = serde_json::from_slice(&validate.stdout).unwrap();
+    let checks = output["data"]["checks"].as_array().unwrap();
+    assert!(checks
+        .iter()
+        .any(|check| check["name"] == "built" && check["status"] == "fail"));
 }
 
 #[test]

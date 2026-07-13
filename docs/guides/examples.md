@@ -189,28 +189,51 @@ ost validate                           # configured / built / runtime / artifact
 
 ### renderer — inspect a Hydra adapter in usdview
 
-The renderer template's default build is host-neutral. Configure and build its
-optional Hydra adapter against the same OpenUSD installation adopted by the
-project's `lookdev` runtime, then let OST compose the interactive session:
+The renderer template's default build is host-neutral. Pull or adopt one real
+OpenUSD imaging/usdview runtime, then let the view command drive the optional
+Hydra adapter through the shared build service and compose the interactive
+session:
 
 ```bash
-cmake -S . -B out-hydra \
-  -DSAMPLE_RENDERER_ENABLE_HYDRA2=ON \
-  -DCMAKE_PREFIX_PATH=<openusd-root> \
-  -DPython3_EXECUTABLE=<openusd-python>
-cmake --build out-hydra --config Release
-
 ost runtime pull cy2026 --profile lookdev --from-usd <openusd-root>
-ost renderer view                       # installed smoke scene, /Camera
+ost renderer view                       # managed incremental build + smoke scene
 ost renderer view scenes/shot.usda      # project-relative or absolute scene
-ost renderer view --build-dir other-build --config Debug --profile lookdev
+ost renderer view --config Debug --generator Ninja --profile lookdev
 ```
 
-The view command refreshes a private install tree, discovers the generated
-`HdRendererPlugin` metadata there, selects its display name in usdview, and
-overlays the runtime environment only on the child process. It does not mutate
-the current shell or imply that the co-built Hydra adapter is a standalone OST
-plugin bundle.
+The view command records the selected runtime and `hydra2` build intent,
+refreshes a private install tree, discovers the generated `HdRendererPlugin`
+metadata there, selects its display name in usdview, and overlays the runtime
+environment only on the child process. It does not mutate the current shell or
+imply that the co-built Hydra adapter is a standalone OST plugin bundle.
+
+Use `--build-dir other-build` for an external/prebuilt CMake tree. That mode is
+validated and labeled as manual evidence; OST installs it but does not rebuild
+it or claim `ost build` completion.
+
+Adopt an existing renderer without overwriting its CMake or source tree. The
+first command is a read-only plan; add `--write` only after reviewing target
+mappings. `--version-file` keeps an existing release version source
+authoritative instead of copying it into `openstrata.toml`:
+
+```bash
+ost renderer adopt --name merlin --platform cy2026 \
+  --core merlin-core --extraction merlin-extraction \
+  --backend vulkan=merlin-vulkan --headless merlin-headless \
+  --hydra2 hdMerlin --version-file VERSION
+ost renderer adopt --name merlin --platform cy2026 \
+  --core merlin-core --extraction merlin-extraction \
+  --backend vulkan=merlin-vulkan --headless merlin-headless \
+  --hydra2 hdMerlin --version-file VERSION --write
+```
+
+Independently produced renderer reports merge only under explicit conflict
+rules: duplicate assertion ids need `--replace`, and an existing FAIL cannot be
+downgraded.
+
+```bash
+ost renderer merge --base cpu.json --overlay gpu.json --out combined.json
+```
 
 If a previous run's stage tree is briefly held open (a scanner, or another
 `ost`), packaging stages into a fresh `stage-<hex>` sibling and warns
@@ -423,8 +446,10 @@ ost ci init                       # scaffold openstrata.ci.yaml (commented start
 
 ost ci validate                   # structural checks (schema, names, digests, levels)
 ost ci validate --resolve         # + every pinned digest must exist in the local registry
+ost ci validate --support support/platforms.toml
 
 ost ci generate github            # write .github/workflows/ost-support-matrix.yml
+ost ci generate github --support support/platforms.toml  # gate public claims first
 ost ci generate github --stdout   # print instead (inspect / pipe)
 ost ci generate github --force    # regenerate over the existing workflow
 ```
@@ -453,6 +478,9 @@ cells:
   - name: plugin-pr-linux
     lane: pull_request
     trust: unsigned              # target floor; lane floor may be stricter
+    support:
+      platform: linux_x86_64     # id from support/platforms.toml
+      features: [plugin_build, plugin_test]
     # runtime_artifact, runtime_remote, bundle, platform, profile, runner, ...
 ```
 

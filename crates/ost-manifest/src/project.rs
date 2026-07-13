@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use camino::Utf8Path;
 use ost_core::paths::PROJECT_MANIFEST;
 use ost_core::{Error, Result};
 
@@ -14,8 +15,16 @@ use ost_core::{Error, Result};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectMeta {
     pub name: String,
-    #[serde(default = "default_version")]
-    pub version: String,
+    /// Inline project version. Exactly one of this and `version_file` is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Repo-relative, single-line authoritative version file.
+    #[serde(
+        default,
+        alias = "version-file",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub version_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -91,7 +100,8 @@ impl Project {
         Project {
             project: ProjectMeta {
                 name: name.into(),
-                version: default_version(),
+                version: Some(default_version()),
+                version_file: None,
                 description: None,
             },
             requires: Requires {
@@ -105,13 +115,98 @@ impl Project {
     }
 
     pub fn from_toml(src: &str) -> Result<Project> {
-        toml::from_str(src).map_err(|e| Error::parse(PROJECT_MANIFEST, anyhow::Error::new(e)))
+        let mut project: Project = toml::from_str(src)
+            .map_err(|e| Error::parse(PROJECT_MANIFEST, anyhow::Error::new(e)))?;
+        if project.project.version.is_none() && project.project.version_file.is_none() {
+            project.project.version = Some(default_version());
+        }
+        project.validate_version_source()?;
+        Ok(project)
     }
 
     pub fn to_toml(&self) -> Result<String> {
+        self.validate_version_source()?;
         toml::to_string_pretty(self)
             .map_err(|e| Error::parse(PROJECT_MANIFEST, anyhow::Error::new(e)))
     }
+
+    /// Resolve the authoritative project version. A version file avoids
+    /// forcing adopted projects to duplicate their existing release source.
+    pub fn effective_version(&self, root: &Utf8Path) -> Result<String> {
+        self.validate_version_source()?;
+        if let Some(version) = &self.project.version {
+            return Ok(version.clone());
+        }
+        let relative = self.project.version_file.as_deref().expect("validated");
+        let path = root.join(relative);
+        let source = std::fs::read_to_string(path.as_std_path())
+            .map_err(|error| Error::io(path.to_string(), error))?;
+        let version = source.trim();
+        if version.is_empty() || version.lines().count() != 1 {
+            return Err(Error::config(format!(
+                "project.version_file '{relative}' must contain one non-empty line"
+            )));
+        }
+        Ok(version.to_string())
+    }
+
+    fn validate_version_source(&self) -> Result<()> {
+        match (&self.project.version, &self.project.version_file) {
+            (Some(version), None) if !version.trim().is_empty() => Ok(()),
+            (None, Some(path)) if safe_relative_file(path) => Ok(()),
+            (Some(_), Some(_)) => Err(Error::config(
+                "[project] must declare either version or version_file, not both",
+            )),
+            (None, Some(path)) => Err(Error::config(format!(
+                "project.version_file '{path}' must be a safe repo-relative path"
+            ))),
+            _ => Err(Error::config(
+                "[project] must declare a non-empty version or version_file",
+            )),
+        }
+    }
+}
+
+fn safe_relative_file(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with(['/', '\\'])
+        && !path.contains(':')
+        && !path.split(['/', '\\']).any(|component| component == "..")
+}
+
+/// Replace an inline project version with a repo-relative authoritative file,
+/// preserving comments, formatting, and unmodelled tables. This is an explicit
+/// adoption/migration edit and is idempotent.
+pub fn set_version_file(src: &str, path: &str) -> Result<Option<String>> {
+    use toml_edit::{value, DocumentMut, Item};
+
+    if !safe_relative_file(path) {
+        return Err(Error::config(format!(
+            "project.version_file '{path}' must be a safe repo-relative path"
+        )));
+    }
+    let mut doc: DocumentMut = src
+        .parse()
+        .map_err(|e| Error::parse(PROJECT_MANIFEST, anyhow::Error::new(e)))?;
+    let project = doc
+        .get_mut("project")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| {
+            Error::InvalidManifest(format!("{PROJECT_MANIFEST} is missing the [project] table"))
+        })?;
+    let current = project
+        .get("version_file")
+        .or_else(|| project.get("version-file"))
+        .and_then(Item::as_str);
+    if current == Some(path) && !project.contains_key("version") {
+        return Ok(None);
+    }
+    project.remove("version");
+    project.remove("version-file");
+    project["version_file"] = value(path);
+    let output = doc.to_string();
+    Project::from_toml(&output)?;
+    Ok(Some(output))
 }
 
 /// Add `name` to `[requires].extensions` in raw manifest TOML, preserving the
@@ -178,6 +273,7 @@ profile = \"lookdev\"
         // No [build] table → None; callers fall back to the host policy.
         let p = Project::from_toml(SAMPLE).unwrap();
         assert!(p.build.is_none());
+        assert_eq!(p.project.version.as_deref(), Some("0.1.0"));
         assert_eq!(BuildConfig::default().compiler, "host");
     }
 
@@ -227,5 +323,33 @@ profile = \"lookdev\"
         let out = add_extension(&src, "openusd").unwrap().unwrap();
         assert!(out.contains("[tools.cmake]"));
         assert!(out.contains("generator = \"Ninja\""));
+    }
+
+    #[test]
+    fn version_file_is_an_exclusive_authoritative_source() {
+        let src = SAMPLE.replace(
+            "name = \"demo\"",
+            "name = \"demo\"\nversion_file = \"VERSION\"",
+        );
+        let project = Project::from_toml(&src).unwrap();
+        assert!(project.project.version.is_none());
+
+        let both = src.replace(
+            "version_file = \"VERSION\"",
+            "version = \"1.0.0\"\nversion_file = \"VERSION\"",
+        );
+        assert!(Project::from_toml(&both).is_err());
+    }
+
+    #[test]
+    fn version_file_migration_is_targeted_and_idempotent() {
+        let src = SAMPLE.replace("name = \"demo\"", "name = \"demo\"\nversion = \"1.2.3\"");
+        let output = set_version_file(&src, "VERSION").unwrap().unwrap();
+        assert!(output.contains("# my project"));
+        assert!(output.contains("# pinned year"));
+        assert!(output.contains("version_file = \"VERSION\""));
+        assert!(!output.contains("version = \"1.2.3\""));
+        assert!(set_version_file(&output, "VERSION").unwrap().is_none());
+        assert!(set_version_file(&src, "../VERSION").is_err());
     }
 }

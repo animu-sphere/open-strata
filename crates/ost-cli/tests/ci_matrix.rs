@@ -196,6 +196,86 @@ fn init_validate_generate_lifecycle() {
     assert_eq!(out.status.code(), Some(3));
 }
 
+#[test]
+fn public_support_claims_gate_hosted_generation() {
+    let sb = Sandbox::new("public-support");
+    let base = format!(
+        "schema: 1
+cells:
+  - name: hosted-linux
+    runtime_artifact: sha256:{}
+    plugin_artifact: sha256:{}
+    platform: cy2026
+    profile: usd
+",
+        "ab".repeat(32),
+        "cd".repeat(32)
+    );
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), &base).unwrap();
+    let supported = "[levels.stable]\n\
+description='covered'\n\
+[levels.unsupported]\n\
+description='not covered'\n\
+[[platforms]]\n\
+id='linux_x86_64'\n\
+label='Linux x86_64'\n\
+[[features]]\n\
+id='github_hosted_ci'\n\
+label='GitHub-hosted CI'\n\
+support={linux_x86_64='stable'}\n\
+[[features]]\n\
+id='plugin_test'\n\
+label='Plugin test'\n\
+support={linux_x86_64='stable'}\n";
+    std::fs::write(sb.base.join("platforms.toml"), supported).unwrap();
+
+    // Enabling the gate makes a missing hosted mapping an explicit validation
+    // failure rather than inferring architecture from a runner image.
+    let out = sb.ost(&["--json", "ci", "validate", "--support", "platforms.toml"]);
+    assert_eq!(out.status.code(), Some(5));
+    let envelope: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(envelope["data"]["support_issues"][0]
+        .as_str()
+        .unwrap()
+        .contains("omits support.platform"));
+
+    let claimed = base.replace(
+        "    profile: usd\n",
+        "    profile: usd\n    support:\n      platform: linux_x86_64\n      features: [plugin_test]\n",
+    );
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), claimed).unwrap();
+    stdout_json(&sb.ost(&["--json", "ci", "validate", "--support", "platforms.toml"]));
+    assert!(sb
+        .ost(&[
+            "ci",
+            "generate",
+            "github",
+            "--stdout",
+            "--support",
+            "platforms.toml",
+        ])
+        .status
+        .success());
+
+    let unsupported = supported.replace(
+        "support={linux_x86_64='stable'}\n",
+        "support={linux_x86_64='unsupported'}\n",
+    );
+    std::fs::write(sb.base.join("platforms.toml"), unsupported).unwrap();
+    let out = sb.ost(&[
+        "--json",
+        "ci",
+        "generate",
+        "github",
+        "--stdout",
+        "--support",
+        "platforms.toml",
+    ]);
+    assert_eq!(out.status.code(), Some(5));
+    let envelope: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "CI_SUPPORT_CLAIM_UNSUPPORTED");
+}
+
 /// Runner profiles + lanes: a hosted PR cell renders into a source-CI
 /// workflow, billing acknowledgement is warned about while missing and
 /// gates publish-capable cells, and `generate` writes one file per lane

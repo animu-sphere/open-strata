@@ -104,6 +104,14 @@ pub(crate) fn load_project(root: &Utf8Path) -> Result<Project> {
 /// Resolve a platform+profile into a build [`Target`] and its [`Resolved`]
 /// runtime, without writing anything. Shared by configure/build/package.
 pub(crate) fn build_target(platform: &str, profile: &str) -> Result<(Target, Resolved)> {
+    build_target_with_generator(platform, profile, "Ninja")
+}
+
+pub(crate) fn build_target_with_generator(
+    platform: &str,
+    profile: &str,
+    generator: &str,
+) -> Result<(Target, Resolved)> {
     let r = resolve(platform, profile)?;
 
     // Pull the digest from the runtime manifest when available.
@@ -126,7 +134,7 @@ pub(crate) fn build_target(platform: &str, profile: &str) -> Result<(Target, Res
         python_version: r.python_version.clone(),
         cxx_standard: r.cxx_standard.clone(),
         capabilities: r.capabilities.clone(),
-        generator: "Ninja".to_string(),
+        generator: generator.to_string(),
     };
     Ok((target, r))
 }
@@ -139,7 +147,17 @@ pub(crate) fn generate(
     profile: &str,
     compiler: &Compiler,
 ) -> Result<Generated> {
-    let (target, r) = build_target(platform, profile)?;
+    generate_with_generator(root, platform, profile, compiler, "Ninja")
+}
+
+pub(crate) fn generate_with_generator(
+    root: &Utf8Path,
+    platform: &str,
+    profile: &str,
+    compiler: &Compiler,
+    generator: &str,
+) -> Result<Generated> {
+    let (target, r) = build_target_with_generator(platform, profile, generator)?;
     let id = target.id();
 
     let target_dir = root.join(STATE_DIR).join("targets").join(&id);
@@ -152,7 +170,7 @@ pub(crate) fn generate(
     // If a previous configure used a different compiler, the CMake cache under
     // build/<id> is stale (cached compiler/ABI) — drop it so the next configure
     // is clean. The toolchain/presets themselves are always regenerated below.
-    invalidate_build_tree_if_compiler_changed(root, &id, &lock_compiler);
+    invalidate_build_tree_if_configuration_changed(root, &id, &lock_compiler, generator);
 
     // 1. toolchain.cmake — pin a host interpreter's Development artifacts so
     // an adopted runtime's pxrConfig (which bakes the export machine's Python
@@ -226,7 +244,7 @@ pub(crate) fn target_output_paths(id: &str) -> Vec<String> {
         format!("{t}/env.json"),
         format!("{t}/target.lock.json"),
         format!("{t}/CMakePresets.json"),
-        "CMakePresets.json".to_string(),
+        USER_PRESETS.to_string(),
         "strata.lock".to_string(),
     ]
 }
@@ -237,10 +255,11 @@ pub(crate) fn target_output_paths(id: &str) -> Vec<String> {
 /// with a different compiler produces incoherent builds. We compare only the
 /// compiler fingerprint (policy + paths) recorded in the previous
 /// `target.lock.json`; a missing/unreadable lock means nothing to invalidate.
-fn invalidate_build_tree_if_compiler_changed(
+fn invalidate_build_tree_if_configuration_changed(
     root: &Utf8Path,
     id: &str,
     next: &ost_build::LockCompiler,
+    generator: &str,
 ) {
     let lock_path = root
         .join(STATE_DIR)
@@ -252,7 +271,7 @@ fn invalidate_build_tree_if_compiler_changed(
         .and_then(|s| serde_json::from_str::<TargetLock>(&s).ok());
 
     if let Some(prev) = previous {
-        if prev.compiler.fingerprint() != next.fingerprint() {
+        if prev.compiler.fingerprint() != next.fingerprint() || prev.generator != generator {
             let build_dir = root.join("build").join(id);
             if build_dir.as_std_path().exists() {
                 let _ = std::fs::remove_dir_all(build_dir.as_std_path());

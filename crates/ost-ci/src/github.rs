@@ -1013,6 +1013,7 @@ mod tests {
             name: name.into(),
             lane: Lane::default(),
             runner: None,
+            support: None,
             runtime_artifact: format!("sha256:{}", "ab".repeat(32)),
             runtime_remote: None,
             plugin_artifact: Some(format!("sha256:{}", "cd".repeat(32))),

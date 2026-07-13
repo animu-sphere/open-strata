@@ -13,7 +13,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use camino::Utf8PathBuf;
 use clap::Args;
 
-use ost_build::{pack_dir, stage_files};
+use ost_build::{
+    pack_dir, stage_files, BuildCompletion, BuildIntent, TargetLock, BUILD_COMPLETION_FILE,
+};
 use ost_core::paths::STATE_DIR;
 use ost_core::{tools, Error, Result};
 use ost_runtime::{RuntimeManifest, MANIFEST_FILE};
@@ -46,6 +48,7 @@ pub struct PackageArgs {
 pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     let (root, platform, profile) = resolve_selection(args.target, args.profile)?;
     let project = load_project(&root)?;
+    let project_version = project.effective_version(&root)?;
     let (target, r) = build_target(&platform, &profile)?;
     let id = target.id();
 
@@ -55,6 +58,28 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
             "target '{id}' is not built — run `ost build` first"
         )));
     }
+    let lock_path = root
+        .join(STATE_DIR)
+        .join("targets")
+        .join(&id)
+        .join("target.lock.json");
+    let completion_path = build_dir.join(BUILD_COMPLETION_FILE);
+    let lock: TargetLock = read_json(&lock_path)?;
+    let completion: BuildCompletion = read_json(&completion_path)?;
+    completion
+        .validate_against(
+            &lock,
+            &project.project.name,
+            &project_version,
+            &Utf8PathBuf::from(format!("build/{id}")),
+        )
+        .map_err(|detail| {
+            Error::precondition(format!(
+                "target '{id}' has stale or incompatible build completion: {detail}"
+            ))
+            .with_hint("rerun `ost build` before packaging")
+        })?;
+    let configuration = completed_configuration(&completion.intent)?;
 
     let cmake = tools::which("cmake").ok_or_else(|| {
         Error::coded(
@@ -76,7 +101,9 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     // that needs PATH, PYTHONPATH and the loader path set consistently.
     let mut install = Command::new(&cmake);
     install
-        .args(["--install", &format!("build/{id}"), "--prefix"])
+        .args(["--install", &format!("build/{id}"), "--config"])
+        .arg(configuration)
+        .arg("--prefix")
         .arg(stage.as_std_path())
         .current_dir(root.as_std_path());
     r.env.apply(&mut install);
@@ -113,9 +140,9 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
 
     // Pack the stage tree.
     let name = &project.project.name;
-    let version = &project.project.version;
+    let version = project_version;
     let archive_name = format!("{name}-{version}-{id}.tar.zst");
-    let dist_dir = root.join("dist").join(name).join(version).join(&id);
+    let dist_dir = root.join("dist").join(name).join(&version).join(&id);
     let archive_path = dist_dir.join(&archive_name);
 
     let packed = pack_dir(&stage, &archive_path, &staged)
@@ -151,12 +178,12 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         "total_size": packed.total_size,
         "created_unix": created,
         "provenance": {
-            "platform": target.platform,
-            "profile": target.profile,
-            "variant": target.variant.slug(),
-            "cxx_standard": target.cxx_standard,
-            "generator": target.generator,
-            "runtime": { "id": target.runtime_id, "digest": target.runtime_digest },
+            "platform": lock.platform,
+            "profile": lock.profile,
+            "variant": lock.variant.slug(),
+            "cxx_standard": lock.cxx_standard,
+            "generator": lock.generator,
+            "runtime": { "id": lock.runtime.id, "digest": lock.runtime.digest },
             "validation": validation,
         },
         "files": files_json,
@@ -192,6 +219,31 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         fmt,
     );
     Ok(())
+}
+
+fn completed_configuration(intent: &BuildIntent) -> Result<&str> {
+    intent
+        .cache
+        .get("CMAKE_BUILD_TYPE")
+        .map(String::as_str)
+        .filter(|configuration| !configuration.trim().is_empty())
+        .ok_or_else(|| {
+            Error::precondition("build completion does not record a CMake configuration")
+                .with_hint("rerun `ost build` before packaging")
+        })
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &camino::Utf8Path) -> Result<T> {
+    let source = std::fs::read_to_string(path.as_std_path()).map_err(|error| {
+        Error::precondition(format!(
+            "required build evidence is missing at '{path}': {error}"
+        ))
+        .with_hint("rerun `ost build` before packaging")
+    })?;
+    serde_json::from_str(&source).map_err(|error| {
+        Error::precondition(format!("invalid build evidence at '{path}': {error}"))
+            .with_hint("rerun `ost build` before packaging")
+    })
 }
 
 fn write(path: &Utf8PathBuf, contents: &str) -> Result<()> {
@@ -243,4 +295,20 @@ fn report(
     );
     println!("  validation: {validation}");
     println!("  manifest.json + SHA256SUMS written alongside the archive");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_configuration_is_required_for_packaging() {
+        let mut intent = BuildIntent::default();
+        assert!(completed_configuration(&intent).is_err());
+
+        intent
+            .cache
+            .insert("CMAKE_BUILD_TYPE".into(), "Debug".into());
+        assert_eq!(completed_configuration(&intent).unwrap(), "Debug");
+    }
 }

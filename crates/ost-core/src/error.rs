@@ -113,7 +113,7 @@ pub enum Error {
         /// The build/work phase the failure is attributed to (e.g.
         /// `schema-generate`, `compile-link`), surfaced in human + `--json`
         /// output so triage does not need to bisect which step failed.
-        phase: Option<&'static str>,
+        phase: Option<String>,
     },
 
     #[error("a project already exists here: {0}")]
@@ -201,17 +201,17 @@ impl Error {
 
     /// Attribute this error to a named work phase (design §14.4), kept separate
     /// from the message for `--json`. A no-op on variants without a phase slot.
-    pub fn with_phase(mut self, phase: &'static str) -> Self {
+    pub fn with_phase(mut self, phase: impl Into<String>) -> Self {
         if let Error::Coded { phase: slot, .. } = &mut self {
-            *slot = Some(phase);
+            *slot = Some(phase.into());
         }
         self
     }
 
     /// The work phase this failure is attributed to, if any.
-    pub fn phase(&self) -> Option<&'static str> {
+    pub fn phase(&self) -> Option<&str> {
         match self {
-            Error::Coded { phase, .. } => *phase,
+            Error::Coded { phase, .. } => phase.as_deref(),
             _ => None,
         }
     }

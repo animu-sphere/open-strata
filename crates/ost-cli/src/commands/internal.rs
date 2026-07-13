@@ -3,9 +3,9 @@
 //!
 //! Regenerates the machine-sourced reference docs under `docs/reference/` from
 //! their sources — the clap command tree, the exit-code [`Category`] contract,
-//! the JSON schemas, and the `support/platforms.toml` declaration — so those
-//! pages cannot drift from the shipped CLI. Run from the repository root; CI
-//! regenerates and fails on any diff.
+//! the JSON schemas, `support/platforms.toml`, and the structured OST variable
+//! declaration — so those pages cannot drift from the shipped CLI. Run from the
+//! repository root; CI regenerates and fails on any diff.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -42,6 +42,9 @@ pub struct GenerateArgs {
     /// Machine-readable support declaration.
     #[arg(long, default_value = "support/platforms.toml")]
     support: Utf8PathBuf,
+    /// Machine-readable OST environment/CMake variable declaration.
+    #[arg(long, default_value = "support/environment-variables.toml")]
+    environment: Utf8PathBuf,
 }
 
 pub fn run(cmd: InternalCmd, fmt: Format) -> Result<()> {
@@ -58,6 +61,11 @@ fn generate(args: GenerateArgs, fmt: Format) -> Result<()> {
         write_page(&args.out, "cli.md", &cli_reference())?,
         write_page(&args.out, "exit-codes.md", &exit_codes_reference())?,
         write_page(&args.out, "schemas.md", &schemas_reference(&args.schemas)?)?,
+        write_page(
+            &args.out,
+            "environment-variables.md",
+            &environment_reference(&args.environment)?,
+        )?,
         write_page(
             &args.out,
             "support-matrix.md",
@@ -78,6 +86,85 @@ fn generate(args: GenerateArgs, fmt: Format) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ---- OST variables ------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvironmentData {
+    variables: Vec<EnvironmentVariable>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvironmentVariable {
+    name: String,
+    kind: String,
+    direction: String,
+    scope: String,
+    description: String,
+    #[serde(default)]
+    secret: bool,
+}
+
+fn environment_reference(path: &Utf8Path) -> Result<String> {
+    let text = std::fs::read_to_string(path.as_std_path())
+        .map_err(|error| Error::Operation(format!("cannot read {path}: {error}")))?;
+    let data: EnvironmentData = toml::from_str(&text)
+        .map_err(|error| Error::config(format!("invalid variable declaration {path}: {error}")))?;
+    let mut seen = std::collections::BTreeSet::new();
+    for variable in &data.variables {
+        if !variable.name.starts_with("OST_") || !seen.insert(&variable.name) {
+            return Err(Error::config(format!(
+                "variable declaration has an invalid or duplicate name: {}",
+                variable.name
+            )));
+        }
+        if !matches!(
+            variable.kind.as_str(),
+            "environment" | "github-variable" | "cmake-cache"
+        ) {
+            return Err(Error::config(format!(
+                "variable '{}' has unknown kind '{}'",
+                variable.name, variable.kind
+            )));
+        }
+        if !matches!(
+            variable.direction.as_str(),
+            "input" | "output" | "input-output"
+        ) {
+            return Err(Error::config(format!(
+                "variable '{}' has unknown direction '{}'",
+                variable.name, variable.direction
+            )));
+        }
+    }
+
+    let mut out = String::from(
+        "# Environment and OST variables\n\n\
+         Supported `OST_*` environment, GitHub repository, and CMake-cache \
+         variables. Sourced from \
+         [`support/environment-variables.toml`](../../support/environment-variables.toml).\n\n\
+         Secret values are consumed from the environment and must never be \
+         committed or printed. Generated output variables apply only to the \
+         named child/session.\n\n\
+         | Variable | Kind | Direction | Scope | Secret | Description |\n\
+         | --- | --- | --- | --- | --- | --- |\n",
+    );
+    for variable in &data.variables {
+        let _ = writeln!(
+            out,
+            "| `{}` | {} | {} | {} | {} | {} |",
+            variable.name,
+            variable.kind,
+            variable.direction,
+            one_line(&variable.scope),
+            if variable.secret { "yes" } else { "no" },
+            one_line(&variable.description),
+        );
+    }
+    Ok(out)
 }
 
 fn write_page(out: &Utf8Path, name: &str, body: &str) -> Result<Utf8PathBuf> {

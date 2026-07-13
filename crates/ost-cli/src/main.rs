@@ -118,7 +118,7 @@ fn main() -> std::process::ExitCode {
         Command::Validate(args) => validate::run(args, fmt),
         Command::Extension(cmd) => extension::run(cmd, fmt),
         Command::Plugin(cmd) => plugin::run(cmd, fmt),
-        Command::Renderer(cmd) => renderer::run(cmd),
+        Command::Renderer(cmd) => renderer::run(cmd, fmt),
         Command::Artifact(cmd) => artifact::run(cmd, fmt),
         Command::Ci(cmd) => ci::run(cmd, fmt),
         Command::Lock(args) => lock::run(args, fmt),
