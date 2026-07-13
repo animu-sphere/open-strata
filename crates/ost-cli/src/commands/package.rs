@@ -13,7 +13,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use camino::Utf8PathBuf;
 use clap::Args;
 
-use ost_build::{pack_dir, stage_files, BuildCompletion, TargetLock, BUILD_COMPLETION_FILE};
+use ost_build::{
+    pack_dir, stage_files, BuildCompletion, BuildIntent, TargetLock, BUILD_COMPLETION_FILE,
+};
 use ost_core::paths::STATE_DIR;
 use ost_core::{tools, Error, Result};
 use ost_runtime::{RuntimeManifest, MANIFEST_FILE};
@@ -77,6 +79,7 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
             ))
             .with_hint("rerun `ost build` before packaging")
         })?;
+    let configuration = completed_configuration(&completion.intent)?;
 
     let cmake = tools::which("cmake").ok_or_else(|| {
         Error::coded(
@@ -98,7 +101,9 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     // that needs PATH, PYTHONPATH and the loader path set consistently.
     let mut install = Command::new(&cmake);
     install
-        .args(["--install", &format!("build/{id}"), "--prefix"])
+        .args(["--install", &format!("build/{id}"), "--config"])
+        .arg(configuration)
+        .arg("--prefix")
         .arg(stage.as_std_path())
         .current_dir(root.as_std_path());
     r.env.apply(&mut install);
@@ -173,12 +178,12 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         "total_size": packed.total_size,
         "created_unix": created,
         "provenance": {
-            "platform": target.platform,
-            "profile": target.profile,
-            "variant": target.variant.slug(),
-            "cxx_standard": target.cxx_standard,
-            "generator": target.generator,
-            "runtime": { "id": target.runtime_id, "digest": target.runtime_digest },
+            "platform": lock.platform,
+            "profile": lock.profile,
+            "variant": lock.variant.slug(),
+            "cxx_standard": lock.cxx_standard,
+            "generator": lock.generator,
+            "runtime": { "id": lock.runtime.id, "digest": lock.runtime.digest },
             "validation": validation,
         },
         "files": files_json,
@@ -214,6 +219,18 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         fmt,
     );
     Ok(())
+}
+
+fn completed_configuration(intent: &BuildIntent) -> Result<&str> {
+    intent
+        .cache
+        .get("CMAKE_BUILD_TYPE")
+        .map(String::as_str)
+        .filter(|configuration| !configuration.trim().is_empty())
+        .ok_or_else(|| {
+            Error::precondition("build completion does not record a CMake configuration")
+                .with_hint("rerun `ost build` before packaging")
+        })
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &camino::Utf8Path) -> Result<T> {
@@ -278,4 +295,20 @@ fn report(
     );
     println!("  validation: {validation}");
     println!("  manifest.json + SHA256SUMS written alongside the archive");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_configuration_is_required_for_packaging() {
+        let mut intent = BuildIntent::default();
+        assert!(completed_configuration(&intent).is_err());
+
+        intent
+            .cache
+            .insert("CMAKE_BUILD_TYPE".into(), "Debug".into());
+        assert_eq!(completed_configuration(&intent).unwrap(), "Debug");
+    }
 }

@@ -527,7 +527,7 @@ fn view(args: ViewArgs) -> Result<()> {
     let adapter = manifest.composition.adapters.get("hydra2").ok_or_else(|| {
         Error::config("renderer composition has no `hydra2` adapter in openstrata.renderer.yaml")
     })?;
-    let runtime = require_real_runtime(&platform, &profile)?;
+    let (runtime, runtime_manifest) = require_real_runtime(&platform, &profile)?;
 
     let explicit_scene = args.scene.map(|scene| rooted(&root, &scene));
     if let Some(scene) = &explicit_scene {
@@ -542,7 +542,12 @@ fn view(args: ViewArgs) -> Result<()> {
         Some(build_dir) => {
             let build_dir = rooted(&root, &build_dir);
             println!("==> using external Hydra build tree: {build_dir}");
-            validate_hydra_build(&build_dir, &runtime.artifact_prefix, &runtime.runtime.id())?;
+            validate_hydra_build(
+                &build_dir,
+                &runtime.artifact_prefix,
+                &runtime.runtime.id(),
+                &runtime_manifest.digest,
+            )?;
             build_dir
         }
         None => managed_hydra_build(
@@ -552,6 +557,7 @@ fn view(args: ViewArgs) -> Result<()> {
             &args.config,
             args.generator,
             &runtime,
+            &runtime_manifest.digest,
         )?,
     };
 
@@ -704,6 +710,7 @@ fn managed_hydra_build(
     config: &str,
     generator: Option<String>,
     runtime: &Resolved,
+    runtime_digest: &str,
 ) -> Result<Utf8PathBuf> {
     let (target, _) = build_target(platform, profile)?;
     let build_dir = root.join("build").join(target.id());
@@ -714,7 +721,7 @@ fn managed_hydra_build(
         portable_path(&runtime.artifact_prefix),
     );
     cache.insert("OST_RUNTIME_ID".into(), runtime.runtime.id());
-    cache.insert("OST_RUNTIME_DIGEST".into(), target.runtime_digest.clone());
+    cache.insert("OST_RUNTIME_DIGEST".into(), runtime_digest.into());
     cache.insert("CMAKE_BUILD_TYPE".into(), config.into());
     let mut intent = ost_build::BuildIntent {
         name: "renderer-hydra2".into(),
@@ -756,7 +763,12 @@ fn managed_hydra_build(
         }
     }
 
-    validate_hydra_build(&build_dir, &runtime.artifact_prefix, &runtime.runtime.id())?;
+    validate_hydra_build(
+        &build_dir,
+        &runtime.artifact_prefix,
+        &runtime.runtime.id(),
+        runtime_digest,
+    )?;
     Ok(build_dir)
 }
 
@@ -815,6 +827,7 @@ fn validate_hydra_build(
     build_dir: &Utf8Path,
     runtime_root: &Utf8Path,
     runtime_id: &str,
+    runtime_digest: &str,
 ) -> Result<()> {
     let source = read_cmake_cache(build_dir)?;
     // A `-D<RENDERER>_ENABLE_HYDRA2=YES` configure stores an UNINITIALIZED
@@ -842,6 +855,21 @@ fn validate_hydra_build(
             .with_hint(
                 "select the runtime used for this build with `--target/--profile`, or \
                  reconfigure the Hydra build against that runtime",
+            )
+            .with_phase("renderer-view-preflight"));
+        }
+    }
+    if let Some(recorded_digest) = cache_path(&source, "OST_RUNTIME_DIGEST") {
+        if recorded_digest != runtime_digest {
+            return Err(Error::coded(
+                "RUNTIME_BUILD_MISMATCH",
+                Category::Precondition,
+                format!(
+                    "Hydra build records runtime digest '{recorded_digest}', but the selected runtime digest is '{runtime_digest}'"
+                ),
+            )
+            .with_hint(
+                "select the exact runtime used for this build, or reconfigure the Hydra build against the selected runtime",
             )
             .with_phase("renderer-view-preflight"));
         }
@@ -1027,7 +1055,7 @@ fn find_all_named_files(root: &Utf8Path, name: &str) -> Result<Vec<Utf8PathBuf>>
     Ok(found)
 }
 
-fn require_real_runtime(platform: &str, profile: &str) -> Result<Resolved> {
+fn require_real_runtime(platform: &str, profile: &str) -> Result<(Resolved, RuntimeManifest)> {
     let resolved = resolve(platform, profile)?;
     if !resolved.pulled {
         return Err(Error::coded(
@@ -1039,10 +1067,12 @@ fn require_real_runtime(platform: &str, profile: &str) -> Result<Resolved> {
             "adopt one with `ost runtime pull {platform} --profile {profile} --from-usd <path>`"
         )));
     }
-    let manifest = std::fs::read_to_string(resolved.prefix.join(MANIFEST_FILE).as_std_path())
-        .ok()
-        .and_then(|source| RuntimeManifest::from_json(&source).ok());
-    if !manifest.is_some_and(|manifest| manifest.source.is_real()) {
+    let manifest_path = resolved.prefix.join(MANIFEST_FILE);
+    let source = std::fs::read_to_string(manifest_path.as_std_path())
+        .map_err(|error| Error::io(manifest_path.to_string(), error))?;
+    let manifest = RuntimeManifest::from_json(&source)
+        .map_err(|error| Error::parse(manifest_path.to_string(), anyhow::Error::new(error)))?;
+    if !manifest.source.is_real() {
         return Err(Error::coded(
             "REAL_RUNTIME_REQUIRED",
             Category::Precondition,
@@ -1052,7 +1082,7 @@ fn require_real_runtime(platform: &str, profile: &str) -> Result<Resolved> {
             "adopt one with `ost runtime pull {platform} --profile {profile} --from-usd <path>`"
         )));
     }
-    Ok(resolved)
+    Ok((resolved, manifest))
 }
 
 fn locate_runtime_tool(runtime: &Resolved, names: &[&str]) -> Option<Utf8PathBuf> {
@@ -1153,7 +1183,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(validate_hydra_build(&build, &runtime, "runtime").is_ok());
+        assert!(validate_hydra_build(&build, &runtime, "runtime", "sha256:runtime").is_ok());
 
         // A plain `-D` configure stores UNINITIALIZED entries with any CMake
         // truthy spelling; the advanced marker must never count as enabled.
@@ -1165,14 +1195,14 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(validate_hydra_build(&build, &runtime, "runtime").is_ok());
+        assert!(validate_hydra_build(&build, &runtime, "runtime", "sha256:runtime").is_ok());
 
         std::fs::write(
             build.join("CMakeCache.txt").as_std_path(),
             "SAMPLE_RENDERER_ENABLE_HYDRA2:BOOL=OFF\nSAMPLE_RENDERER_ENABLE_HYDRA2-ADVANCED:INTERNAL=1\n",
         )
         .unwrap();
-        assert!(validate_hydra_build(&build, &runtime, "runtime").is_err());
+        assert!(validate_hydra_build(&build, &runtime, "runtime", "sha256:runtime").is_err());
         std::fs::remove_dir_all(build.as_std_path()).unwrap();
         std::fs::remove_dir_all(runtime.as_std_path()).unwrap();
     }
@@ -1191,11 +1221,33 @@ mod tests {
         )
         .unwrap();
 
-        let error = validate_hydra_build(&build, &runtime, "runtime").unwrap_err();
+        let error =
+            validate_hydra_build(&build, &runtime, "runtime", "sha256:runtime").unwrap_err();
         assert_eq!(error.code(), "RUNTIME_BUILD_MISMATCH");
         std::fs::remove_dir_all(build.as_std_path()).unwrap();
         std::fs::remove_dir_all(runtime.as_std_path()).unwrap();
         std::fs::remove_dir_all(other.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn hydra_build_preflight_rejects_a_stale_runtime_digest() {
+        let build = temp_dir("digest-build");
+        let runtime = temp_dir("digest-runtime");
+        std::fs::write(
+            build.join("CMakeCache.txt").as_std_path(),
+            format!(
+                "SAMPLE_RENDERER_ENABLE_HYDRA2:BOOL=ON\nOST_RUNTIME_ROOT:PATH={}\nOST_RUNTIME_ID:STRING=runtime\nOST_RUNTIME_DIGEST:STRING=sha256:old\n",
+                portable_path(&runtime)
+            ),
+        )
+        .unwrap();
+
+        let error = validate_hydra_build(&build, &runtime, "runtime", "sha256:new").unwrap_err();
+        assert_eq!(error.code(), "RUNTIME_BUILD_MISMATCH");
+        assert!(error.to_string().contains("sha256:old"));
+        assert!(error.to_string().contains("sha256:new"));
+        std::fs::remove_dir_all(build.as_std_path()).unwrap();
+        std::fs::remove_dir_all(runtime.as_std_path()).unwrap();
     }
 
     #[test]

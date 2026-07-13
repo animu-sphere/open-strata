@@ -425,6 +425,43 @@ fn full_lifecycle_init_build_package() {
 }
 
 #[test]
+fn multi_config_package_uses_the_completed_configuration_and_generator() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping multi_config_package: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("multi-config-package");
+    init_and_pull(&sb);
+
+    let build = sb.ost(&[
+        "build",
+        "--generator",
+        "Ninja Multi-Config",
+        "--config",
+        "Debug",
+        "--progress",
+        "plain",
+    ]);
+    assert!(
+        build.status.success(),
+        "multi-config build failed:\n{}",
+        out_text(&build)
+    );
+
+    let package = sb.ost(&["package"]);
+    assert!(
+        package.status.success(),
+        "multi-config package failed:\n{}",
+        out_text(&package)
+    );
+    let manifest_path =
+        find_first(&sb.work.join("dist"), "manifest.json").expect("package manifest");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["provenance"]["generator"], "Ninja Multi-Config");
+}
+
+#[test]
 fn renderer_template_scaffolds_one_project_and_a_strict_manifest() {
     let sb = Sandbox::new("renderer-template");
     let init = sb.ost(&[

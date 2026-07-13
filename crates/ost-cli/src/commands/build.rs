@@ -176,9 +176,7 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
 
     let cmake_prog = pre.cmake.clone().unwrap_or_else(|| PathBuf::from("cmake"));
     // CMake wants forward slashes even on Windows.
-    let ninja_arg = args
-        .generator
-        .eq_ignore_ascii_case("Ninja")
+    let ninja_arg = generator_uses_ninja(&args.generator)
         .then(|| {
             pre.ninja
                 .as_ref()
@@ -193,8 +191,7 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
     let mut intent = intent;
     intent
         .cache
-        .entry("CMAKE_BUILD_TYPE".into())
-        .or_insert_with(|| args.config.clone());
+        .insert("CMAKE_BUILD_TYPE".into(), args.config.clone());
     for (key, value) in &intent.cache {
         configure_args.push(format!("-D{key}={value}"));
     }
@@ -346,6 +343,10 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
 
 fn timeout(seconds: u64) -> Option<Duration> {
     (seconds > 0).then(|| Duration::from_secs(seconds))
+}
+
+fn generator_uses_ninja(generator: &str) -> bool {
+    generator.eq_ignore_ascii_case("Ninja") || generator.eq_ignore_ascii_case("Ninja Multi-Config")
 }
 
 fn invalidate_completion(build_dir: &Utf8Path) -> Result<()> {
@@ -519,7 +520,7 @@ fn preflight(root: &Utf8Path, target: &Target, pulled: bool, args: &BuildArgs) -
 
     // Ninja. On Windows the MSVC developer environment we auto-load also puts a
     // Ninja on PATH, so an explicit one is not strictly required there.
-    let wants_ninja = args.generator.eq_ignore_ascii_case("Ninja");
+    let wants_ninja = generator_uses_ninja(&args.generator);
     let ninja = wants_ninja
         .then(|| {
             locate(
@@ -728,5 +729,13 @@ mod tests {
         assert!(files.iter().any(|f| f == "CMakeUserPresets.json"));
         assert!(!files.iter().any(|f| f == "CMakePresets.json"));
         assert!(files.iter().any(|f| f == "strata.lock"));
+    }
+
+    #[test]
+    fn ninja_multi_config_uses_the_ninja_tool_path() {
+        assert!(generator_uses_ninja("Ninja"));
+        assert!(generator_uses_ninja("Ninja Multi-Config"));
+        assert!(generator_uses_ninja("ninja multi-config"));
+        assert!(!generator_uses_ninja("Visual Studio 17 2022"));
     }
 }
