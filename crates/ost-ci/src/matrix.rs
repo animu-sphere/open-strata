@@ -834,9 +834,11 @@ impl SupportMatrix {
                 names.push(name.to_string());
             }
         }
+        // Draft mode renders no publisher job, so its runner is not metered.
         if let Some(name) = self
             .release
             .as_ref()
+            .filter(|release| release.mode == ReleaseMode::Publish)
             .and_then(|release| release.publisher_runner.as_deref())
         {
             if let Some(profile) = self.runners.get(name) {
@@ -1904,5 +1906,159 @@ cells:
         );
         let err = SupportMatrix::from_yaml(&support).expect_err("host_python on support lane");
         assert!(err.to_string().contains("source lanes"), "{err}");
+    }
+
+    /// `lanes_yaml()` with a minimal valid draft release contract: a policy,
+    /// a `verified` release floor, exact hosted bootstrap pins, and the first
+    /// cell promoted to a `main` publish candidate.
+    fn release_yaml() -> String {
+        lanes_yaml()
+            .replace(
+                "schema: 1\n",
+                "schema: 1\n\
+                 trust:\n\
+                 \x20   policy: openstrata-artifact-policy.toml\n\
+                 \x20   release_min_trust: verified\n\
+                 release:\n\
+                 \x20   version: 1.2.3\n\
+                 \x20   mode: draft\n",
+            )
+            .replace(
+                "        version: \"0.9.0\"\n",
+                &format!(
+                    "        version: \"0.9.0\"\n        sha256:\n            x86_64-pc-windows-msvc: {}\n",
+                    "ef".repeat(32)
+                ),
+            )
+            .replace(
+                "        lane: pull_request\n",
+                "        lane: main\n        publish: candidate\n        trust: verified\n",
+            )
+    }
+
+    #[test]
+    fn release_contract_structural_errors_are_rejected() {
+        // The draft baseline itself is valid and selects one candidate.
+        let m = SupportMatrix::from_yaml(&release_yaml()).unwrap();
+        assert_eq!(m.candidate_cells().len(), 1);
+
+        let cases = [
+            (
+                release_yaml().replace(
+                    "release:\n    version: 1.2.3\n    mode: draft\n",
+                    "",
+                ),
+                "require a matrix-level release block",
+            ),
+            (
+                release_yaml().replace("        publish: candidate\n", ""),
+                "declares no cells with publish: candidate",
+            ),
+            (
+                release_yaml().replace("    version: 1.2.3\n", "    version: v1.2.3\n"),
+                "bare SemVer",
+            ),
+            (
+                release_yaml().replace(
+                    "    release_min_trust: verified\n",
+                    "    release_min_trust: attested\n",
+                ),
+                "too weak",
+            ),
+            (
+                release_yaml().replace("    policy: openstrata-artifact-policy.toml\n", ""),
+                "trust.policy",
+            ),
+            (
+                release_yaml().replace(
+                    "    mode: draft\n",
+                    "    mode: draft\n    environment: \"bad env!\"\n",
+                ),
+                "release.environment",
+            ),
+            (
+                release_yaml().replace(
+                    "    mode: draft\n",
+                    "    mode: publish\n    destination: oci://ghcr.io/owner/plugin\n",
+                ),
+                "requires release.publisher_runner",
+            ),
+            (
+                release_yaml().replace(
+                    "    mode: draft\n",
+                    "    mode: publish\n    destination: oci://ghcr.io/owner/plugin\n    publisher_runner: nope\n",
+                ),
+                "unknown runner profile",
+            ),
+            (
+                release_yaml().replace(
+                    "    mode: draft\n",
+                    "    mode: publish\n    publisher_runner: windows-hosted\n",
+                ),
+                "requires release.destination",
+            ),
+            (
+                release_yaml().replace(
+                    "    mode: draft\n",
+                    "    mode: publish\n    destination: oci://ghcr.io/owner/plugin:latest\n    publisher_runner: windows-hosted\n",
+                ),
+                "without a tag or digest",
+            ),
+            (
+                release_yaml().replace(
+                    &format!(
+                        "        sha256:\n            x86_64-pc-windows-msvc: {}\n",
+                        "ef".repeat(32)
+                    ),
+                    "",
+                ),
+                "bootstrap.ost.sha256",
+            ),
+        ];
+        for (yaml, needle) in cases {
+            let err = SupportMatrix::from_yaml(&yaml).expect_err(needle);
+            assert!(
+                err.to_string().contains(needle),
+                "expected '{needle}' in: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn draft_publisher_runner_is_not_billing_material() {
+        // linux-hosted is referenced only as the publisher runner; the
+        // candidate cell stays on windows-hosted.
+        let with_runner = release_yaml().replace(
+            "runners:\n",
+            "runners:\n    linux-hosted:\n        kind: github-hosted\n        image: ubuntu-24.04\n",
+        );
+
+        // Draft mode renders no publisher job, so only the candidate's
+        // hosted runner is billing material.
+        let draft = with_runner.replace(
+            "    mode: draft\n",
+            "    mode: draft\n    publisher_runner: linux-hosted\n",
+        );
+        let m = SupportMatrix::from_yaml(&draft).unwrap();
+        assert_eq!(m.hosted_ack_missing(), vec!["windows-hosted"]);
+        assert!(!m
+            .hosted_ack_errors()
+            .iter()
+            .any(|hit| hit.contains("release publisher")));
+
+        // Publish mode adds the publisher runner to both lists.
+        let publish = with_runner.replace(
+            "    mode: draft\n",
+            "    mode: publish\n    destination: oci://ghcr.io/owner/plugin\n    publisher_runner: linux-hosted\n",
+        );
+        let m = SupportMatrix::from_yaml(&publish).unwrap();
+        assert_eq!(
+            m.hosted_ack_missing(),
+            vec!["windows-hosted", "linux-hosted"]
+        );
+        assert!(m
+            .hosted_ack_errors()
+            .iter()
+            .any(|hit| hit.contains("release publisher: runner 'linux-hosted'")));
     }
 }

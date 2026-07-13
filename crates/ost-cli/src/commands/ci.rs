@@ -283,9 +283,11 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
         }
     }
 
+    // Draft mode renders no publisher job; only publish mode adds its runner.
     if let Some(name) = matrix
         .release
         .as_ref()
+        .filter(|release| release.mode == ost_ci::ReleaseMode::Publish)
         .and_then(|release| release.publisher_runner.as_deref())
     {
         if let Some(profile) = matrix.runners.get(name) {

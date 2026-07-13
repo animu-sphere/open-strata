@@ -118,6 +118,10 @@ valid subject-bound provenance establishes `attested`; when required provenance
 matches an allowed publisher and a valid SBOM is also present, that publisher's
 declared trust applies. This derivation is non-sticky — importing an exported
 artifact still records `local`, so a copied `record.json` cannot grant trust.
+Provenance content is digest-bound and policy-matched but not yet
+cryptographically signed (SEC-005): treat evidence-derived trust as an assertion
+about a handoff you already control — such as artifacts inside one workflow
+run — not as protection against an attacker who can author the sidecar files.
 Human output includes the effective and required levels. JSON output keeps
 `data.trust` as the effective value and adds `record_trust` plus
 `evidence_trust`, alongside the `data.policy` result. A trust failure exits with

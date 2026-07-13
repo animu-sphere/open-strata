@@ -714,7 +714,7 @@ fn release_candidate_steps(matrix: &SupportMatrix) -> String {
         .as_deref()
         .expect("validated release policy");
     let reproducibility = if release.reproducible {
-        "      - name: Repackage and prove reproducibility\n        shell: bash\n        run: |\n          set -euo pipefail\n          sums=\"$(find \"${{ matrix.bundle }}/.strata/dist\" -type f -name SHA256SUMS -print | head -n 1)\"\n          if [ -z \"$sums\" ]; then echo \"::error title=release::package produced no SHA256SUMS\"; exit 1; fi\n          cp \"$sums\" .ost-release/first-SHA256SUMS\n          ost plugin package ${{ matrix.bundle }} --target ${{ matrix.platform }} --profile ${{ matrix.profile }}\n          cmp .ost-release/first-SHA256SUMS \"$sums\"\n"
+        "      - name: Repackage and prove reproducibility\n        shell: bash\n        run: |\n          set -euo pipefail\n          sums=\"$(find \"${{ matrix.bundle }}/.strata/dist\" -type f -name SHA256SUMS -print -quit)\"\n          if [ -z \"$sums\" ]; then echo \"::error title=release::package produced no SHA256SUMS\"; exit 1; fi\n          cp \"$sums\" .ost-release/first-SHA256SUMS\n          ost plugin package ${{ matrix.bundle }} --target ${{ matrix.platform }} --profile ${{ matrix.profile }}\n          cmp .ost-release/first-SHA256SUMS \"$sums\"\n"
     } else {
         ""
     };
@@ -742,11 +742,7 @@ fn release_candidate_steps(matrix: &SupportMatrix) -> String {
             echo \"::error title=release ref::expected tag $expected, got $GITHUB_REF_TYPE $GITHUB_REF_NAME\"; exit 1
           fi
           mkdir -p .ost-release
-          ost --json plugin inspect ${{{{ matrix.bundle }}}} > .ost-release/inspect.json
-          bundle_version=\"$(sed -n 's/^[[:space:]]*\"version\": \"\\([^\"]*\\)\",*$/\\1/p' .ost-release/inspect.json | head -n 1)\"
-          if [ \"$bundle_version\" != \"{release_version}\" ]; then
-            echo \"::error title=release version::bundle declares '$bundle_version', tag requires '{release_version}'\"; exit 1
-          fi
+          ost --json plugin inspect ${{{{ matrix.bundle }}}} --expect-version {release_version} > .ost-release/inspect.json
       - name: Validate the trusted CI manifest
         shell: bash
         run: ost ci validate
@@ -904,8 +900,6 @@ fn release_publisher_job(matrix: &SupportMatrix) -> String {
       packages: write
     env:
       OST_HOME: ${{{{ github.workspace }}}}/.ost-publish-home
-      OST_REGISTRY_USER: ${{{{ github.actor }}}}
-      OST_REGISTRY_PASSWORD: ${{{{ secrets.GITHUB_TOKEN }}}}
     strategy:
       matrix:
         include:
@@ -924,6 +918,11 @@ fn release_publisher_job(matrix: &SupportMatrix) -> String {
           path: .ost-release/candidates
       - name: Re-verify and publish candidates
         shell: bash
+        # The registry credential is step-scoped: bootstrap and download run
+        # without it.
+        env:
+          OST_REGISTRY_USER: ${{{{ github.actor }}}}
+          OST_REGISTRY_PASSWORD: ${{{{ secrets.GITHUB_TOKEN }}}}
         run: |
           set -euo pipefail
           mkdir -p .ost-release/results
@@ -1689,6 +1688,7 @@ mod tests {
         let candidate_text = serde_yaml::to_string(&doc["jobs"]["candidates"]).unwrap();
         for gate in [
             "trusted release requires an exact checksum pin",
+            "--expect-version 1.2.3",
             "Repackage and prove reproducibility",
             "--from-package",
             "--require-sbom",
@@ -1715,8 +1715,35 @@ mod tests {
         assert!(publisher_text.contains("artifact push"));
         assert!(publisher_text.contains("oci://ghcr.io/owner/plugin:1.2.3-$cell"));
         assert!(publisher_text.contains("actions/download-artifact@"));
+        // The registry credential is step-scoped, never job-wide.
+        assert!(publisher["env"]["OST_REGISTRY_PASSWORD"].is_null());
+        let publish_step = publisher["steps"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|step| step["name"] == "Re-verify and publish candidates")
+            .expect("publish step");
+        assert!(publish_step["env"]["OST_REGISTRY_PASSWORD"]
+            .as_str()
+            .unwrap()
+            .contains("secrets.GITHUB_TOKEN"));
 
         let workflows = generate_github(&matrix);
         assert_eq!(workflows.last().unwrap().path, RELEASE_WORKFLOW_PATH);
+    }
+
+    #[test]
+    fn draft_release_renders_candidates_without_a_publisher_or_secrets() {
+        let mut matrix = release_matrix();
+        matrix.release.as_mut().unwrap().mode = ReleaseMode::Draft;
+        matrix.validate().unwrap();
+
+        let yaml = generate_release(&matrix).expect("release workflow");
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("valid YAML");
+        assert!(doc["jobs"]["candidates"].is_mapping());
+        assert!(doc["jobs"]["publish"].is_null());
+        assert!(!yaml.contains("secrets."));
+        assert!(!yaml.contains("artifact push"));
+        assert!(!yaml.contains("id-token"));
     }
 }

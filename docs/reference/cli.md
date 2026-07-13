@@ -580,13 +580,19 @@ Run staged diagnostics (L0–L1) and write a report
 
 Report a bundle's Level 0 structure
 
-**Usage:** `ost plugin inspect <BUNDLE>`
+**Usage:** `ost plugin inspect [OPTIONS] <BUNDLE>`
 
 **Arguments:**
 
 | Argument | Required | Description |
 | --- | --- | --- |
 | `<BUNDLE>` | yes | Path to the bundle directory (containing openstrata.plugin.yaml) |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--expect-version <EXPECT_VERSION>` | Fail unless the manifest declares exactly this plugin version (generated release gates pin the tag's version here) |
 
 #### `ost plugin new`
 
