@@ -13,12 +13,17 @@
 //! move bytes; identity (digests, manifest schema, verification policy) never
 //! leaves this crate's core.
 
+pub mod evidence;
 pub mod policy;
 pub mod record;
 pub mod reference;
 pub mod store;
 pub mod transport;
 
+pub use evidence::{
+    generate_evidence, verify_evidence_digest, verify_provenance, verify_sbom, EvidenceDigest,
+    PROVENANCE_FILE, SBOM_FILE,
+};
 pub use policy::{
     AllowedPublisher, ArtifactPolicy, ProtectedNamespace, PublisherAuthorization,
     PublisherIdentity, TrustLevel, ARTIFACT_POLICY_FILE, ARTIFACT_POLICY_OIDC_AUDIENCE,

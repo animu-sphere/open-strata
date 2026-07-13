@@ -1349,6 +1349,7 @@ fn export(
             serde_json::json!(if slim { "sdk" } else { "full" }),
         );
     }
+    let evidence = ost_artifact::generate_evidence(&dist_dir, &mut producer)?;
     let producer_json = serde_json::to_string_pretty(&producer)
         .map_err(|e| Error::parse("runtime artifact manifest", anyhow::Error::new(e)))?;
     let producer_path = dist_dir.join("manifest.json");
@@ -1358,9 +1359,23 @@ fn export(
         .archive_digest
         .strip_prefix("sha256:")
         .unwrap_or(&packed.archive_digest);
+    let mut checksum_lines = vec![format!("{bare}  {archive_name}")];
+    checksum_lines.extend(evidence.iter().map(|layer| {
+        format!(
+            "{}  {}",
+            layer
+                .digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&layer.digest),
+            layer.path
+        )
+    }));
     let sums = dist_dir.join("SHA256SUMS");
-    std::fs::write(sums.as_std_path(), format!("{bare}  {archive_name}\n"))
-        .map_err(|e| Error::io(sums.to_string(), e))?;
+    std::fs::write(
+        sums.as_std_path(),
+        format!("{}\n", checksum_lines.join("\n")),
+    )
+    .map_err(|e| Error::io(sums.to_string(), e))?;
 
     // Register in the registry. Export enforced the gates above, so the entry
     // is `published` — the trusted tier CI pins.

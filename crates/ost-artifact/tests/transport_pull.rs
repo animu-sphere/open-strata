@@ -479,9 +479,15 @@ fn digest_pinned_pull_imports_and_verifies() {
         evidence.remote.oci_digest.as_deref(),
         Some(bundle.oci_digest.as_str())
     );
-    // Every chain step passed (none skipped: the policy pinned everything).
+    // Every required chain step passed. Evidence sidecars are optional for this
+    // legacy fixture and therefore reported as skipped.
     for (step, status) in &evidence.verification {
-        assert_eq!(*status, "passed", "step {step}");
+        let expected = if matches!(*step, "sbom" | "provenance") {
+            "skipped"
+        } else {
+            "passed"
+        };
+        assert_eq!(*status, expected, "step {step}");
     }
 
     // The imported artifact is fully usable: registry lists it and verify passes.

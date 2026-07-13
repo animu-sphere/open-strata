@@ -93,6 +93,32 @@ impl Sandbox {
         .unwrap();
         dist.into_std_path_buf()
     }
+
+    fn add_evidence(&self, dist: &Path) {
+        let dist = Utf8PathBuf::from_path_buf(dist.to_path_buf()).unwrap();
+        let manifest_path = dist.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest_path.as_std_path()).unwrap()).unwrap();
+        manifest["build"] = serde_json::json!({
+            "source": { "repository": "owner/repo", "revision": "deadbeef" },
+            "builder": {
+                "id": "https://github.com/owner/repo/.github/workflows/release.yml@refs/tags/v1",
+                "identity": {
+                    "repository": "owner/repo",
+                    "workflow_path": ".github/workflows/release.yml",
+                    "git_ref": "refs/tags/v1",
+                    "actor": "release-bot",
+                    "event": "push"
+                }
+            }
+        });
+        ost_artifact::generate_evidence(&dist, &mut manifest).unwrap();
+        std::fs::write(
+            manifest_path.as_std_path(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
 }
 
 impl Drop for Sandbox {
@@ -267,6 +293,80 @@ fn verify_enforces_strict_artifact_policy() {
     assert_eq!(out.status.code(), Some(3));
     let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(error["error"]["code"], "ARTIFACT_POLICY_PARSE_FAILED");
+}
+
+#[test]
+fn verify_can_require_and_validate_attached_evidence() {
+    let sb = Sandbox::new("evidence");
+    let legacy = sb.make_plugin_dist("legacy", b"no evidence");
+    let imported = stdout_json(&sb.ost(&["--json", "artifact", "import", path_str(&legacy)]));
+    let legacy_digest = imported["data"]["artifact"]["digest"].as_str().unwrap();
+    let out = sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        legacy_digest,
+        "--require-sbom",
+        "--require-provenance",
+    ]);
+    assert_eq!(out.status.code(), Some(5));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        report["data"]["evidence"]["sbom"]["error_code"],
+        "ARTIFACT_SBOM_REQUIRED"
+    );
+    assert_eq!(
+        report["data"]["evidence"]["provenance"]["error_code"],
+        "ARTIFACT_PROVENANCE_REQUIRED"
+    );
+
+    let dist = sb.make_plugin_dist("attested", b"evidence bytes");
+    sb.add_evidence(&dist);
+    let imported = stdout_json(&sb.ost(&["--json", "artifact", "import", path_str(&dist)]));
+    let digest = imported["data"]["artifact"]["digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        imported["data"]["artifact"]["sbom"],
+        ost_artifact::SBOM_FILE
+    );
+    assert_eq!(
+        imported["data"]["artifact"]["provenance"],
+        ost_artifact::PROVENANCE_FILE
+    );
+    let verified = stdout_json(&sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--require-sbom",
+        "--require-provenance",
+    ]));
+    assert_eq!(verified["data"]["evidence"]["sbom"]["passed"], true);
+    assert_eq!(verified["data"]["evidence"]["provenance"]["passed"], true);
+
+    let stored_provenance = sb
+        .home
+        .join("artifacts")
+        .join("objects")
+        .join("sha256")
+        .join(digest.strip_prefix("sha256:").unwrap())
+        .join(ost_artifact::PROVENANCE_FILE);
+    std::fs::write(stored_provenance, b"tampered\n").unwrap();
+    let out = sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--require-provenance",
+    ]);
+    assert_eq!(out.status.code(), Some(5));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        report["data"]["evidence"]["provenance"]["error_code"],
+        "ARTIFACT_EVIDENCE_DIGEST_MISMATCH"
+    );
 }
 
 #[test]

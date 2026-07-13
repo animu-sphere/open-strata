@@ -1443,6 +1443,12 @@ mod tests {
         assert!(cmake.contains("$<INSTALL_INTERFACE:include>"));
         assert!(!cmake.contains("INSTALL_INTERFACE:include/"));
         assert!(cmake.contains("DESTINATION \"include/vrm-schema\""));
+        assert!(cmake.contains("PUBLIC NOMINMAX"));
+        let config =
+            std::fs::read_to_string(dir.join("cmake/VrmSchemaConfig.cmake.in").as_std_path())
+                .unwrap();
+        assert!(config.contains("if(NOT pxr_FOUND)"));
+        assert!(config.contains("find_dependency(pxr CONFIG)"));
         let consumer =
             std::fs::read_to_string(dir.join("tests/consumer/main.cpp").as_std_path()).unwrap();
         assert!(consumer.contains("#include <vrm-schema/contractAPI.h>"));

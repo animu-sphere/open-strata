@@ -63,6 +63,26 @@ impl Bundle {
             }
             _ => {}
         }
+        if manifest.manifest.is_some() {
+            let unknown = manifest.requires.unknown_keys().collect::<Vec<_>>();
+            if !unknown.is_empty() {
+                let fields = unknown
+                    .iter()
+                    .map(|field| format!("requires.{field}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let message = if unknown.contains(&"libraries") {
+                    format!(
+                        "{fields} is reserved and unsupported: ordinary library identity, ABI, and package discovery do not yet have a portable manifest contract"
+                    )
+                } else {
+                    format!(
+                        "versioned plugin manifest contains unknown field(s): {fields} (allowed below requires: capabilities, components, runtime_libs, bundles)"
+                    )
+                };
+                return Err(Error::config(message));
+            }
+        }
 
         // Every filesystem path a manifest can name must stay inside the bundle.
         // Validate them once, here, so all downstream resolution (`plug_info`,
@@ -355,6 +375,43 @@ mod tests {
         )
         .unwrap();
         assert!(Bundle::load(&root).is_ok());
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn versioned_requires_is_strict_and_libraries_is_explicitly_reserved() {
+        let root = write_bundle("resources/plugInfo.json");
+        let manifest_path = root.join(PLUGIN_MANIFEST);
+        let legacy = std::fs::read_to_string(manifest_path.as_std_path()).unwrap();
+
+        // Preserve the legacy compatibility contract: old manifests may carry
+        // an extension key that this version ignores.
+        std::fs::write(
+            manifest_path.as_std_path(),
+            format!("{legacy}requires:\n  vendor_extension: true\n"),
+        )
+        .unwrap();
+        assert!(Bundle::load(&root).is_ok());
+
+        std::fs::write(
+            manifest_path.as_std_path(),
+            format!(
+                "manifest:\n  schema: {PLUGIN_SCHEMA}\n{legacy}requires:\n  libraries:\n    - id: shared\n"
+            ),
+        )
+        .unwrap();
+        let err = Bundle::load(&root).expect_err("versioned libraries must fail closed");
+        assert_eq!(err.code(), "INVALID_CONFIG");
+        assert!(err.to_string().contains("requires.libraries"), "{err}");
+        assert!(err.to_string().contains("reserved"), "{err}");
+
+        std::fs::write(
+            manifest_path.as_std_path(),
+            format!("manifest:\n  schema: {PLUGIN_SCHEMA}\n{legacy}requires:\n  typo: true\n"),
+        )
+        .unwrap();
+        let err = Bundle::load(&root).expect_err("versioned unknown keys must fail closed");
+        assert!(err.to_string().contains("requires.typo"), "{err}");
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

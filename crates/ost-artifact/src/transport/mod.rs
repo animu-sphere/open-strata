@@ -88,8 +88,8 @@ pub trait ArtifactTransport {
     /// already pinned.
     fn resolve(&self, reference: &RemoteReference) -> Result<ResolvedRemote>;
 
-    /// Fetch the artifact's producer files (main archive, optional debug
-    /// sidecar, and `manifest.json`)
+    /// Fetch the artifact's producer files (main archive, optional debug and
+    /// evidence sidecars, and `manifest.json`)
     /// into a dist-shaped directory, verifying transport-level digests on the
     /// way down. Returns the directory holding the files (which may be the
     /// source itself for local backends). `scratch` is a caller-owned empty
@@ -210,6 +210,22 @@ pub fn pull(
             },
         ));
         verification.extend(chain.steps);
+        verification.push((
+            "sbom",
+            if outcome.record.sbom.is_some() {
+                "passed"
+            } else {
+                "skipped"
+            },
+        ));
+        verification.push((
+            "provenance",
+            if outcome.record.provenance.is_some() {
+                "passed"
+            } else {
+                "skipped"
+            },
+        ));
         verification.push(("local_import", "passed"));
 
         let import_path = store.object_dir(outcome.record.digest_hex());

@@ -151,6 +151,18 @@ pub struct Requires {
     /// Workspace validation resolves these by plugin identity before any build.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bundles: Vec<BundleDependency>,
+    /// Unknown keys are retained only long enough for [`crate::Bundle::load`] to apply
+    /// the versioned-manifest compatibility rule. Legacy manifests keep their
+    /// historical fail-open behavior; `openstrata.plugin/v1alpha1` manifests
+    /// reject every key not modeled above (including reserved `libraries`).
+    #[serde(flatten, default, skip_serializing)]
+    unknown: IndexMap<String, serde_yaml::Value>,
+}
+
+impl Requires {
+    pub(crate) fn unknown_keys(&self) -> impl Iterator<Item = &str> {
+        self.unknown.keys().map(String::as_str)
+    }
 }
 
 /// A versioned dependency on another plugin bundle in the same composition.

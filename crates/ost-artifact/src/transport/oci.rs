@@ -33,6 +33,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use ost_core::{digest, Category, Error, Result};
 
+use crate::evidence::{EvidenceDigest, PROVENANCE_FILE, SBOM_FILE};
 use crate::record::{is_sha256_ref, manifest_debug_archive, MANIFEST_FILE};
 use crate::reference::{OciReference, RemoteReference};
 use crate::transport::{ArtifactTransport, ResolvedRemote};
@@ -51,6 +52,10 @@ pub const MEDIA_TYPE_DEBUG_ARCHIVE: &str = "application/vnd.openstrata.artifact.
 /// Layer media type of the producer manifest JSON.
 pub const MEDIA_TYPE_PRODUCER_MANIFEST: &str =
     "application/vnd.openstrata.artifact.manifest.v1+json";
+/// SPDX 2.3 JSON evidence layer.
+pub const MEDIA_TYPE_SBOM: &str = "application/spdx+json";
+/// SLSA provenance encoded as in-toto JSONL.
+pub const MEDIA_TYPE_PROVENANCE: &str = "application/vnd.in-toto+json";
 /// Config media type: the OpenStrata artifact descriptor (unused on pull).
 pub const MEDIA_TYPE_DESCRIPTOR: &str = "application/vnd.openstrata.artifact.descriptor.v1+json";
 
@@ -818,6 +823,15 @@ impl ArtifactTransport for OciTransport {
             self.fetch_blob_to(r, debug_layer, &scratch.join(&debug.archive))?;
         }
 
+        for (media_type, title) in [
+            (MEDIA_TYPE_SBOM, SBOM_FILE),
+            (MEDIA_TYPE_PROVENANCE, PROVENANCE_FILE),
+        ] {
+            if let Some(layer) = manifest.find_layer(media_type, |candidate| candidate == title) {
+                self.fetch_blob_to(r, layer, &scratch.join(title))?;
+            }
+        }
+
         Ok(scratch.to_owned())
     }
 
@@ -844,6 +858,34 @@ impl ArtifactTransport for OciTransport {
         if let Some(debug) = &debug {
             crate::store::verify_archive_claim(source_dir, debug)?;
         }
+        let sbom = record_evidence(
+            source.record.sbom.as_deref(),
+            source.record.sbom_digest.as_deref(),
+            source.record.sbom_size,
+            "SBOM",
+            SBOM_FILE,
+        )?;
+        let provenance = record_evidence(
+            source.record.provenance.as_deref(),
+            source.record.provenance_digest.as_deref(),
+            source.record.provenance_size,
+            "provenance",
+            PROVENANCE_FILE,
+        )?;
+        for evidence in [&sbom, &provenance].into_iter().flatten() {
+            crate::evidence::verify_evidence_digest(source_dir, evidence)?;
+        }
+        if let Some(evidence) = &sbom {
+            crate::evidence::verify_sbom(&source_dir.join(&evidence.path), &source.record.digest)?;
+        }
+        if let Some(evidence) = &provenance {
+            crate::evidence::verify_provenance(
+                &source_dir.join(&evidence.path),
+                &producer,
+                &source.record.digest,
+                None,
+            )?;
+        }
         let manifest_digest = digest::sha256_hex(&manifest_bytes);
         let manifest_size = manifest_bytes.len() as u64;
 
@@ -867,6 +909,22 @@ impl ArtifactTransport for OciTransport {
                 digest: &debug.digest,
                 size: debug.archive_size,
                 title: Some(&debug.archive),
+            });
+        }
+        if let Some(sbom) = &sbom {
+            layers.push(LayerDescriptor {
+                media_type: MEDIA_TYPE_SBOM,
+                digest: &sbom.digest,
+                size: sbom.size,
+                title: Some(&sbom.path),
+            });
+        }
+        if let Some(provenance) = &provenance {
+            layers.push(LayerDescriptor {
+                media_type: MEDIA_TYPE_PROVENANCE,
+                digest: &provenance.digest,
+                size: provenance.size,
+                title: Some(&provenance.path),
             });
         }
         layers.push(LayerDescriptor {
@@ -916,6 +974,13 @@ impl ArtifactTransport for OciTransport {
                     WriteBody::File(source_dir.join(&debug.archive)),
                 )?;
             }
+            for evidence in [&sbom, &provenance].into_iter().flatten() {
+                self.upload_blob(
+                    r,
+                    &evidence.digest,
+                    WriteBody::File(source_dir.join(&evidence.path)),
+                )?;
+            }
             self.upload_blob(
                 r,
                 &manifest_digest,
@@ -948,6 +1013,35 @@ impl ArtifactTransport for OciTransport {
             already_present,
             auth_mode: self.auth_mode.borrow().to_string(),
         })
+    }
+}
+
+fn record_evidence(
+    path: Option<&str>,
+    digest: Option<&str>,
+    size: Option<u64>,
+    label: &str,
+    expected_path: &str,
+) -> Result<Option<EvidenceDigest>> {
+    match (path, digest, size) {
+        (None, None, None) => Ok(None),
+        (Some(path), Some(digest), Some(size)) if path == expected_path => {
+            Ok(Some(EvidenceDigest {
+                path: path.to_string(),
+                digest: digest.to_string(),
+                size,
+            }))
+        }
+        (Some(path), Some(_), Some(_)) => Err(Error::coded(
+            "ARTIFACT_EVIDENCE_INVALID",
+            Category::Validation,
+            format!("artifact record {label} path must be '{expected_path}', got '{path}'"),
+        )),
+        _ => Err(Error::coded(
+            "ARTIFACT_EVIDENCE_INVALID",
+            Category::Validation,
+            format!("artifact record has incomplete {label} path/digest/size metadata"),
+        )),
     }
 }
 
@@ -1582,6 +1676,11 @@ mod tests {
             validation: "passed".into(),
             licenses: vec!["Apache-2.0".into()],
             sbom: None,
+            sbom_digest: None,
+            sbom_size: None,
+            provenance: None,
+            provenance_digest: None,
+            provenance_size: None,
             runtime_id: Some("rt".into()),
             runtime_digest: Some("sha256:beef".into()),
         };
@@ -1593,14 +1692,51 @@ mod tests {
         let (addr, state) = spawn_mock_registry();
         let dir = std::env::temp_dir().join(format!("ost-push-{}", std::process::id()));
         let dir = Utf8PathBuf::from_path_buf(dir).unwrap();
-        let (archive_path, manifest_path, record) = push_fixture(&dir);
+        let (archive_path, manifest_path, mut record) = push_fixture(&dir);
         let debug_path = dir.join("rt-26.05-linux-x86_64-debug.tar.zst");
         let debug_bytes = b"debug symbols";
         std::fs::write(debug_path.as_std_path(), debug_bytes).unwrap();
+        let source_metadata = serde_json::json!({
+            "repository": "owner/repo",
+            "revision": "deadbeef",
+        });
+        let sbom_bytes = serde_json::to_vec(&serde_json::json!({
+            "spdxVersion": "SPDX-2.3",
+            "packages": [{
+                "checksums": [{
+                    "algorithm": "SHA256",
+                    "checksumValue": record.digest_hex(),
+                }],
+            }],
+        }))
+        .unwrap();
+        let mut provenance_bytes = serde_json::to_vec(&serde_json::json!({
+            "_type": "https://in-toto.io/Statement/v1",
+            "subject": [{ "digest": { "sha256": record.digest_hex() } }],
+            "predicate": {
+                "buildDefinition": {
+                    "externalParameters": { "source": source_metadata },
+                },
+            },
+        }))
+        .unwrap();
+        provenance_bytes.push(b'\n');
+        std::fs::write(dir.join(SBOM_FILE).as_std_path(), &sbom_bytes).unwrap();
+        std::fs::write(dir.join(PROVENANCE_FILE).as_std_path(), &provenance_bytes).unwrap();
+        record.sbom = Some(SBOM_FILE.into());
+        record.sbom_digest = Some(digest::sha256_hex(&sbom_bytes));
+        record.sbom_size = Some(sbom_bytes.len() as u64);
+        record.provenance = Some(PROVENANCE_FILE.into());
+        record.provenance_digest = Some(digest::sha256_hex(&provenance_bytes));
+        record.provenance_size = Some(provenance_bytes.len() as u64);
         std::fs::write(
             manifest_path.as_std_path(),
             serde_json::to_vec(&serde_json::json!({
                 "kind": "openstrata.runtime",
+                "build": {
+                    "source": source_metadata,
+                    "builder": {},
+                },
                 "debug": {
                     "archive": "rt-26.05-linux-x86_64-debug.tar.zst",
                     "archive_digest": digest::sha256_hex(debug_bytes),
@@ -1632,8 +1768,9 @@ mod tests {
             .ends_with(&format!("@{}", outcome.oci_digest)));
         {
             let st = state.lock().unwrap();
-            // config + main/debug archives + producer-manifest blobs.
-            assert_eq!(st.blobs.len(), 4, "four blobs uploaded");
+            // Config + main/debug archives + SBOM/provenance + producer
+            // manifest blobs.
+            assert_eq!(st.blobs.len(), 6, "six blobs uploaded");
             // Every blob digest sent in the `?digest=` query must be a single,
             // well-formed `sha256:<hex>` — a `sha256:sha256:<hex>` double prefix
             // (re-wrapping `digest::sha256_hex` output) is exactly what GHCR

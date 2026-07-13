@@ -199,6 +199,8 @@ Verify a stored artifact's integrity (archive digest + per-file hashes)
 | Option | Description |
 | --- | --- |
 | `--policy <FILE>` | Enforce minimum trust from an artifact policy TOML file |
+| `--require-provenance` | Fail unless valid SLSA/in-toto provenance is attached |
+| `--require-sbom` | Fail unless a valid SPDX SBOM is attached to the artifact |
 
 ### `ost build`
 

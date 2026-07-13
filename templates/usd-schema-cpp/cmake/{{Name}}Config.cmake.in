@@ -1,7 +1,11 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
-find_dependency(pxr CONFIG)
+if(NOT pxr_FOUND)
+    # pxrConfig is not idempotent on every supported OpenUSD line. A workspace
+    # consumer normally resolved it through the runtime toolchain already.
+    find_dependency(pxr CONFIG)
+endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/{{Name}}Targets.cmake")
 check_required_components({{Name}})
