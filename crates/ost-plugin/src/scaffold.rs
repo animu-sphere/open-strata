@@ -1459,6 +1459,32 @@ mod tests {
     }
 
     #[test]
+    fn openexec_quotes_yaml_scalar_schema_bundle_ids() {
+        let dir = unique_tmp("scaffold-exec-yaml-scalar");
+        scaffold_with_template_inputs(
+            PluginKind::UsdExec,
+            "pose-eval",
+            None,
+            None,
+            None,
+            Some(ExecTemplateInputs {
+                schema_bundle: "null",
+                schema_type: "RigContractAPI",
+            }),
+            &dir,
+        )
+        .expect("YAML-keyword bundle id remains a string");
+
+        let bundle = crate::Bundle::load(&dir).expect("generated manifest remains loadable");
+        assert_eq!(bundle.manifest.requires.bundles[0].id, "null");
+        let manifest = std::fs::read_to_string(dir.join(crate::PLUGIN_MANIFEST).as_std_path())
+            .expect("read generated manifest");
+        assert!(manifest.contains(r#"{ id: "null", version:"#));
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
     fn package_resolver_requires_a_safe_extension() {
         for extension in [None, Some("../evil"), Some("a.b"), Some("")] {
             let dir = unique_tmp("scaffold-pkg-resolver-badext");

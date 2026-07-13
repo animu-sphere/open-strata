@@ -201,6 +201,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn report_schema_accepts_every_plugin_kind() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/plugin-report.schema.json"))
+                .expect("plugin report schema parses");
+        let kinds = schema["properties"]["kind"]["enum"]
+            .as_array()
+            .expect("kind enum")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        let modeled = crate::PluginKind::ALL
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, modeled);
+    }
+
+    #[test]
     fn utc_stamp_is_correct_and_sortable() {
         // 2021-11-14T22:00:00Z = 1_636_927_200
         assert_eq!(utc_stamp(1_636_927_200), "20211114T220000Z");

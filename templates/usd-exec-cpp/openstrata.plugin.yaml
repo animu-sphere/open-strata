@@ -16,7 +16,7 @@ requires:
     # Update the version range and contract if the schema bundle uses a
     # different public contract. OpenExec code depends on that contract, not
     # on an importer or file-format implementation.
-    - { id: {{schema_bundle}}, version: ">=0.1,<1.0", contract: 1 }
+    - { id: "{{schema_bundle}}", version: ">=0.1,<1.0", contract: 1 }
 usd:
   plug_info: plugin/resources/{{name}}/plugInfo.json
 tests:

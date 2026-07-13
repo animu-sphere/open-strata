@@ -739,7 +739,7 @@ fn validate_runtime_remote(cell: &str, remote: &RuntimeRemote) -> Result<()> {
 fn validate_repo_path(label: &str, value: &str) -> Result<()> {
     let safe_chars = value
         .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'\\' | b'.' | b'_' | b'-'));
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-'));
     let escapes = value.is_empty()
         || value.starts_with('/')
         || value.starts_with('\\')
@@ -1260,6 +1260,14 @@ cells:
 
         let unsafe_policy = yaml.replace("policies/artifacts.toml", "../artifacts.toml");
         let err = SupportMatrix::from_yaml(&unsafe_policy).expect_err("unsafe policy path");
+        assert!(
+            err.to_string().contains("safe repository-relative"),
+            "{err}"
+        );
+
+        let windows_policy = yaml.replace("policies/artifacts.toml", r"policies\artifacts.toml");
+        let err = SupportMatrix::from_yaml(&windows_policy)
+            .expect_err("policy paths must render safely in bash");
         assert!(
             err.to_string().contains("safe repository-relative"),
             "{err}"

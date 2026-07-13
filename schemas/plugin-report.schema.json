@@ -12,7 +12,13 @@
     "version": { "type": "string" },
     "kind": {
       "type": "string",
-      "enum": ["usd-fileformat", "usd-asset-resolver", "usd-schema"]
+      "enum": [
+        "usd-fileformat",
+        "usd-asset-resolver",
+        "usd-package-resolver",
+        "usd-exec",
+        "usd-schema"
+      ]
     },
     "license": {
       "type": ["string", "null"],
