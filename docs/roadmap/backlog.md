@@ -8,8 +8,8 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.15.0 — provenance / SBOM bundle) is detailed in
-[current.md](current.md).
+The next milestone (v0.15.0 — source-workspace composition plus the provenance /
+SBOM bundle) is detailed in [current.md](current.md).
 
 - ⬜ **v0.16.0 — generated trusted CI.** Push the trust chain up into the CI
   contract (future-policy §7/§8/§13): a `trust` field on support-matrix targets, a
@@ -37,11 +37,12 @@ The next milestone (v0.15.0 — provenance / SBOM bundle) is detailed in
   [openusd-plugin-templates.md](../design/proposed/openusd-plugin-templates.md).
   Versioned descriptors, deterministic provenance, the asset-resolver and
   compiled-schema skeletons, copied CMake helpers, and read-only bundle graph
-  validation are in. Next automate clean-install consumer gates, prove the
+  validation are in. Source-workspace dependency composition is the v0.15.0
+  correctness gate. Beyond it, automate clean-install consumer gates, prove the
   schema skeleton on a second supported platform/OpenUSD line, and harden the
-  asset resolver. Extend the existing `ost plugin new` lifecycle—do not create a
-  parallel template repository, CLI, renderer, bundle model, or artifact path.
-  Add package resolver, Exec, Hydra, and tool candidates only at
+  asset resolver. Extend the existing `ost plugin new` lifecycle—do not create
+  a parallel template repository, CLI, renderer, bundle model, or artifact
+  path. Add package resolver, Exec, Hydra, and tool candidates only at
   evidence-appropriate maturity.
 - ⬜ **Renderer project skeleton and Level 7 verification.** Direction:
   [renderer-templates.md](../design/proposed/renderer-templates.md). Add one
@@ -105,6 +106,17 @@ Shipped context for each area is in the
   `dlopen`; (c) reconcile `ost artifact push` vs `oras push` OCI manifests —
   document the canonical producer path (prefer `ost artifact push`) or reproduce
   the `oras` manifest byte-for-byte so CI pins don't drift.
+- ⬜ **Portable ordinary-library dependency contract.** Versioned plugin
+  manifests fail on an unknown `requires.libraries` key until library identity,
+  version selection, ABI, CMake package discovery, and artifact/prefix ownership
+  have a portable contract. Do not infer library dependencies from CMake target
+  names or turn shared libraries into fake plugin bundles.
+- ⬜ **Packaged workspace/product composition.** Source-workspace closure is
+  separate from clean-install artifact composition. Define member bundle
+  digests, extraction layout, dependency closure, and aggregate evidence before
+  making `plugin test --workspace --from-package` or support lanes compose
+  several packages. Preserve member manifests/provenance and do not fall back to
+  workspace source paths or a hand-maintained per-bundle loop.
 
 ## Documentation & tooling
 

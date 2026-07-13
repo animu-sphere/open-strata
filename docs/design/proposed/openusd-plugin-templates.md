@@ -49,7 +49,7 @@ and a product aggregate may compose their artifacts for distribution.
 | --- | --- | --- |
 | Bundle, not repository, is the plugin identity boundary | adopt | One repository may contain several independently buildable and publishable bundles. Repository splitting remains an ownership/release decision. |
 | Extend `plugin-workspace` for multiple bundles | adopt | Build on the shipped `usd-plugin-workspace` scaffold and `ost plugin test --workspace`; do not introduce a second workspace product. |
-| Declare bundle-to-bundle dependencies in `openstrata.plugin.yaml` | adopt in stages | Add a versioned manifest extension, graph validation, cycle detection, contract checks, and only then build ordering. Preserve current manifest fields during migration. |
+| Declare bundle-to-bundle dependencies in `openstrata.plugin.yaml` | adopt in stages | The versioned extension and read-only graph checks shipped in v0.14.0; real split evidence now qualifies deterministic source-workspace session/build composition as the next stage. Preserve standalone and packaged boundaries. |
 | Keep schema, resolver, file format, and Exec in separate bundles | adopt as the composition default | Public/reusable contracts should be separate. Co-hosted schema remains supported for small or legacy bundles and is not silently split. |
 | Add a compiled-schema scaffold | adopt as a skeleton | Use the catalog id `usd-schema-cpp`; `usd-schema-compiled` describes the same candidate and must not become a competing id. |
 | One `usd-resolver-cpp` template selects asset or package resolver | modify | Keep `usd-asset-resolver-cpp` and `usd-package-resolver-cpp` separate because their interfaces, security tests, and promotion evidence differ. |
@@ -184,12 +184,34 @@ A mature workspace composition should provide:
   schema-contract checks, and cycle detection before any build;
 - workspace integration tests in addition to each bundle's own tests;
 - both whole-workspace and selected-bundle workflows;
+- dependency-aware runtime sessions and build prefixes derived from the
+  validated manifest graph, without repeating the closure in CLI or CI config;
 - no relative sibling paths encoded into generated bundle manifests or install
   interfaces.
 
-Auto-discovery alone does not imply dependency order. Until the versioned graph
-contract lands, the workspace may discover and test bundles but must not infer
+Auto-discovery alone does not imply dependency order. Before the versioned graph
+contract, a workspace could discover and test bundles but could not infer
 semantic dependencies from directory names, CMake target names, or link errors.
+The shipped graph now permits ordering only from validated `requires.bundles`
+edges; those other inference sources remain forbidden.
+
+The graph contract has now landed and survived a real schema/file-format split.
+The next stage consumes that validated graph for source workspaces:
+
+- test/run/doctor sessions include the primary bundle's transitive dependency
+  closure automatically; explicit `--with` remains additive for external or
+  ad-hoc composition;
+- build walks dependencies in deterministic topological order, installs them to
+  an OST-owned target-specific prefix, and exposes them through
+  `CMAKE_PREFIX_PATH`/normal config-package discovery;
+- generated source CI derives the same closure from its existing `bundle:`
+  selector and must not introduce a second cell-level dependency list;
+- source composition never rewrites a bundle to use `add_subdirectory`, a
+  sibling path, or a workspace-only link target.
+
+Packaged support cells are a separate composition boundary: they may compose
+multiple bundles only after a product/artifact descriptor pins every member by
+digest and can prove clean-install discovery without the workspace tree.
 
 `libs/` is a recommended convention for shared non-plugin code, not a second
 plugin catalog. A future `openstrata.library.yaml` may describe exportable
@@ -306,7 +328,9 @@ requires:
 legacy manifests without composition fields remain accepted during migration.
 Dependency entries reject unknown keys. `requires.libraries` remains reserved
 until a portable library identity/discovery contract exists; inferring it from
-CMake target names would make missing-package validation unreliable.
+CMake target names would make missing-package validation unreliable. A
+versioned manifest must reject that reserved key (and every other unknown
+`requires:` key) rather than accept a declaration that has no effect.
 
 Semantic package version and authored-data contract version solve different
 problems. `version` selects a compatible bundle implementation. A schema
@@ -366,6 +390,13 @@ Common CMake logic is appropriate for:
 - Windows DLL and Unix loader/RPATH handling;
 - ABI and artifact metadata;
 - registration test declaration.
+
+Installed-consumer fixtures that include OpenUSD headers must carry the same
+platform hygiene as plugin targets (`NOMINMAX` on Windows). Generated package
+configs must also avoid re-entering `pxrConfig` after the caller has already
+resolved `pxr`; guard `find_dependency(pxr CONFIG)` on `pxr_FOUND` so
+non-idempotent transitive imported targets such as `TBB::tbb` are not declared
+twice.
 
 The canonical helpers may live under `templates/_shared/cmake/`, but generation
 copies the pinned helper files into the new bundle. Generated CMake must be
@@ -672,31 +703,36 @@ path; existing generated source remains project-owned.
    manifest acceptance unexpectedly.
 3. ✅ Add read-only dependency graph validation: deterministic discovery, duplicate
    and missing ids, version/contract checks, forbidden directions, and cycles.
-4. ⏳ Extract self-contained shared CMake mechanics, test copied helpers, and prove
+4. ⏳ Compose validated source-workspace dependencies for build, doctor, test,
+   run, and generated source CI. The first real split proved graph/schema
+   contracts and explicit `--with`; completion removes consumer-owned sibling
+   bootstrap glue and restores the consumer's full hosted verification pyramid.
+5. ⏳ Extract self-contained shared CMake mechanics, test copied helpers, and prove
    standalone plus workspace-consumer builds before generating graph targets.
    The versioned copied helper and standalone/workspace configure evidence have
    landed for the compiled file-format and asset-resolver entries; full build
    and clean-install evidence remains before this step is complete.
-5. ⏳ Add the standalone `usd-schema-cpp` skeleton with pinned generation modes,
+6. ⏳ Add the standalone `usd-schema-cpp` skeleton with pinned generation modes,
    contract baseline, downstream consumer fixture, and clean-install tests. The
    embedded skeleton, `VERIFY` baseline, CMake export, and fixture have landed;
-   automated clean-install and second-platform/OpenUSD-line evidence remain.
-6. Harden the `usd-asset-resolver-cpp` skeleton with identifier, cache,
+   automated clean-install and second-platform/OpenUSD-line evidence remain;
+   the MSVC consumer and repeated-`pxrConfig` defects are immediate fixes.
+7. Harden the `usd-asset-resolver-cpp` skeleton with identifier, cache,
    concurrency, cross-platform, and broader clean-install evidence.
-7. Define the product descriptor and aggregate report, then compose existing
+8. Define the product descriptor and aggregate report, then compose existing
    bundle packages by digest and run extraction/clean-install smoke tests.
-8. Dogfood `usd-package-resolver-cpp` against a second package backend before
+9. Dogfood `usd-package-resolver-cpp` against a second package backend before
    promotion; do not fold it into the asset-resolver scaffold.
-9. Add tool-project, Exec, and Hydra/renderer candidates as their distinct
+10. Add tool-project, Exec, and Hydra/renderer candidates as their distinct
    lifecycle gaps are proven; keep algorithmic/reference code outside formal
    scaffolds.
-10. Add an explicit template diff/gap report before any migration or automatic
+11. Add an explicit template diff/gap report before any migration or automatic
     manifest-editing command.
 
-The first implementation slice should improve metadata and verification around
-the templates and workspace already shipped, while specifying dependency fields
-without making them control builds yet. It should not bootstrap a new repository,
-parallel CLI, product command family, or general-purpose text templating engine.
+The next implementation slice makes already validated source dependency fields
+control composition. It must not bootstrap a new repository, parallel CLI,
+product command family, general-purpose text templating engine, or CI-only
+dependency declaration.
 
 ## Completion criteria for bundle composition
 
@@ -707,6 +743,10 @@ without weakening the single-bundle lifecycle:
   generated as independent bundles and built both alone and in one workspace;
 - a file-format consumer can depend on installed schema and resolver bundles
   without embedding their implementation or using sibling source paths;
+- `ost plugin test <consumer>` and `ost plugin test --workspace` run that
+  consumer's full pyramid without a required hand-authored `--with`, and
+  generated source CI uses the same closure without a cell-level dependency
+  list;
 - bundle dependencies and schema contracts are resolved from versioned manifests
   with actionable mismatch and cycle diagnostics;
 - an ordinary shared container/parser library can be consumed by two bundles

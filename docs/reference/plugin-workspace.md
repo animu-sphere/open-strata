@@ -5,6 +5,12 @@ directories and `plugins/*`, sorts them by path, validates their dependency
 graph, and only then resolves a runtime or runs per-bundle verification. Graph
 validation is read-only and does not control CMake build order.
 
+That last sentence describes the released v0.14.0 behavior. The planned
+v0.15.0 source-workspace composition contract is specified below; until it
+lands, use `--with <bundle>` for a consumer's runtime session and normal
+installed-package discovery or repository-owned build glue for its CMake
+dependency.
+
 ## Versioned manifest extension
 
 Legacy manifests without bundle composition fields remain valid. A manifest
@@ -54,11 +60,17 @@ type, property, or token surface increments it and requires authored-data
 migration notes. Consumers of a versioned schema contract must select it
 explicitly.
 
-The proposed `requires.libraries` class is not validated yet: unknown keys under
-`requires` are currently ignored rather than rejected, so a `libraries` block has
-no effect. Library identity and discovery need a separate portable contract
-before workspace validation can distinguish a missing package from an externally
-installed CMake dependency.
+In v0.14.0 the proposed `requires.libraries` class is not validated: unknown
+keys under `requires` are ignored rather than rejected, so a `libraries` block
+has no effect. This is a known fail-open gap, not an extension mechanism.
+
+The v0.15.0 strictness target is recursive unknown-field rejection below
+`requires:` for manifests that opt into `openstrata.plugin/v1alpha1`.
+`requires.libraries` remains reserved and must be rejected until library
+identity, version selection, ABI, CMake package discovery, and artifact/prefix
+ownership have a separate portable contract. Workspace validation must not
+infer it from CMake target names or mistake an externally installed dependency
+for a missing workspace-owned package.
 
 ## Dependency directions
 
@@ -70,6 +82,33 @@ installed CMake dependency.
 
 These checks preserve standalone bundle ownership. They do not synthesize
 `add_subdirectory` order or link targets.
+
+## Planned v0.15.0 source-workspace composition
+
+After graph validation succeeds, source-workspace commands will consume the
+same graph rather than asking each caller to restate it:
+
+- `plugin test --workspace` composes each primary bundle with its transitive
+  dependency closure before running L2 and above;
+- a selected `plugin doctor|test|run <bundle>` resolves the same closure when
+  its containing workspace is unambiguous;
+- `plugin build <bundle>` builds source dependencies in deterministic
+  topological order, installs them to an OST-owned target-specific prefix, and
+  passes that prefix through normal CMake package discovery;
+- generated source-CI cells use the manifest closure selected by `bundle:` and
+  do not gain a second, manually maintained `with:` list;
+- explicit `--with` remains additive for external or ad-hoc bundles and keeps
+  its existing caller-defined ordering.
+
+The primary bundle keeps priority in the plugin and loader search paths;
+resolved dependencies follow in a stable order, then the runtime. Duplicate
+bundle identities are rejected or deduplicated only after identity/version/
+contract agreement—path order must not silently pick a provider.
+
+This source-tree contract does not make a single packaged artifact contain its
+dependencies. Multi-package clean-install verification and support-lane
+composition require a future product/artifact-closure descriptor that pins
+every member by digest. They must not fall back to sibling source paths.
 
 ## Graph result
 
