@@ -478,6 +478,63 @@ anything the *build* depends on. Build prerequisites are modeled separately and
 render in a first-class section between runtime materialization and
 `ost plugin build`.
 
+### Generated trusted releases
+
+A release lane is not a source-CI step with credentials added. It is a separate,
+tag-triggered workflow generated from a typed `release:` block. Candidate cells
+must use `lane: main`, opt in with `publish: candidate`, meet
+`release_min_trust` (at least `verified`), and use exact per-target
+`bootstrap.ost.sha256` pins on hosted runners.
+
+```yaml
+trust:
+  policy: openstrata-artifact-policy.toml
+  main_min_trust: verified
+  release_min_trust: trusted
+
+bootstrap:
+  ost:
+    version: "0.16.0"
+    sha256:
+      x86_64-unknown-linux-musl: <64-hex release-asset checksum>
+
+release:
+  version: 1.2.3                 # only tag v1.2.3 is accepted
+  mode: publish                  # draft stops after verified handoffs
+  destination: oci://ghcr.io/example/my-plugin
+  publisher_runner: linux-hosted # key under runners:
+  environment: release
+  reproducible: true
+  from_package: true
+  checks:
+    - name: Run release corpus smoke
+      run: ctest --test-dir build/corpus --output-on-failure
+
+cells:
+  - name: linux-release
+    lane: main
+    publish: candidate
+    trust: trusted
+    runner: linux-hosted
+    bundle: plugins/myPlugin
+    # runtime_artifact, runtime_remote, platform, profile, up_to, ...
+```
+
+`ost ci generate github` adds `.github/workflows/ost-release.yml`. Its read-only
+ref gate requires the exact `v<release.version>` tag. Each candidate job checks
+the bundle version, materializes and verifies the pinned runtime, builds/tests,
+runs the declared checks, packages twice when `reproducible: true`, exercises the
+clean archive when `from_package: true`, and uploads an immutable artifact
+handoff containing checksums, SBOM, and provenance.
+
+Only the final publisher job has `id-token: write`, `packages: write`, and the
+registry credential. It downloads each candidate into a fresh local store,
+re-verifies the artifact and its provenance against `trust.policy`, then pushes
+to `<destination>:<version>-<cell>`. A fresh import remains `local` in the stored
+record; verification derives a non-sticky effective trust from subject-bound
+provenance, a valid SBOM, and the matched publisher policy. This keeps handoff
+trust reproducible without treating an imported `record.json` as authority.
+
 ### Hosted source CI: the runtime/toolchain contract (macOS + Windows)
 
 A GitHub-hosted source cell (e.g. `macos-15-arm64`, `windows-2022`) pulls the

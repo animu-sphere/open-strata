@@ -18,7 +18,7 @@ use clap::Subcommand;
 use ost_artifact::{ArtifactKind, ArtifactStore};
 use ost_ci::{
     generate_github, starter_matrix, Lane, Publish, SupportMatrix, MATRIX_FILE,
-    SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
+    RELEASE_WORKFLOW_PATH, SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
 };
 use ost_core::{Error, Result};
 
@@ -283,7 +283,35 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
         }
     }
 
-    let hosted_jobs = matrix.cells.iter().filter(|c| matrix.is_hosted(c)).count();
+    if let Some(name) = matrix
+        .release
+        .as_ref()
+        .and_then(|release| release.publisher_runner.as_deref())
+    {
+        if let Some(profile) = matrix.runners.get(name) {
+            let list = if profile.is_hosted() {
+                &mut metered
+            } else {
+                &mut operator
+            };
+            push_unique(list, name.to_string());
+        }
+    }
+
+    let hosted_jobs = matrix.cells.iter().filter(|c| matrix.is_hosted(c)).count()
+        + matrix
+            .release
+            .as_ref()
+            .filter(|release| {
+                release.mode == ost_ci::ReleaseMode::Publish
+                    && release.publisher_runner.as_deref().is_some_and(|name| {
+                        matrix
+                            .runners
+                            .get(name)
+                            .is_some_and(|profile| profile.is_hosted())
+                    })
+            })
+            .map_or(0, |_| 1);
     let publish_capable = matrix
         .cells
         .iter()
@@ -325,6 +353,9 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
     if !matrix.source_cells().is_empty() {
         workflows.push(SOURCE_WORKFLOW_PATH);
     }
+    if matrix.release.is_some() {
+        workflows.push(RELEASE_WORKFLOW_PATH);
+    }
     let trust_cells = matrix
         .cells
         .iter()
@@ -343,6 +374,18 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
         "release_min_trust": matrix.trust.release_min_trust,
         "cells": trust_cells,
     });
+    let release = matrix.release.as_ref().map(|release| {
+        serde_json::json!({
+            "version": release.version,
+            "mode": release.mode,
+            "destination": release.destination,
+            "publisher_runner": release.publisher_runner,
+            "environment": release.environment,
+            "reproducible": release.reproducible,
+            "from_package": release.from_package,
+            "candidate_cells": matrix.candidate_cells().iter().map(|cell| cell.name.as_str()).collect::<Vec<_>>(),
+        })
+    });
 
     if fmt.is_json() {
         output::success(&serde_json::json!({
@@ -357,6 +400,7 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
             "requires_billing_acknowledgement": !hosted_unacknowledged.is_empty(),
             "publish_capable_jobs": publish_capable,
             "trust": trust,
+            "release": release,
             "bootstrap": bootstrap,
             "remote_runtime_cells": remote_runtime_cells,
             "air_gapped_source_cells": air_gapped_source_cells,
@@ -389,6 +433,14 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
         }
     );
     println!("  publish-capable:  {publish_capable} job(s)");
+    if let Some(release) = &matrix.release {
+        println!(
+            "  release:          v{} ({:?}, {} candidate cell(s))",
+            release.version,
+            release.mode,
+            matrix.candidate_cells().len()
+        );
+    }
     println!(
         "  trust floors:     PR {}, main {}, release {} (policy: {})",
         matrix.trust.pr_min_trust,
@@ -457,6 +509,18 @@ fn generate(
              or pass --allow-placeholders to render anyway",
         ));
     }
+    let billing_errors = matrix.hosted_ack_errors();
+    if !billing_errors.is_empty() {
+        return Err(Error::coded(
+            "CI_HOSTED_BILLING_UNACKNOWLEDGED",
+            ost_core::Category::Validation,
+            format!(
+                "publish-capable hosted jobs require billing acknowledgement ({})",
+                billing_errors.join("; ")
+            ),
+        )
+        .with_hint("set runners.<name>.billing.acknowledgement: required"));
+    }
 
     let workflows = generate_github(&matrix);
 
@@ -478,7 +542,7 @@ fn generate(
     let out_paths: Vec<Utf8PathBuf> = match out {
         Some(out) if workflows.len() > 1 => {
             return Err(Error::usage(format!(
-                "the matrix renders {} workflows (source CI + support matrix) — \
+                "the matrix renders {} workflows (source/support/release lanes) — \
                  --out '{out}' targets a single file; use the default paths",
                 workflows.len()
             )));

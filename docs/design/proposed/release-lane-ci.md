@@ -1,9 +1,9 @@
 # Release-lane CI and v0.14 dogfood intake
 
-> Status: proposed. Intake decision for the usd-vrm-plugins v0.13.0 release-lane
-> report dated 2026-07-12. This document separates immediate correctness fixes
-> from the larger generated trusted-CI design already scheduled after the trust
-> and provenance foundations.
+> Status: accepted; typed trusted-release generation implemented for v0.16.0.
+> Intake decision for the usd-vrm-plugins v0.13.0 release-lane report dated
+> 2026-07-12. Live downstream registry/host acceptance remains release evidence,
+> not an untyped extension point in the generator.
 
 ## Outcome
 
@@ -152,14 +152,14 @@ in the authored CI contract. Falling back only to a checksum downloaded from the
 same release origin is acceptable for lower-trust source CI but is not a fully
 pinned release policy.
 
-## Generated release-lane direction
+## Generated release-lane contract
 
 Do not add an unstructured per-cell `extra_steps` field. A release workflow has
 different triggers, permissions, trust, provenance, and publication behavior
 from pull-request source CI. Treating it as a few injected shell lines would hide
 the important policy.
 
-The future model should make the following typed concepts first-class:
+The v0.16 model makes the following typed concepts first-class:
 
 - tag/ref trigger and version-source agreement;
 - selected source cells/platforms and exact runtime/bootstrap pins;

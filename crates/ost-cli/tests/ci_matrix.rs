@@ -219,10 +219,22 @@ fn runner_profiles_and_lanes_render_source_and_support_workflows() {
         .any(|w| w["code"] == "CI_HOSTED_BILLING_UNACKNOWLEDGED"));
 
     // A publish-capable cell on that runner turns the warning into an error.
-    let publishing = lanes_yaml.replace(
-        "    lane: pull_request\n",
-        "    lane: main\n    publish: candidate\n",
-    );
+    let publishing = lanes_yaml
+        .replace(
+            "schema: 1\n",
+            "schema: 1\ntrust:\n  policy: openstrata-artifact-policy.toml\n  release_min_trust: verified\nrelease:\n  version: 1.2.3\n  mode: draft\n",
+        )
+        .replace(
+            "    version: \"0.9.0\"\n",
+            &format!(
+                "    version: \"0.9.0\"\n    sha256:\n      x86_64-pc-windows-msvc: {}\n",
+                "ef".repeat(32)
+            ),
+        )
+        .replace(
+            "    lane: pull_request\n",
+            "    lane: main\n    publish: candidate\n    trust: verified\n",
+        );
     std::fs::write(sb.base.join("publishing.yaml"), &publishing).unwrap();
     let out = sb.ost(&["--json", "ci", "validate", "--matrix", "publishing.yaml"]);
     assert_eq!(out.status.code(), Some(5));
@@ -418,6 +430,58 @@ fn trust_aware_matrix_plans_and_generates_evidence_gates() {
     }
     assert!(!source.contains("plugin publish"));
     assert!(!source.contains("artifact push"));
+}
+
+#[test]
+fn typed_release_contract_plans_and_generates_isolated_publisher() {
+    let sb = Sandbox::new("release-lane");
+    let matrix = lanes_yaml()
+        .replace(
+            "schema: 1\n",
+            "schema: 1\ntrust:\n  policy: openstrata-artifact-policy.toml\n  main_min_trust: verified\n  release_min_trust: trusted\nrelease:\n  version: 1.2.3\n  mode: publish\n  destination: oci://ghcr.io/owner/plugin\n  publisher_runner: windows-hosted\n  environment: release\n  reproducible: true\n  from_package: true\n  checks:\n    - name: Release corpus smoke\n      run: ctest --test-dir build/corpus --output-on-failure\n",
+        )
+        .replace(
+            "    version: \"0.9.0\"\n",
+            &format!(
+                "    version: \"0.9.0\"\n    sha256:\n      x86_64-pc-windows-msvc: {}\n",
+                "ef".repeat(32)
+            ),
+        )
+        .replace(
+            "    image: windows-2022\n",
+            "    image: windows-2022\n    billing:\n      acknowledgement: required\n",
+        )
+        .replace(
+            "    lane: pull_request\n",
+            "    lane: main\n    publish: candidate\n    trust: trusted\n",
+        );
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), matrix).unwrap();
+
+    let plan = stdout_json(&sb.ost(&["--json", "ci", "plan"]));
+    assert_eq!(plan["data"]["workflows"].as_array().unwrap().len(), 3);
+    assert_eq!(plan["data"]["release"]["version"], "1.2.3");
+    assert_eq!(plan["data"]["release"]["mode"], "publish");
+    assert_eq!(
+        plan["data"]["release"]["candidate_cells"],
+        serde_json::json!(["plugin-pr-windows"])
+    );
+
+    let generated = stdout_json(&sb.ost(&["--json", "ci", "generate", "github"]));
+    assert_eq!(generated["data"]["workflows"].as_array().unwrap().len(), 3);
+    let release = sb.base.join(".github/workflows/ost-release.yml");
+    let text = std::fs::read_to_string(&release).unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+    assert_eq!(doc["permissions"]["contents"], "read");
+    assert_eq!(doc["jobs"]["publish"]["permissions"]["id-token"], "write");
+    assert_eq!(doc["jobs"]["publish"]["permissions"]["packages"], "write");
+    let candidates = serde_yaml::to_string(&doc["jobs"]["candidates"]).unwrap();
+    assert!(candidates.contains("Repackage and prove reproducibility"));
+    assert!(candidates.contains("--from-package"));
+    assert!(candidates.contains("Release corpus smoke"));
+    assert!(!candidates.contains("artifact push"));
+    let publisher = serde_yaml::to_string(&doc["jobs"]["publish"]).unwrap();
+    assert!(publisher.contains("artifact push"));
+    assert!(publisher.contains("secrets.GITHUB_TOKEN"));
 }
 
 #[test]

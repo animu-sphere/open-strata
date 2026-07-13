@@ -11,11 +11,12 @@ pub mod github;
 pub mod matrix;
 
 pub use github::{
-    generate_github, generate_source, generate_support, GeneratedWorkflow, SOURCE_WORKFLOW_PATH,
-    WORKFLOW_PATH,
+    generate_github, generate_release, generate_source, generate_support, GeneratedWorkflow,
+    RELEASE_WORKFLOW_PATH, SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
 };
 pub use matrix::{
     is_placeholder_digest, starter_matrix, Acknowledgement, Billing, Bootstrap, HostOs, HostSpec,
-    Lane, OstBootstrap, Publish, RunnerKind, RunnerProfile, RuntimeRemote, SupportCell,
-    SupportMatrix, TrustRequirements, MATRIX_FILE, MATRIX_SCHEMA, MAX_LEVEL,
+    Lane, OstBootstrap, Publish, ReleaseLane, ReleaseMode, RunnerKind, RunnerProfile,
+    RuntimeRemote, SupportCell, SupportMatrix, TrustRequirements, MATRIX_FILE, MATRIX_SCHEMA,
+    MAX_LEVEL,
 };

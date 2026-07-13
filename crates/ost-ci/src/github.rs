@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 //! GitHub Actions workflow generation from a support matrix (Phase 5).
 //!
-//! Cells render by **lane** into up to two workflows:
+//! Cells render by **lane** into up to three workflows:
 //!
 //! - **source CI** (`pull_request` / `main` lanes): checkout → materialize a
 //!   digest-pinned runtime SDK artifact → build/test/package the bundle from
 //!   source. Never publishes, never uses secrets (fork-PR safety).
 //! - **support matrix** (`scheduled` / `workflow_dispatch` lanes): re-verify a
 //!   pinned runtime×plugin artifact pair from the runner's local registry.
+//! - **trusted release** (`publish: candidate` on `main` cells): exact tag
+//!   validation → reproducible package/from-package gates → immutable candidate
+//!   handoff → a separate OIDC-authorized publisher job.
 //!
 //! Cells reference named runner profiles; the renderer maps a profile to
 //! `runs-on` (`github-hosted.image` → the image, `self-hosted.labels` → the
@@ -16,7 +19,7 @@
 //! is pinned to a full commit SHA (SEC-004), reusing the SHAs this repository
 //! itself pins.
 
-use crate::matrix::{Bootstrap, Lane, SourceCheck, SupportCell, SupportMatrix};
+use crate::matrix::{Bootstrap, Lane, ReleaseMode, SourceCheck, SupportCell, SupportMatrix};
 
 /// Default path of the generated support-matrix workflow.
 pub const WORKFLOW_PATH: &str = ".github/workflows/ost-support-matrix.yml";
@@ -24,12 +27,19 @@ pub const WORKFLOW_PATH: &str = ".github/workflows/ost-support-matrix.yml";
 /// Default path of the generated source-CI workflow.
 pub const SOURCE_WORKFLOW_PATH: &str = ".github/workflows/ost-source-ci.yml";
 
+/// Default path of the generated trusted-release workflow.
+pub const RELEASE_WORKFLOW_PATH: &str = ".github/workflows/ost-release.yml";
+
 /// `actions/checkout`, pinned (SEC-004). Matches ci.yml.
 const CHECKOUT: &str = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0";
 
 /// `actions/upload-artifact`, pinned (SEC-004). Matches release.yml.
 const UPLOAD_ARTIFACT: &str =
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7";
+
+/// `actions/download-artifact`, pinned (SEC-004). Matches release.yml.
+const DOWNLOAD_ARTIFACT: &str =
+    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8";
 
 /// `actions/cache`, pinned (SEC-004). Matches ci.yml.
 const CACHE: &str = "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0";
@@ -55,7 +65,7 @@ pub struct GeneratedWorkflow {
     pub yaml: String,
 }
 
-/// Render the matrix into its workflows (support first, then source CI).
+/// Render the matrix into its workflows (support, source CI, then release).
 /// Lanes with no cells render nothing; a non-empty matrix always yields at
 /// least one workflow.
 pub fn generate_github(matrix: &SupportMatrix) -> Vec<GeneratedWorkflow> {
@@ -69,6 +79,12 @@ pub fn generate_github(matrix: &SupportMatrix) -> Vec<GeneratedWorkflow> {
     if let Some(yaml) = generate_source(matrix) {
         out.push(GeneratedWorkflow {
             path: SOURCE_WORKFLOW_PATH,
+            yaml,
+        });
+    }
+    if let Some(yaml) = generate_release(matrix) {
+        out.push(GeneratedWorkflow {
+            path: RELEASE_WORKFLOW_PATH,
             yaml,
         });
     }
@@ -277,12 +293,17 @@ fn support_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportC
 /// matrix's exact-byte pin when one is declared), put the binary on PATH,
 /// and save bootstrap evidence. A failure here is a *bootstrap* failure —
 /// its own step — never conflated with an artifact/runtime failure.
-fn bootstrap_step(bootstrap: &Bootstrap) -> String {
+fn bootstrap_step(bootstrap: &Bootstrap, require_exact_pin: bool) -> String {
     let ost = &bootstrap.ost;
     let mut pin_lines = String::new();
     for (triple, hex) in &ost.sha256 {
         pin_lines.push_str(&format!("            {triple}) pinned=\"{hex}\" ;;\n"));
     }
+    let exact_pin_gate = if require_exact_pin {
+        "          if [ -z \"$pinned\" ]; then\n            echo \"::error title=ost bootstrap::trusted release requires an exact checksum pin for $triple\" ; exit 1\n          fi\n"
+    } else {
+        ""
+    };
     format!(
         "\
 \x20     - name: Bootstrap ost {version} (pinned release asset, checksum-verified)
@@ -303,7 +324,8 @@ fn bootstrap_step(bootstrap: &Bootstrap) -> String {
 {pin_lines}\
 \x20           *) : ;;
           esac
-          asset=\"ost-cli-${{triple}}.${{ext}}\"
+{exact_pin_gate}\
+\x20         asset=\"ost-cli-${{triple}}.${{ext}}\"
           base=\"https://github.com/{repository}/releases/download/v{version}\"
           curl -fsSLo \"$asset\" \"$base/$asset\"
           curl -fsSLo \"$asset.sha256\" \"$base/$asset.sha256\"
@@ -515,7 +537,7 @@ fn source_steps(matrix: &SupportMatrix) -> String {
     let bootstrap = matrix
         .bootstrap
         .as_ref()
-        .map(bootstrap_step)
+        .map(|bootstrap| bootstrap_step(bootstrap, false))
         .unwrap_or_default();
     let policy = matrix
         .trust
@@ -679,12 +701,310 @@ jobs:
     ))
 }
 
+fn release_candidate_steps(matrix: &SupportMatrix) -> String {
+    let release = matrix.release.as_ref().expect("validated release block");
+    let bootstrap = matrix
+        .bootstrap
+        .as_ref()
+        .map(|bootstrap| bootstrap_step(bootstrap, true))
+        .unwrap_or_default();
+    let policy = matrix
+        .trust
+        .policy
+        .as_deref()
+        .expect("validated release policy");
+    let reproducibility = if release.reproducible {
+        "      - name: Repackage and prove reproducibility\n        shell: bash\n        run: |\n          set -euo pipefail\n          sums=\"$(find \"${{ matrix.bundle }}/.strata/dist\" -type f -name SHA256SUMS -print | head -n 1)\"\n          if [ -z \"$sums\" ]; then echo \"::error title=release::package produced no SHA256SUMS\"; exit 1; fi\n          cp \"$sums\" .ost-release/first-SHA256SUMS\n          ost plugin package ${{ matrix.bundle }} --target ${{ matrix.platform }} --profile ${{ matrix.profile }}\n          cmp .ost-release/first-SHA256SUMS \"$sums\"\n"
+    } else {
+        ""
+    };
+    let from_package = if release.from_package {
+        "      - name: Test the clean extracted package\n        shell: bash\n        run: ost plugin test ${{ matrix.bundle }} --target ${{ matrix.platform }} --profile ${{ matrix.profile }} --up-to ${{ matrix.up_to }} --from-package --json\n"
+    } else {
+        ""
+    };
+    let mut checks = source_check_steps(&matrix.source_checks);
+    checks.push_str(&source_check_steps(&release.checks));
+    format!(
+        "\
+\x20   steps:
+      - name: Check out the repository
+        uses: {CHECKOUT}
+{BILLING_NOTICE}\
+{bootstrap}\
+{version_check}\
+\x20     - name: Enforce tag and bundle version agreement
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=\"v{release_version}\"
+          if [ \"$GITHUB_REF_TYPE\" != tag ] || [ \"$GITHUB_REF_NAME\" != \"$expected\" ]; then
+            echo \"::error title=release ref::expected tag $expected, got $GITHUB_REF_TYPE $GITHUB_REF_NAME\"; exit 1
+          fi
+          mkdir -p .ost-release
+          ost --json plugin inspect ${{{{ matrix.bundle }}}} > .ost-release/inspect.json
+          bundle_version=\"$(sed -n 's/^[[:space:]]*\"version\": \"\\([^\"]*\\)\",*$/\\1/p' .ost-release/inspect.json | head -n 1)\"
+          if [ \"$bundle_version\" != \"{release_version}\" ]; then
+            echo \"::error title=release version::bundle declares '$bundle_version', tag requires '{release_version}'\"; exit 1
+          fi
+      - name: Validate the trusted CI manifest
+        shell: bash
+        run: ost ci validate
+{fetch}\
+\x20     - name: Verify and materialize the pinned runtime SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} --require-sbom --require-provenance --policy {policy}
+          ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
+{prebuild}\
+\x20     - name: Build the release candidate from source
+        shell: bash
+        run: ost plugin build ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
+      - name: Run the release verification pyramid
+        shell: bash
+        run: ost plugin test ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --up-to ${{{{ matrix.up_to }}}} --json
+{checks}\
+\x20     - name: Package the lean release candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-release
+          ost plugin package ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
+{reproducibility}\
+{from_package}\
+\x20     - name: Verify and stage the immutable candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ost plugin publish ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} | tee .ost-release/publish.txt
+          digest=\"$(sed -n 's/^[[:space:]]*digest: \\(sha256:[0-9a-fA-F]\\{{64\\}}\\)$/\\1/p' .ost-release/publish.txt | tail -n 1)\"
+          if [ -z \"$digest\" ]; then echo \"::error title=release::publish produced no artifact digest\"; exit 1; fi
+          ost artifact verify \"$digest\" --minimum-trust {release_trust} --require-sbom --require-provenance --policy {policy}
+          ost artifact export \"$digest\" .ost-release/candidate
+          printf '%s\\n' \"$digest\" > .ost-release/candidate/artifact.digest
+          printf '%s\\n' \"${{{{ matrix.name }}}}\" > .ost-release/candidate/cell.name
+      - name: Upload the immutable candidate handoff
+        uses: {UPLOAD_ARTIFACT}
+        with:
+          name: candidate-${{{{ matrix.name }}}}
+          path: .ost-release/candidate/
+          if-no-files-found: error
+      - name: Upload release reports and CI evidence
+        if: always()
+        uses: {UPLOAD_ARTIFACT}
+        with:
+          name: release-report-${{{{ matrix.name }}}}
+          path: |
+            ${{{{ matrix.bundle }}}}/.strata/reports/
+            .ost-ci/
+            .ost-release/inspect.json
+            .ost-release/publish.txt
+",
+        release_version = release.version,
+        release_trust = matrix.trust.release_min_trust,
+        version_check = ost_version_step(matrix.bootstrap.as_ref()),
+        fetch = runtime_fetch_steps(matrix.bootstrap.as_ref()),
+        prebuild = prebuild_steps(matrix),
+    )
+}
+
+fn release_candidate_job(matrix: &SupportMatrix, cells: &[&SupportCell]) -> String {
+    let mut include = String::new();
+    for cell in cells {
+        let bundle = cell.bundle.as_deref().unwrap_or(".");
+        let remote = cell
+            .runtime_remote
+            .as_ref()
+            .map(|reference| reference.uri.as_str())
+            .unwrap_or("");
+        let host_python = cell.host_python.as_deref().unwrap_or("");
+        include.push_str(&include_entry(
+            matrix,
+            cell,
+            &format!(
+                "            bundle: {bundle}\n\
+                 \x20           runtime_remote: \"{remote}\"\n\
+                 \x20           host_python: \"{host_python}\"\n"
+            ),
+        ));
+    }
+    let ost_home = if matrix.bootstrap.is_some() {
+        "\n      OST_HOME: ${{ matrix.hosted && format('{0}/.ost-release-home', github.workspace) || '' }}"
+    } else {
+        ""
+    };
+    format!(
+        "\
+\x20 candidates:
+    needs: validate-release-ref
+    name: candidate ${{{{ matrix.name }}}}
+    runs-on: ${{{{ matrix.runs_on }}}}
+{env}{ost_home}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+{include}\
+{steps}",
+        env = ci_env(false),
+        steps = release_candidate_steps(matrix),
+    )
+}
+
+fn release_publisher_job(matrix: &SupportMatrix) -> String {
+    let release = matrix.release.as_ref().expect("validated release block");
+    if release.mode != ReleaseMode::Publish {
+        return String::new();
+    }
+    let runner_name = release
+        .publisher_runner
+        .as_deref()
+        .expect("validated publisher runner");
+    let runner = matrix
+        .runners
+        .get(runner_name)
+        .expect("validated publisher runner profile");
+    let runs_on = runner
+        .runs_on()
+        .into_iter()
+        .map(|label| format!("\"{label}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let environment = release
+        .environment
+        .as_deref()
+        .map(|name| format!("    environment: {name}\n"))
+        .unwrap_or_default();
+    let bootstrap = matrix
+        .bootstrap
+        .as_ref()
+        .map(|bootstrap| bootstrap_step(bootstrap, true))
+        .unwrap_or_default();
+    let policy = matrix
+        .trust
+        .policy
+        .as_deref()
+        .expect("validated release policy");
+    let destination = release
+        .destination
+        .as_deref()
+        .expect("validated release destination");
+    format!(
+        "\
+\x20 publish:
+    needs: candidates
+    name: Publish verified candidates
+    runs-on: ${{{{ matrix.runs_on }}}}
+{environment}\
+\x20   permissions:
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      OST_HOME: ${{{{ github.workspace }}}}/.ost-publish-home
+      OST_REGISTRY_USER: ${{{{ github.actor }}}}
+      OST_REGISTRY_PASSWORD: ${{{{ secrets.GITHUB_TOKEN }}}}
+    strategy:
+      matrix:
+        include:
+          - name: {runner_name}
+            hosted: {hosted}
+            runs_on: [{runs_on}]
+    steps:
+      - name: Check out the repository trust policy
+        uses: {CHECKOUT}
+{bootstrap}\
+{version_check}\
+\x20     - name: Download immutable candidate handoffs
+        uses: {DOWNLOAD_ARTIFACT}
+        with:
+          pattern: candidate-*
+          path: .ost-release/candidates
+      - name: Re-verify and publish candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-release/results
+          found=0
+          for candidate in .ost-release/candidates/candidate-*; do
+            [ -d \"$candidate\" ] || continue
+            found=1
+            digest=\"$(tr -d '\\r\\n' < \"$candidate/artifact.digest\")\"
+            cell=\"$(tr -d '\\r\\n' < \"$candidate/cell.name\")\"
+            case \"$digest\" in sha256:[0-9a-fA-F]*) ;; *) echo \"::error title=release::invalid candidate digest\"; exit 1 ;; esac
+            ost artifact import \"$candidate\"
+            ost artifact verify \"$digest\" --minimum-trust {release_trust} --require-sbom --require-provenance --policy {policy}
+            ost --json artifact push \"$digest\" \"{destination}:{release_version}-$cell\" --policy {policy} > \".ost-release/results/$cell.json\"
+          done
+          if [ \"$found\" != 1 ]; then echo \"::error title=release::no candidate handoffs downloaded\"; exit 1; fi
+      - name: Upload publication evidence
+        if: always()
+        uses: {UPLOAD_ARTIFACT}
+        with:
+          name: publication-evidence
+          path: .ost-release/results/
+          if-no-files-found: error
+",
+        hosted = runner.is_hosted(),
+        release_version = release.version,
+        release_trust = matrix.trust.release_min_trust,
+        version_check = ost_version_step(matrix.bootstrap.as_ref()),
+    )
+}
+
+/// Render the tag-triggered trusted release workflow, or `None` when the
+/// matrix has no release contract.
+pub fn generate_release(matrix: &SupportMatrix) -> Option<String> {
+    let release = matrix.release.as_ref()?;
+    let candidates = matrix.candidate_cells();
+    let candidate_job = release_candidate_job(matrix, &candidates);
+    let publisher = release_publisher_job(matrix);
+    Some(format!(
+        "\
+# Generated by `ost ci generate github` from openstrata.ci.yaml.
+# Regenerate after editing the matrix; do not edit the jobs by hand.
+#
+# Trusted release: a read-only tag/ref gate feeds isolated candidate builders.
+# Only the final publisher receives OIDC/package permissions, and only after
+# every candidate passes reproducibility, clean-package, evidence, and policy
+# verification. Draft mode intentionally omits that publisher job.
+name: ost trusted release
+
+on:
+  push:
+    tags: [\"v*\"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release-ref:
+    name: Validate release ref
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the exact release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=\"v{version}\"
+          if [ \"$GITHUB_REF_TYPE\" != tag ] || [ \"$GITHUB_REF_NAME\" != \"$expected\" ]; then
+            echo \"::error title=release ref::expected tag $expected, got $GITHUB_REF_TYPE $GITHUB_REF_NAME\"; exit 1
+          fi
+{candidate_job}\
+{publisher}",
+        version = release.version,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::matrix::{
-        HostOs, HostSpec, Lane, OstBootstrap, Publish, RunnerKind, RunnerProfile, RuntimeRemote,
-        SourceCheck, SupportCell, TrustRequirements, MATRIX_SCHEMA,
+        Acknowledgement, Billing, HostOs, HostSpec, Lane, OstBootstrap, Publish, ReleaseLane,
+        RunnerKind, RunnerProfile, RuntimeRemote, SourceCheck, SupportCell, TrustRequirements,
+        MATRIX_SCHEMA,
     };
     use ost_artifact::TrustLevel;
     use std::collections::BTreeMap;
@@ -715,6 +1035,7 @@ mod tests {
             bootstrap: None,
             runners: BTreeMap::new(),
             source_checks: vec![],
+            release: None,
             cells: vec![
                 SupportCell {
                     up_to: 4,
@@ -762,6 +1083,7 @@ mod tests {
             }),
             runners,
             source_checks: vec![],
+            release: None,
             cells: vec![
                 SupportCell {
                     lane: Lane::PullRequest,
@@ -787,6 +1109,37 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn release_matrix() -> SupportMatrix {
+        let mut matrix = lanes_matrix();
+        matrix.runners.get_mut("windows-hosted").unwrap().billing = Some(Billing {
+            acknowledgement: Acknowledgement::Required,
+        });
+        matrix.trust = TrustRequirements {
+            policy: Some("openstrata-artifact-policy.toml".into()),
+            pr_min_trust: TrustLevel::Attested,
+            main_min_trust: TrustLevel::Verified,
+            release_min_trust: TrustLevel::Trusted,
+        };
+        matrix.cells[0].lane = Lane::Main;
+        matrix.cells[0].publish = Publish::Candidate;
+        matrix.cells[0].trust = TrustLevel::Trusted;
+        matrix.release = Some(ReleaseLane {
+            version: "1.2.3".into(),
+            mode: ReleaseMode::Publish,
+            destination: Some("oci://ghcr.io/owner/plugin".into()),
+            publisher_runner: Some("windows-hosted".into()),
+            environment: Some("release".into()),
+            reproducible: true,
+            from_package: true,
+            checks: vec![SourceCheck {
+                name: "Release corpus smoke".into(),
+                run: "ctest --test-dir build/corpus --output-on-failure".into(),
+            }],
+        });
+        matrix.validate().unwrap();
+        matrix
     }
 
     #[test]
@@ -1321,5 +1674,49 @@ mod tests {
             .unwrap()
             .iter()
             .any(|step| step["name"] == "Check out the repository trust policy"));
+    }
+
+    #[test]
+    fn trusted_release_separates_candidate_and_publisher_permissions() {
+        let matrix = release_matrix();
+        let yaml = generate_release(&matrix).expect("release workflow");
+        assert_eq!(yaml, generate_release(&matrix).unwrap(), "deterministic");
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("valid YAML");
+
+        assert_eq!(doc["permissions"]["contents"], "read");
+        assert_eq!(doc["jobs"]["candidates"]["needs"], "validate-release-ref");
+        assert!(doc["jobs"]["candidates"].get("permissions").is_none());
+        let candidate_text = serde_yaml::to_string(&doc["jobs"]["candidates"]).unwrap();
+        for gate in [
+            "trusted release requires an exact checksum pin",
+            "Repackage and prove reproducibility",
+            "--from-package",
+            "--require-sbom",
+            "--require-provenance",
+            "--minimum-trust trusted",
+            "Release corpus smoke",
+        ] {
+            assert!(
+                candidate_text.contains(gate),
+                "missing {gate}:\n{candidate_text}"
+            );
+        }
+        assert!(!candidate_text.contains("secrets."));
+        assert!(!candidate_text.contains("artifact push"));
+
+        let publisher = &doc["jobs"]["publish"];
+        assert_eq!(publisher["needs"], "candidates");
+        assert_eq!(publisher["environment"], "release");
+        assert_eq!(publisher["permissions"]["contents"], "read");
+        assert_eq!(publisher["permissions"]["id-token"], "write");
+        assert_eq!(publisher["permissions"]["packages"], "write");
+        let publisher_text = serde_yaml::to_string(publisher).unwrap();
+        assert!(publisher_text.contains("secrets.GITHUB_TOKEN"));
+        assert!(publisher_text.contains("artifact push"));
+        assert!(publisher_text.contains("oci://ghcr.io/owner/plugin:1.2.3-$cell"));
+        assert!(publisher_text.contains("actions/download-artifact@"));
+
+        let workflows = generate_github(&matrix);
+        assert_eq!(workflows.last().unwrap().path, RELEASE_WORKFLOW_PATH);
     }
 }
