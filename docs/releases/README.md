@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.17.0 | [v0.17.0.md](v0.17.0.md) | Renderer build truth + managed Hydra inspection |
 | v0.16.0 | [v0.16.0.md](v0.16.0.md) | Library/renderer dogfood substrates + generated trusted release CI |
 | v0.15.0 | [v0.15.0.md](v0.15.0.md) | Workspace composition + artifact evidence bundles |
 | v0.14.0 | [v0.14.0.md](v0.14.0.md) | Artifact trust policy foundation |

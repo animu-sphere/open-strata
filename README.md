@@ -31,9 +31,10 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.16.0** — executable plain-library composition,
-renderer/Hydra bootstrap contracts, and generated trusted release CI with
-reproducibility, clean-package, evidence, policy, and isolated-publisher gates.
+The current release is **v0.17.0** — renderer build completion evidence,
+recoverable managed CMake execution, one-command Hydra inspection through
+`ost renderer view`, renderer adoption/evidence transport, and generated support
+references for environment variables and platform support.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
