@@ -505,7 +505,12 @@ fn validate_surfaces_renderer_pass_fail_skip_evidence() {
             {"id":"renderer.render_product.color","status":"skip","detail":"GPU frame skipped"},
             {"id":"renderer.render_product.depth","status":"skip","detail":"GPU frame skipped"},
             {"id":"renderer.frame.persistence","status":"skip","detail":"GPU frame skipped"},
-            {"id":"renderer.install_tree","status":"pass"}
+            {"id":"renderer.install_tree","status":"pass"},
+            {"id":"renderer.plugin.discovery","status":"skip","detail":"Hydra adapter disabled"},
+            {"id":"renderer.delegate.creation","status":"skip","detail":"Hydra adapter disabled"},
+            {"id":"renderer.render_buffer.cpu","status":"skip","detail":"Hydra adapter disabled"},
+            {"id":"renderer.host.first_frame","status":"skip","detail":"usdview unavailable"},
+            {"id":"renderer.host.stable_update","status":"skip","detail":"usdview unavailable"}
           ]
         }"#,
     )

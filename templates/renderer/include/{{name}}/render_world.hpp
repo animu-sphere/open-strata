@@ -12,6 +12,8 @@ struct FrameSnapshot {
 
 class RenderWorld {
  public:
+  void SetTriangleCount(std::uint32_t triangle_count);
+  void MarkChanged();
   void SetBootstrapTriangle();
   [[nodiscard]] FrameSnapshot Commit();
 

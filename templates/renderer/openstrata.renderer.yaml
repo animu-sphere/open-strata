@@ -3,13 +3,14 @@ renderer:
   name: {{name}}
 composition:
   backend: vulkan
-  scene_inputs: [headless]
+  scene_inputs: [headless, hydra2]
   units:
     core: {{name}}-render-core
     extraction: {{name}}-render-extraction
     backend: {{name}}-render-vulkan
   adapters:
     headless: {{name}}-headless
+    hydra2: hd{{Name}}
 render_products:
   required: [color, depth]
 frame:
@@ -27,3 +28,8 @@ validation:
     - renderer.render_product.depth
     - renderer.frame.persistence
     - renderer.install_tree
+    - renderer.plugin.discovery
+    - renderer.delegate.creation
+    - renderer.render_buffer.cpu
+    - renderer.host.first_frame
+    - renderer.host.stable_update

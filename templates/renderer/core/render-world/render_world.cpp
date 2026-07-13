@@ -3,11 +3,17 @@
 
 namespace {{Name}} {
 
-void RenderWorld::SetBootstrapTriangle() {
-  if (triangle_count_ != 1) {
-    triangle_count_ = 1;
+void RenderWorld::SetTriangleCount(std::uint32_t triangle_count) {
+  if (triangle_count_ != triangle_count) {
+    triangle_count_ = triangle_count;
     dirty_ = true;
   }
+}
+
+void RenderWorld::MarkChanged() { dirty_ = true; }
+
+void RenderWorld::SetBootstrapTriangle() {
+  SetTriangleCount(1);
 }
 
 FrameSnapshot RenderWorld::Commit() {

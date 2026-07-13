@@ -1,6 +1,7 @@
 # Renderer template direction
 
-> Status: proposed skeleton direction. Based on the hdMerlin dogfooding report,
+> Status: Slice A and the optional Slice B bootstrap are implemented at skeleton
+> maturity. Based on the hdMerlin dogfooding report,
 > the 2026-07-13 VRM workspace reports, and an application review against the
 > hdMerlin source tree. This is the renderer specialization of the common
 > [OpenUSD plugin template policy](openusd-plugin-templates.md). The first
@@ -170,13 +171,14 @@ renderer:
   name: sample-renderer
 composition:
   backend: vulkan
-  scene_inputs: [headless]
+  scene_inputs: [headless, hydra2]
   units:
     core: sample-render-core
     extraction: sample-render-extraction
     backend: sample-render-vulkan
   adapters:
     headless: sample-render-headless
+    hydra2: hdSampleRender
 render_products:
   required: [color, depth]
 frame:
@@ -194,6 +196,11 @@ validation:
     - renderer.render_product.depth
     - renderer.frame.persistence
     - renderer.install_tree
+    - renderer.plugin.discovery
+    - renderer.delegate.creation
+    - renderer.render_buffer.cpu
+    - renderer.host.first_frame
+    - renderer.host.stable_update
 ```
 
 The names under `units` and `adapters` identify logical scaffold units, not
@@ -240,6 +247,7 @@ renderer.render_product.color
 renderer.render_product.depth
 renderer.plugin.discovery
 renderer.delegate.creation
+renderer.render_buffer.cpu
 renderer.host.first_frame
 renderer.host.stable_update
 ```
@@ -337,15 +345,26 @@ promotion or broader support claims.
 
 ### Slice B — Hydra 2 adapter and Level 7
 
-- Add a co-built Hydra 2 runtime product and reuse common plugin discovery/report
-  assertions. Extract a `hydra-renderer` bundle model only if an independent
-  build/install/package lifecycle is also proven.
-- Add ABI/configuration and runtime path helpers.
-- Add discovery, delegate creation, basic mesh/camera Sync, color/depth CPU
-  RenderBuffer, install-tree usdview first-frame, and stable-update assertions.
+- ✅ Add a co-built Hydra 2 runtime product and reuse the renderer report
+  assertions without pretending it is an independent bundle. Extract a
+  `hydra-renderer` bundle model only if a separate build/install/package
+  lifecycle is later proven.
+- ✅ Derive OpenUSD runtime paths from the located SDK, generate target-specific
+  module suffixes in `plugInfo.json`, and keep multi-config build/install
+  resources and shaders adjacent to the module.
+- ✅ Separate discovery, actual module load/delegate creation, CPU
+  color/depth/id RenderBuffer, and install-tree usdview first-frame/stable-update
+  evidence. A successful host test merges those facts into the renderer report;
+  absent OpenUSD, testusdview, Python, GPU, or display capability stays SKIP.
+- 🚧 The bootstrap observes mesh presence, visibility, dirty points/topology,
+  and camera prim creation while deliberately rendering the deterministic
+  backend triangle. Renderer-owned authored geometry and camera-matrix
+  translation remains the next dogfood step rather than common OST policy.
 
 Done when discovery, delegate creation, rendering, and host presentation can fail
-independently and produce separate evidence.
+independently and produce separate evidence. The local OpenUSD 26.05 Windows
+reference path satisfies that bootstrap gate; the hosted OS/OpenUSD matrix and
+authored scene translation remain promotion gates.
 
 ### Slice C — expand only after dogfooding
 

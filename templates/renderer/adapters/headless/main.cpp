@@ -173,6 +173,18 @@ int main(int argc, char** argv) {
   }
   checks.push_back({"renderer.install_tree", install_tree ? "pass" : "skip",
                     install_tree ? "" : "run the renderer install-tree CTest"});
+#if defined({{NAME}}_HAS_HYDRA2)
+  const std::string hydra_detail =
+      "the co-built Hydra adapter is exercised by its OpenUSD CTests";
+#else
+  const std::string hydra_detail =
+      "configure with {{NAME}}_ENABLE_HYDRA2=ON and a matching OpenUSD SDK";
+#endif
+  checks.push_back({"renderer.plugin.discovery", "skip", hydra_detail});
+  checks.push_back({"renderer.delegate.creation", "skip", hydra_detail});
+  checks.push_back({"renderer.render_buffer.cpu", "skip", hydra_detail});
+  checks.push_back({"renderer.host.first_frame", "skip", hydra_detail});
+  checks.push_back({"renderer.host.stable_update", "skip", hydra_detail});
 
   if (!WriteReport(report_path, checks, frame)) {
     std::cerr << "cannot write renderer report: " << report_path << '\n';

@@ -49,7 +49,7 @@ renderer source pack.
 - ⬜ Dogfood the real `vrmContainer -> usdVrm` producer/consumer on all three
   hosted OSes, then delete the downstream bootstrap/runtime-copy adapter.
 
-### P2 — renderer Slice A 🚧
+### P2 — renderer Slice A + Hydra bootstrap 🚧
 
 - ✅ Add `openstrata.renderer/v1alpha1` and
   `openstrata.renderer-report/v1alpha1` with strict parsing and required
@@ -62,9 +62,18 @@ renderer source pack.
 - ✅ Replace the generated GPU-frame skip with a deterministic Vulkan offscreen
   triangle, RGBA8/depth32 contract checks, repeated explicit completion,
   renderer validation callback capture, and a 1,000-frame clean loop.
+- ✅ Add an optional co-built Hydra 2 module without changing core/package
+  ownership, plus cross-platform `plugInfo` generation and imported-runtime
+  discovery.
+- ✅ Add independent plugin discovery, delegate creation, CPU RenderBuffer, and
+  isolated install-tree usdview first-frame/stable-update evidence. Successful
+  host testing merges the checks into `renderer-report.json`; unavailable
+  OpenUSD/usdview/display capability remains an explained skip.
 - ⬜ Run the generated core-only and Vulkan paths on the hosted OS matrix and
   apply the manifest/report contract to hydra-merlin without restructuring its
   package or adapter ownership.
+- ⬜ Dogfood renderer-owned authored topology/points/camera translation before
+  promoting those policies beyond the bootstrap seam.
 
 ### P0 — trust-aware support matrix 🚧
 

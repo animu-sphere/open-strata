@@ -55,8 +55,8 @@ impl Template {
         }
     }
 
-    /// Runtime profile written to a newly scaffolded project. Renderer Slice A
-    /// is host/OpenUSD independent; Hydra adds the USD dependency in Slice B.
+    /// Runtime profile written to a newly scaffolded project. The renderer keeps
+    /// its Hydra pack opt-in so its default project remains OpenUSD independent.
     pub fn default_profile(self) -> &'static str {
         match self {
             Template::Renderer => "core",
@@ -213,6 +213,46 @@ const RENDERER: &[TemplateFile] = &[
     tf(
         "adapters/headless/main.cpp",
         include_str!("../../../templates/renderer/adapters/headless/main.cpp"),
+    ),
+    tf(
+        "adapters/hydra2/CMakeLists.txt",
+        include_str!("../../../templates/renderer/adapters/hydra2/CMakeLists.txt"),
+    ),
+    tf(
+        "adapters/hydra2/src/adapter.hpp",
+        include_str!("../../../templates/renderer/adapters/hydra2/src/adapter.hpp"),
+    ),
+    tf(
+        "adapters/hydra2/src/adapter.cpp",
+        include_str!("../../../templates/renderer/adapters/hydra2/src/adapter.cpp"),
+    ),
+    tf(
+        "adapters/hydra2/src/renderer_plugin.cpp",
+        include_str!("../../../templates/renderer/adapters/hydra2/src/renderer_plugin.cpp"),
+    ),
+    tf(
+        "adapters/hydra2/resources/plugInfo.json.in",
+        include_str!("../../../templates/renderer/adapters/hydra2/resources/plugInfo.json.in"),
+    ),
+    tf(
+        "adapters/hydra2/tests/plugin_probe.cpp",
+        include_str!("../../../templates/renderer/adapters/hydra2/tests/plugin_probe.cpp"),
+    ),
+    tf(
+        "adapters/hydra2/tests/render_buffer_test.cpp",
+        include_str!("../../../templates/renderer/adapters/hydra2/tests/render_buffer_test.cpp"),
+    ),
+    tf(
+        "adapters/hydra2/tests/usdview-smoke.usda",
+        include_str!("../../../templates/renderer/adapters/hydra2/tests/usdview-smoke.usda"),
+    ),
+    tf(
+        "adapters/hydra2/tests/usdview_smoke_test.py",
+        include_str!("../../../templates/renderer/adapters/hydra2/tests/usdview_smoke_test.py"),
+    ),
+    tf(
+        "adapters/hydra2/tests/run_usdview_smoke.cmake",
+        include_str!("../../../templates/renderer/adapters/hydra2/tests/run_usdview_smoke.cmake"),
     ),
     tf(
         "validation/CMakeLists.txt",
@@ -597,6 +637,9 @@ mod tests {
             "core/render-extraction/CMakeLists.txt",
             "backend/vulkan/CMakeLists.txt",
             "adapters/headless/CMakeLists.txt",
+            "adapters/hydra2/CMakeLists.txt",
+            "adapters/hydra2/resources/plugInfo.json.in",
+            "adapters/hydra2/tests/usdview-smoke.usda",
             "validation/CMakeLists.txt",
         ] {
             assert!(written.iter().any(|path| path.as_str() == expected));
@@ -606,10 +649,17 @@ mod tests {
         let parsed = ost_manifest::RendererManifest::parse(&manifest).unwrap();
         assert_eq!(parsed.renderer.name, "sample-renderer");
         assert_eq!(parsed.composition.backend, "vulkan");
+        assert_eq!(parsed.composition.adapters["hydra2"], "hdSampleRenderer");
+        assert!(parsed
+            .validation
+            .assertions
+            .iter()
+            .any(|assertion| assertion == "renderer.host.first_frame"));
 
         let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
         assert!(cmake.contains("project(SampleRenderer"));
         assert!(cmake.contains("add_subdirectory(core/render-world)"));
+        assert!(cmake.contains("ENABLE_HYDRA2"));
         assert!(!cmake.contains("openstrata.library.yaml"));
 
         let headless =

@@ -1,0 +1,20 @@
+{
+  "Plugins": [
+    {
+      "Info": {
+        "Types": {
+          "Hd{{Name}}RendererPlugin": {
+            "bases": ["HdRendererPlugin"],
+            "displayName": "{{Name}}",
+            "priority": 0
+          }
+        }
+      },
+      "LibraryPath": "@{{NAME}}_HYDRA_LIBRARY_NAME@",
+      "Name": "hd{{Name}}",
+      "ResourcePath": ".",
+      "Root": "..",
+      "Type": "library"
+    }
+  ]
+}

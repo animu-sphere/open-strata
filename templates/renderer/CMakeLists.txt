@@ -10,11 +10,16 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option({{NAME}}_ENABLE_VULKAN "Probe and link the Vulkan backend capability" ON)
+option({{NAME}}_ENABLE_HYDRA2 "Build the optional co-built OpenUSD Hydra 2 adapter" OFF)
 option({{NAME}}_BUILD_TESTS "Build renderer contract and install-tree tests" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+if({{NAME}}_BUILD_TESTS)
+  include(CTest)
+endif()
 
 if(MSVC)
   add_compile_options(/W4 /permissive- /EHsc)
@@ -36,9 +41,12 @@ add_subdirectory(core/render-world)
 add_subdirectory(core/render-extraction)
 add_subdirectory(backend/vulkan)
 add_subdirectory(adapters/headless)
+if({{NAME}}_ENABLE_HYDRA2)
+  add_subdirectory(adapters/hydra2)
+  target_compile_definitions({{name}}-headless PRIVATE {{NAME}}_HAS_HYDRA2=1)
+endif()
 
 if({{NAME}}_BUILD_TESTS)
-  include(CTest)
   add_subdirectory(validation)
 endif()
 

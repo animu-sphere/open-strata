@@ -38,14 +38,14 @@ The next milestone (v0.16.0 — generated trusted CI) is detailed in
   a parallel template repository, CLI, renderer, bundle model, or artifact
   path. Add Hydra and tool candidates only at
   evidence-appropriate maturity.
-- ⬜ **Renderer Slice B/Level 7 and skeleton promotion.** Direction:
-  [renderer-templates.md](../design/proposed/renderer-templates.md). Slice A's
-  project scaffold, manifest, capability report, and install-tree seam are
-  active in the current milestone. Next add the optional co-built Hydra 2
-  adapter and independently reported discovery/delegate/GPU/RenderBuffer/
-  usdview stable-update evidence. Keep skeleton maturity until a second
-  independent implementation; instancing, materials, upload policy, and
-  zero-copy interop remain renderer-owned until separately proven.
+- ⬜ **Renderer Hydra dogfood and skeleton promotion.** Direction:
+  [renderer-templates.md](../design/proposed/renderer-templates.md). The optional
+  co-built Hydra 2 bootstrap now separates discovery, delegate creation, CPU
+  RenderBuffer, and install-tree usdview first-frame/stable-update evidence.
+  Next dogfood authored mesh/camera translation and the hosted OS/OpenUSD matrix,
+  then apply the contract to a second independent renderer. Keep skeleton
+  maturity until that evidence exists; instancing, materials, upload policy,
+  and zero-copy interop remain renderer-owned until separately proven.
 - ⬜ **Phase 7 — Sessions / sandbox.** Session metadata; `ost session start | fork
   | diff | discard | promote`. Workspace isolation; optional Linux namespace /
   overlayfs.

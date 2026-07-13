@@ -5,7 +5,8 @@ An OpenStrata renderer skeleton generated with
 
 This is one CMake project with internal target boundaries for the host-neutral
 scene model, project-owned extraction seam, Vulkan capability pack, and headless
-runtime product. These directories are not separate packages or plugin bundles.
+runtime product. The optional Hydra 2 directory is a co-built runtime module,
+not a separate OpenStrata bundle. These directories are not separate packages.
 
 ## Build and inspect evidence
 
@@ -27,6 +28,44 @@ Run CTest for build-tree and install-tree evidence:
 ```bash
 ctest --test-dir build/<target-id> -C Release --output-on-failure
 ```
+
+## Build the Hydra 2 adapter
+
+The adapter is opt-in so a default renderer build remains independent of
+OpenUSD. Point `CMAKE_PREFIX_PATH` at a matching OpenUSD imaging/usdview SDK:
+
+```bash
+cmake -S . -B out-hydra \
+  -D{{NAME}}_ENABLE_HYDRA2=ON \
+  -DCMAKE_PREFIX_PATH=<openusd-root> \
+  -DPython3_EXECUTABLE=<openusd-python>
+cmake --build out-hydra --config Release
+ctest --test-dir out-hydra -C Release --output-on-failure
+```
+
+The Hydra tests independently verify plugin discovery, module loading and
+delegate creation, CPU color/depth/id RenderBuffers, and an isolated install-tree
+`testusdview` first frame plus USD points update. When the host test passes it
+writes `renderer-hydra-report.json` and merges those PASS results into
+`renderer-report.json`. It also retains `usdview-first-frame.png` and
+`usdview-stable-update.png` under the staged test prefix.
+
+For interactive inspection after installing to `<stage>`, launch the matching
+OpenUSD Python and usdview with these session values:
+
+```powershell
+$env:PXR_PLUGINPATH_NAME = "<stage>/lib/usd/hd{{Name}}/resources"
+$env:PYTHONPATH = "<openusd-root>/lib/python"
+$env:PATH = "<openusd-root>/bin;<openusd-root>/lib;$env:PATH"
+& <openusd-python> <openusd-root>/bin/usdview `
+  <stage>/share/{{name}}/tests/usdview-smoke.usda `
+  --renderer {{Name}} --camera /Camera
+```
+
+The generated adapter intentionally renders the same deterministic bootstrap
+triangle used by the headless path. Mesh presence, visibility, and dirty updates
+cross the adapter seam, while authored topology/points/camera projection policy
+remains an explicit project extension rather than an OST-owned renderer model.
 
 ## Ownership boundary
 
