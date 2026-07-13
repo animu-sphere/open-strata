@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 
 use commands::{
     artifact, build, ci, configure, devshell, doctor, env, extension, init, internal, lock,
-    package, platform, plugin, presets, runtime, uv, validate,
+    package, platform, plugin, presets, renderer, runtime, uv, validate,
 };
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
@@ -76,6 +76,10 @@ enum Command {
     #[command(subcommand)]
     Plugin(plugin::PluginCmd),
 
+    /// Inspect renderer projects in host applications.
+    #[command(subcommand)]
+    Renderer(renderer::RendererCmd),
+
     /// Import, inspect, verify, export, and pull artifacts (local registry +
     /// remote OCI transport).
     #[command(subcommand)]
@@ -114,6 +118,7 @@ fn main() -> std::process::ExitCode {
         Command::Validate(args) => validate::run(args, fmt),
         Command::Extension(cmd) => extension::run(cmd, fmt),
         Command::Plugin(cmd) => plugin::run(cmd, fmt),
+        Command::Renderer(cmd) => renderer::run(cmd),
         Command::Artifact(cmd) => artifact::run(cmd, fmt),
         Command::Ci(cmd) => ci::run(cmd, fmt),
         Command::Lock(args) => lock::run(args, fmt),

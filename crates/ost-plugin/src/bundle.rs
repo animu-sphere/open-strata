@@ -44,6 +44,7 @@ impl Bundle {
             .map_err(|e| Error::parse(PLUGIN_MANIFEST, anyhow::Error::new(e)))?;
 
         let uses_composition = !manifest.requires.bundles.is_empty()
+            || !manifest.requires.libraries.is_empty()
             || manifest
                 .schema
                 .as_ref()
@@ -71,15 +72,9 @@ impl Bundle {
                     .map(|field| format!("requires.{field}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let message = if unknown.contains(&"libraries") {
-                    format!(
-                        "{fields} is reserved and unsupported: ordinary library identity, ABI, and package discovery do not yet have a portable manifest contract"
-                    )
-                } else {
-                    format!(
-                        "versioned plugin manifest contains unknown field(s): {fields} (allowed below requires: capabilities, components, runtime_libs, bundles)"
-                    )
-                };
+                let message = format!(
+                    "versioned plugin manifest contains unknown field(s): {fields} (allowed below requires: capabilities, components, runtime_libs, bundles, libraries)"
+                );
                 return Err(Error::config(message));
             }
         }
@@ -224,7 +219,7 @@ pub(crate) fn check_safe_relative(field: &str, rel: &str) -> Result<()> {
 /// UNC path; USD's plugin loader fails to match it), so we hand them the plain
 /// drive path. On non-Windows hosts `canonicalize` already returns a clean
 /// absolute path, so [`strip_verbatim`] is a no-op there.
-fn canonicalize_root(root: &Utf8Path) -> Result<Utf8PathBuf> {
+pub(crate) fn canonicalize_root(root: &Utf8Path) -> Result<Utf8PathBuf> {
     let canon =
         std::fs::canonicalize(root.as_std_path()).map_err(|e| Error::io(root.to_string(), e))?;
     let utf8 = Utf8PathBuf::from_path_buf(canon)
@@ -379,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn versioned_requires_is_strict_and_libraries_is_explicitly_reserved() {
+    fn versioned_requires_is_strict_and_accepts_library_dependencies() {
         let root = write_bundle("resources/plugInfo.json");
         let manifest_path = root.join(PLUGIN_MANIFEST);
         let legacy = std::fs::read_to_string(manifest_path.as_std_path()).unwrap();
@@ -396,14 +391,12 @@ mod tests {
         std::fs::write(
             manifest_path.as_std_path(),
             format!(
-                "manifest:\n  schema: {PLUGIN_SCHEMA}\n{legacy}requires:\n  libraries:\n    - id: shared\n"
+                "manifest:\n  schema: {PLUGIN_SCHEMA}\n{legacy}requires:\n  libraries:\n    - {{ id: shared, version: '>=1.0,<2.0' }}\n"
             ),
         )
         .unwrap();
-        let err = Bundle::load(&root).expect_err("versioned libraries must fail closed");
-        assert_eq!(err.code(), "INVALID_CONFIG");
-        assert!(err.to_string().contains("requires.libraries"), "{err}");
-        assert!(err.to_string().contains("reserved"), "{err}");
+        let bundle = Bundle::load(&root).expect("versioned library dependency is modeled");
+        assert_eq!(bundle.manifest.requires.libraries[0].id, "shared");
 
         std::fs::write(
             manifest_path.as_std_path(),

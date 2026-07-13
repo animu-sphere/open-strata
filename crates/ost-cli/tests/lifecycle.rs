@@ -415,6 +415,127 @@ fn full_lifecycle_init_build_package() {
 }
 
 #[test]
+fn renderer_template_scaffolds_one_project_and_a_strict_manifest() {
+    let sb = Sandbox::new("renderer-template");
+    let init = sb.ost(&[
+        "--json",
+        "init",
+        "--platform",
+        "cy2026",
+        "--template",
+        "renderer",
+        "--name",
+        "sample-renderer",
+    ]);
+    assert!(init.status.success(), "init failed:\n{}", out_text(&init));
+    let output: serde_json::Value = serde_json::from_slice(&init.stdout).unwrap();
+    assert_eq!(output["data"]["template"], "renderer");
+
+    for path in [
+        "openstrata.renderer.yaml",
+        "core/render-world/CMakeLists.txt",
+        "core/render-extraction/CMakeLists.txt",
+        "backend/vulkan/CMakeLists.txt",
+        "adapters/headless/CMakeLists.txt",
+        "validation/CMakeLists.txt",
+    ] {
+        assert!(
+            sb.work_file(path).is_file(),
+            "missing renderer output {path}"
+        );
+    }
+
+    let source = std::fs::read_to_string(sb.work_file("openstrata.renderer.yaml")).unwrap();
+    let manifest = ost_manifest::RendererManifest::parse(&source).unwrap();
+    assert_eq!(manifest.renderer.name, "sample-renderer");
+    assert_eq!(
+        manifest.composition.units["core"],
+        "sample-renderer-render-core"
+    );
+    assert!(manifest
+        .validation
+        .assertions
+        .iter()
+        .any(|id| id == "renderer.render_product.color"));
+
+    // Internal packs are target boundaries in one project, not generated
+    // workspace package descriptors.
+    assert!(!sb.work_file("openstrata.library.yaml").exists());
+    assert!(!sb.work_file("openstrata.plugin.yaml").exists());
+}
+
+#[test]
+fn validate_surfaces_renderer_pass_fail_skip_evidence() {
+    let sb = Sandbox::new("renderer-validate");
+    let init = sb.ost(&[
+        "init",
+        "--platform",
+        "cy2026",
+        "--template",
+        "renderer",
+        "--name",
+        "sample-renderer",
+    ]);
+    assert!(init.status.success(), "init failed:\n{}", out_text(&init));
+    let project = std::fs::read_to_string(sb.work_file("openstrata.toml")).unwrap();
+    assert!(project.contains("profile = \"core\""));
+    let pull = sb.ost(&["runtime", "pull", "cy2026", "--profile", "core"]);
+    assert!(pull.status.success(), "pull failed:\n{}", out_text(&pull));
+    let configure = sb.ost(&["configure"]);
+    assert!(
+        configure.status.success(),
+        "configure failed:\n{}",
+        out_text(&configure)
+    );
+
+    let target = single_target_dir(&sb.work);
+    let id = target.file_name().unwrap().to_string_lossy().into_owned();
+    let build = sb.work.join("build").join(id);
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::write(
+        build.join("renderer-report.json"),
+        r#"{
+          "schema":"openstrata.renderer-report/v1alpha1",
+          "renderer":{"name":"sample-renderer"},
+          "checks":[
+            {"id":"renderer.core.boundary","status":"pass"},
+            {"id":"renderer.backend.capability","status":"skip","detail":"GPU unavailable"},
+            {"id":"renderer.gpu.frame","status":"skip","detail":"GPU unavailable"},
+            {"id":"renderer.validation.messages","status":"skip","detail":"validation layer unavailable"},
+            {"id":"renderer.render_product.color","status":"skip","detail":"GPU frame skipped"},
+            {"id":"renderer.render_product.depth","status":"skip","detail":"GPU frame skipped"},
+            {"id":"renderer.frame.persistence","status":"skip","detail":"GPU frame skipped"},
+            {"id":"renderer.install_tree","status":"pass"},
+            {"id":"renderer.plugin.discovery","status":"skip","detail":"Hydra adapter disabled"},
+            {"id":"renderer.delegate.creation","status":"skip","detail":"Hydra adapter disabled"},
+            {"id":"renderer.render_buffer.cpu","status":"skip","detail":"Hydra adapter disabled"},
+            {"id":"renderer.host.first_frame","status":"skip","detail":"usdview unavailable"},
+            {"id":"renderer.host.stable_update","status":"skip","detail":"usdview unavailable"}
+          ]
+        }"#,
+    )
+    .unwrap();
+
+    let validate = sb.ost(&["--json", "validate"]);
+    assert!(
+        validate.status.success(),
+        "validate failed:\n{}",
+        out_text(&validate)
+    );
+    let output: serde_json::Value = serde_json::from_slice(&validate.stdout).unwrap();
+    let checks = output["data"]["checks"].as_array().unwrap();
+    assert!(checks
+        .iter()
+        .any(|check| { check["name"] == "renderer-manifest" && check["status"] == "pass" }));
+    assert!(checks.iter().any(|check| {
+        check["name"] == "renderer.backend.capability" && check["status"] == "skip"
+    }));
+    assert!(checks
+        .iter()
+        .any(|check| { check["name"] == "renderer.install_tree" && check["status"] == "pass" }));
+}
+
+#[test]
 fn build_failure_names_the_phase_and_log() {
     if let Err(reason) = native_lifecycle_ready() {
         eprintln!("skipping build_failure: {reason}");
@@ -943,6 +1064,174 @@ fn selected_and_workspace_tests_compose_manifest_dependencies_without_with() {
         "a declared closure fails closed on an unloadable workspace:\n{}",
         out_text(&out)
     );
+}
+
+#[test]
+fn plain_library_dependencies_validate_inspect_and_render_build_order() {
+    let sb = Sandbox::new("wslibrary");
+    init_and_pull(&sb);
+    let scaffold = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "consumer",
+        "--extension",
+        "toy",
+    ]);
+    assert!(scaffold.status.success(), "{}", out_text(&scaffold));
+
+    let manifest_path = sb.work_file("consumer/openstrata.plugin.yaml");
+    let source = std::fs::read_to_string(&manifest_path).unwrap();
+    let source = source.replace(
+        "requires:\n  capabilities: [usd-stage-read]\n",
+        "requires:\n  capabilities: [usd-stage-read]\n  libraries:\n    - { id: container, version: '>=1.0,<2.0' }\n",
+    );
+    std::fs::write(
+        &manifest_path,
+        format!("manifest:\n  schema: openstrata.plugin/v1alpha1\n{source}"),
+    )
+    .unwrap();
+
+    let library_root = sb.work_file("libs/container");
+    std::fs::create_dir_all(&library_root).unwrap();
+    std::fs::write(
+        library_root.join("openstrata.library.yaml"),
+        "schema: openstrata.library/v1alpha1\nlibrary: { id: container, version: 1.2.0 }\ncmake: { package: container, target: 'container::container' }\nruntime: { directories: [bin, lib] }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        library_root.join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.23)\nproject(container LANGUAGES CXX)\nadd_library(container SHARED container.cpp)\ninstall(TARGETS container EXPORT containerTargets)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        library_root.join("container.cpp"),
+        "int container() { return 1; }\n",
+    )
+    .unwrap();
+    let plugin_library = sb.work_file(&format!(
+        "consumer/lib/{}ConsumerFileFormat{}",
+        "lib",
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::create_dir_all(plugin_library.parent().unwrap()).unwrap();
+    std::fs::write(plugin_library, b"test library marker").unwrap();
+
+    let inspect = sb.ost(&["--json", "plugin", "inspect", "consumer"]);
+    assert!(inspect.status.success(), "{}", out_text(&inspect));
+    let value: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(value["data"]["libraries"][0]["id"], "container");
+    assert_eq!(value["data"]["libraries"][0]["version"], "1.2.0");
+    assert_eq!(
+        value["data"]["libraries"][0]["cmake_target"],
+        "container::container"
+    );
+
+    let build = sb.ost(&["plugin", "build", "consumer", "--dry-run"]);
+    assert!(build.status.success(), "{}", out_text(&build));
+    let plan = out_text(&build);
+    assert!(plan.contains("== build library container =="), "{plan}");
+    assert!(plan.contains("libs/container"), "{plan}");
+    assert!(plan.contains("workspace-prefix"), "{plan}");
+    assert!(
+        plan.find("== build library container ==") < plan.find("== build primary consumer =="),
+        "library must install before the consumer configures: {plan}"
+    );
+
+    let workspace = sb.ost(&["--json", "plugin", "test", "--workspace", "--up-to", "1"]);
+    assert!(workspace.status.success(), "{}", out_text(&workspace));
+    let value: serde_json::Value = serde_json::from_slice(&workspace.stdout).unwrap();
+    assert_eq!(value["data"]["graph"]["libraries"][0]["id"], "container");
+    assert_eq!(
+        value["data"]["graph"]["library_edges"][0]["from"],
+        "consumer"
+    );
+
+    // Model the install result of the dry-run plan and prove packaging carries
+    // the declared runtime closure instead of relying on a mutable sibling.
+    let consumer_target = single_target_dir(&sb.work_file("consumer"));
+    let target_id = consumer_target.file_name().unwrap();
+    let installed_bin = sb
+        .work_file(".strata/targets")
+        .join(target_id)
+        .join("workspace-prefix/bin");
+    std::fs::create_dir_all(&installed_bin).unwrap();
+    std::fs::write(
+        installed_bin.join(format!("container{}", std::env::consts::DLL_SUFFIX)),
+        b"plain library runtime marker",
+    )
+    .unwrap();
+    let package = sb.ost(&["plugin", "package", "consumer"]);
+    assert!(package.status.success(), "{}", out_text(&package));
+    let package_manifest = find_first(&sb.work_file("consumer/dist"), "manifest.json").unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(package_manifest).unwrap()).unwrap();
+    assert_eq!(value["dependencies"]["libraries"][0]["id"], "container");
+    assert!(value["files"].as_array().unwrap().iter().any(|file| {
+        file["path"]
+            .as_str()
+            .is_some_and(|path| path.contains("runtime/libraries/bin/container"))
+    }));
+    let packaged_test = sb.ost(&[
+        "--json",
+        "plugin",
+        "test",
+        "consumer",
+        "--from-package",
+        "--up-to",
+        "1",
+    ]);
+    assert!(
+        packaged_test.status.success(),
+        "{}",
+        out_text(&packaged_test)
+    );
+}
+
+/// A packaged manifest keeps its `requires.bundles` edges, so a bundle
+/// standing alone (an extracted package, a single-bundle checkout) must not
+/// fail workspace graph validation for siblings that are not there.
+#[test]
+fn bundle_with_dependencies_but_no_siblings_stays_standalone() {
+    let sb = Sandbox::new("standalone-deps");
+    init_and_pull(&sb);
+    let scaffold = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "consumer",
+        "--extension",
+        "toy",
+    ]);
+    assert!(scaffold.status.success(), "{}", out_text(&scaffold));
+
+    let manifest_path = sb.work_file("consumer/openstrata.plugin.yaml");
+    let source = std::fs::read_to_string(&manifest_path).unwrap();
+    let source = source.replace(
+        "requires:\n  capabilities: [usd-stage-read]\n",
+        "requires:\n  capabilities: [usd-stage-read]\n  bundles:\n    - { id: companion, version: '>=1.0,<2.0' }\n",
+    );
+    std::fs::write(
+        &manifest_path,
+        format!("manifest:\n  schema: openstrata.plugin/v1alpha1\n{source}"),
+    )
+    .unwrap();
+    let plugin_library = sb.work_file(&format!(
+        "consumer/lib/{}ConsumerFileFormat{}",
+        "lib",
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::create_dir_all(plugin_library.parent().unwrap()).unwrap();
+    std::fs::write(plugin_library, b"test library marker").unwrap();
+
+    let inspect = sb.ost(&["--json", "plugin", "inspect", "consumer"]);
+    assert!(
+        inspect.status.success(),
+        "a lone bundle with declared edges must stay inspectable:\n{}",
+        out_text(&inspect)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert!(value["data"]["libraries"].is_null());
 }
 
 /// Inside a generated CI job the `OST_CI_*` variables travel into every

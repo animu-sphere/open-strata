@@ -85,7 +85,25 @@ pub fn session_env_with(runtime_env: &EnvSet, bundle: &Bundle, with: &[Bundle], 
 /// point a run at an external/extracted plugin tree without injecting a source
 /// bundle's build-tree paths.
 pub fn session_env_from(runtime_env: &EnvSet, bundles: &[&Bundle], os: Os) -> EnvSet {
+    session_env_from_with_library_dirs(runtime_env, bundles, &[], os)
+}
+
+/// Compose a session from plugin bundles plus installed runtime directories of
+/// resolved plain-library dependencies. Bundle libraries retain priority, then
+/// plain libraries, then the selected runtime.
+pub fn session_env_from_with_library_dirs(
+    runtime_env: &EnvSet,
+    bundles: &[&Bundle],
+    library_dirs: &[&Utf8Path],
+    os: Os,
+) -> EnvSet {
     let mut vars = runtime_env.vars.clone();
+    for directory in library_dirs.iter().rev() {
+        vars.push(EnvVar {
+            key: lib_key(os).into(),
+            op: EnvOp::Prepend(portable(directory)),
+        });
+    }
     for bundle in bundles.iter().rev() {
         vars.extend(bundle_vars(bundle, os));
     }
@@ -236,6 +254,30 @@ usd: { plug_info: plugin/resources/usdluma/plugInfo.json }
         assert_eq!(
             pxr,
             "/install/usdluma/plugin/resources/usdluma:/runtime/plugin/usd"
+        );
+    }
+
+    #[test]
+    fn plain_library_dirs_follow_bundle_dirs_and_precede_runtime() {
+        let runtime = EnvSet {
+            sep: ':',
+            vars: vec![EnvVar {
+                key: "LD_LIBRARY_PATH".into(),
+                op: EnvOp::Prepend("/runtime/lib".into()),
+            }],
+        };
+        let primary = bundle();
+        let library = Utf8Path::new("/workspace-prefix/lib");
+        let env = session_env_from_with_library_dirs(&runtime, &[&primary], &[library], Os::Linux);
+        let resolved = env.resolve_over(&std::collections::HashMap::new());
+        let loader = resolved
+            .iter()
+            .find(|(key, _)| key == "LD_LIBRARY_PATH")
+            .map(|(_, value)| value.as_str())
+            .unwrap();
+        assert_eq!(
+            loader,
+            "/bundles/usdluma/lib:/workspace-prefix/lib:/runtime/lib"
         );
     }
 

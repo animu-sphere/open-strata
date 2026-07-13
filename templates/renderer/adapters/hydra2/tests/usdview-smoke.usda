@@ -1,0 +1,32 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Triangle"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(-0.5, -0.5, 0), (0.5, -0.5, 0), (0, 0.5, 0)]
+        color3f[] primvars:displayColor = [(1, 0.15, 0.05)] (
+            interpolation = "constant"
+        )
+    }
+}
+
+def Camera "Camera"
+{
+    float focalLength = 50
+    float horizontalAperture = 20.955
+    float verticalAperture = 15.2908
+    float2 clippingRange = (0.1, 100)
+    matrix4d xformOp:transform = ((1, 0, 0, 0),
+                                  (0, 1, 0, 0),
+                                  (0, 0, 1, 0),
+                                  (0, 0, 5, 1))
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+}

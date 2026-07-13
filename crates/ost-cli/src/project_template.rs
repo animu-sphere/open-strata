@@ -20,6 +20,8 @@ use ost_core::{Error, Result};
 pub enum Template {
     /// A minimal buildable C++ library (default).
     CppLibrary,
+    /// A host-neutral renderer project with headless validation evidence.
+    Renderer,
     /// A minimal OpenUSD plugin project.
     UsdPlugin,
     /// A dual-mode root for a repository of plugin bundles (`ost plugin new`).
@@ -33,11 +35,12 @@ impl Template {
     pub fn parse(s: &str) -> Result<Template> {
         match s {
             "cpp-library" => Ok(Template::CppLibrary),
+            "renderer" => Ok(Template::Renderer),
             "usd-plugin" => Ok(Template::UsdPlugin),
             "usd-plugin-workspace" | "plugin-workspace" => Ok(Template::PluginWorkspace),
             "bare" => Ok(Template::Bare),
             other => Err(Error::usage(format!(
-                "unknown template '{other}' (expected: cpp-library, usd-plugin, usd-plugin-workspace, bare)"
+                "unknown template '{other}' (expected: cpp-library, renderer, usd-plugin, usd-plugin-workspace, bare)"
             ))),
         }
     }
@@ -45,9 +48,19 @@ impl Template {
     pub fn as_str(self) -> &'static str {
         match self {
             Template::CppLibrary => "cpp-library",
+            Template::Renderer => "renderer",
             Template::UsdPlugin => "usd-plugin",
             Template::PluginWorkspace => "usd-plugin-workspace",
             Template::Bare => "bare",
+        }
+    }
+
+    /// Runtime profile written to a newly scaffolded project. The renderer keeps
+    /// its Hydra pack opt-in so its default project remains OpenUSD independent.
+    pub fn default_profile(self) -> &'static str {
+        match self {
+            Template::Renderer => "core",
+            _ => "usd",
         }
     }
 
@@ -56,6 +69,10 @@ impl Template {
             Template::CppLibrary => Some(EmbeddedTemplate {
                 descriptor: CPP_LIBRARY_DESCRIPTOR,
                 files: CPP_LIBRARY,
+            }),
+            Template::Renderer => Some(EmbeddedTemplate {
+                descriptor: RENDERER_DESCRIPTOR,
+                files: RENDERER,
             }),
             Template::UsdPlugin => Some(EmbeddedTemplate {
                 descriptor: USD_PLUGIN_DESCRIPTOR,
@@ -112,9 +129,146 @@ const CPP_LIBRARY: &[TemplateFile] = &[
         "src/{{name}}.cpp",
         include_str!("../../../templates/cpp-library/src/{{name}}.cpp"),
     ),
+    tf(
+        "cmake/{{Name}}Config.cmake.in",
+        include_str!("../../../templates/cpp-library/cmake/{{Name}}Config.cmake.in"),
+    ),
+    tf(
+        "openstrata.library.yaml",
+        include_str!("../../../templates/cpp-library/openstrata.library.yaml"),
+    ),
 ];
 
 const CPP_LIBRARY_DESCRIPTOR: &str = include_str!("../../../templates/cpp-library/template.yaml");
+
+const RENDERER: &[TemplateFile] = &[
+    tf(
+        "CMakeLists.txt",
+        include_str!("../../../templates/renderer/CMakeLists.txt"),
+    ),
+    tf(
+        "README.md",
+        include_str!("../../../templates/renderer/README.md"),
+    ),
+    tf(
+        ".gitignore",
+        include_str!("../../../templates/renderer/.gitignore"),
+    ),
+    tf(
+        "openstrata.renderer.yaml",
+        include_str!("../../../templates/renderer/openstrata.renderer.yaml"),
+    ),
+    tf(
+        "cmake/{{Name}}Config.cmake.in",
+        include_str!("../../../templates/renderer/cmake/{{Name}}Config.cmake.in"),
+    ),
+    tf(
+        "include/{{name}}/render_world.hpp",
+        include_str!("../../../templates/renderer/include/{{name}}/render_world.hpp"),
+    ),
+    tf(
+        "include/{{name}}/extraction.hpp",
+        include_str!("../../../templates/renderer/include/{{name}}/extraction.hpp"),
+    ),
+    tf(
+        "include/{{name}}/vulkan_backend.hpp",
+        include_str!("../../../templates/renderer/include/{{name}}/vulkan_backend.hpp"),
+    ),
+    tf(
+        "core/render-world/CMakeLists.txt",
+        include_str!("../../../templates/renderer/core/render-world/CMakeLists.txt"),
+    ),
+    tf(
+        "core/render-world/render_world.cpp",
+        include_str!("../../../templates/renderer/core/render-world/render_world.cpp"),
+    ),
+    tf(
+        "core/render-extraction/CMakeLists.txt",
+        include_str!("../../../templates/renderer/core/render-extraction/CMakeLists.txt"),
+    ),
+    tf(
+        "core/render-extraction/extraction.cpp",
+        include_str!("../../../templates/renderer/core/render-extraction/extraction.cpp"),
+    ),
+    tf(
+        "backend/vulkan/CMakeLists.txt",
+        include_str!("../../../templates/renderer/backend/vulkan/CMakeLists.txt"),
+    ),
+    tf(
+        "backend/vulkan/vulkan_backend.cpp",
+        include_str!("../../../templates/renderer/backend/vulkan/vulkan_backend.cpp"),
+    ),
+    tf(
+        "backend/vulkan/shaders/triangle.vert",
+        include_str!("../../../templates/renderer/backend/vulkan/shaders/triangle.vert"),
+    ),
+    tf(
+        "backend/vulkan/shaders/triangle.frag",
+        include_str!("../../../templates/renderer/backend/vulkan/shaders/triangle.frag"),
+    ),
+    tf(
+        "adapters/headless/CMakeLists.txt",
+        include_str!("../../../templates/renderer/adapters/headless/CMakeLists.txt"),
+    ),
+    tf(
+        "adapters/headless/main.cpp",
+        include_str!("../../../templates/renderer/adapters/headless/main.cpp"),
+    ),
+    tf(
+        "adapters/hydra2/CMakeLists.txt",
+        include_str!("../../../templates/renderer/adapters/hydra2/CMakeLists.txt"),
+    ),
+    tf(
+        "adapters/hydra2/src/adapter.hpp",
+        include_str!("../../../templates/renderer/adapters/hydra2/src/adapter.hpp"),
+    ),
+    tf(
+        "adapters/hydra2/src/adapter.cpp",
+        include_str!("../../../templates/renderer/adapters/hydra2/src/adapter.cpp"),
+    ),
+    tf(
+        "adapters/hydra2/src/renderer_plugin.cpp",
+        include_str!("../../../templates/renderer/adapters/hydra2/src/renderer_plugin.cpp"),
+    ),
+    tf(
+        "adapters/hydra2/resources/plugInfo.json.in",
+        include_str!("../../../templates/renderer/adapters/hydra2/resources/plugInfo.json.in"),
+    ),
+    tf(
+        "adapters/hydra2/tests/plugin_probe.cpp",
+        include_str!("../../../templates/renderer/adapters/hydra2/tests/plugin_probe.cpp"),
+    ),
+    tf(
+        "adapters/hydra2/tests/render_buffer_test.cpp",
+        include_str!("../../../templates/renderer/adapters/hydra2/tests/render_buffer_test.cpp"),
+    ),
+    tf(
+        "adapters/hydra2/tests/usdview-smoke.usda",
+        include_str!("../../../templates/renderer/adapters/hydra2/tests/usdview-smoke.usda"),
+    ),
+    tf(
+        "adapters/hydra2/tests/usdview_smoke_test.py",
+        include_str!("../../../templates/renderer/adapters/hydra2/tests/usdview_smoke_test.py"),
+    ),
+    tf(
+        "adapters/hydra2/tests/run_usdview_smoke.cmake",
+        include_str!("../../../templates/renderer/adapters/hydra2/tests/run_usdview_smoke.cmake"),
+    ),
+    tf(
+        "validation/CMakeLists.txt",
+        include_str!("../../../templates/renderer/validation/CMakeLists.txt"),
+    ),
+    tf(
+        "validation/check-core-boundary.cmake.in",
+        include_str!("../../../templates/renderer/validation/check-core-boundary.cmake.in"),
+    ),
+    tf(
+        "validation/run-install-smoke.cmake.in",
+        include_str!("../../../templates/renderer/validation/run-install-smoke.cmake.in"),
+    ),
+];
+
+const RENDERER_DESCRIPTOR: &str = include_str!("../../../templates/renderer/template.yaml");
 
 const USD_PLUGIN: &[TemplateFile] = &[
     tf(
@@ -349,6 +503,8 @@ mod tests {
             Template::parse("cpp-library").unwrap(),
             Template::CppLibrary
         );
+        assert_eq!(Template::parse("renderer").unwrap(), Template::Renderer);
+        assert_eq!(Template::Renderer.default_profile(), "core");
         assert_eq!(Template::parse("usd-plugin").unwrap(), Template::UsdPlugin);
         assert_eq!(
             Template::parse("plugin-workspace").unwrap(),
@@ -367,6 +523,7 @@ mod tests {
         let vars = Vars::new("catalog-check");
         for template in [
             Template::CppLibrary,
+            Template::Renderer,
             Template::UsdPlugin,
             Template::PluginWorkspace,
         ] {
@@ -464,6 +621,52 @@ mod tests {
         let cml = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
         assert!(cml.contains("install(TARGETS"));
         assert!(cml.contains("cmake_minimum_required(VERSION 3.23)"));
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn renderer_is_one_project_with_explicit_skip_evidence() {
+        let dir = unique_tmp("renderer");
+        std::fs::create_dir_all(dir.as_std_path()).unwrap();
+        let written = scaffold(Template::Renderer, "sample-renderer", &dir, false).unwrap();
+
+        for expected in [
+            "openstrata.renderer.yaml",
+            "core/render-world/CMakeLists.txt",
+            "core/render-extraction/CMakeLists.txt",
+            "backend/vulkan/CMakeLists.txt",
+            "adapters/headless/CMakeLists.txt",
+            "adapters/hydra2/CMakeLists.txt",
+            "adapters/hydra2/resources/plugInfo.json.in",
+            "adapters/hydra2/tests/usdview-smoke.usda",
+            "validation/CMakeLists.txt",
+        ] {
+            assert!(written.iter().any(|path| path.as_str() == expected));
+        }
+        let manifest =
+            std::fs::read_to_string(dir.join("openstrata.renderer.yaml").as_std_path()).unwrap();
+        let parsed = ost_manifest::RendererManifest::parse(&manifest).unwrap();
+        assert_eq!(parsed.renderer.name, "sample-renderer");
+        assert_eq!(parsed.composition.backend, "vulkan");
+        assert_eq!(parsed.composition.adapters["hydra2"], "hdSampleRenderer");
+        assert!(parsed
+            .validation
+            .assertions
+            .iter()
+            .any(|assertion| assertion == "renderer.host.first_frame"));
+
+        let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
+        assert!(cmake.contains("project(SampleRenderer"));
+        assert!(cmake.contains("add_subdirectory(core/render-world)"));
+        assert!(cmake.contains("ENABLE_HYDRA2"));
+        assert!(!cmake.contains("openstrata.library.yaml"));
+
+        let headless =
+            std::fs::read_to_string(dir.join("adapters/headless/main.cpp").as_std_path()).unwrap();
+        assert!(headless.contains("renderer.gpu.frame"));
+        assert!(headless.contains("\"skip\""));
+        assert!(!headless.contains("{{"));
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
     }

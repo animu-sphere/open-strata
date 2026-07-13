@@ -1,0 +1,9 @@
+# OpenStrata-generated build state and local build products.
+/build/
+/.strata/
+/out/
+CMakeUserPresets.json
+
+# Generated renderer evidence.
+renderer-report.json
+renderer-*-report.json

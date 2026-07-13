@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/animu-sphere/open-strata/main/schemas/renderer.schema.json",
+  "title": "OpenStrata Renderer Manifest",
+  "description": "Logical renderer source composition and validation intent. Units are project-owned labels, not necessarily packages or artifacts.",
+  "type": "object",
+  "required": ["schema", "renderer", "composition", "render_products", "frame", "validation"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "type": "string", "const": "openstrata.renderer/v1alpha1" },
+    "renderer": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/definitions/portableId" }
+      }
+    },
+    "composition": {
+      "type": "object",
+      "required": ["backend", "scene_inputs", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "backend": { "$ref": "#/definitions/portableId" },
+        "scene_inputs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/portableId" }
+        },
+        "units": { "$ref": "#/definitions/labelMap" },
+        "adapters": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/definitions/portableId" },
+          "additionalProperties": { "$ref": "#/definitions/portableId" }
+        }
+      }
+    },
+    "render_products": {
+      "type": "object",
+      "required": ["required"],
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/portableId" }
+        }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "required": ["contexts", "completion"],
+      "additionalProperties": false,
+      "properties": {
+        "contexts": { "type": "integer", "minimum": 1 },
+        "completion": { "type": "string", "minLength": 1 }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "required": ["gpu_smoke", "validation_messages_are_errors", "assertions"],
+      "additionalProperties": false,
+      "properties": {
+        "gpu_smoke": { "type": "boolean" },
+        "validation_messages_are_errors": { "type": "boolean" },
+        "assertions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/evidenceId" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "portableId": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "evidenceId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$"
+    },
+    "labelMap": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/definitions/portableId" },
+      "additionalProperties": { "$ref": "#/definitions/portableId" }
+    }
+  }
+}

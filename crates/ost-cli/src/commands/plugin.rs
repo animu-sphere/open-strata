@@ -33,7 +33,7 @@ use ost_core::variant::{Abi, Variant};
 use ost_core::{tools, Category, Error, Host, Result};
 use ost_plugin::{
     default_template_id, diagnose, run_levels, scaffold_with_template_inputs, session_env_with,
-    usdview_check, Bundle, CxxAbi, DoctorReport, ExecTemplateInputs, PluginKind, Probe,
+    usdview_check, Bundle, CxxAbi, DoctorReport, ExecTemplateInputs, Library, PluginKind, Probe,
     RuntimeContext, Session, Status, ToolOutput,
 };
 use ost_runtime::{EnvSet, RuntimeManifest, MANIFEST_FILE};
@@ -492,11 +492,24 @@ fn inspect(bundle_path: &str, fmt: Format) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
     // Level 0 only: bundle structure, no runtime resolution.
     let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+    let libraries = selected_workspace_library_evidence(&bundle, None)?;
 
     if fmt.is_json() {
-        output::report(report.passed(), &ost_plugin::report_json(&bundle, &report));
+        let mut body = ost_plugin::report_json(&bundle, &report);
+        if !libraries.is_empty() {
+            body["libraries"] = serde_json::Value::Array(libraries);
+        }
+        output::report(report.passed(), &body);
     } else {
         print_report(&bundle, &report);
+        for library in &libraries {
+            println!(
+                "  library: {} {} -> {}",
+                library["id"].as_str().unwrap_or("?"),
+                library["version"].as_str().unwrap_or("?"),
+                library["cmake_target"].as_str().unwrap_or("?")
+            );
+        }
     }
     finish(&report)
 }
@@ -583,7 +596,8 @@ fn build(
         );
     };
     let dependencies = dependencies_from_workspace(&primary, &workspace)?;
-    if dependencies.is_empty() {
+    let libraries = libraries_from_workspace(&primary, &workspace)?;
+    if dependencies.is_empty() && libraries.is_empty() {
         return build_one(
             bundle_path,
             target,
@@ -622,11 +636,27 @@ fn build(
 
     if !fmt.is_json() {
         println!(
-            "Workspace composition: {} dependenc{} -> {}",
+            "Workspace composition: {} bundle dependenc{}, {} librar{} -> {}",
             dependencies.len(),
             if dependencies.len() == 1 { "y" } else { "ies" },
+            libraries.len(),
+            if libraries.len() == 1 { "y" } else { "ies" },
             prefix
         );
+    }
+    for library in &libraries {
+        if !fmt.is_json() {
+            println!("\n== build library {} ==", library.id());
+        }
+        build_library_one(
+            library,
+            target.clone(),
+            profile.clone(),
+            dry_run,
+            ninja.clone(),
+            compiler_opts.clone(),
+            &prefix,
+        )?;
     }
     for dependency in &dependencies {
         if !fmt.is_json() {
@@ -660,6 +690,108 @@ fn build(
         true,
         fmt,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_library_one(
+    library: &Library,
+    target: Option<String>,
+    profile: Option<String>,
+    dry_run: bool,
+    ninja: Option<String>,
+    compiler_opts: CompilerOpts,
+    workspace_prefix: &Utf8Path,
+) -> Result<()> {
+    let (platform, profile) = selection(target, profile).ok_or_else(|| {
+        Error::usage(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
+        )
+    })?;
+    let (tgt, r) = build_target(&platform, &profile)?;
+    let id = tgt.id();
+    let compiler = resolve_plugin_compiler(&library.root, &compiler_opts)?;
+    let target_dir = target_state_dir(&library.root, &id);
+    std::fs::create_dir_all(target_dir.as_std_path())
+        .map_err(|error| Error::io(target_dir.to_string(), error))?;
+    let toolchain = target_dir.join("toolchain.cmake");
+    let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &tgt.python_version);
+    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
+    let mut toolchain_text =
+        ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref());
+    toolchain_text.push_str(&format!(
+        "\n# Source-workspace library install prefix.\nlist(PREPEND CMAKE_PREFIX_PATH \"{}\")\n",
+        cmake_path(workspace_prefix)
+    ));
+    std::fs::write(toolchain.as_std_path(), format!("{toolchain_text}\n"))
+        .map_err(|error| Error::io(toolchain.to_string(), error))?;
+
+    let build_dir = target_build_dir(&library.root, &id);
+    let cmake = tools::which("cmake");
+    let ninja = ninja.map(PathBuf::from).or_else(|| tools::which("ninja"));
+    let mut configure_args = vec![
+        "-S".to_string(),
+        cmake_path(&library.root),
+        "-B".to_string(),
+        cmake_path(&build_dir),
+        "-G".to_string(),
+        "Ninja".to_string(),
+        format!("-DCMAKE_TOOLCHAIN_FILE={}", cmake_path(&toolchain)),
+        "-DCMAKE_BUILD_TYPE=Release".to_string(),
+        format!("-DCMAKE_INSTALL_PREFIX={}", cmake_path(workspace_prefix)),
+    ];
+    if let Some(ninja) = &ninja {
+        configure_args.push(format!(
+            "-DCMAKE_MAKE_PROGRAM={}",
+            ninja.display().to_string().replace('\\', "/")
+        ));
+    }
+    let build_args = vec!["--build".to_string(), cmake_path(&build_dir)];
+    let install_args = vec![
+        "--install".to_string(),
+        cmake_path(&build_dir),
+        "--prefix".to_string(),
+        cmake_path(workspace_prefix),
+        "--config".to_string(),
+        "Release".to_string(),
+    ];
+    if dry_run {
+        println!("# dry run — would generate {toolchain} then:");
+        if tgt.os() == Os::Windows && tools::which("cl").is_none() {
+            println!("# (would auto-load the MSVC environment via vcvars64.bat)");
+        }
+        println!("cmake {}", configure_args.join(" "));
+        println!("cmake {}", build_args.join(" "));
+        println!("cmake {}", install_args.join(" "));
+        return Ok(());
+    }
+    if !r.pulled {
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            Category::Precondition,
+            format!(
+                "runtime '{}' not pulled — run `ost runtime pull {platform} --profile {profile}` first",
+                tgt.runtime_id
+            ),
+        ));
+    }
+    let cmake = cmake.ok_or_else(|| {
+        Error::coded(
+            "REQUIRED_TOOL_MISSING",
+            Category::Precondition,
+            "`cmake` not found on PATH",
+        )
+    })?;
+    let lock_compiler = compiler::to_lock(&compiler, &r.artifact_prefix, tgt.os());
+    invalidate_plugin_build_tree_if_compiler_changed(&library.root, &id, &lock_compiler);
+    let build_env = maybe_bootstrap_msvc(tgt.os());
+    run_step(PHASE_CONFIGURE, &cmake, &configure_args, &build_env)?;
+    run_step(PHASE_COMPILE_LINK, &cmake, &build_args, &build_env)?;
+    run_step("workspace-install", &cmake, &install_args, &build_env)?;
+    let record = target_dir.join("compiler.lock.json");
+    if let Ok(json) = serde_json::to_string_pretty(&lock_compiler) {
+        let _ = std::fs::write(record.as_std_path(), json);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -963,20 +1095,51 @@ fn package(
     // a scalar (collapsing any per-OS/`inherit` source declaration).
     packaged_manifest.runtime.cxx_abi = ctx.cxx_abi.clone().map(CxxAbi::Scalar);
     packaged_manifest.runtime.python_abi = ctx.python_abi.clone();
-    let packaged_bundle = Bundle {
-        root: bundle.root.clone(),
-        manifest: packaged_manifest.clone(),
-    };
+    let library_runtime = selected_library_package_runtime(&bundle, &id)?;
+    for (_, relative) in &library_runtime {
+        let relative = relative.to_string();
+        if !packaged_manifest.requires.runtime_libs.contains(&relative) {
+            packaged_manifest.requires.runtime_libs.push(relative);
+        }
+    }
+    let library_evidence = selected_workspace_library_evidence(&bundle, Some(&r))?;
+    let packaged_library_dirs = library_runtime
+        .iter()
+        .map(|(_, relative)| relative.to_string())
+        .collect::<Vec<_>>();
+    let packaged_library_evidence = library_evidence
+        .iter()
+        .map(|library| {
+            serde_json::json!({
+                "id": library["id"],
+                "version": library["version"],
+                "descriptor": ost_plugin::LIBRARY_MANIFEST,
+                "cmake_package": library["cmake_package"],
+                "cmake_target": library["cmake_target"],
+                "prefix": serde_json::Value::Null,
+                "runtime_directories": packaged_library_dirs,
+                "provenance": "source-workspace",
+            })
+        })
+        .collect::<Vec<_>>();
 
-    let session = session_env_with(&r.env, &packaged_bundle, &[], host.os);
     // Reruns must not fail on a stage the previous run left temporarily
     // undeletable (scanner-held handles, dogfooding report #9): stage into a
     // fresh sibling instead, and surface that as an actionable warning
     // (`--clean-stage` reclaims the stable name).
     let preferred_stage = target_state_dir(&bundle.root, &id).join("package-stage");
     let (stage, stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
-    stage_plugin_bundle(&packaged_bundle, &stage)?;
+    stage_plugin_bundle(&bundle, &stage)?;
+    for (source, relative) in &library_runtime {
+        copy_tree_required(source, relative, &stage)?;
+    }
     write_packaged_manifest(&stage.join(ost_plugin::PLUGIN_MANIFEST), &packaged_manifest)?;
+    write_library_evidence(&stage, &packaged_library_evidence)?;
+    let packaged_bundle = Bundle {
+        root: stage.clone(),
+        manifest: packaged_manifest.clone(),
+    };
+    let session = session_env_with(&r.env, &packaged_bundle, &[], host.os);
     write_validation_files(&packaged_bundle, &report, &session, &stage)?;
 
     let staged = stage_files(&stage).map_err(|e| {
@@ -1094,6 +1257,11 @@ fn package(
         },
         "files": files_json,
     });
+    if !packaged_library_evidence.is_empty() {
+        manifest["dependencies"] = serde_json::json!({
+            "libraries": packaged_library_evidence,
+        });
+    }
     if let Some(debug_json) = &debug_json {
         manifest["debug"] = debug_json.clone();
     }
@@ -1346,6 +1514,11 @@ fn run_session(
     let plugin_path_bundles = load_with_bundles(plugin_paths)?;
     let host = Host::detect();
     let r = require_real_runtime(target, profile)?;
+    let library_dirs = if no_inject {
+        Vec::new()
+    } else {
+        selected_workspace_library_runtime_dirs(&bundle, &r, true)?
+    };
 
     // Search order (highest first): the source bundle unless --no-inject, then
     // any --plugin-path trees, then --with companions, then the runtime.
@@ -1355,7 +1528,16 @@ fn run_session(
     }
     contributing.extend(plugin_path_bundles.iter());
     contributing.extend(with_bundles.iter());
-    let session = ost_plugin::session_env_from(&r.env, &contributing, host.os);
+    let library_dirs = library_dirs
+        .iter()
+        .map(Utf8PathBuf::as_path)
+        .collect::<Vec<_>>();
+    let session = ost_plugin::session_env_from_with_library_dirs(
+        &r.env,
+        &contributing,
+        &library_dirs,
+        host.os,
+    );
     let (program, args) = prepare_session_command(&command, &r.artifact_prefix, &r.python_version)?;
 
     let mut cmd = Command::new(&program);
@@ -1487,9 +1669,21 @@ fn test(
     let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     let host = Host::detect();
     let resolved = resolve_runtime(target, profile)?;
+    let library_dirs = match resolved.as_ref() {
+        Some(resolved) => selected_workspace_library_runtime_dirs(&bundle, resolved, up_to >= 2)?,
+        None => Vec::new(),
+    };
 
-    let (report, report_dir) =
-        test_bundle(&bundle, &with_bundles, resolved.as_ref(), &host, up_to)?;
+    let (report, report_dir) = test_bundle(
+        &bundle,
+        &with_bundles,
+        &library_dirs,
+        resolved.as_ref(),
+        &host,
+        up_to,
+    )?;
+    let libraries = selected_workspace_library_evidence(&bundle, resolved.as_ref())?;
+    write_library_evidence(&report_dir, &libraries)?;
 
     if fmt.is_json() {
         let mut body = ost_plugin::report_json(&bundle, &report);
@@ -1498,6 +1692,16 @@ fn test(
                 "report_dir".into(),
                 serde_json::Value::String(report_dir.to_string()),
             );
+            if !libraries.is_empty() {
+                obj.insert(
+                    "libraries".into(),
+                    serde_json::Value::Array(libraries.clone()),
+                );
+                obj.insert(
+                    "dependencies_file".into(),
+                    serde_json::Value::String(report_dir.join("dependencies.json").to_string()),
+                );
+            }
         }
         output::report(report.passed(), &body);
     } else {
@@ -1569,7 +1773,7 @@ fn test_from_package(
     ost_artifact::extract_archive(&archive_path, archive_digest, &extract_dir)?;
 
     let extracted = load_bundle(extract_dir.as_str())?;
-    let (report, report_dir) = test_bundle(&extracted, &with_bundles, Some(&r), &host, up_to)?;
+    let (report, report_dir) = test_bundle(&extracted, &with_bundles, &[], Some(&r), &host, up_to)?;
 
     if fmt.is_json() {
         let mut body = ost_plugin::report_json(&extracted, &report);
@@ -1599,6 +1803,7 @@ fn test_from_package(
 fn test_bundle(
     bundle: &Bundle,
     with_bundles: &[Bundle],
+    library_dirs: &[Utf8PathBuf],
     resolved: Option<&crate::commands::Resolved>,
     host: &Host,
     up_to: u8,
@@ -1606,7 +1811,19 @@ fn test_bundle(
     let ctx = resolved.map(runtime_context).unwrap_or_default();
     let session = match resolved {
         Some(r) => {
-            let env = session_env_with(&r.env, bundle, with_bundles, host.os);
+            let mut contributing = Vec::with_capacity(with_bundles.len() + 1);
+            contributing.push(bundle);
+            contributing.extend(with_bundles.iter());
+            let library_dirs = library_dirs
+                .iter()
+                .map(Utf8PathBuf::as_path)
+                .collect::<Vec<_>>();
+            let env = ost_plugin::session_env_from_with_library_dirs(
+                &r.env,
+                &contributing,
+                &library_dirs,
+                host.os,
+            );
             // An adopted runtime may not bundle Python; put a matching host
             // interpreter's dir on the loader path so usdcat/usdview and the
             // pxr bindings can load pythonXY.dll and a matched `python` runs.
@@ -1677,7 +1894,12 @@ fn test_workspace(
         .iter()
         .map(|root| Bundle::load(root))
         .collect::<Result<Vec<_>>>()?;
-    let graph = ost_plugin::validate_workspace(&bundles);
+    let library_roots = discover_workspace_libraries(Utf8Path::new("."))?;
+    let libraries = library_roots
+        .iter()
+        .map(|root| Library::load(root))
+        .collect::<Result<Vec<_>>>()?;
+    let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
     if !graph.passed {
         if fmt.is_json() {
             output::report(
@@ -1691,8 +1913,14 @@ fn test_workspace(
             );
         } else {
             println!(
-                "Workspace dependency graph: {} bundle(s), {} issue(s)",
+                "Workspace dependency graph: {} bundle(s), {} librar{}, {} issue(s)",
                 graph.nodes.len(),
+                graph.libraries.len(),
+                if graph.libraries.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
                 graph.issues.len()
             );
             for issue in &graph.issues {
@@ -1703,9 +1931,12 @@ fn test_workspace(
     }
     if !fmt.is_json() {
         println!(
-            "Workspace dependency graph: {} bundle(s), {} edge(s), valid\n",
+            "Workspace dependency graph: {} bundle(s), {} bundle edge(s), {} librar{}, {} library edge(s), valid\n",
             graph.nodes.len(),
-            graph.edges.len()
+            graph.edges.len(),
+            graph.libraries.len(),
+            if graph.libraries.len() == 1 { "y" } else { "ies" },
+            graph.library_edges.len()
         );
     }
 
@@ -1720,7 +1951,17 @@ fn test_workspace(
         .cloned()
         .map(|bundle| (bundle.manifest.name().to_string(), bundle))
         .collect();
-    let mut results: Vec<(Bundle, DoctorReport, Utf8PathBuf)> = Vec::new();
+    let library_by_id: BTreeMap<String, Library> = libraries
+        .into_iter()
+        .map(|library| (library.id().to_string(), library))
+        .collect();
+    let workspace = SourceWorkspace {
+        root: Utf8PathBuf::from("."),
+        bundles: by_id.clone(),
+        libraries: library_by_id,
+        graph: graph.clone(),
+    };
+    let mut results: Vec<(Bundle, DoctorReport, Utf8PathBuf, Vec<serde_json::Value>)> = Vec::new();
     for (root, bundle) in roots.iter().zip(bundles) {
         let dependencies = graph
             .dependency_order(bundle.manifest.name())
@@ -1735,28 +1976,52 @@ fn test_workspace(
             })
             .collect::<Result<Vec<_>>>()?;
         let composed = merge_composed_bundles(&bundle, dependencies, explicit_bundles.clone())?;
-        let (report, report_dir) =
-            test_bundle(&bundle, &composed, resolved.as_ref(), &host, up_to)?;
+        let library_dirs = match resolved.as_ref() {
+            Some(resolved) => {
+                library_runtime_dirs_from_workspace(&bundle, &workspace, resolved, up_to >= 2)?
+            }
+            None => Vec::new(),
+        };
+        let (report, report_dir) = test_bundle(
+            &bundle,
+            &composed,
+            &library_dirs,
+            resolved.as_ref(),
+            &host,
+            up_to,
+        )?;
+        let library_evidence = selected_workspace_library_evidence(&bundle, resolved.as_ref())?;
+        write_library_evidence(&report_dir, &library_evidence)?;
         if !fmt.is_json() {
             println!("== {} ({root}) ==", bundle.manifest.plugin.name);
             print_report(&bundle, &report);
             println!("Report: {report_dir}\n");
         }
-        results.push((bundle, report, report_dir));
+        results.push((bundle, report, report_dir, library_evidence));
     }
 
-    let failed = results.iter().filter(|(_, r, _)| !r.passed()).count();
+    let failed = results.iter().filter(|(_, r, _, _)| !r.passed()).count();
     let all_passed = failed == 0;
     if fmt.is_json() {
         let bundles: Vec<serde_json::Value> = results
             .iter()
-            .map(|(bundle, report, dir)| {
+            .map(|(bundle, report, dir, libraries)| {
                 let mut body = ost_plugin::report_json(bundle, report);
                 if let Some(obj) = body.as_object_mut() {
                     obj.insert(
                         "report_dir".into(),
                         serde_json::Value::String(dir.to_string()),
                     );
+                    if !libraries.is_empty() {
+                        obj.insert(
+                            "libraries".into(),
+                            serde_json::Value::Array(libraries.clone()),
+                        );
+                        obj.insert(
+                            "dependencies_file".into(),
+                            serde_json::Value::String(dir.join("dependencies.json").to_string()),
+                        );
+                    }
                 }
                 body
             })
@@ -1807,24 +2072,56 @@ fn discover_workspace_bundles(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
     Ok(found)
 }
 
+/// Plain CMake library projects of a workspace: immediate subdirectories and
+/// `libs/*` entries holding `openstrata.library.yaml`, in deterministic order.
+fn discover_workspace_libraries(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
+    let mut found = Vec::new();
+    let scan = |directory: &Utf8Path, found: &mut Vec<Utf8PathBuf>| {
+        let Ok(entries) = std::fs::read_dir(directory.as_std_path()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
+                continue;
+            };
+            if path.is_dir() && path.join(ost_plugin::LIBRARY_MANIFEST).is_file() {
+                found.push(path);
+            }
+        }
+    };
+    scan(root, &mut found);
+    scan(&root.join("libs"), &mut found);
+    found.sort();
+    found.dedup();
+    Ok(found)
+}
+
 #[derive(Debug)]
 struct SourceWorkspace {
     root: Utf8PathBuf,
     bundles: BTreeMap<String, Bundle>,
+    libraries: BTreeMap<String, Library>,
     graph: ost_plugin::WorkspaceValidation,
 }
 
 /// Identify the conventional workspace containing `primary`. A bundle directly
 /// below `<root>/` belongs to `<root>`; one below `<root>/plugins/` belongs to
-/// `<root>`. Requiring at least two discovered bundles prevents an extracted
-/// standalone package from being mistaken for a source composition.
+/// `<root>`. Discovery runs only when the primary declares a bundle or library
+/// edge, so an extracted package is not treated as a source composition by
+/// directory shape alone.
 ///
-/// A primary with no `requires.bundles` has an empty closure by definition, so
-/// discovery is skipped entirely: unrelated sibling bundles (a broken
-/// manifest, a stale backup copy) must not fail a command that needs nothing
-/// from them.
+/// A primary with no bundle or library requirements has an empty closure, so
+/// discovery is skipped entirely: unrelated sibling bundles or libraries (a
+/// broken manifest, a stale backup copy) cannot fail a command that needs none.
+///
+/// A packaged manifest keeps its declared edges, so an extracted package
+/// standing alone still reaches discovery. With no sibling bundles and no
+/// plain libraries there is no source composition to validate: such a tree
+/// keeps behaving like a plain bundle instead of failing graph validation.
 fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
-    if primary.manifest.requires.bundles.is_empty() {
+    let needs_library_workspace = !primary.manifest.requires.libraries.is_empty()
+        && !has_materialized_package_library_closure(primary);
+    if primary.manifest.requires.bundles.is_empty() && !needs_library_workspace {
         return Ok(None);
     }
     let parent = match primary.root.parent() {
@@ -1840,7 +2137,8 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
         parent
     };
     let roots = discover_workspace_bundles(root)?;
-    if roots.len() < 2 {
+    let library_roots = discover_workspace_libraries(root)?;
+    if roots.len() < 2 && library_roots.is_empty() {
         return Ok(None);
     }
     let loaded = roots
@@ -1851,7 +2149,11 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
         return Ok(None);
     }
 
-    let graph = ost_plugin::validate_workspace(&loaded);
+    let loaded_libraries = library_roots
+        .iter()
+        .map(|path| Library::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let graph = ost_plugin::validate_workspace_with_libraries(&loaded, &loaded_libraries);
     if !graph.passed {
         let details = graph
             .issues
@@ -1873,11 +2175,36 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
         .into_iter()
         .map(|bundle| (bundle.manifest.name().to_string(), bundle))
         .collect();
+    let libraries = loaded_libraries
+        .into_iter()
+        .map(|library| (library.id().to_string(), library))
+        .collect();
     Ok(Some(SourceWorkspace {
         root: root.to_owned(),
         bundles,
+        libraries,
         graph,
     }))
+}
+
+fn has_materialized_package_library_closure(bundle: &Bundle) -> bool {
+    let evidence = bundle.root.join("dependencies.json");
+    if !evidence.as_std_path().is_file() {
+        return false;
+    }
+    let has_recorded_libraries = std::fs::read_to_string(evidence.as_std_path())
+        .ok()
+        .and_then(|source| serde_json::from_str::<serde_json::Value>(&source).ok())
+        .and_then(|value| value["libraries"].as_array().map(|items| !items.is_empty()))
+        .unwrap_or(false);
+    has_recorded_libraries
+        && bundle
+            .manifest
+            .requires
+            .runtime_libs
+            .iter()
+            .filter(|directory| directory.starts_with("runtime/libraries"))
+            .any(|directory| bundle.path(directory).as_std_path().is_dir())
 }
 
 fn dependencies_from_workspace(
@@ -1917,6 +2244,212 @@ fn selected_workspace_dependencies(primary: &Bundle) -> Result<Vec<Bundle>> {
         Some(workspace) => dependencies_from_workspace(primary, &workspace),
         None => Ok(Vec::new()),
     }
+}
+
+fn libraries_from_workspace(primary: &Bundle, workspace: &SourceWorkspace) -> Result<Vec<Library>> {
+    let order = workspace
+        .graph
+        .library_dependency_order(primary.manifest.name())
+        .ok_or_else(|| {
+            Error::coded(
+                "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+                Category::Validation,
+                format!(
+                    "library closure for bundle '{}' is absent from the validated workspace graph at '{}'",
+                    primary.manifest.name(),
+                    workspace.root
+                ),
+            )
+        })?;
+    order
+        .into_iter()
+        .map(|id| {
+            workspace.libraries.get(&id).cloned().ok_or_else(|| {
+                Error::coded(
+                    "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+                    Category::Validation,
+                    format!("validated workspace library '{id}' could not be loaded"),
+                )
+            })
+        })
+        .collect()
+}
+
+fn target_id_from_resolved(resolved: &crate::commands::Resolved) -> String {
+    format!(
+        "{}-{}-{}",
+        resolved.runtime.platform,
+        resolved.runtime.variant.short_slug(),
+        resolved.runtime.profile
+    )
+}
+
+fn library_runtime_dirs_from_workspace(
+    primary: &Bundle,
+    workspace: &SourceWorkspace,
+    resolved: &crate::commands::Resolved,
+    require_materialized: bool,
+) -> Result<Vec<Utf8PathBuf>> {
+    let libraries = libraries_from_workspace(primary, workspace)?;
+    let prefix = workspace
+        .root
+        .join(STATE_DIR)
+        .join("targets")
+        .join(target_id_from_resolved(resolved))
+        .join("workspace-prefix");
+    let mut directories = Vec::new();
+    for library in libraries {
+        let materialized = library.installed_runtime_dirs(&prefix);
+        if require_materialized
+            && !library.manifest.runtime.directories.is_empty()
+            && materialized.is_empty()
+        {
+            return Err(Error::coded(
+                "WORKSPACE_LIBRARY_RUNTIME_MISSING",
+                Category::Precondition,
+                format!(
+                    "library '{}' {} has no installed runtime directory under '{}'",
+                    library.id(),
+                    library.version(),
+                    prefix
+                ),
+            )
+            .with_hint(format!(
+                "run `ost plugin build {}` so the validated library closure is installed before test/run",
+                primary.root
+            )));
+        }
+        directories.extend(materialized);
+    }
+    directories.sort();
+    directories.dedup();
+    Ok(directories)
+}
+
+fn selected_workspace_library_runtime_dirs(
+    primary: &Bundle,
+    resolved: &crate::commands::Resolved,
+    require_materialized: bool,
+) -> Result<Vec<Utf8PathBuf>> {
+    match source_workspace_for(primary)? {
+        Some(workspace) => {
+            library_runtime_dirs_from_workspace(primary, &workspace, resolved, require_materialized)
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+fn selected_workspace_library_evidence(
+    primary: &Bundle,
+    resolved: Option<&crate::commands::Resolved>,
+) -> Result<Vec<serde_json::Value>> {
+    let Some(workspace) = source_workspace_for(primary)? else {
+        let path = primary.root.join("dependencies.json");
+        let Some(libraries) = std::fs::read_to_string(path.as_std_path())
+            .ok()
+            .and_then(|source| serde_json::from_str::<serde_json::Value>(&source).ok())
+            .and_then(|value| value["libraries"].as_array().cloned())
+        else {
+            return Ok(Vec::new());
+        };
+        return Ok(libraries);
+    };
+    let libraries = libraries_from_workspace(primary, &workspace)?;
+    let prefix = resolved.map(|resolved| {
+        workspace
+            .root
+            .join(STATE_DIR)
+            .join("targets")
+            .join(target_id_from_resolved(resolved))
+            .join("workspace-prefix")
+    });
+    Ok(libraries
+        .into_iter()
+        .map(|library| {
+            let runtime_directories = prefix
+                .as_ref()
+                .map(|prefix| {
+                    library
+                        .installed_runtime_dirs(prefix)
+                        .into_iter()
+                        .map(|directory| directory.to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            serde_json::json!({
+                "id": library.id(),
+                "version": library.version(),
+                "descriptor": library.root.join(ost_plugin::LIBRARY_MANIFEST),
+                "cmake_package": library.manifest.cmake.package,
+                "cmake_target": library.manifest.cmake.target,
+                "prefix": prefix,
+                "runtime_directories": runtime_directories,
+                "provenance": "source-workspace",
+            })
+        })
+        .collect())
+}
+
+fn selected_library_package_runtime(
+    primary: &Bundle,
+    target_id: &str,
+) -> Result<Vec<(Utf8PathBuf, Utf8PathBuf)>> {
+    let Some(workspace) = source_workspace_for(primary)? else {
+        return Ok(Vec::new());
+    };
+    let libraries = libraries_from_workspace(primary, &workspace)?;
+    let prefix = workspace
+        .root
+        .join(STATE_DIR)
+        .join("targets")
+        .join(target_id)
+        .join("workspace-prefix");
+    let mut mappings = BTreeMap::<Utf8PathBuf, Utf8PathBuf>::new();
+    for library in libraries {
+        let mut materialized = 0usize;
+        for directory in &library.manifest.runtime.directories {
+            let source = prefix.join(directory);
+            if source.as_std_path().is_dir() {
+                let relative = Utf8Path::new("runtime/libraries").join(directory);
+                mappings.entry(relative).or_insert(source);
+                materialized += 1;
+            }
+        }
+        if !library.manifest.runtime.directories.is_empty() && materialized == 0 {
+            return Err(Error::coded(
+                "WORKSPACE_LIBRARY_RUNTIME_MISSING",
+                Category::Precondition,
+                format!(
+                    "library '{}' {} has no packageable runtime directory under '{}'",
+                    library.id(),
+                    library.version(),
+                    prefix
+                ),
+            )
+            .with_hint(format!(
+                "run `ost plugin build {}` before packaging so the library closure is installed",
+                primary.root
+            )));
+        }
+    }
+    Ok(mappings
+        .into_iter()
+        .map(|(relative, source)| (source, relative))
+        .collect())
+}
+
+fn write_library_evidence(report_dir: &Utf8Path, libraries: &[serde_json::Value]) -> Result<()> {
+    if libraries.is_empty() {
+        return Ok(());
+    }
+    let path = report_dir.join("dependencies.json");
+    let body = serde_json::to_string_pretty(&serde_json::json!({
+        "schema": "openstrata.dependencies/v1alpha1",
+        "libraries": libraries,
+    }))
+    .map_err(|error| Error::parse("dependencies.json", anyhow::Error::new(error)))?;
+    std::fs::write(path.as_std_path(), format!("{body}\n"))
+        .map_err(|error| Error::io(path.to_string(), error))
 }
 
 /// Merge graph-resolved dependencies with explicit `--with` bundles. Identity
@@ -1977,6 +2510,7 @@ fn view(
     let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
     let r = require_real_runtime(target, profile)?;
+    let library_dirs = selected_workspace_library_runtime_dirs(&bundle, &r, true)?;
 
     let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"])
         .ok_or_else(|| {
@@ -1988,7 +2522,19 @@ fn view(
         })?;
     let fixture_path = bundle.path(fixture); // absolute passes through; else under the bundle
 
-    let session = session_env_with(&r.env, &bundle, &with_bundles, host.os);
+    let mut contributing = Vec::with_capacity(with_bundles.len() + 1);
+    contributing.push(&bundle);
+    contributing.extend(with_bundles.iter());
+    let library_dirs = library_dirs
+        .iter()
+        .map(Utf8PathBuf::as_path)
+        .collect::<Vec<_>>();
+    let session = ost_plugin::session_env_from_with_library_dirs(
+        &r.env,
+        &contributing,
+        &library_dirs,
+        host.os,
+    );
     let mut cmd = Command::new(&usdview);
     cmd.arg(fixture_path.as_str());
     session.apply(&mut cmd); // overlay the session env, no global mutation
@@ -2014,8 +2560,21 @@ fn test_view(
     let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
     let r = require_real_runtime(target, profile)?;
+    let library_dirs = selected_workspace_library_runtime_dirs(&bundle, &r, true)?;
 
-    let session = session_env_with(&r.env, &bundle, &with_bundles, host.os);
+    let mut contributing = Vec::with_capacity(with_bundles.len() + 1);
+    contributing.push(&bundle);
+    contributing.extend(with_bundles.iter());
+    let library_dirs = library_dirs
+        .iter()
+        .map(Utf8PathBuf::as_path)
+        .collect::<Vec<_>>();
+    let session = ost_plugin::session_env_from_with_library_dirs(
+        &r.env,
+        &contributing,
+        &library_dirs,
+        host.os,
+    );
     let probe = ProcessProbe::new(session.resolve());
     let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"]);
     let sess = Session {

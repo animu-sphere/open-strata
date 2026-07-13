@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+if(@{{NAME}}_WITH_VULKAN@)
+  find_dependency(Vulkan 1.3)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/{{Name}}Targets.cmake")

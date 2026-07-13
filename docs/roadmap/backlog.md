@@ -38,15 +38,14 @@ The next milestone (v0.16.0 — generated trusted CI) is detailed in
   a parallel template repository, CLI, renderer, bundle model, or artifact
   path. Add Hydra and tool candidates only at
   evidence-appropriate maturity.
-- ⬜ **Renderer project skeleton and Level 7 verification.** Direction:
-  [renderer-templates.md](../design/proposed/renderer-templates.md). Add one
-  composable `renderer` project scaffold (host-neutral core, project-owned
-  extraction seam, Vulkan offscreen backend, validation pack, optional Hydra 2
-  adapter), a committed renderer composition manifest, and independently
-  reported discovery/delegate/GPU/RenderBuffer/usdview stable-update evidence.
-  Keep it at skeleton maturity until a second independent implementation;
-  instancing, materials, upload policy, and zero-copy interop remain
-  renderer-owned until separately proven.
+- ⬜ **Renderer Hydra dogfood and skeleton promotion.** Direction:
+  [renderer-templates.md](../design/proposed/renderer-templates.md). The optional
+  co-built Hydra 2 bootstrap now separates discovery, delegate creation, CPU
+  RenderBuffer, and install-tree usdview first-frame/stable-update evidence.
+  Next dogfood authored mesh/camera translation and the hosted OS/OpenUSD matrix,
+  then apply the contract to a second independent renderer. Keep skeleton
+  maturity until that evidence exists; instancing, materials, upload policy,
+  and zero-copy interop remain renderer-owned until separately proven.
 - ⬜ **Phase 7 — Sessions / sandbox.** Session metadata; `ost session start | fork
   | diff | discard | promote`. Workspace isolation; optional Linux namespace /
   overlayfs.
@@ -102,11 +101,6 @@ Shipped context for each area is in the
   `dlopen`; (c) reconcile `ost artifact push` vs `oras push` OCI manifests —
   document the canonical producer path (prefer `ost artifact push`) or reproduce
   the `oras` manifest byte-for-byte so CI pins don't drift.
-- ⬜ **Portable ordinary-library dependency contract.** Versioned plugin
-  manifests fail on an unknown `requires.libraries` key until library identity,
-  version selection, ABI, CMake package discovery, and artifact/prefix ownership
-  have a portable contract. Do not infer library dependencies from CMake target
-  names or turn shared libraries into fake plugin bundles.
 - ⬜ **Packaged workspace/product composition.** Source-workspace closure is
   separate from clean-install artifact composition. Define member bundle
   digests, extraction layout, dependency closure, and aggregate evidence before

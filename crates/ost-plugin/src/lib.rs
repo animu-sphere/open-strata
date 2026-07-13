@@ -19,6 +19,7 @@
 mod bundle;
 mod doctor;
 mod levels;
+mod library;
 mod model;
 mod plug_info;
 mod report;
@@ -30,9 +31,14 @@ mod workspace;
 pub use bundle::Bundle;
 pub use doctor::{diagnose, Diagnostic, DoctorReport, RuntimeContext, Status};
 pub use levels::{run_levels, usdview_check, Probe, Session, ToolOutput};
+pub use library::{
+    Library, LibraryCmake, LibraryIdentity, LibraryManifest, LibraryRequires, LibraryRuntime,
+    LIBRARY_MANIFEST, LIBRARY_SCHEMA,
+};
 pub use model::{
-    BundleDependency, CxxAbi, PluginIdentity, PluginKind, PluginManifest, PluginManifestHeader,
-    Requires, RuntimeReq, SchemaSection, Tests, UsdSection, PLUGIN_MANIFEST, PLUGIN_SCHEMA,
+    BundleDependency, CxxAbi, LibraryDependency, PluginIdentity, PluginKind, PluginManifest,
+    PluginManifestHeader, Requires, RuntimeReq, SchemaSection, Tests, UsdSection, PLUGIN_MANIFEST,
+    PLUGIN_SCHEMA,
 };
 pub use plug_info::{
     contains_template_token, library_plugin_names, library_plugin_paths, merge_schema_types,
@@ -45,8 +51,12 @@ pub use scaffold::{
     add_cohosted_schema, default_template_id, scaffold, scaffold_with_template,
     scaffold_with_template_inputs, template_ids, AddedSchema, ExecTemplateInputs,
 };
-pub use session::{bundle_vars, session_env, session_env_from, session_env_with};
+pub use session::{
+    bundle_vars, session_env, session_env_from, session_env_from_with_library_dirs,
+    session_env_with,
+};
 pub use version::{satisfies, RangeError};
 pub use workspace::{
-    validate_workspace, WorkspaceEdge, WorkspaceIssue, WorkspaceNode, WorkspaceValidation,
+    validate_workspace, validate_workspace_with_libraries, WorkspaceEdge, WorkspaceIssue,
+    WorkspaceLibraryEdge, WorkspaceLibraryNode, WorkspaceNode, WorkspaceValidation,
 };

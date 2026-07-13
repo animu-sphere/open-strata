@@ -1,0 +1,61 @@
+schema: openstrata.template/v1alpha1
+template:
+  id: renderer
+  version: 0.4.0
+  maturity: skeleton
+  artifact_kind: project
+variables:
+  - name: name
+    type: portable-identifier
+    required: true
+outputs:
+  files:
+    - CMakeLists.txt
+    - README.md
+    - .gitignore
+    - openstrata.renderer.yaml
+    - cmake/{{Name}}Config.cmake.in
+    - include/{{name}}/render_world.hpp
+    - include/{{name}}/extraction.hpp
+    - include/{{name}}/vulkan_backend.hpp
+    - core/render-world/CMakeLists.txt
+    - core/render-world/render_world.cpp
+    - core/render-extraction/CMakeLists.txt
+    - core/render-extraction/extraction.cpp
+    - backend/vulkan/CMakeLists.txt
+    - backend/vulkan/vulkan_backend.cpp
+    - backend/vulkan/shaders/triangle.vert
+    - backend/vulkan/shaders/triangle.frag
+    - adapters/headless/CMakeLists.txt
+    - adapters/headless/main.cpp
+    - adapters/hydra2/CMakeLists.txt
+    - adapters/hydra2/src/adapter.hpp
+    - adapters/hydra2/src/adapter.cpp
+    - adapters/hydra2/src/renderer_plugin.cpp
+    - adapters/hydra2/resources/plugInfo.json.in
+    - adapters/hydra2/tests/plugin_probe.cpp
+    - adapters/hydra2/tests/render_buffer_test.cpp
+    - adapters/hydra2/tests/usdview-smoke.usda
+    - adapters/hydra2/tests/usdview_smoke_test.py
+    - adapters/hydra2/tests/run_usdview_smoke.cmake
+    - validation/CMakeLists.txt
+    - validation/check-core-boundary.cmake.in
+    - validation/run-install-smoke.cmake.in
+    - openstrata.scaffold.yaml
+verification:
+  assertions:
+    - renderer.core.boundary
+    - renderer.backend.capability
+    - renderer.gpu.frame
+    - renderer.validation.messages
+    - renderer.render_product.color
+    - renderer.render_product.depth
+    - renderer.frame.persistence
+    - renderer.install_tree
+    - renderer.plugin.discovery
+    - renderer.delegate.creation
+    - renderer.render_buffer.cpu
+    - renderer.host.first_frame
+    - renderer.host.stable_update
+compatibility:
+  ost: ">=0.15,<1.0"

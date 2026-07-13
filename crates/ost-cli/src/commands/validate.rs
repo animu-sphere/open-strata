@@ -11,6 +11,7 @@ use clap::Args;
 use ost_build::TargetLock;
 use ost_core::paths::STATE_DIR;
 use ost_core::{digest, Result};
+use ost_manifest::{RendererCheckStatus, RendererManifest, RendererReport, RENDERER_MANIFEST};
 
 use crate::commands::configure::{build_target, load_project, resolve_selection};
 use crate::output::{self, Format};
@@ -51,29 +52,29 @@ impl Status {
 }
 
 struct Check {
-    name: &'static str,
+    name: String,
     status: Status,
     detail: Option<String>,
 }
 
 impl Check {
-    fn pass(name: &'static str) -> Check {
+    fn pass(name: impl Into<String>) -> Check {
         Check {
-            name,
+            name: name.into(),
             status: Status::Pass,
             detail: None,
         }
     }
-    fn fail(name: &'static str, detail: impl Into<String>) -> Check {
+    fn fail(name: impl Into<String>, detail: impl Into<String>) -> Check {
         Check {
-            name,
+            name: name.into(),
             status: Status::Fail,
             detail: Some(detail.into()),
         }
     }
-    fn skip(name: &'static str, detail: impl Into<String>) -> Check {
+    fn skip(name: impl Into<String>, detail: impl Into<String>) -> Check {
         Check {
-            name,
+            name: name.into(),
             status: Status::Skip,
             detail: Some(detail.into()),
         }
@@ -114,6 +115,66 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
             "built",
             "build directory missing — run `ost build`",
         ));
+    }
+
+    // Renderer-specific composition/evidence is additive to the generic target
+    // lifecycle. Ordinary projects without openstrata.renderer.yaml keep the
+    // exact existing checks.
+    let renderer_manifest_path = root.join(RENDERER_MANIFEST);
+    if renderer_manifest_path.as_std_path().is_file() {
+        match RendererManifest::load(&root) {
+            Ok(manifest) => {
+                if manifest.renderer.name == project.project.name {
+                    checks.push(Check::pass("renderer-manifest"));
+                } else {
+                    checks.push(Check::fail(
+                        "renderer-manifest",
+                        format!(
+                            "renderer name '{}' does not match project name '{}'",
+                            manifest.renderer.name, project.project.name
+                        ),
+                    ));
+                }
+                let report_path = manifest.report_path(&build_dir);
+                if report_path.as_std_path().is_file() {
+                    match RendererReport::load(&report_path).and_then(|report| {
+                        report.validate_against(&manifest)?;
+                        Ok(report)
+                    }) {
+                        Ok(report) => {
+                            checks.push(Check::pass("renderer-evidence"));
+                            for renderer_check in report.checks {
+                                checks.push(Check {
+                                    name: renderer_check.id,
+                                    status: match renderer_check.status {
+                                        RendererCheckStatus::Pass => Status::Pass,
+                                        RendererCheckStatus::Fail => Status::Fail,
+                                        RendererCheckStatus::Skip => Status::Skip,
+                                    },
+                                    detail: renderer_check.detail,
+                                });
+                            }
+                        }
+                        Err(error) => checks.push(Check::fail(
+                            "renderer-evidence",
+                            format!("{} is invalid: {error}", report_path),
+                        )),
+                    }
+                } else {
+                    checks.push(Check::skip(
+                        "renderer-evidence",
+                        format!(
+                            "{} is absent — build the renderer on the target host",
+                            report_path
+                        ),
+                    ));
+                }
+            }
+            Err(error) => checks.push(Check::fail(
+                "renderer-manifest",
+                format!("{} is invalid: {error}", renderer_manifest_path),
+            )),
+        }
     }
 
     // 3. runtime-compatible — the runtime is pulled and its digest matches the

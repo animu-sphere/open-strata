@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::{satisfies, Bundle, PluginKind};
+use crate::library::is_portable_id;
+use crate::{satisfies, Bundle, Library, LibraryDependency, PluginKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkspaceNode {
@@ -25,6 +26,23 @@ pub struct WorkspaceEdge {
     pub contract: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkspaceLibraryNode {
+    pub id: String,
+    pub version: String,
+    pub package: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct WorkspaceLibraryEdge {
+    pub from: String,
+    /// `bundle` or `library`; the namespaces stay distinct even when ids match.
+    pub from_kind: String,
+    pub to: String,
+    pub version: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct WorkspaceIssue {
     pub code: String,
@@ -39,6 +57,8 @@ pub struct WorkspaceValidation {
     pub passed: bool,
     pub nodes: Vec<WorkspaceNode>,
     pub edges: Vec<WorkspaceEdge>,
+    pub libraries: Vec<WorkspaceLibraryNode>,
+    pub library_edges: Vec<WorkspaceLibraryEdge>,
     pub issues: Vec<WorkspaceIssue>,
 }
 
@@ -91,11 +111,87 @@ impl WorkspaceValidation {
         visit(bundle_id, &adjacency, &mut visited, &mut ordered);
         Some(ordered)
     }
+
+    /// Return all plain libraries needed by a selected bundle and its bundle
+    /// closure, deepest library dependencies first.
+    pub fn library_dependency_order(&self, bundle_id: &str) -> Option<Vec<String>> {
+        if !self.passed || !self.nodes.iter().any(|node| node.id == bundle_id) {
+            return None;
+        }
+        let mut selected_bundles = self.dependency_order(bundle_id)?;
+        selected_bundles.push(bundle_id.to_string());
+
+        let mut library_adjacency: BTreeMap<&str, Vec<&str>> = self
+            .libraries
+            .iter()
+            .map(|library| (library.id.as_str(), Vec::new()))
+            .collect();
+        for edge in &self.library_edges {
+            if edge.from_kind == "library" {
+                library_adjacency
+                    .entry(edge.from.as_str())
+                    .or_default()
+                    .push(edge.to.as_str());
+            }
+        }
+        for dependencies in library_adjacency.values_mut() {
+            dependencies.sort_unstable();
+            dependencies.dedup();
+        }
+
+        fn visit<'a>(
+            id: &'a str,
+            adjacency: &BTreeMap<&'a str, Vec<&'a str>>,
+            visited: &mut BTreeSet<&'a str>,
+            ordered: &mut Vec<String>,
+        ) {
+            if let Some(dependencies) = adjacency.get(id) {
+                for dependency in dependencies {
+                    if visited.insert(dependency) {
+                        visit(dependency, adjacency, visited, ordered);
+                        ordered.push((*dependency).to_string());
+                    }
+                }
+            }
+        }
+
+        let selected = selected_bundles
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let mut roots = self
+            .library_edges
+            .iter()
+            .filter(|edge| edge.from_kind == "bundle" && selected.contains(edge.from.as_str()))
+            .map(|edge| edge.to.as_str())
+            .collect::<Vec<_>>();
+        roots.sort_unstable();
+        roots.dedup();
+        let mut visited = BTreeSet::new();
+        let mut ordered = Vec::new();
+        for root in roots {
+            if visited.insert(root) {
+                visit(root, &library_adjacency, &mut visited, &mut ordered);
+                ordered.push(root.to_string());
+            }
+        }
+        Some(ordered)
+    }
 }
 
 /// Validate bundle identity and dependency contracts without changing build
 /// order or invoking CMake. Input order does not affect the report.
 pub fn validate_workspace(bundles: &[Bundle]) -> WorkspaceValidation {
+    validate_workspace_with_libraries(bundles, &[])
+}
+
+/// Validate plugin-bundle and plain-library identities as one source workspace.
+/// Bundle and library namespaces remain distinct, while their edges share one
+/// fail-closed report and deterministic build order.
+pub fn validate_workspace_with_libraries(
+    bundles: &[Bundle],
+    libraries: &[Library],
+) -> WorkspaceValidation {
     let mut by_id: BTreeMap<&str, Vec<&Bundle>> = BTreeMap::new();
     for bundle in bundles {
         by_id
@@ -161,7 +257,38 @@ pub fn validate_workspace(bundles: &[Bundle]) -> WorkspaceValidation {
         .iter()
         .filter_map(|(id, matches)| (matches.len() == 1).then_some((*id, matches[0])))
         .collect();
+    let mut libraries_by_id: BTreeMap<&str, Vec<&Library>> = BTreeMap::new();
+    for library in libraries {
+        libraries_by_id
+            .entry(library.id())
+            .or_default()
+            .push(library);
+    }
+    let mut library_nodes = Vec::new();
+    for (id, matches) in &libraries_by_id {
+        if matches.len() > 1 {
+            issues.push(issue(
+                "WORKSPACE_DUPLICATE_LIBRARY_ID",
+                id,
+                None,
+                format!("library id '{id}' is declared {} times", matches.len()),
+            ));
+            continue;
+        }
+        let library = matches[0];
+        library_nodes.push(WorkspaceLibraryNode {
+            id: id.to_string(),
+            version: library.version().to_string(),
+            package: library.manifest.cmake.package.clone(),
+            target: library.manifest.cmake.target.clone(),
+        });
+    }
+    let unique_libraries: BTreeMap<&str, &Library> = libraries_by_id
+        .iter()
+        .filter_map(|(id, matches)| (matches.len() == 1).then_some((*id, matches[0])))
+        .collect();
     let mut edges = Vec::new();
+    let mut library_edges = Vec::new();
 
     for (id, bundle) in &unique {
         let mut dependencies = BTreeSet::new();
@@ -244,6 +371,55 @@ pub fn validate_workspace(bundles: &[Bundle]) -> WorkspaceValidation {
             validate_contract(id, dependency, provider, &mut issues);
             validate_direction(id, bundle.manifest.kind(), provider, &mut issues);
         }
+        let mut library_dependencies = BTreeSet::new();
+        for dependency in &bundle.manifest.requires.libraries {
+            if !library_dependencies.insert(dependency.id.as_str()) {
+                issues.push(issue(
+                    "WORKSPACE_DUPLICATE_LIBRARY_DEPENDENCY",
+                    id,
+                    Some(&dependency.id),
+                    format!(
+                        "bundle '{id}' declares library dependency '{}' more than once",
+                        dependency.id
+                    ),
+                ));
+                continue;
+            }
+            validate_library_dependency(
+                id,
+                "bundle",
+                dependency,
+                &unique_libraries,
+                &mut issues,
+                &mut library_edges,
+            );
+        }
+    }
+
+    for (id, library) in &unique_libraries {
+        let mut dependencies = BTreeSet::new();
+        for dependency in &library.manifest.requires.libraries {
+            if !dependencies.insert(dependency.id.as_str()) {
+                issues.push(issue(
+                    "WORKSPACE_DUPLICATE_LIBRARY_DEPENDENCY",
+                    id,
+                    Some(&dependency.id),
+                    format!(
+                        "library '{id}' declares dependency '{}' more than once",
+                        dependency.id
+                    ),
+                ));
+                continue;
+            }
+            validate_library_dependency(
+                id,
+                "library",
+                dependency,
+                &unique_libraries,
+                &mut issues,
+                &mut library_edges,
+            );
+        }
     }
 
     edges.sort();
@@ -261,24 +437,106 @@ pub fn validate_workspace(bundles: &[Bundle]) -> WorkspaceValidation {
             format!("bundle dependency cycle: {closed}"),
         ));
     }
+    library_edges.sort();
+    for cycle in find_library_cycles(&library_nodes, &library_edges) {
+        let closed = cycle
+            .iter()
+            .chain(cycle.first())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        issues.push(issue(
+            "WORKSPACE_LIBRARY_DEPENDENCY_CYCLE",
+            &cycle[0],
+            None,
+            format!("library dependency cycle: {closed}"),
+        ));
+    }
     issues.sort();
 
     WorkspaceValidation {
         passed: issues.is_empty(),
         nodes,
         edges,
+        libraries: library_nodes,
+        library_edges,
         issues,
     }
 }
 
-fn is_portable_id(id: &str) -> bool {
-    id.chars()
-        .next()
-        .map(|first| first.is_ascii_alphabetic())
-        .unwrap_or(false)
-        && id.chars().all(|character| {
-            character.is_ascii_alphanumeric() || character == '-' || character == '_'
-        })
+fn validate_library_dependency(
+    consumer_id: &str,
+    consumer_kind: &str,
+    dependency: &LibraryDependency,
+    providers: &BTreeMap<&str, &Library>,
+    issues: &mut Vec<WorkspaceIssue>,
+    edges: &mut Vec<WorkspaceLibraryEdge>,
+) {
+    if !is_portable_id(&dependency.id) {
+        issues.push(issue(
+            "WORKSPACE_LIBRARY_DEPENDENCY_ID_INVALID",
+            consumer_id,
+            Some(&dependency.id),
+            format!(
+                "library dependency id '{}' is not a portable identifier",
+                dependency.id
+            ),
+        ));
+        return;
+    }
+    let Some(provider) = providers.get(dependency.id.as_str()) else {
+        issues.push(issue(
+            "WORKSPACE_LIBRARY_DEPENDENCY_MISSING",
+            consumer_id,
+            Some(&dependency.id),
+            format!(
+                "{consumer_kind} '{consumer_id}' requires missing library '{}'",
+                dependency.id
+            ),
+        ));
+        return;
+    };
+    edges.push(WorkspaceLibraryEdge {
+        from: consumer_id.to_string(),
+        from_kind: consumer_kind.to_string(),
+        to: dependency.id.clone(),
+        version: dependency.version.clone(),
+    });
+    if dependency.version.trim().is_empty() {
+        issues.push(issue(
+            "WORKSPACE_LIBRARY_DEPENDENCY_VERSION_INVALID",
+            consumer_id,
+            Some(&dependency.id),
+            format!(
+                "{consumer_kind} '{consumer_id}' declares an empty version requirement for '{}'",
+                dependency.id
+            ),
+        ));
+        return;
+    }
+    match satisfies(provider.version(), &dependency.version) {
+        Ok(true) => {}
+        Ok(false) => issues.push(issue(
+            "WORKSPACE_LIBRARY_DEPENDENCY_VERSION_MISMATCH",
+            consumer_id,
+            Some(&dependency.id),
+            format!(
+                "{consumer_kind} '{consumer_id}' requires library '{}' at {}, but the workspace has {}",
+                dependency.id,
+                dependency.version,
+                provider.version()
+            ),
+        )),
+        Err(error) => issues.push(issue(
+            "WORKSPACE_LIBRARY_DEPENDENCY_VERSION_INVALID",
+            consumer_id,
+            Some(&dependency.id),
+            format!(
+                "{consumer_kind} '{consumer_id}' declares an invalid version requirement for '{}': {error}",
+                dependency.id
+            ),
+        )),
+    }
 }
 
 fn validate_contract(
@@ -402,6 +660,36 @@ fn find_cycles(nodes: &[WorkspaceNode], edges: &[WorkspaceEdge]) -> BTreeSet<Vec
     cycles
 }
 
+fn find_library_cycles(
+    nodes: &[WorkspaceLibraryNode],
+    edges: &[WorkspaceLibraryEdge],
+) -> BTreeSet<Vec<String>> {
+    let mut adjacency: BTreeMap<String, Vec<String>> = nodes
+        .iter()
+        .map(|node| (node.id.clone(), Vec::new()))
+        .collect();
+    for edge in edges.iter().filter(|edge| edge.from_kind == "library") {
+        adjacency
+            .entry(edge.from.clone())
+            .or_default()
+            .push(edge.to.clone());
+    }
+    for dependencies in adjacency.values_mut() {
+        dependencies.sort();
+        dependencies.dedup();
+    }
+
+    let mut states: BTreeMap<String, u8> = adjacency.keys().map(|id| (id.clone(), 0)).collect();
+    let mut stack = Vec::new();
+    let mut cycles = BTreeSet::new();
+    for id in adjacency.keys() {
+        if states[id] == 0 {
+            visit(id, &adjacency, &mut states, &mut stack, &mut cycles);
+        }
+    }
+    cycles
+}
+
 fn visit(
     id: &str,
     adjacency: &BTreeMap<String, Vec<String>>,
@@ -439,7 +727,7 @@ mod tests {
     use camino::Utf8PathBuf;
 
     use super::*;
-    use crate::PluginManifest;
+    use crate::{LibraryManifest, PluginManifest, LIBRARY_SCHEMA};
 
     fn bundle(source: &str) -> Bundle {
         Bundle {
@@ -452,6 +740,85 @@ mod tests {
         format!(
             "manifest:\n  schema: openstrata.plugin/v1alpha1\nplugin:\n  name: {name}\n  version: {version}\n  kind: {kind}\nruntime:\n  openusd: '>=25.05,<27.0'\nusd:\n  plug_info: resources/plugInfo.json\n{extra}"
         )
+    }
+
+    fn library(id: &str, version: &str, extra: &str) -> Library {
+        let source = format!(
+            "schema: {LIBRARY_SCHEMA}\nlibrary: {{ id: {id}, version: {version} }}\ncmake: {{ package: {id}, target: '{id}::{id}' }}\n{extra}"
+        );
+        Library {
+            root: Utf8PathBuf::from(format!("unused/libs/{id}")),
+            manifest: LibraryManifest::parse(&source).unwrap(),
+        }
+    }
+
+    #[test]
+    fn validates_and_orders_plain_library_closure() {
+        let consumer = bundle(&manifest(
+            "consumer",
+            "1.0.0",
+            "usd-fileformat",
+            "requires:\n  libraries:\n    - { id: container, version: '>=1.0,<2.0' }\n",
+        ));
+        let container = library(
+            "container",
+            "1.2.0",
+            "requires:\n  libraries:\n    - { id: bytes, version: '>=2.0,<3.0' }\n",
+        );
+        let bytes = library("bytes", "2.1.0", "");
+
+        let report = validate_workspace_with_libraries(&[consumer], &[container, bytes]);
+
+        assert!(report.passed, "{:?}", report.issues);
+        assert_eq!(
+            report.library_dependency_order("consumer").unwrap(),
+            vec!["bytes", "container"]
+        );
+        assert_eq!(report.libraries.len(), 2);
+        assert_eq!(report.library_edges.len(), 2);
+    }
+
+    #[test]
+    fn rejects_missing_incompatible_duplicate_and_cyclic_libraries() {
+        let consumer = bundle(&manifest(
+            "consumer",
+            "1.0.0",
+            "usd-fileformat",
+            "requires:\n  libraries:\n    - { id: a, version: '>=9.0,<10.0' }\n    - { id: absent, version: '>=1.0,<2.0' }\n",
+        ));
+        let a = library(
+            "a",
+            "1.0.0",
+            "requires:\n  libraries:\n    - { id: b, version: '>=1.0,<2.0' }\n",
+        );
+        let duplicate_a = library("a", "1.0.0", "");
+        let b = library(
+            "b",
+            "1.0.0",
+            "requires:\n  libraries:\n    - { id: a, version: '>=1.0,<2.0' }\n",
+        );
+
+        let report = validate_workspace_with_libraries(
+            std::slice::from_ref(&consumer),
+            &[a.clone(), duplicate_a, b.clone()],
+        );
+        let codes = report
+            .issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(codes.contains("WORKSPACE_DUPLICATE_LIBRARY_ID"));
+        assert!(codes.contains("WORKSPACE_LIBRARY_DEPENDENCY_MISSING"));
+
+        let report = validate_workspace_with_libraries(&[consumer], &[a, b]);
+        let codes = report
+            .issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(codes.contains("WORKSPACE_LIBRARY_DEPENDENCY_VERSION_MISMATCH"));
+        assert!(codes.contains("WORKSPACE_LIBRARY_DEPENDENCY_MISSING"));
+        assert!(codes.contains("WORKSPACE_LIBRARY_DEPENDENCY_CYCLE"));
     }
 
     #[test]

@@ -99,7 +99,7 @@ cargo test -p ost-cli --test lifecycle --locked -- --nocapture
 
 ```text
 ost platform   list | show <cy> | diff <a> <b>     inspect VFX platform years
-ost init [--template cpp-library|usd-plugin|usd-plugin-workspace|--bare]  scaffold a buildable project
+ost init [--template cpp-library|renderer|usd-plugin|usd-plugin-workspace|--bare]  scaffold a buildable project
 ost runtime    pull | list | show | validate | repair | explain | export   manage runtimes in the store
 ost env <cy> --profile <p> [--shell bash|pwsh]      print the activating environment
 ost devshell <cy> --profile <p>                     enter an interactive runtime shell
@@ -111,6 +111,7 @@ ost package                                         install + tar.zst artifact +
 ost validate                                        validate a built/packaged target
 ost extension  list | why <id> | add <id>           inspect/request controlled extensions
 ost plugin     new | inspect | build | doctor | run | test | view | test-view | schema add | package | publish   OpenUSD plugin bundles + workspace graph validation
+ost renderer   view [scene]                          open a built Hydra renderer in the matching usdview session
 ost artifact   import | list | show | verify | export | extract   local digest-addressed artifact registry
 ost ci         init | validate | plan | generate github    runtime×plugin support matrix -> CI workflow
 ost lock [--check]                                  generate/verify strata.lock

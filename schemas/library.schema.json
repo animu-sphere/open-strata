@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/animu-sphere/open-strata/main/schemas/library.schema.json",
+  "title": "OpenStrata Plain Library Manifest",
+  "description": "The openstrata.library.yaml descriptor for an ordinary installed CMake package participating in a source workspace closure.",
+  "type": "object",
+  "required": ["schema", "library", "cmake"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "type": "string", "const": "openstrata.library/v1alpha1" },
+    "library": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)*$"
+        }
+      }
+    },
+    "cmake": {
+      "type": "object",
+      "required": ["package", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "package": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "pattern": "^[^:]+(::[^:]+)+$" }
+      }
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "libraries": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/libraryDependency" }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "directories": {
+          "type": "array",
+          "default": ["bin", "lib"],
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "libraryDependency": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+        },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
