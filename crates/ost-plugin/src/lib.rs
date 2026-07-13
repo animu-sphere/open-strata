@@ -42,8 +42,8 @@ pub use report::{
     ci_evidence_from_env, environment_json, report_json, summary_text, write_report, REPORT_SCHEMA,
 };
 pub use scaffold::{
-    add_cohosted_schema, default_template_id, scaffold, scaffold_with_template, template_ids,
-    AddedSchema,
+    add_cohosted_schema, default_template_id, scaffold, scaffold_with_template,
+    scaffold_with_template_inputs, template_ids, AddedSchema, ExecTemplateInputs,
 };
 pub use session::{bundle_vars, session_env, session_env_from, session_env_with};
 pub use version::{satisfies, RangeError};

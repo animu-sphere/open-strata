@@ -71,7 +71,8 @@ impl Sandbox {
             .env_remove("OST_CI_RUNNER_PROFILE")
             .env_remove("OST_CI_RUNS_ON")
             .env_remove("OST_CI_RUNTIME_ARTIFACT")
-            .env_remove("OST_CI_PLUGIN_ARTIFACT");
+            .env_remove("OST_CI_PLUGIN_ARTIFACT")
+            .env_remove("OST_CI_MINIMUM_TRUST");
         for (key, value) in envs {
             cmd.env(key, value);
         }
@@ -675,6 +676,56 @@ fn generated_package_resolver_requires_extension_and_records_provenance() {
 }
 
 #[test]
+fn generated_openexec_plugin_requires_schema_contract_inputs() {
+    let sb = Sandbox::new("exec-scaffold");
+
+    let missing = sb.ost(&["plugin", "new", "usd-exec", "pose-eval"]);
+    assert_eq!(missing.status.code(), Some(4), "{}", out_text(&missing));
+    assert!(out_text(&missing).contains("needs --schema-bundle"));
+
+    let partial = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-exec",
+        "pose-eval",
+        "--schema-bundle",
+        "rig-schema",
+    ]);
+    assert_eq!(partial.status.code(), Some(2), "{}", out_text(&partial));
+    assert!(out_text(&partial).contains("must be provided together"));
+
+    let out = sb.ost(&[
+        "--json",
+        "plugin",
+        "new",
+        "usd-exec",
+        "pose-eval",
+        "--schema-bundle",
+        "rig-schema",
+        "--schema-type",
+        "RigContractAPI",
+    ]);
+    assert!(
+        out.status.success(),
+        "OpenExec scaffold failed:\n{}",
+        out_text(&out)
+    );
+    let body: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(body["data"]["kind"], "usd-exec");
+    assert_eq!(body["data"]["template"], "usd-exec-cpp");
+
+    let root = sb.work.join("pose-eval");
+    let provenance: serde_yaml::Value = serde_yaml::from_str(
+        &std::fs::read_to_string(root.join("openstrata.scaffold.yaml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(provenance["template"]["id"], "usd-exec-cpp");
+    assert_eq!(provenance["inputs"]["schema_bundle"], "rig-schema");
+    assert_eq!(provenance["inputs"]["schema_type"], "RigContractAPI");
+    assert!(root.join("src/PoseEvalPlugin.cpp").is_file());
+}
+
+#[test]
 fn compiled_schema_template_is_selected_explicitly_and_reported() {
     let sb = Sandbox::new("schema-cpp-scaffold");
     let out = sb.ost(&[
@@ -917,6 +968,7 @@ fn report_records_ci_evidence_from_the_env_contract() {
             ("OST_CI_RUNNER_PROFILE", "windows-hosted"),
             ("OST_CI_RUNS_ON", "windows-2022"),
             ("OST_CI_RUNTIME_ARTIFACT", digest.as_str()),
+            ("OST_CI_MINIMUM_TRUST", "attested"),
         ],
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -926,6 +978,7 @@ fn report_records_ci_evidence_from_the_env_contract() {
     assert_eq!(ci["lane"], "pull_request");
     assert_eq!(ci["runner_profile"], "windows-hosted");
     assert_eq!(ci["runtime_artifact"], digest);
+    assert_eq!(ci["minimum_trust"], "attested");
     // The unset variable records as null, not a missing key.
     assert!(ci["plugin_artifact"].is_null());
 

@@ -92,6 +92,8 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
         "          - name: {name}\n\
          \x20           lane: {lane}\n\
          \x20           runtime_artifact: {runtime}\n\
+         \x20           target_trust: {target_trust}\n\
+         \x20           minimum_trust: {minimum_trust}\n\
          \x20           platform: {platform}\n\
          \x20           profile: {profile}\n\
          \x20           up_to: {up_to}\n\
@@ -102,6 +104,8 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
         name = cell.name,
         lane = cell.lane.as_str(),
         runtime = cell.runtime_artifact,
+        target_trust = cell.trust,
+        minimum_trust = matrix.minimum_trust(cell),
         platform = cell.platform,
         profile = cell.profile,
         up_to = cell.up_to,
@@ -121,7 +125,8 @@ fn ci_env(with_plugin_artifact: bool) -> String {
          \x20     OST_CI_LANE: ${{ matrix.lane }}\n\
          \x20     OST_CI_RUNNER_PROFILE: ${{ matrix.runner_profile }}\n\
          \x20     OST_CI_RUNS_ON: ${{ join(matrix.runs_on, ',') }}\n\
-         \x20     OST_CI_RUNTIME_ARTIFACT: ${{ matrix.runtime_artifact }}",
+         \x20     OST_CI_RUNTIME_ARTIFACT: ${{ matrix.runtime_artifact }}\n\
+         \x20     OST_CI_MINIMUM_TRUST: ${{ matrix.minimum_trust }}",
     );
     if with_plugin_artifact {
         env.push_str("\n      OST_CI_PLUGIN_ARTIFACT: ${{ matrix.plugin_artifact }}");
@@ -208,6 +213,23 @@ fn support_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportC
         ));
     }
 
+    let policy = matrix
+        .trust
+        .policy
+        .as_deref()
+        .map(|path| format!(" --policy {path}"))
+        .unwrap_or_default();
+    let policy_checkout = matrix
+        .trust
+        .policy
+        .as_ref()
+        .map(|_| {
+            format!(
+                "      - name: Check out the repository trust policy\n        uses: {CHECKOUT}\n"
+            )
+        })
+        .unwrap_or_default();
+
     format!(
         "\
 \x20 {id}:
@@ -223,14 +245,15 @@ fn support_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportC
 {include}\
 \x20   steps:
 {BILLING_NOTICE}\
+{policy_checkout}\
 \x20     - name: Check the pinned artifacts are in the local registry
         run: |
           ost artifact show ${{{{ matrix.runtime_artifact }}}}
           ost artifact show ${{{{ matrix.plugin_artifact }}}}
       - name: Verify artifact integrity
         run: |
-          ost artifact verify ${{{{ matrix.runtime_artifact }}}}
-          ost artifact verify ${{{{ matrix.plugin_artifact }}}}
+          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} --require-sbom --require-provenance{policy}
+          ost artifact verify ${{{{ matrix.plugin_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} --require-sbom --require-provenance{policy}
       - name: Materialize the runtime from the registry
         run: ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
       - name: Extract the plugin bundle under test
@@ -494,6 +517,12 @@ fn source_steps(matrix: &SupportMatrix) -> String {
         .as_ref()
         .map(bootstrap_step)
         .unwrap_or_default();
+    let policy = matrix
+        .trust
+        .policy
+        .as_deref()
+        .map(|path| format!(" --policy {path}"))
+        .unwrap_or_default();
     format!(
         "\
 \x20   steps:
@@ -512,7 +541,7 @@ fn source_steps(matrix: &SupportMatrix) -> String {
           set -euo pipefail
           mkdir -p .ost-ci
           printf '{{\"schema\":1,\"runtime_artifact\":\"%s\",\"source\":\"%s\"}}\\n' \"${{{{ matrix.runtime_artifact }}}}\" \"${{{{ matrix.runtime_remote != '' && 'remote-pull' || 'local-registry' }}}}\" > .ost-ci/runtime-source.json
-          ost artifact verify ${{{{ matrix.runtime_artifact }}}}
+          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} --require-sbom --require-provenance{policy}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
 {prebuild}\
 \x20     - name: Build the plugin from source
@@ -655,8 +684,9 @@ mod tests {
     use super::*;
     use crate::matrix::{
         HostOs, HostSpec, Lane, OstBootstrap, Publish, RunnerKind, RunnerProfile, RuntimeRemote,
-        SourceCheck, SupportCell, MATRIX_SCHEMA,
+        SourceCheck, SupportCell, TrustRequirements, MATRIX_SCHEMA,
     };
+    use ost_artifact::TrustLevel;
     use std::collections::BTreeMap;
 
     fn cell(name: &str) -> SupportCell {
@@ -673,6 +703,7 @@ mod tests {
             up_to: 5,
             host_python: None,
             publish: Publish::default(),
+            trust: Default::default(),
             host: HostSpec::default(),
         }
     }
@@ -680,6 +711,7 @@ mod tests {
     fn matrix() -> SupportMatrix {
         SupportMatrix {
             schema: MATRIX_SCHEMA,
+            trust: Default::default(),
             bootstrap: None,
             runners: BTreeMap::new(),
             source_checks: vec![],
@@ -717,6 +749,7 @@ mod tests {
         );
         SupportMatrix {
             schema: MATRIX_SCHEMA,
+            trust: Default::default(),
             bootstrap: Some(Bootstrap {
                 ost: OstBootstrap {
                     version: "0.9.0".into(),
@@ -1224,5 +1257,69 @@ mod tests {
         assert_eq!(scheduled[0]["name"], "linux-usd-toy");
         assert_eq!(dispatch.len(), 1);
         assert_eq!(dispatch[0]["name"], "windows-usd-toy");
+    }
+
+    #[test]
+    fn generated_jobs_enforce_effective_trust_and_artifact_evidence() {
+        let mut source = lanes_matrix();
+        source.trust = TrustRequirements {
+            policy: Some("policies/artifacts.toml".into()),
+            pr_min_trust: TrustLevel::Attested,
+            main_min_trust: TrustLevel::Verified,
+            release_min_trust: TrustLevel::Trusted,
+        };
+        source.cells[0].trust = TrustLevel::Unsigned;
+        let yaml = generate_source(&source).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let include = &doc["jobs"]["pr"]["strategy"]["matrix"]["include"][0];
+        assert_eq!(include["target_trust"], "unsigned");
+        assert_eq!(include["minimum_trust"], "attested");
+        assert_eq!(
+            doc["jobs"]["pr"]["env"]["OST_CI_MINIMUM_TRUST"],
+            "${{ matrix.minimum_trust }}"
+        );
+        let verify = doc["jobs"]["pr"]["steps"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|step| step["name"] == "Verify and materialize the pinned runtime SDK")
+            .unwrap()["run"]
+            .as_str()
+            .unwrap();
+        for required in [
+            "--minimum-trust ${{ matrix.minimum_trust }}",
+            "--require-sbom",
+            "--require-provenance",
+            "--policy policies/artifacts.toml",
+        ] {
+            assert!(verify.contains(required), "missing {required}: {verify}");
+        }
+        assert!(!yaml.contains("artifact push"));
+        assert!(!yaml.contains("plugin publish"));
+
+        let mut support = matrix();
+        support.trust.policy = Some("policies/artifacts.toml".into());
+        support.cells[0].trust = TrustLevel::Verified;
+        let yaml = generate_support(&support).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"][0]["minimum_trust"],
+            "verified"
+        );
+        let verify = doc["jobs"]["scheduled"]["steps"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|step| step["name"] == "Verify artifact integrity")
+            .unwrap()["run"]
+            .as_str()
+            .unwrap();
+        assert_eq!(verify.matches("--require-sbom").count(), 2);
+        assert_eq!(verify.matches("--require-provenance").count(), 2);
+        assert!(doc["jobs"]["scheduled"]["steps"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|step| step["name"] == "Check out the repository trust policy"));
     }
 }

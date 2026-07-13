@@ -338,6 +338,10 @@ fn plan_reports_execution_facts() {
     );
     assert_eq!(d["requires_billing_acknowledgement"], true);
     assert_eq!(d["publish_capable_jobs"], 0);
+    assert_eq!(d["trust"]["pr_min_trust"], "local");
+    assert_eq!(d["trust"]["main_min_trust"], "local");
+    assert_eq!(d["trust"]["release_min_trust"], "local");
+    assert_eq!(d["trust"]["cells"][0]["effective_minimum"], "local");
     assert_eq!(d["workflows"].as_array().unwrap().len(), 2);
     // v0.9.0 remote-transport facts: the bootstrap pin and which cells pull
     // remotely vs stay air-gapped.
@@ -368,6 +372,52 @@ fn plan_reports_execution_facts() {
         serde_json::json!(["self-hosted, linux, x64"])
     );
     assert_eq!(v["data"]["workflows"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn trust_aware_matrix_plans_and_generates_evidence_gates() {
+    let sb = Sandbox::new("trusted-ci");
+    let matrix = lanes_yaml()
+        .replace(
+            "schema: 1\n",
+            "schema: 1\ntrust:\n  policy: policies/artifacts.toml\n  pr_min_trust: attested\n  main_min_trust: verified\n  release_min_trust: trusted\n",
+        )
+        .replace(
+            "    lane: pull_request\n",
+            "    lane: pull_request\n    trust: unsigned\n",
+        );
+    std::fs::write(sb.base.join("trusted.yaml"), &matrix).unwrap();
+
+    let plan = stdout_json(&sb.ost(&["--json", "ci", "plan", "--matrix", "trusted.yaml"]));
+    assert_eq!(plan["data"]["trust"]["policy"], "policies/artifacts.toml");
+    assert_eq!(plan["data"]["trust"]["cells"][0]["target"], "unsigned");
+    assert_eq!(
+        plan["data"]["trust"]["cells"][0]["effective_minimum"],
+        "attested"
+    );
+
+    let generated = stdout_json(&sb.ost(&[
+        "--json",
+        "ci",
+        "generate",
+        "github",
+        "--matrix",
+        "trusted.yaml",
+    ]));
+    assert_eq!(generated["ok"], true);
+    let source =
+        std::fs::read_to_string(sb.base.join(".github/workflows/ost-source-ci.yml")).unwrap();
+    for required in [
+        "minimum_trust: attested",
+        "--minimum-trust ${{ matrix.minimum_trust }}",
+        "--require-sbom",
+        "--require-provenance",
+        "--policy policies/artifacts.toml",
+    ] {
+        assert!(source.contains(required), "missing {required}:\n{source}");
+    }
+    assert!(!source.contains("plugin publish"));
+    assert!(!source.contains("artifact push"));
 }
 
 #[test]

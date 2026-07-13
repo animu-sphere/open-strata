@@ -225,6 +225,10 @@ runtime's tools and need a **real** runtime (adopt or build a source first).
 ost plugin new usd-fileformat toy --extension toy
 ost plugin new usd-fileformat toy --extension toy --dir ./plugins/toy
 
+# scaffold OpenExec computations against an independently versioned schema contract
+ost plugin new usd-exec pose-eval \
+  --schema-bundle rig-schema --schema-type RigContractAPI
+
 ost plugin inspect toy                 # Level 0 structure (human + --json)
 ost plugin build toy --target cy2026 --profile usd       # build the .so via ost-build
 ost plugin build toy --dry-run         # show the cmake commands only
@@ -315,6 +319,9 @@ ost artifact show 3fa9c1
 # integrity: recompute the archive digest AND re-hash every tar entry
 # against the producer manifest's files[] (exit 5 on any mismatch)
 ost artifact verify 3fa9c1
+ost artifact verify 3fa9c1 --minimum-trust verified \
+  --require-sbom --require-provenance \
+  --policy openstrata-artifact-policy.toml
 
 # CI handoff: copy archive + manifest + SHA256SUMS + record out;
 # the exported directory is re-importable on another machine
@@ -406,6 +413,28 @@ Those jobs render to `.github/workflows/ost-source-ci.yml`, check out the repo,
 materialize the pinned runtime SDK, build/test/package the bundle from source,
 and never publish or use secrets. Keep repo-specific post-build smoke coverage
 in the generated workflow with matrix-level `source_checks`:
+
+```yaml
+trust:
+  policy: openstrata-artifact-policy.toml
+  pr_min_trust: unsigned
+  main_min_trust: attested
+  release_min_trust: verified
+
+cells:
+  - name: plugin-pr-linux
+    lane: pull_request
+    trust: unsigned              # target floor; lane floor may be stricter
+    # runtime_artifact, runtime_remote, bundle, platform, profile, runner, ...
+```
+
+Generated jobs use the stricter of a cell's target `trust` and its lane floor.
+Every consumed runtime/plugin artifact is verified with that minimum plus
+required SBOM and provenance; `trust.policy` additionally gates the provenance
+builder identity. PR and ordinary source-CI jobs remain publish-free and retain
+read-only repository permissions.
+
+Repo-specific checks remain separate from trust policy:
 
 ```yaml
 source_checks:

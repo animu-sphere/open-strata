@@ -608,11 +608,19 @@ and a minimal evaluation-context boundary are skeleton candidates. Scheduling,
 graph construction, state ownership, invalidation semantics, solvers, mutation,
 and CPU/GPU execution remain reference policy.
 
-The provisional catalog id is `usd-exec-cpp`; `openexec-plugin-cpp` is not a
-second entry. Final naming and a new plugin kind wait for the OpenUSD extension
-point and manifest capability vocabulary to stabilize. In a composed product,
-the Exec bundle depends on the public schema contract and not on importer or
-file-format implementation state.
+OpenUSD 26.05 stabilized the initial schema-computation extension point around
+`Info.Exec.Schemas` and `EXEC_REGISTER_COMPUTATIONS_FOR_SCHEMA`. The embedded
+`usd-exec-cpp` skeleton therefore uses the distinct `usd-exec` plugin kind;
+`openexec-plugin-cpp` is not a second entry. In a composed product, the Exec
+bundle depends on the public schema contract and not on importer or file-format
+implementation state.
+
+The shipped skeleton establishes discovery metadata, registration, private
+tokens, a deterministic no-input callback seam, copied CMake/install mechanics,
+and explicit `requires.bundles` schema composition. A schema-specific applied
+fixture and `ExecUsdSystem` client test remain product integration evidence:
+the generic scaffold cannot infer the authored schema identifier from its C++
+type name.
 
 ### Hydra and renderer
 
@@ -641,7 +649,7 @@ only if it actually ships a discoverable OpenUSD plugin.
 | `usd-schema-cpp` | embedded standalone scaffold, four generation modes, committed 26.05 outputs, contract baseline, CMake export, and downstream fixture | skeleton; clean-install automation and broader matrix evidence pending |
 | `usd-asset-resolver-cpp` | embedded URI resolver scaffold, copied CMake helper, descriptor, provenance, and registration fixture | skeleton; promotion evidence pending |
 | `usd-package-resolver-cpp` | embedded sidecar-backed scaffold, copied CMake helper, descriptor, provenance, and registration fixture | skeleton; second package backend pending |
-| `usd-exec-cpp` | architecture/reference reports | reference, then skeleton |
+| `usd-exec-cpp` | embedded OpenUSD 26.05 registration scaffold, schema-contract dependency, copied CMake helper, descriptor, provenance, and discovery metadata | skeleton; schema-specific evaluation dogfood pending |
 | `hydra-render-delegate-cpp` | hdMerlin dogfood evidence | skeleton candidate |
 | `renderer-project` | hdMerlin end-to-end structure | skeleton candidate |
 | `usd-tool-cpp` | normal project/package substrate exists | project-template candidate |

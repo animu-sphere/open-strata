@@ -325,6 +325,24 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
     if !matrix.source_cells().is_empty() {
         workflows.push(SOURCE_WORKFLOW_PATH);
     }
+    let trust_cells = matrix
+        .cells
+        .iter()
+        .map(|cell| {
+            serde_json::json!({
+                "name": cell.name,
+                "target": cell.trust,
+                "effective_minimum": matrix.minimum_trust(cell),
+            })
+        })
+        .collect::<Vec<_>>();
+    let trust = serde_json::json!({
+        "policy": matrix.trust.policy.as_deref(),
+        "pr_min_trust": matrix.trust.pr_min_trust,
+        "main_min_trust": matrix.trust.main_min_trust,
+        "release_min_trust": matrix.trust.release_min_trust,
+        "cells": trust_cells,
+    });
 
     if fmt.is_json() {
         output::success(&serde_json::json!({
@@ -338,6 +356,7 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
             "hosted_unacknowledged": hosted_unacknowledged,
             "requires_billing_acknowledgement": !hosted_unacknowledged.is_empty(),
             "publish_capable_jobs": publish_capable,
+            "trust": trust,
             "bootstrap": bootstrap,
             "remote_runtime_cells": remote_runtime_cells,
             "air_gapped_source_cells": air_gapped_source_cells,
@@ -370,6 +389,13 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
         }
     );
     println!("  publish-capable:  {publish_capable} job(s)");
+    println!(
+        "  trust floors:     PR {}, main {}, release {} (policy: {})",
+        matrix.trust.pr_min_trust,
+        matrix.trust.main_min_trust,
+        matrix.trust.release_min_trust,
+        matrix.trust.policy.as_deref().unwrap_or("none")
+    );
     match &matrix.bootstrap {
         Some(b) => println!(
             "  bootstrap:        ost {} from {} ({} exact-byte pin(s))",

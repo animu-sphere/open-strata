@@ -12,7 +12,13 @@
     "version": { "type": "string" },
     "kind": {
       "type": "string",
-      "enum": ["usd-fileformat", "usd-asset-resolver", "usd-schema"]
+      "enum": [
+        "usd-fileformat",
+        "usd-asset-resolver",
+        "usd-package-resolver",
+        "usd-exec",
+        "usd-schema"
+      ]
     },
     "license": {
       "type": ["string", "null"],
@@ -46,7 +52,7 @@
     },
     "ci": {
       "type": "object",
-      "description": "CI evidence, present only when the run happened inside a generated CI job (the job exports OST_CI_* variables): which support cell this report proves, on which lane and runner, against which pinned artifacts. Fields other than `cell` are null when the job did not export them.",
+      "description": "CI evidence, present only when the run happened inside a generated CI job (the job exports OST_CI_* variables): which support cell this report proves, on which lane and runner, against which pinned artifacts and effective trust floor. Fields other than `cell` are null when the job did not export them.",
       "required": ["cell"],
       "additionalProperties": false,
       "properties": {
@@ -61,7 +67,11 @@
           "description": "The resolved runs-on labels, comma-joined."
         },
         "runtime_artifact": { "type": ["string", "null"] },
-        "plugin_artifact": { "type": ["string", "null"] }
+        "plugin_artifact": { "type": ["string", "null"] },
+        "minimum_trust": {
+          "type": ["string", "null"],
+          "enum": ["local", "unsigned", "attested", "verified", "trusted", null]
+        }
       }
     },
     "summary": {

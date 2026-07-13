@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use ost_artifact::TrustLevel;
 use ost_core::{Error, Result};
 
 /// Filename of the support matrix at a project root.
@@ -122,6 +123,23 @@ pub enum Publish {
     #[default]
     Never,
     Candidate,
+}
+
+/// Trust floors applied by generated CI. The optional policy path is
+/// repository-relative and is passed to artifact verification so provenance
+/// builder identities are checked against the same allowed-publisher contract
+/// used by protected publication.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustRequirements {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(default)]
+    pub pr_min_trust: TrustLevel,
+    #[serde(default)]
+    pub main_min_trust: TrustLevel,
+    #[serde(default)]
+    pub release_min_trust: TrustLevel,
 }
 
 /// What kind of infrastructure a runner profile provides.
@@ -304,6 +322,10 @@ pub struct SupportCell {
     /// Publication policy (default `never`).
     #[serde(default)]
     pub publish: Publish,
+    /// Target-level trust requirement. Generated verification uses the stricter
+    /// of this declaration and the current lane's minimum.
+    #[serde(default)]
+    pub trust: TrustLevel,
     #[serde(default)]
     pub host: HostSpec,
 }
@@ -356,6 +378,10 @@ fn is_major_minor(v: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct SupportMatrix {
     pub schema: u32,
+    /// Lane and publisher-policy trust requirements. Defaults to local trust so
+    /// existing matrices remain valid while adopting the v0.16 contract.
+    #[serde(default)]
+    pub trust: TrustRequirements,
     /// The pinned `ost` bootstrap for GitHub-hosted source CI. Required as
     /// soon as any source cell resolves to a hosted runner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -397,6 +423,9 @@ impl SupportMatrix {
         }
         if let Some(bootstrap) = &self.bootstrap {
             validate_bootstrap(bootstrap)?;
+        }
+        if let Some(policy) = &self.trust.policy {
+            validate_repo_path("trust.policy", policy)?;
         }
         for (i, check) in self.source_checks.iter().enumerate() {
             validate_source_check(i, check)?;
@@ -508,6 +537,12 @@ impl SupportMatrix {
                     "cell '{name}': the pull_request lane must never publish (fork-PR safety)"
                 )));
             }
+            if cell.publish != Publish::Never && cell.trust < self.trust.release_min_trust {
+                return Err(Error::InvalidManifest(format!(
+                    "cell '{name}': publish-capable target trust '{}' is below release_min_trust '{}'",
+                    cell.trust, self.trust.release_min_trust
+                )));
+            }
             if cell.platform.is_empty() || cell.profile.is_empty() {
                 return Err(Error::InvalidManifest(format!(
                     "cell '{name}': platform and profile must be non-empty"
@@ -588,6 +623,18 @@ impl SupportMatrix {
     /// Cells that re-validate pinned artifacts (`scheduled` / dispatch).
     pub fn support_cells(&self) -> Vec<&SupportCell> {
         self.cells.iter().filter(|c| !c.lane.is_source()).collect()
+    }
+
+    /// Effective trust floor for one cell: the target-level requirement or the
+    /// lane minimum, whichever is stricter. Support lanes have no implicit lane
+    /// floor and therefore use the target declaration directly.
+    pub fn minimum_trust(&self, cell: &SupportCell) -> TrustLevel {
+        let lane_minimum = match cell.lane {
+            Lane::PullRequest => self.trust.pr_min_trust,
+            Lane::Main => self.trust.main_min_trust,
+            Lane::Scheduled | Lane::WorkflowDispatch => TrustLevel::Local,
+        };
+        std::cmp::max(cell.trust, lane_minimum)
     }
 
     /// Whether any source cell declares a `host_python` ABI — the signal for
@@ -684,6 +731,23 @@ fn validate_runtime_remote(cell: &str, remote: &RuntimeRemote) -> Result<()> {
         return Err(Error::InvalidManifest(format!(
             "cell '{cell}': runtime_remote.uri pins {uri_digest} but \
              expected_oci_digest is {expected} — the two must agree"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_repo_path(label: &str, value: &str) -> Result<()> {
+    let safe_chars = value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-'));
+    let escapes = value.is_empty()
+        || value.starts_with('/')
+        || value.starts_with('\\')
+        || value.contains(':')
+        || value.split(['/', '\\']).any(|part| part == "..");
+    if !safe_chars || escapes {
+        return Err(Error::InvalidManifest(format!(
+            "{label} '{value}' must be a safe repository-relative path"
         )));
     }
     Ok(())
@@ -883,6 +947,15 @@ pub fn starter_matrix() -> String {
 # workflow_dispatch; default scheduled) and reference a named runner
 # profile instead of raw labels. Source lanes (pull_request/main) build
 # the bundle from the checked-out repo and omit plugin_artifact.
+# Each cell may also declare a target-level `trust`. The matrix-level trust
+# block supplies lane floors; generated jobs enforce the stricter value and
+# require SBOM + provenance evidence for every consumed artifact:
+#
+#   trust:
+#     policy: openstrata-artifact-policy.toml
+#     pr_min_trust: unsigned
+#     main_min_trust: attested
+#     release_min_trust: verified
 #
 # Source cells on GitHub-hosted runners additionally need (1) a
 # `runtime_remote` reference so the runner can pull the pinned runtime
@@ -1157,6 +1230,56 @@ cells:
         // Empty run is rejected.
         let empty = format!("{base}source_checks:\n  - name: nop\n    run: \"  \"\n");
         assert!(SupportMatrix::from_yaml(&empty).is_err());
+    }
+
+    #[test]
+    fn trust_requirements_apply_lane_and_target_floors() {
+        let yaml = lanes_yaml().replace(
+            "schema: 1\n",
+            "schema: 1\ntrust:\n  policy: policies/artifacts.toml\n  pr_min_trust: attested\n  main_min_trust: verified\n  release_min_trust: trusted\n",
+        );
+        let yaml = yaml.replace(
+            "        lane: pull_request\n",
+            "        lane: pull_request\n        trust: unsigned\n",
+        );
+        let matrix = SupportMatrix::from_yaml(&yaml).expect("trust-aware matrix parses");
+        assert_eq!(
+            matrix.trust.policy.as_deref(),
+            Some("policies/artifacts.toml")
+        );
+        assert_eq!(
+            matrix.minimum_trust(&matrix.cells[0]),
+            TrustLevel::Attested,
+            "PR lane floor is stricter than the target declaration"
+        );
+        assert_eq!(
+            matrix.minimum_trust(&matrix.cells[1]),
+            TrustLevel::Local,
+            "support lanes use their target declaration"
+        );
+
+        let unsafe_policy = yaml.replace("policies/artifacts.toml", "../artifacts.toml");
+        let err = SupportMatrix::from_yaml(&unsafe_policy).expect_err("unsafe policy path");
+        assert!(
+            err.to_string().contains("safe repository-relative"),
+            "{err}"
+        );
+
+        let windows_policy = yaml.replace("policies/artifacts.toml", r"policies\artifacts.toml");
+        let err = SupportMatrix::from_yaml(&windows_policy)
+            .expect_err("policy paths must render safely in bash");
+        assert!(
+            err.to_string().contains("safe repository-relative"),
+            "{err}"
+        );
+
+        let under_trusted_publish = yaml.replace(
+            "        lane: pull_request\n        trust: unsigned\n",
+            "        lane: main\n        publish: candidate\n        trust: verified\n",
+        );
+        let err = SupportMatrix::from_yaml(&under_trusted_publish)
+            .expect_err("release trust floor must gate publishing targets");
+        assert!(err.to_string().contains("release_min_trust"), "{err}");
     }
 
     fn lanes_yaml() -> String {

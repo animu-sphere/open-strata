@@ -32,9 +32,9 @@ use ost_core::template::SCAFFOLD_PROVENANCE;
 use ost_core::variant::{Abi, Variant};
 use ost_core::{tools, Category, Error, Host, Result};
 use ost_plugin::{
-    default_template_id, diagnose, run_levels, scaffold_with_template, session_env_with,
-    usdview_check, Bundle, CxxAbi, DoctorReport, PluginKind, Probe, RuntimeContext, Session,
-    Status, ToolOutput,
+    default_template_id, diagnose, run_levels, scaffold_with_template_inputs, session_env_with,
+    usdview_check, Bundle, CxxAbi, DoctorReport, ExecTemplateInputs, PluginKind, Probe,
+    RuntimeContext, Session, Status, ToolOutput,
 };
 use ost_runtime::{EnvSet, RuntimeManifest, MANIFEST_FILE};
 
@@ -48,7 +48,7 @@ pub enum PluginCmd {
     /// Scaffold a new plugin bundle from a template.
     New {
         /// Plugin kind: usd-fileformat | usd-asset-resolver |
-        /// usd-package-resolver | usd-schema.
+        /// usd-package-resolver | usd-exec | usd-schema.
         kind: String,
         /// Plugin name (becomes the bundle directory), e.g. `toy`.
         name: String,
@@ -59,6 +59,14 @@ pub enum PluginCmd {
         /// URI scheme the resolver handles (required for usd-asset-resolver).
         #[arg(long)]
         scheme: Option<String>,
+        /// Public schema bundle whose contract the OpenExec plugin consumes
+        /// (required for usd-exec).
+        #[arg(long)]
+        schema_bundle: Option<String>,
+        /// C++ schema type used by EXEC_REGISTER_COMPUTATIONS_FOR_SCHEMA
+        /// (required for usd-exec), e.g. VrmSchemaContractAPI.
+        #[arg(long)]
+        schema_type: Option<String>,
         /// Catalog template id. usd-schema defaults to usd-schema-codeless;
         /// use usd-schema-cpp for the experimental compiled skeleton.
         #[arg(long)]
@@ -239,15 +247,21 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             name,
             extension,
             scheme,
+            schema_bundle,
+            schema_type,
             template,
             dir,
         } => new(
-            &kind,
-            &name,
-            extension.as_deref(),
-            scheme.as_deref(),
-            template.as_deref(),
-            dir.as_deref(),
+            NewPluginArgs {
+                kind: &kind,
+                name: &name,
+                extension: extension.as_deref(),
+                scheme: scheme.as_deref(),
+                schema_bundle: schema_bundle.as_deref(),
+                schema_type: schema_type.as_deref(),
+                template: template.as_deref(),
+                dir: dir.as_deref(),
+            },
             fmt,
         ),
         PluginCmd::Inspect { bundle } => inspect(&bundle, fmt),
@@ -399,15 +413,28 @@ fn schema_add(bundle: &str, class: &str, source: &str, codeless: bool, fmt: Form
     Ok(())
 }
 
-fn new(
-    kind: &str,
-    name: &str,
-    extension: Option<&str>,
-    scheme: Option<&str>,
-    template: Option<&str>,
-    dir: Option<&str>,
-    fmt: Format,
-) -> Result<()> {
+struct NewPluginArgs<'a> {
+    kind: &'a str,
+    name: &'a str,
+    extension: Option<&'a str>,
+    scheme: Option<&'a str>,
+    schema_bundle: Option<&'a str>,
+    schema_type: Option<&'a str>,
+    template: Option<&'a str>,
+    dir: Option<&'a str>,
+}
+
+fn new(args: NewPluginArgs<'_>, fmt: Format) -> Result<()> {
+    let NewPluginArgs {
+        kind,
+        name,
+        extension,
+        scheme,
+        schema_bundle,
+        schema_type,
+        template,
+        dir,
+    } = args;
     let kind = PluginKind::from_tag(kind).ok_or_else(|| {
         let kinds: Vec<&str> = PluginKind::ALL.iter().map(|k| k.as_str()).collect();
         Error::usage(format!(
@@ -418,7 +445,20 @@ fn new(
 
     let dest = Utf8PathBuf::from(dir.unwrap_or(name));
     let template_id = template.unwrap_or_else(|| default_template_id(kind));
-    let files = scaffold_with_template(kind, name, extension, scheme, template, &dest)?;
+    let exec = match (schema_bundle, schema_type) {
+        (Some(schema_bundle), Some(schema_type)) => Some(ExecTemplateInputs {
+            schema_bundle,
+            schema_type,
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(Error::usage(
+                "--schema-bundle and --schema-type must be provided together",
+            ))
+        }
+    };
+    let files =
+        scaffold_with_template_inputs(kind, name, extension, scheme, template, exec, &dest)?;
 
     if fmt.is_json() {
         output::success(&serde_json::json!({

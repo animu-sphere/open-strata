@@ -5,7 +5,7 @@ The next milestone and active carry-over work. Shipped detail is in
 
 ## Next milestone: v0.16.0 — generated trusted CI
 
-**Status:** not started; release planning · **Depends on:** v0.15.0 workspace
+**Status:** 🚧 in progress · **Depends on:** v0.15.0 workspace
 composition and artifact evidence bundles (shipped).
 
 v0.14.0 added artifact trust policy and publisher identity checks. v0.15.0 made
@@ -14,14 +14,19 @@ consume workspace dependency closures. v0.16.0 pushes that trust chain into the
 generated CI contract so trusted publication lanes are generated, policy-gated,
 and separate from ordinary PR/source validation lanes.
 
-### P0 — trust-aware support matrix
+### P0 — trust-aware support matrix 🚧
 
-- Add trust requirements to support-matrix targets and lanes: a target-level
+- ✅ Add trust requirements to support-matrix targets and lanes: a target-level
   `trust` declaration plus lane minimums such as `pr_min_trust`,
-  `main_min_trust`, and `release_min_trust`.
-- Keep PR and source-CI lanes publish-free. They may build and test from source,
-  but they must not mint trusted runtime or plugin artifacts.
-- Make release workflows refuse untrusted artifacts instead of relying on
+  `main_min_trust`, and `release_min_trust`. `ost ci plan` reports each target
+  and its effective floor.
+- ✅ Generated support/source jobs enforce the stricter target/lane floor and
+  require valid SBOM + provenance evidence; an optional repository policy also
+  gates builder identity. `ost artifact verify --minimum-trust` composes with
+  (and never weakens) the policy file minimum.
+- ✅ Keep PR and source-CI lanes publish-free. They may build and test from
+  source, but they do not mint trusted runtime or plugin artifacts.
+- ⬜ Make generated release workflows refuse untrusted artifacts instead of relying on
   hand-authored workflow convention.
 
 ### P0 — protected runtime-publish lane
