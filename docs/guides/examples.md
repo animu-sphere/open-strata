@@ -273,6 +273,21 @@ Plugin package artifacts land under
 `<bundle>/dist/plugins/<name>/<version>/<target>/` with a `tar.zst`,
 `manifest.json`, and `SHA256SUMS`.
 
+### Golden USDA line endings
+
+Keep committed USDA fixtures and goldens at LF even on Windows:
+
+```gitattributes
+*.usda text eol=lf
+```
+
+This is semantic for triple-quoted USDA strings. A CRLF checkout can put a
+literal carriage return into the parsed string value; `usdcat --flatten` then
+preserves it and L5 correctly reports a real golden mismatch. Do not fix that by
+normalizing carriage returns inside string values. Re-normalize the working tree
+after adding the attribute, regenerate the golden only if authored data changed,
+and inspect the flattened diff before accepting it.
+
 ## artifact — the local digest-addressed registry
 
 Runtimes, plugin bundles, and project packages become registry **artifacts**:
