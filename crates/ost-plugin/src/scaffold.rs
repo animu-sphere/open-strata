@@ -5,8 +5,8 @@
 //! binary. Files (and path components) carry `{{token}}` placeholders that are
 //! substituted per invocation. The catalog currently ships
 //! `usd-fileformat-cpp`, `usd-schema-codeless`, `usd-schema-cpp`, and the
-//! experimental `usd-asset-resolver-cpp` and `usd-package-resolver-cpp`
-//! skeletons.
+//! experimental `usd-asset-resolver-cpp`, `usd-package-resolver-cpp`, and
+//! `usd-exec-cpp` skeletons.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -317,6 +317,52 @@ const USD_PACKAGE_RESOLVER_CPP: &[TemplateFile] = &[
 const USD_PACKAGE_RESOLVER_CPP_DESCRIPTOR: &str =
     include_str!("../../../templates/usd-package-resolver-cpp/template.yaml");
 
+/// The `usd-exec-cpp` OpenExec schema-computation registration skeleton.
+const USD_EXEC_CPP: &[TemplateFile] = &[
+    tf(
+        "openstrata.plugin.yaml",
+        include_str!("../../../templates/usd-exec-cpp/openstrata.plugin.yaml"),
+    ),
+    tf(
+        "CMakeLists.txt",
+        include_str!("../../../templates/usd-exec-cpp/CMakeLists.txt"),
+    ),
+    tf(
+        "README.md",
+        include_str!("../../../templates/usd-exec-cpp/README.md"),
+    ),
+    tf(
+        ".gitignore",
+        include_str!("../../../templates/usd-exec-cpp/.gitignore"),
+    ),
+    tf(
+        "cmake/OpenStrataPlugin.cmake",
+        include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake"),
+    ),
+    tf(
+        "src/{{Name}}Computation.h",
+        include_str!("../../../templates/usd-exec-cpp/src/{{Name}}Computation.h"),
+    ),
+    tf(
+        "src/{{Name}}Computation.cpp",
+        include_str!("../../../templates/usd-exec-cpp/src/{{Name}}Computation.cpp"),
+    ),
+    tf(
+        "src/{{Name}}Plugin.cpp",
+        include_str!("../../../templates/usd-exec-cpp/src/{{Name}}Plugin.cpp"),
+    ),
+    tf(
+        "plugin/resources/{{name}}/plugInfo.json.in",
+        include_str!("../../../templates/usd-exec-cpp/plugin/resources/{{name}}/plugInfo.json.in"),
+    ),
+    tf(
+        "tests/fixtures/basic.usda",
+        include_str!("../../../templates/usd-exec-cpp/tests/fixtures/basic.usda"),
+    ),
+];
+
+const USD_EXEC_CPP_DESCRIPTOR: &str = include_str!("../../../templates/usd-exec-cpp/template.yaml");
+
 const fn tf(path: &'static str, contents: &'static str) -> TemplateFile {
     TemplateFile { path, contents }
 }
@@ -344,6 +390,8 @@ struct Vars {
     ident_upper: String,
     extension: String,
     scheme: String,
+    schema_bundle: String,
+    schema_type: String,
 }
 
 impl Vars {
@@ -357,7 +405,18 @@ impl Vars {
             .replace("{{ident}}", &self.ident)
             .replace("{{extension}}", &self.extension)
             .replace("{{scheme}}", &self.scheme)
+            .replace("{{schema_bundle}}", &self.schema_bundle)
+            .replace("{{SchemaType}}", &self.schema_type)
     }
+}
+
+/// OpenExec's registration metadata names the C++ schema type, while workspace
+/// composition names the independently discoverable schema bundle that owns
+/// its public contract. Both are required inputs for `usd-exec-cpp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecTemplateInputs<'a> {
+    pub schema_bundle: &'a str,
+    pub schema_type: &'a str,
 }
 
 /// Convert a plugin name to a PascalCase C++ identifier base, e.g.
@@ -449,6 +508,22 @@ fn validate_scheme(scheme: &str) -> Result<()> {
     }
 }
 
+fn validate_cpp_identifier(label: &str, value: &str) -> Result<()> {
+    let valid = value
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_alphabetic() || c == '_')
+        .unwrap_or(false)
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::Operation(format!(
+            "invalid {label} '{value}': use a C++ identifier (letters, digits, or '_', not starting with a digit)"
+        )))
+    }
+}
+
 /// Scaffold a new bundle of `kind` named `name` into `dest` (the bundle root).
 ///
 /// `extension` is required for file-format plugins and `scheme` for asset
@@ -472,6 +547,21 @@ pub fn scaffold_with_template(
     extension: Option<&str>,
     scheme: Option<&str>,
     template_id: Option<&str>,
+    dest: &Utf8Path,
+) -> Result<Vec<Utf8PathBuf>> {
+    scaffold_with_template_inputs(kind, name, extension, scheme, template_id, None, dest)
+}
+
+/// Scaffold with the additional schema-contract inputs required by OpenExec.
+/// Other plugin kinds reject `exec` so unrelated templates retain their strict
+/// option shape.
+pub fn scaffold_with_template_inputs(
+    kind: PluginKind,
+    name: &str,
+    extension: Option<&str>,
+    scheme: Option<&str>,
+    template_id: Option<&str>,
+    exec: Option<ExecTemplateInputs<'_>>,
     dest: &Utf8Path,
 ) -> Result<Vec<Utf8PathBuf>> {
     validate_name(name)?;
@@ -498,6 +588,10 @@ pub fn scaffold_with_template(
             descriptor: USD_PACKAGE_RESOLVER_CPP_DESCRIPTOR,
             files: USD_PACKAGE_RESOLVER_CPP,
         },
+        (PluginKind::UsdExec, "usd-exec-cpp") => EmbeddedTemplate {
+            descriptor: USD_EXEC_CPP_DESCRIPTOR,
+            files: USD_EXEC_CPP,
+        },
         _ => {
             return Err(Error::Operation(format!(
             "template '{requested}' is not available for plugin kind '{}' (expected one of: {})",
@@ -516,39 +610,59 @@ pub fn scaffold_with_template(
         )));
     }
 
-    let (extension, scheme) = match (kind, extension, scheme) {
-        (PluginKind::UsdFileformat, Some(e), None) => {
+    let (extension, scheme, schema_bundle, schema_type) = match (kind, extension, scheme, exec) {
+        (PluginKind::UsdFileformat, Some(e), None, None) => {
             validate_extension(e)?;
-            (e.to_string(), String::new())
+            (e.to_string(), String::new(), String::new(), String::new())
         }
-        (PluginKind::UsdFileformat, None, None) => {
+        (PluginKind::UsdFileformat, None, None, None) => {
             return Err(Error::Operation(
                 "usd-fileformat needs --extension <ext> (the file extension it reads)".into(),
             ))
         }
-        (PluginKind::UsdAssetResolver, None, Some(s)) => {
+        (PluginKind::UsdAssetResolver, None, Some(s), None) => {
             validate_scheme(s)?;
-            (String::new(), s.to_string())
+            (String::new(), s.to_string(), String::new(), String::new())
         }
-        (PluginKind::UsdAssetResolver, None, None) => {
+        (PluginKind::UsdAssetResolver, None, None, None) => {
             return Err(Error::Operation(
                 "usd-asset-resolver needs --scheme <scheme> (the URI scheme it handles)".into(),
             ))
         }
-        (PluginKind::UsdPackageResolver, Some(e), None) => {
+        (PluginKind::UsdPackageResolver, Some(e), None, None) => {
             validate_extension(e)?;
-            (e.to_string(), String::new())
+            (e.to_string(), String::new(), String::new(), String::new())
         }
-        (PluginKind::UsdPackageResolver, None, None) => {
+        (PluginKind::UsdPackageResolver, None, None, None) => {
             return Err(Error::Operation(
                 "usd-package-resolver needs --extension <ext> (the package extension it handles)"
                     .into(),
             ))
         }
-        (PluginKind::UsdSchema, None, None) => (String::new(), String::new()),
-        (kind, _, _) => {
+        (PluginKind::UsdExec, None, None, Some(exec)) => {
+            validate_name(exec.schema_bundle)?;
+            validate_cpp_identifier("schema type", exec.schema_type)?;
+            (
+                String::new(),
+                String::new(),
+                exec.schema_bundle.to_string(),
+                exec.schema_type.to_string(),
+            )
+        }
+        (PluginKind::UsdExec, None, None, None) => {
+            return Err(Error::Operation(
+                "usd-exec needs --schema-bundle <id> and --schema-type <CppSchemaType>".into(),
+            ))
+        }
+        (PluginKind::UsdSchema, None, None, None) => (
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
+        (kind, _, _, _) => {
             return Err(Error::Operation(format!(
-                "options do not match plugin kind '{}': use --extension for usd-fileformat or usd-package-resolver and --scheme only for usd-asset-resolver",
+                "options do not match plugin kind '{}': use --extension for usd-fileformat or usd-package-resolver, --scheme for usd-asset-resolver, and schema inputs only for usd-exec",
                 kind.as_str()
             )))
         }
@@ -577,6 +691,8 @@ pub fn scaffold_with_template(
         ident,
         extension,
         scheme,
+        schema_bundle,
+        schema_type,
     };
 
     let planned = planned_outputs(embedded.files, &vars)?;
@@ -629,6 +745,10 @@ pub fn scaffold_with_template(
     if !vars.scheme.is_empty() {
         inputs.insert("scheme".into(), vars.scheme.clone());
     }
+    if !vars.schema_bundle.is_empty() {
+        inputs.insert("schema_bundle".into(), vars.schema_bundle.clone());
+        inputs.insert("schema_type".into(), vars.schema_type.clone());
+    }
     let provenance =
         ScaffoldProvenance::new(&descriptor, env!("CARGO_PKG_VERSION"), inputs).to_yaml()?;
     let provenance_path = dest.join(SCAFFOLD_PROVENANCE);
@@ -647,6 +767,7 @@ pub const fn default_template_id(kind: PluginKind) -> &'static str {
         PluginKind::UsdSchema => "usd-schema-codeless",
         PluginKind::UsdAssetResolver => "usd-asset-resolver-cpp",
         PluginKind::UsdPackageResolver => "usd-package-resolver-cpp",
+        PluginKind::UsdExec => "usd-exec-cpp",
     }
 }
 
@@ -657,6 +778,7 @@ pub const fn template_ids(kind: PluginKind) -> &'static [&'static str] {
         PluginKind::UsdSchema => &["usd-schema-codeless", "usd-schema-cpp"],
         PluginKind::UsdAssetResolver => &["usd-asset-resolver-cpp"],
         PluginKind::UsdPackageResolver => &["usd-package-resolver-cpp"],
+        PluginKind::UsdExec => &["usd-exec-cpp"],
     }
 }
 
@@ -829,6 +951,8 @@ pub fn add_cohosted_schema(
         ident,
         extension: String::new(),
         scheme: String::new(),
+        schema_bundle: String::new(),
+        schema_type: String::new(),
     };
     if let Some(parent) = schema_abs.parent() {
         std::fs::create_dir_all(parent.as_std_path())
@@ -1240,6 +1364,98 @@ mod tests {
         assert_eq!(provenance.inputs.get("extension").unwrap(), "pack");
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn scaffolds_an_openexec_schema_computation_skeleton() {
+        let dir = unique_tmp("scaffold-exec");
+        let files = scaffold_with_template_inputs(
+            PluginKind::UsdExec,
+            "pose-eval",
+            None,
+            None,
+            None,
+            Some(ExecTemplateInputs {
+                schema_bundle: "rig-schema",
+                schema_type: "RigContractAPI",
+            }),
+            &dir,
+        )
+        .expect("scaffold OpenExec plugin");
+
+        for expected in [
+            "src/PoseEvalComputation.h",
+            "src/PoseEvalComputation.cpp",
+            "src/PoseEvalPlugin.cpp",
+            "plugin/resources/pose-eval/plugInfo.json",
+            "cmake/OpenStrataPlugin.cmake",
+        ] {
+            assert!(files.iter().any(|f| f.as_str() == expected), "{expected}");
+        }
+
+        let bundle = crate::Bundle::load(&dir).expect("OpenExec bundle loads");
+        assert_eq!(bundle.manifest.kind(), PluginKind::UsdExec);
+        assert_eq!(bundle.manifest.provides, vec!["usd-exec:RigContractAPI"]);
+        assert_eq!(bundle.manifest.requires.bundles[0].id, "rig-schema");
+        assert_eq!(bundle.manifest.requires.bundles[0].contract, Some(1));
+
+        let plug_info = std::fs::read_to_string(bundle.plug_info().as_std_path()).unwrap();
+        assert!(plug_info.contains("\"Exec\""));
+        assert!(plug_info.contains("\"RigContractAPI\""));
+        assert!(plug_info.contains("\"allowsPluginComputations\": true"));
+
+        let registration =
+            std::fs::read_to_string(dir.join("src/PoseEvalPlugin.cpp").as_std_path()).unwrap();
+        assert!(registration.contains("EXEC_REGISTER_COMPUTATIONS_FOR_SCHEMA(RigContractAPI)"));
+        assert!(registration.contains("PrimComputation(_tokens->computePoseEval)"));
+        assert!(!registration.contains("{{"));
+
+        let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
+        assert!(cmake.contains("COMPONENTS exec tf vdf"));
+
+        let provenance: ScaffoldProvenance = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.join(SCAFFOLD_PROVENANCE).as_std_path()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance.template.id, "usd-exec-cpp");
+        assert_eq!(
+            provenance.inputs.get("schema_bundle").unwrap(),
+            "rig-schema"
+        );
+        assert_eq!(
+            provenance.inputs.get("schema_type").unwrap(),
+            "RigContractAPI"
+        );
+
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn openexec_requires_both_safe_schema_inputs() {
+        for exec in [
+            None,
+            Some(ExecTemplateInputs {
+                schema_bundle: "../schema",
+                schema_type: "RigContractAPI",
+            }),
+            Some(ExecTemplateInputs {
+                schema_bundle: "rig-schema",
+                schema_type: "9Invalid",
+            }),
+        ] {
+            let dir = unique_tmp("scaffold-exec-invalid");
+            assert!(scaffold_with_template_inputs(
+                PluginKind::UsdExec,
+                "pose-eval",
+                None,
+                None,
+                None,
+                exec,
+                &dir,
+            )
+            .is_err());
+            assert!(!dir.as_std_path().exists());
+        }
     }
 
     #[test]

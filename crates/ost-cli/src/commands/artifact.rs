@@ -58,6 +58,10 @@ pub enum ArtifactCmd {
         /// Enforce minimum trust from an artifact policy TOML file.
         #[arg(long, value_name = "FILE")]
         policy: Option<Utf8PathBuf>,
+        /// Enforce an explicit trust floor. When --policy is also present, the
+        /// stricter of this value and the policy's minimum is used.
+        #[arg(long, value_name = "LEVEL")]
+        minimum_trust: Option<TrustLevel>,
         /// Fail unless a valid SPDX SBOM is attached to the artifact.
         #[arg(long)]
         require_sbom: bool,
@@ -146,12 +150,14 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
         ArtifactCmd::Verify {
             digest,
             policy,
+            minimum_trust,
             require_sbom,
             require_provenance,
         } => verify(
             &store,
             &digest,
             policy.as_deref(),
+            minimum_trust,
             require_sbom,
             require_provenance,
             fmt,
@@ -582,6 +588,7 @@ fn verify(
     store: &ArtifactStore,
     digest: &str,
     policy_path: Option<&camino::Utf8Path>,
+    minimum_trust: Option<TrustLevel>,
     require_sbom: bool,
     require_provenance: bool,
     fmt: Format,
@@ -589,9 +596,18 @@ fn verify(
     let report = store.verify(digest)?;
     let record = store.resolve(digest)?;
     let policy = policy_path.map(ArtifactPolicy::load).transpose()?;
-    let policy_error = policy
+    let policy_minimum = policy
         .as_ref()
-        .and_then(|value| value.verify_trust(record.trust).err());
+        .map(|value| value.minimum_trust)
+        .unwrap_or_default();
+    let effective_minimum = std::cmp::max(minimum_trust.unwrap_or_default(), policy_minimum);
+    let trust_requirement = ArtifactPolicy {
+        schema: ost_artifact::ARTIFACT_POLICY_SCHEMA,
+        minimum_trust: effective_minimum,
+        protected_namespaces: Vec::new(),
+        allowed_publishers: Vec::new(),
+    };
+    let policy_error = trust_requirement.verify_trust(record.trust).err();
     let policy_passed = policy_error.is_none();
     let object_dir = store.object_dir(record.digest_hex());
     let manifest = store.producer_manifest(&record)?;
@@ -618,9 +634,9 @@ fn verify(
                 "files_missing": report.files_missing,
                 "files_extra": report.files_extra,
                 "trust": record.trust,
-                "policy": policy.as_ref().map(|value| serde_json::json!({
+                "policy": (policy.is_some() || minimum_trust.is_some()).then(|| serde_json::json!({
                     "path": policy_path.map(ToString::to_string),
-                    "minimum_trust": value.minimum_trust,
+                    "minimum_trust": effective_minimum,
                     "passed": policy_passed,
                     "error_code": policy_error.as_ref().map(|e| e.code()),
                     "message": policy_error.as_ref().map(ToString::to_string),
@@ -636,6 +652,7 @@ fn verify(
             &report,
             policy.as_ref(),
             record.trust,
+            (policy.is_some() || minimum_trust.is_some()).then_some(effective_minimum),
             policy_error.as_ref(),
             &sbom,
             &provenance,
@@ -741,6 +758,7 @@ fn render_verify(
     report: &VerifyReport,
     policy: Option<&ArtifactPolicy>,
     trust: ost_artifact::TrustLevel,
+    minimum_trust: Option<TrustLevel>,
     policy_error: Option<&Error>,
     sbom: &EvidenceCheck,
     provenance: &EvidenceCheck,
@@ -767,9 +785,12 @@ fn render_verify(
             println!("  EXTRA:    {f}");
         }
     }
-    if let Some(policy) = policy {
+    if let Some(minimum_trust) = minimum_trust {
         println!("  trust:          {trust}");
-        println!("  policy minimum: {}", policy.minimum_trust);
+        println!("  policy minimum: {minimum_trust}");
+        if let Some(policy) = policy {
+            println!("  policy file:    schema {}", policy.schema);
+        }
         println!(
             "  policy result:  {}",
             if policy_error.is_none() { "OK" } else { "FAIL" }

@@ -38,7 +38,7 @@ report.json written under .strata/reports/<plugin>/<UTC-timestamp>/ by `ost plug
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `ci` | object | no | CI evidence, present only when the run happened inside a generated CI job (the job exports OST_CI_* variables): which support cell this report proves, on which lane and runner, against which pinned artifacts. Fields other than `cell` are null when the job did not export them. |
+| `ci` | object | no | CI evidence, present only when the run happened inside a generated CI job (the job exports OST_CI_* variables): which support cell this report proves, on which lane and runner, against which pinned artifacts and effective trust floor. Fields other than `cell` are null when the job did not export them. |
 | `diagnostics` | array | yes |  |
 | `environment` | object | no | Only on `doctor --json` stdout: the session env preview (mirrors environment.json). Absent from the on-disk report.json. |
 | `kind` | string | yes |  |

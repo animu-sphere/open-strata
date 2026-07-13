@@ -32,9 +32,11 @@ The next milestone (v0.16.0 — generated trusted CI) is detailed in
   validation, and source-workspace dependency composition are in. Next, automate
   clean-install consumer gates, prove the
   schema skeleton on a second supported platform/OpenUSD line, and harden the
-  asset resolver. Extend the existing `ost plugin new` lifecycle—do not create
+  asset resolver. The OpenExec schema-computation skeleton is now in the
+  embedded catalog; its next evidence is a schema-specific applied fixture and
+  `ExecUsdSystem` dogfood. Extend the existing `ost plugin new` lifecycle—do not create
   a parallel template repository, CLI, renderer, bundle model, or artifact
-  path. Add package resolver, Exec, Hydra, and tool candidates only at
+  path. Add Hydra and tool candidates only at
   evidence-appropriate maturity.
 - ⬜ **Renderer project skeleton and Level 7 verification.** Direction:
   [renderer-templates.md](../design/proposed/renderer-templates.md). Add one

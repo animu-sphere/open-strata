@@ -26,9 +26,17 @@ backwards-compatible default for `usd-schema`.
 | `usd-schema-cpp` | skeleton | `usd-schema` | `--template usd-schema-cpp` |
 | `usd-asset-resolver-cpp` | skeleton | `usd-asset-resolver` | `--scheme <scheme>` |
 | `usd-package-resolver-cpp` | skeleton | `usd-package-resolver` | `--extension <ext>` |
+| `usd-exec-cpp` | skeleton | `usd-exec` | `--schema-bundle <id> --schema-type <CppType>` |
 
 Skeletons have stable generation and lifecycle seams, but their domain
 architecture has not met the promotion evidence required of a template.
+
+The OpenExec skeleton targets OpenUSD 26.05's schema-computation registration
+contract. It emits `Info.Exec.Schemas` discovery metadata,
+`EXEC_REGISTER_COMPUTATIONS_FOR_SCHEMA`, a deterministic callback seam, and a
+versioned dependency on the public schema bundle contract. It deliberately does
+not standardize graph construction, scheduling, invalidation, solvers, stage
+mutation, or CPU/GPU execution.
 
 ## Copied CMake helper
 

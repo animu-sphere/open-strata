@@ -1,0 +1,23 @@
+# OpenStrata plugin bundle manifest.
+manifest:
+  schema: openstrata.plugin/v1alpha1
+plugin:
+  name: {{name}}
+  version: 0.1.0
+  kind: usd-exec
+license: Apache-2.0
+runtime:
+  openusd: ">=26.05,<27.0"
+provides:
+  - usd-exec:{{SchemaType}}
+requires:
+  capabilities: [usd-stage-read]
+  bundles:
+    # Update the version range and contract if the schema bundle uses a
+    # different public contract. OpenExec code depends on that contract, not
+    # on an importer or file-format implementation.
+    - { id: {{schema_bundle}}, version: ">=0.1,<1.0", contract: 1 }
+usd:
+  plug_info: plugin/resources/{{name}}/plugInfo.json
+tests:
+  smoke: [tests/fixtures/basic.usda]

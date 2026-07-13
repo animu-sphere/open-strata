@@ -25,7 +25,8 @@ pub const REPORT_SCHEMA: u32 = 1;
 /// CI evidence from the `OST_CI_*` contract (Phase 5). Generated workflows
 /// export these job-level variables so every report written inside a CI job
 /// records *which support claim* it proves: the cell, its lane, the runner
-/// profile and resolved `runs-on`, and the pinned artifact digests. Returns
+/// profile and resolved `runs-on`, pinned artifact digests, and the effective
+/// artifact trust floor. Returns
 /// `None` outside CI (no `OST_CI_CELL`), so local reports are unchanged.
 pub fn ci_evidence_from_env() -> Option<serde_json::Value> {
     let cell = std::env::var("OST_CI_CELL")
@@ -42,6 +43,7 @@ pub fn ci_evidence_from_env() -> Option<serde_json::Value> {
         "runs_on": get("OST_CI_RUNS_ON"),
         "runtime_artifact": get("OST_CI_RUNTIME_ARTIFACT"),
         "plugin_artifact": get("OST_CI_PLUGIN_ARTIFACT"),
+        "minimum_trust": get("OST_CI_MINIMUM_TRUST"),
     }))
 }
 

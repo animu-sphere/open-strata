@@ -16,7 +16,8 @@ platforms/        built-in CY manifests, embedded into the binary
 profiles/         capability bundles (core / dev / usd / lookdev)
 extensions/       controlled extension manifests (openusd / materialx)
 templates/        project + plugin scaffolds (usd-fileformat-cpp, usd-schema-codeless,
-                  usd-schema-cpp, usd-asset-resolver-cpp, usd-package-resolver-cpp, …)
+                  usd-schema-cpp, usd-asset-resolver-cpp, usd-package-resolver-cpp,
+                  usd-exec-cpp, …)
 schemas/          JSON schemas for platform / project / lock / plugin-report documents
 docs/             this documentation
 ```
@@ -36,7 +37,7 @@ docs/             this documentation
 | **Plugin bundle** | A self-describing OpenUSD plugin (`openstrata.plugin.yaml` + sources + `plugInfo.json` + fixtures), verified by levels 0–5. | implemented |
 | **Plugin workspace** | Deterministically discovered plugin bundles plus a read-only, version/contract-checked dependency graph; build ordering is not inferred yet. | implemented |
 | **Artifact** | An immutable, digest-addressed bundle (`tar.zst` + manifest + validation report) in the local registry, transportable over OCI. | implemented |
-| **Support matrix** | `openstrata.ci.yaml`: digest-pinned runtime×plugin support lines, runner profiles, and lanes, rendered to CI workflows. | implemented |
+| **Support matrix** | `openstrata.ci.yaml`: digest-pinned runtime×plugin support lines, runner profiles, lanes, and trust floors, rendered to CI workflows. | implemented |
 | **Session** | A mutable workspace over an immutable runtime. | planned |
 
 ## On-disk layout

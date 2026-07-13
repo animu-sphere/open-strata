@@ -198,6 +198,7 @@ Verify a stored artifact's integrity (archive digest + per-file hashes)
 
 | Option | Description |
 | --- | --- |
+| `--minimum-trust <LEVEL>` | Enforce an explicit trust floor. When --policy is also present, the stricter of this value and the policy's minimum is used |
 | `--policy <FILE>` | Enforce minimum trust from an artifact policy TOML file |
 | `--require-provenance` | Fail unless valid SLSA/in-toto provenance is attached |
 | `--require-sbom` | Fail unless a valid SPDX SBOM is attached to the artifact |
@@ -596,7 +597,7 @@ Scaffold a new plugin bundle from a template
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `<KIND>` | yes | Plugin kind: usd-fileformat \| usd-asset-resolver \| usd-package-resolver \| usd-schema |
+| `<KIND>` | yes | Plugin kind: usd-fileformat \| usd-asset-resolver \| usd-package-resolver \| usd-exec \| usd-schema |
 | `<NAME>` | yes | Plugin name (becomes the bundle directory), e.g. `toy` |
 
 **Options:**
@@ -605,6 +606,8 @@ Scaffold a new plugin bundle from a template
 | --- | --- |
 | `--dir <DIR>` | Destination directory. Defaults to ./<name> |
 | `--extension <EXTENSION>` | File extension the plugin handles (required for usd-fileformat and usd-package-resolver) |
+| `--schema-bundle <SCHEMA_BUNDLE>` | Public schema bundle whose contract the OpenExec plugin consumes (required for usd-exec) |
+| `--schema-type <SCHEMA_TYPE>` | C++ schema type used by EXEC_REGISTER_COMPUTATIONS_FOR_SCHEMA (required for usd-exec), e.g. VrmSchemaContractAPI |
 | `--scheme <SCHEME>` | URI scheme the resolver handles (required for usd-asset-resolver) |
 | `--template <TEMPLATE>` | Catalog template id. usd-schema defaults to usd-schema-codeless; use usd-schema-cpp for the experimental compiled skeleton |
 

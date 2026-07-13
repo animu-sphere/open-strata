@@ -31,6 +31,7 @@ pub enum PluginKind {
     UsdFileformat,
     UsdAssetResolver,
     UsdPackageResolver,
+    UsdExec,
     UsdSchema,
 }
 
@@ -40,6 +41,7 @@ impl PluginKind {
             PluginKind::UsdFileformat => "usd-fileformat",
             PluginKind::UsdAssetResolver => "usd-asset-resolver",
             PluginKind::UsdPackageResolver => "usd-package-resolver",
+            PluginKind::UsdExec => "usd-exec",
             PluginKind::UsdSchema => "usd-schema",
         }
     }
@@ -49,16 +51,18 @@ impl PluginKind {
             "usd-fileformat" => Some(PluginKind::UsdFileformat),
             "usd-asset-resolver" => Some(PluginKind::UsdAssetResolver),
             "usd-package-resolver" => Some(PluginKind::UsdPackageResolver),
+            "usd-exec" => Some(PluginKind::UsdExec),
             "usd-schema" => Some(PluginKind::UsdSchema),
             _ => None,
         }
     }
 
     /// Every kind, for help text and validation messages.
-    pub const ALL: [PluginKind; 4] = [
+    pub const ALL: [PluginKind; 5] = [
         PluginKind::UsdFileformat,
         PluginKind::UsdAssetResolver,
         PluginKind::UsdPackageResolver,
+        PluginKind::UsdExec,
         PluginKind::UsdSchema,
     ];
 }

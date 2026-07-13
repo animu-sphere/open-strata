@@ -1,0 +1,37 @@
+schema: openstrata.template/v1alpha1
+template:
+  id: usd-exec-cpp
+  version: 0.1.0
+  maturity: skeleton
+  artifact_kind: plugin
+plugin_kind: usd-exec
+variables:
+  - name: name
+    type: portable-identifier
+    required: true
+  - name: schema_bundle
+    type: portable-identifier
+    required: true
+  - name: schema_type
+    type: portable-identifier
+    required: true
+outputs:
+  files:
+    - openstrata.plugin.yaml
+    - CMakeLists.txt
+    - README.md
+    - .gitignore
+    - cmake/OpenStrataPlugin.cmake
+    - src/{{Name}}Computation.h
+    - src/{{Name}}Computation.cpp
+    - src/{{Name}}Plugin.cpp
+    - plugin/resources/{{name}}/plugInfo.json.in
+    - plugin/resources/{{name}}/plugInfo.json
+    - tests/fixtures/basic.usda
+    - openstrata.scaffold.yaml
+verification:
+  levels: [0, 1, 2]
+  assertions: [deterministic-generation, exec-schema-registration, install-tree-discovery]
+compatibility:
+  ost: ">=0.16,<1.0"
+  openusd: ">=26.05,<27.0"

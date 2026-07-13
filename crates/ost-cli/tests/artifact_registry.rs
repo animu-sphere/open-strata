@@ -296,6 +296,60 @@ fn verify_enforces_strict_artifact_policy() {
 }
 
 #[test]
+fn verify_enforces_inline_minimum_trust_and_uses_the_stricter_floor() {
+    let sb = Sandbox::new("minimum-trust");
+    let dist = sb.make_plugin_dist("toy", b"inline trust checked bytes");
+    let imported = stdout_json(&sb.ost(&["--json", "artifact", "import", path_str(&dist)]));
+    let digest = imported["data"]["artifact"]["digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let local = stdout_json(&sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--minimum-trust",
+        "local",
+    ]));
+    assert_eq!(local["data"]["policy"]["minimum_trust"], "local");
+    assert_eq!(local["data"]["policy"]["passed"], true);
+
+    let out = sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--minimum-trust",
+        "verified",
+    ]);
+    assert_eq!(out.status.code(), Some(5));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["data"]["policy"]["minimum_trust"], "verified");
+    assert_eq!(
+        report["data"]["policy"]["error_code"],
+        "ARTIFACT_POLICY_TRUST_INSUFFICIENT"
+    );
+
+    let policy = sb.base.join("stricter-policy.toml");
+    std::fs::write(&policy, "schema = 1\nminimum_trust = \"attested\"\n").unwrap();
+    let out = sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--minimum-trust",
+        "unsigned",
+        "--policy",
+        path_str(&policy),
+    ]);
+    assert_eq!(out.status.code(), Some(5));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["data"]["policy"]["minimum_trust"], "attested");
+}
+
+#[test]
 fn verify_can_require_and_validate_attached_evidence() {
     let sb = Sandbox::new("evidence");
     let legacy = sb.make_plugin_dist("legacy", b"no evidence");

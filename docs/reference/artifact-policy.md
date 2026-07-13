@@ -99,6 +99,18 @@ ost artifact verify sha256:... \
   --policy openstrata-artifact-policy.toml
 ```
 
+Generated CI can also pass an explicit lane/target floor:
+
+```bash
+ost artifact verify sha256:... --minimum-trust verified \
+  --require-sbom --require-provenance \
+  --policy openstrata-artifact-policy.toml
+```
+
+When both controls are present, verification enforces the stricter of
+`--minimum-trust` and the policy file's `minimum_trust`. The policy file still
+provides the allowed-publisher identities used by required provenance checks.
+
 The command first runs the existing archive and per-file integrity checks, then
 compares the record's trust with `minimum_trust`. Human output includes the
 actual and required levels. JSON output adds `data.trust` and a `data.policy`
