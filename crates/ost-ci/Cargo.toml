@@ -11,3 +11,4 @@ ost-core.workspace = true
 ost-artifact.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
+toml.workspace = true

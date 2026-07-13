@@ -9,6 +9,7 @@
 
 pub mod github;
 pub mod matrix;
+pub mod support;
 
 pub use github::{
     generate_github, generate_release, generate_source, generate_support, GeneratedWorkflow,
@@ -17,6 +18,7 @@ pub use github::{
 pub use matrix::{
     is_placeholder_digest, starter_matrix, Acknowledgement, Billing, Bootstrap, HostOs, HostSpec,
     Lane, OstBootstrap, Publish, ReleaseLane, ReleaseMode, RunnerKind, RunnerProfile,
-    RuntimeRemote, SupportCell, SupportMatrix, TrustRequirements, MATRIX_FILE, MATRIX_SCHEMA,
-    MAX_LEVEL,
+    RuntimeRemote, SupportCell, SupportClaim, SupportMatrix, TrustRequirements, MATRIX_FILE,
+    MATRIX_SCHEMA, MAX_LEVEL,
 };
+pub use support::SupportDeclaration;

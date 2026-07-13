@@ -214,11 +214,15 @@ Configure and build a target with CMake + Ninja
 
 | Option | Description |
 | --- | --- |
+| `--build-timeout <BUILD_TIMEOUT>` | Build timeout in seconds; 0 disables it |
 | `--cc <CC>` | C compiler path (implies `--compiler explicit`) |
 | `--check` | Run preflight checks only, without generating files or building |
 | `--compiler <COMPILER>` | Compiler policy: `host` (default), `runtime`, or `explicit` |
+| `--config <CONFIG>` | Build configuration (CMAKE_BUILD_TYPE and multi-config --config) |
+| `--configure-timeout <CONFIGURE_TIMEOUT>` | Configure timeout in seconds; 0 disables it |
 | `--cxx <CXX>` | C++ compiler path (implies `--compiler explicit`) |
 | `--dry-run` | Print the commands and files that would be produced, without executing or writing anything |
+| `--generator <GENERATOR>` | CMake generator. Ninja remains the default |
 | `--jobs <JOBS>` | Parallel jobs: a number, or `auto` to let Ninja decide |
 | `--ninja <NINJA>` | Path to the ninja executable if it is not on PATH |
 | `--no-vcvars` | Do not auto-load the MSVC developer environment (Windows) |
@@ -266,6 +270,7 @@ Emit a GitHub Actions workflow (one job per support cell)
 | `--matrix <MATRIX>` | Path to the matrix file. Defaults to ./openstrata.ci.yaml |
 | `--out <OUT>` | Output path. Defaults to .github/workflows/ost-support-matrix.yml |
 | `--stdout` | Print the workflow to stdout instead of writing a file |
+| `--support <SUPPORT>` | Refuse generation when hosted claims exceed this support declaration |
 
 #### `ost ci init`
 
@@ -303,6 +308,7 @@ Validate the support matrix
 | --- | --- |
 | `--matrix <MATRIX>` | Path to the matrix file. Defaults to ./openstrata.ci.yaml |
 | `--resolve` | Also require every pinned digest to resolve in the local registry |
+| `--support <SUPPORT>` | Check hosted cells against a public support/platform declaration |
 
 ### `ost configure`
 
@@ -828,7 +834,48 @@ Inspect renderer projects in host applications
 
 **Subcommands:**
 
+- [`ost renderer adopt`](#ost-renderer-adopt) — Safely adopt an existing CMake renderer without overwriting source
+- [`ost renderer merge`](#ost-renderer-merge) — Merge independently produced renderer reports with conflict checks
 - [`ost renderer view`](#ost-renderer-view) — Open a scene in usdview with the built Hydra renderer selected
+
+#### `ost renderer adopt`
+
+Safely adopt an existing CMake renderer without overwriting source
+
+**Usage:** `ost renderer adopt [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--allow-unresolved` | Record unresolved target labels instead of refusing the write |
+| `--backend <BACKEND>` | Backend mapping in KIND=TARGET form, e.g. vulkan=merlin-vulkan |
+| `--core <CORE>` | Existing CMake target for the host-neutral core |
+| `--extraction <EXTRACTION>` | Existing CMake target for renderer extraction |
+| `--headless <HEADLESS>` | Existing headless adapter target |
+| `--hydra2 <HYDRA2>` | Existing optional Hydra 2 adapter target |
+| `--name <NAME>` | Renderer/project identity |
+| `--platform <PLATFORM>` | Platform for a missing openstrata.toml |
+| `--profile <PROFILE>` | Host-neutral project profile for a missing openstrata.toml |
+| `--replace-manifest` | Replace an existing, different renderer manifest (never source/CMake) |
+| `--version <VERSION>` | Inline project version for a missing openstrata.toml (default 0.1.0) |
+| `--version-file <VERSION_FILE>` | Existing repo-relative authoritative version file to adopt |
+| `--write` | Apply the plan. Without this flag the command is a read-only dry run |
+
+#### `ost renderer merge`
+
+Merge independently produced renderer reports with conflict checks
+
+**Usage:** `ost renderer merge [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--base <BASE>` | Base renderer report |
+| `--out <OUT>` | Output renderer report |
+| `--overlay <OVERLAY>` | Overlay renderer report |
+| `--replace` | Explicitly replace duplicate assertion ids |
 
 #### `ost renderer view`
 
@@ -846,10 +893,11 @@ Open a scene in usdview with the built Hydra renderer selected
 
 | Option | Description |
 | --- | --- |
-| `--build-dir <BUILD_DIR>` | Hydra-enabled CMake build tree, relative to the project root |
+| `--build-dir <BUILD_DIR>` | External/prebuilt Hydra CMake tree. Omit for an OST-managed build |
 | `--camera <CAMERA>` | Camera prim passed to usdview |
 | `--config <CONFIG>` | CMake configuration to install and inspect |
-| `--profile <PROFILE>` | Runtime profile. Defaults to `lookdev` for Hydra/usdview capability |
+| `--generator <GENERATOR>` | CMake generator for the managed build. Ninja remains the default |
+| `--profile <PROFILE>` | Runtime profile. Auto-selects a unique pulled usdview runtime |
 | `--renderer <RENDERER>` | Override the renderer display name read from installed plugInfo.json |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 
@@ -1016,5 +1064,6 @@ Validate a built/packaged target
 
 | Option | Description |
 | --- | --- |
+| `--build-dir <BUILD_DIR>` | External/manual build tree whose evidence should be validated without claiming it was produced by `ost build` |
 | `--profile <PROFILE>` | Profile to validate. Defaults to the project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |

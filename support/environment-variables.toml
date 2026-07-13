@@ -1,0 +1,181 @@
+# Source of truth for docs/reference/environment-variables.md.
+# `kind` is environment, github-variable, or cmake-cache.
+# `direction` is input, output, or input-output from ost's perspective.
+
+[[variables]]
+name = "OST_HOME"
+kind = "environment"
+direction = "input"
+scope = "all commands"
+description = "Override the user store root (default: ~/.ost)."
+
+[[variables]]
+name = "OST_NINJA"
+kind = "environment"
+direction = "input"
+scope = "ost build"
+description = "Ninja executable override when --ninja is not supplied."
+
+[[variables]]
+name = "OST_USD_ROOT"
+kind = "environment"
+direction = "input"
+scope = "ost runtime pull"
+description = "Existing OpenUSD install adopted when --from-usd is omitted."
+
+[[variables]]
+name = "OST_USD_SRC"
+kind = "environment"
+direction = "input"
+scope = "ost runtime pull --build"
+description = "OpenUSD source tree used when --build has no path."
+
+[[variables]]
+name = "OST_USD_DEPS"
+kind = "environment"
+direction = "input"
+scope = "ost runtime pull --build"
+description = "Platform-path-separated dependency prefixes used when --deps is omitted."
+
+[[variables]]
+name = "OST_UV"
+kind = "environment"
+direction = "input"
+scope = "ost uv"
+description = "uv executable override."
+
+[[variables]]
+name = "OST_UV_ALLOW_SHADOWED"
+kind = "environment"
+direction = "input"
+scope = "ost uv"
+description = "Allow a project dependency to shadow a runtime-provided package when set."
+
+[[variables]]
+name = "OST_REGISTRY_TOKEN"
+kind = "environment"
+direction = "input"
+scope = "OCI artifact pull"
+secret = true
+description = "Static bearer token accepted for registry reads, not pushes."
+
+[[variables]]
+name = "OST_REGISTRY_USER"
+kind = "environment"
+direction = "input"
+scope = "OCI artifact push"
+secret = true
+description = "Registry username used with OST_REGISTRY_PASSWORD."
+
+[[variables]]
+name = "OST_REGISTRY_PASSWORD"
+kind = "environment"
+direction = "input"
+scope = "OCI artifact push"
+secret = true
+description = "Registry password/token used with OST_REGISTRY_USER."
+
+[[variables]]
+name = "OST_DEVSHELL"
+kind = "environment"
+direction = "output"
+scope = "ost devshell child"
+description = "Selected runtime id; also prevents recursively nesting a devshell."
+
+[[variables]]
+name = "OST_RUNTIME_PREFIX"
+kind = "environment"
+direction = "output"
+scope = "ost devshell child"
+description = "Selected runtime store prefix."
+
+[[variables]]
+name = "OST_CI_CELL"
+kind = "environment"
+direction = "output"
+scope = "generated CI job"
+description = "Support-cell identity embedded in validation evidence."
+
+[[variables]]
+name = "OST_CI_LANE"
+kind = "environment"
+direction = "output"
+scope = "generated CI job"
+description = "Execution lane embedded in validation evidence."
+
+[[variables]]
+name = "OST_CI_RUNNER_PROFILE"
+kind = "environment"
+direction = "output"
+scope = "generated CI job"
+description = "Runner profile embedded in validation evidence."
+
+[[variables]]
+name = "OST_CI_RUNS_ON"
+kind = "environment"
+direction = "output"
+scope = "generated CI job"
+description = "Concrete runner labels embedded in validation evidence."
+
+[[variables]]
+name = "OST_CI_RUNTIME_ARTIFACT"
+kind = "environment"
+direction = "output"
+scope = "generated CI job"
+description = "Pinned runtime artifact digest embedded in validation evidence."
+
+[[variables]]
+name = "OST_CI_PLUGIN_ARTIFACT"
+kind = "environment"
+direction = "output"
+scope = "generated CI job"
+description = "Pinned plugin artifact digest embedded in validation evidence when present."
+
+[[variables]]
+name = "OST_CI_MINIMUM_TRUST"
+kind = "environment"
+direction = "output"
+scope = "generated CI job"
+description = "Effective artifact trust floor embedded in validation evidence."
+
+[[variables]]
+name = "OST_CI_DISABLE_CACHE"
+kind = "github-variable"
+direction = "input"
+scope = "generated hosted CI"
+description = "Repository variable; true bypasses the hosted OST artifact cache."
+
+[[variables]]
+name = "OST_RUN_NATIVE_LIFECYCLE"
+kind = "environment"
+direction = "input"
+scope = "repository tests on Windows"
+description = "Opt in to native compiler lifecycle integration tests."
+
+[[variables]]
+name = "OST_RENDERER_ADAPTERS"
+kind = "cmake-cache"
+direction = "input"
+scope = "managed renderer build"
+description = "Semicolon-separated renderer adapter intents; v0.17 defines hydra2."
+
+[[variables]]
+name = "OST_RUNTIME_ROOT"
+kind = "cmake-cache"
+direction = "output"
+scope = "managed renderer build"
+description = "Effective OpenUSD artifact prefix recorded for launch fingerprint checks."
+
+[[variables]]
+name = "OST_RUNTIME_ID"
+kind = "cmake-cache"
+direction = "output"
+scope = "managed renderer build"
+description = "Selected runtime identity recorded for launch fingerprint checks."
+
+[[variables]]
+name = "OST_RUNTIME_DIGEST"
+kind = "cmake-cache"
+direction = "output"
+scope = "managed renderer build"
+description = "Selected runtime digest recorded for build provenance."

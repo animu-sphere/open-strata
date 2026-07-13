@@ -13,7 +13,7 @@ mod project;
 mod renderer;
 
 pub use lock::{Lock, LockExtension, LockPython, LockRuntime, Validation};
-pub use project::{add_extension, BuildConfig, Project, ProjectMeta, Requires};
+pub use project::{add_extension, set_version_file, BuildConfig, Project, ProjectMeta, Requires};
 pub use renderer::{
     FrameContract, RenderProducts, RendererCheck, RendererCheckStatus, RendererComposition,
     RendererDevice, RendererIdentity, RendererManifest, RendererReport, RendererReportIdentity,

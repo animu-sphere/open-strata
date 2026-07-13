@@ -2,44 +2,65 @@
 //! `ost renderer` — renderer-project developer workflows.
 //!
 //! The renderer remains one ordinary CMake project. This command does not add
-//! another build/package lifecycle; it bridges an already-built optional Hydra
-//! adapter into the matching OpenUSD runtime session for interactive usdview.
+//! another build/package lifecycle; it requests an optional Hydra adapter from
+//! the common managed build service, then bridges its installed product into
+//! the matching OpenUSD runtime session for interactive usdview.
 
+use std::collections::BTreeMap;
 use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use serde_json::Value;
 
+use ost_core::fs::write_atomic;
 use ost_core::host::Os;
-use ost_core::paths::STATE_DIR;
+use ost_core::paths::{find_project_root, PROJECT_MANIFEST, STATE_DIR};
 use ost_core::{tools, Category, Error, Host, Result};
-use ost_manifest::RendererManifest;
+use ost_manifest::{
+    set_version_file, FrameContract, Project, ProjectMeta, RenderProducts, RendererComposition,
+    RendererIdentity, RendererManifest, RendererReport, RendererValidation, Requires,
+    RENDERER_MANIFEST, RENDERER_SCHEMA,
+};
 use ost_runtime::{EnvOp, EnvVar, RuntimeManifest, MANIFEST_FILE};
 
-use crate::commands::configure::resolve_selection;
+use crate::commands::build::{self, BuildArgs};
+use crate::commands::configure::{build_target, resolve_selection};
 use crate::commands::{resolve, with_host_python_on_path, Resolved};
+use crate::output::{self, Format};
+
+const RENDERER_ADOPTION_FILE: &str = "openstrata.renderer-adoption.json";
 
 #[derive(Debug, Subcommand)]
 pub enum RendererCmd {
+    /// Safely adopt an existing CMake renderer without overwriting source.
+    Adopt(RendererAdoptArgs),
+
+    /// Merge independently produced renderer reports with conflict checks.
+    Merge(RendererMergeArgs),
+
     /// Open a scene in usdview with the built Hydra renderer selected.
     View {
         /// USD scene to open. Defaults to the installed usdview smoke scene.
         scene: Option<Utf8PathBuf>,
 
-        /// Hydra-enabled CMake build tree, relative to the project root.
-        #[arg(long, default_value = "out-hydra")]
-        build_dir: Utf8PathBuf,
+        /// External/prebuilt Hydra CMake tree. Omit for an OST-managed build.
+        #[arg(long)]
+        build_dir: Option<Utf8PathBuf>,
 
         /// CMake configuration to install and inspect.
         #[arg(long, default_value = "Release")]
         config: String,
 
+        /// CMake generator for the managed build. Ninja remains the default.
+        #[arg(long)]
+        generator: Option<String>,
+
         /// Platform target, e.g. `cy2026`. Defaults to the project's platform.
         #[arg(long)]
         target: Option<String>,
 
-        /// Runtime profile. Defaults to `lookdev` for Hydra/usdview capability.
+        /// Runtime profile. Auto-selects a unique pulled usdview runtime.
         #[arg(long)]
         profile: Option<String>,
 
@@ -53,12 +74,89 @@ pub enum RendererCmd {
     },
 }
 
-pub fn run(cmd: RendererCmd) -> Result<()> {
+#[derive(Debug, Args)]
+pub struct RendererAdoptArgs {
+    /// Renderer/project identity.
+    #[arg(long)]
+    name: String,
+
+    /// Existing CMake target for the host-neutral core.
+    #[arg(long)]
+    core: String,
+
+    /// Existing CMake target for renderer extraction.
+    #[arg(long)]
+    extraction: String,
+
+    /// Backend mapping in KIND=TARGET form, e.g. vulkan=merlin-vulkan.
+    #[arg(long)]
+    backend: String,
+
+    /// Existing headless adapter target.
+    #[arg(long)]
+    headless: String,
+
+    /// Existing optional Hydra 2 adapter target.
+    #[arg(long)]
+    hydra2: Option<String>,
+
+    /// Platform for a missing openstrata.toml.
+    #[arg(long)]
+    platform: Option<String>,
+
+    /// Host-neutral project profile for a missing openstrata.toml.
+    #[arg(long, default_value = "core")]
+    profile: String,
+
+    /// Inline project version for a missing openstrata.toml (default 0.1.0).
+    #[arg(long, conflicts_with = "version_file")]
+    version: Option<String>,
+
+    /// Existing repo-relative authoritative version file to adopt.
+    #[arg(long, conflicts_with = "version")]
+    version_file: Option<String>,
+
+    /// Apply the plan. Without this flag the command is a read-only dry run.
+    #[arg(long)]
+    write: bool,
+
+    /// Replace an existing, different renderer manifest (never source/CMake).
+    #[arg(long)]
+    replace_manifest: bool,
+
+    /// Record unresolved target labels instead of refusing the write.
+    #[arg(long)]
+    allow_unresolved: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RendererMergeArgs {
+    /// Base renderer report.
+    #[arg(long)]
+    base: Utf8PathBuf,
+
+    /// Overlay renderer report.
+    #[arg(long)]
+    overlay: Utf8PathBuf,
+
+    /// Output renderer report.
+    #[arg(long)]
+    out: Utf8PathBuf,
+
+    /// Explicitly replace duplicate assertion ids.
+    #[arg(long)]
+    replace: bool,
+}
+
+pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
     match cmd {
+        RendererCmd::Adopt(args) => adopt(args, fmt),
+        RendererCmd::Merge(args) => merge_reports(args, fmt),
         RendererCmd::View {
             scene,
             build_dir,
             config,
+            generator,
             target,
             profile,
             camera,
@@ -67,6 +165,7 @@ pub fn run(cmd: RendererCmd) -> Result<()> {
             scene,
             build_dir,
             config,
+            generator,
             target,
             profile,
             camera,
@@ -77,31 +176,359 @@ pub fn run(cmd: RendererCmd) -> Result<()> {
 
 struct ViewArgs {
     scene: Option<Utf8PathBuf>,
-    build_dir: Utf8PathBuf,
+    build_dir: Option<Utf8PathBuf>,
     config: String,
+    generator: Option<String>,
     target: Option<String>,
     profile: Option<String>,
     camera: String,
     renderer: Option<String>,
 }
 
+fn adopt(args: RendererAdoptArgs, fmt: Format) -> Result<()> {
+    let root = renderer_command_root()?;
+    let cmake_root = root.join("CMakeLists.txt");
+    if !cmake_root.as_std_path().is_file() {
+        return Err(Error::precondition(format!(
+            "existing renderer has no root CMakeLists.txt at {cmake_root}"
+        )));
+    }
+
+    let (backend_kind, backend_target) = args.backend.split_once('=').ok_or_else(|| {
+        Error::usage("--backend must use KIND=TARGET form, e.g. vulkan=merlin-vulkan")
+    })?;
+    if backend_kind.trim().is_empty() || backend_target.trim().is_empty() {
+        return Err(Error::usage("--backend KIND and TARGET must not be empty"));
+    }
+
+    let project_path = root.join(PROJECT_MANIFEST);
+    let (project, project_action, project_body) = if project_path.as_std_path().is_file() {
+        let source = std::fs::read_to_string(project_path.as_std_path())
+            .map_err(|error| Error::io(project_path.to_string(), error))?;
+        if args.version.is_some() {
+            return Err(Error::usage(
+                "--version only applies when openstrata.toml is missing; use the existing manifest or --version-file",
+            ));
+        }
+        let updated = args
+            .version_file
+            .as_deref()
+            .map(|path| set_version_file(&source, path))
+            .transpose()?
+            .flatten();
+        let project = Project::from_toml(updated.as_deref().unwrap_or(&source))?;
+        if project.project.name != args.name {
+            return Err(Error::config(format!(
+                "existing project name '{}' does not match adopted renderer '{}'",
+                project.project.name, args.name
+            )));
+        }
+        let action = if updated.is_some() {
+            "update-version-source"
+        } else {
+            "keep"
+        };
+        (project, action, updated)
+    } else {
+        let platform = args.platform.clone().ok_or_else(|| {
+            Error::usage("--platform is required when openstrata.toml is missing")
+        })?;
+        let project = Project {
+            project: ProjectMeta {
+                name: args.name.clone(),
+                version: if args.version_file.is_some() {
+                    None
+                } else {
+                    Some(args.version.clone().unwrap_or_else(|| "0.1.0".into()))
+                },
+                version_file: args.version_file.clone(),
+                description: Some("Adopted OpenStrata renderer project".into()),
+            },
+            requires: Requires {
+                platform,
+                profile: args.profile.clone(),
+                capabilities: Vec::new(),
+                extensions: Vec::new(),
+            },
+            build: None,
+        };
+        let body = project.to_toml()?;
+        (project, "create", Some(body))
+    };
+    let project_version = project.effective_version(&root)?;
+
+    let mut units = BTreeMap::new();
+    units.insert("backend".into(), backend_target.to_string());
+    units.insert("core".into(), args.core.clone());
+    units.insert("extraction".into(), args.extraction.clone());
+    let mut adapters = BTreeMap::new();
+    adapters.insert("headless".into(), args.headless.clone());
+    if let Some(hydra2) = &args.hydra2 {
+        adapters.insert("hydra2".into(), hydra2.clone());
+    }
+    let mut scene_inputs = vec!["headless".into()];
+    if args.hydra2.is_some() {
+        scene_inputs.push("hydra2".into());
+    }
+    let manifest = RendererManifest {
+        schema: RENDERER_SCHEMA.into(),
+        renderer: RendererIdentity {
+            name: args.name.clone(),
+        },
+        composition: RendererComposition {
+            backend: backend_kind.to_string(),
+            scene_inputs,
+            units,
+            adapters,
+        },
+        render_products: RenderProducts {
+            required: vec!["color".into(), "depth".into()],
+        },
+        frame: FrameContract {
+            contexts: 3,
+            completion: "explicit".into(),
+        },
+        validation: RendererValidation {
+            gpu_smoke: true,
+            validation_messages_are_errors: true,
+            assertions: renderer_assertions(),
+        },
+    };
+    manifest.validate()?;
+    let manifest_body = serde_yaml::to_string(&manifest)
+        .map_err(|error| Error::parse(RENDERER_MANIFEST, anyhow::Error::new(error)))?;
+    let manifest_path = root.join(RENDERER_MANIFEST);
+    let renderer_action = if manifest_path.as_std_path().is_file() {
+        let current = RendererManifest::load(&root)?;
+        if current == manifest {
+            "keep"
+        } else {
+            "replace"
+        }
+    } else {
+        "create"
+    };
+
+    let labels: Vec<(String, String)> = manifest
+        .composition
+        .units
+        .iter()
+        .chain(manifest.composition.adapters.iter())
+        .map(|(role, target)| (role.clone(), target.clone()))
+        .collect();
+    let resolution: Vec<serde_json::Value> = labels
+        .iter()
+        .map(|(role, target)| {
+            serde_json::json!({
+                "role": role,
+                "target": target,
+                "resolved": cmake_sources_contain(&root, target),
+            })
+        })
+        .collect();
+    let unresolved: Vec<String> = resolution
+        .iter()
+        .filter(|item| item["resolved"] == false)
+        .filter_map(|item| item["target"].as_str().map(str::to_string))
+        .collect();
+
+    if args.write && !unresolved.is_empty() && !args.allow_unresolved {
+        return Err(Error::precondition(format!(
+            "adoption target labels were not found in CMake sources: {}",
+            unresolved.join(", ")
+        ))
+        .with_hint("correct the mappings or pass --allow-unresolved to record them explicitly"));
+    }
+    if args.write && renderer_action == "replace" && !args.replace_manifest {
+        return Err(Error::precondition(format!(
+            "{RENDERER_MANIFEST} already differs from the adoption plan"
+        ))
+        .with_hint("review the dry run, then pass --replace-manifest --write"));
+    }
+
+    let adoption = serde_json::json!({
+        "schema": "openstrata.renderer-adoption/v1",
+        "mode": "adopted",
+        "renderer": args.name,
+        "project": {
+            "name": project.project.name,
+            "version": project_version,
+            "version_source": project.project.version_file.as_deref().unwrap_or("openstrata.toml"),
+        },
+        "mapping": {
+            "backend": backend_kind,
+            "targets": resolution,
+        },
+        "unresolved": unresolved,
+    });
+    let adoption_body = serde_json::to_string_pretty(&adoption)
+        .map_err(|error| Error::parse(RENDERER_ADOPTION_FILE, anyhow::Error::new(error)))?;
+
+    if args.write {
+        if let Some(body) = project_body {
+            write_atomic(project_path.as_std_path(), format!("{body}\n").as_bytes())?;
+        }
+        if renderer_action != "keep" {
+            write_atomic(manifest_path.as_std_path(), manifest_body.as_bytes())?;
+        }
+        let adoption_path = root.join(RENDERER_ADOPTION_FILE);
+        write_atomic(
+            adoption_path.as_std_path(),
+            format!("{adoption_body}\n").as_bytes(),
+        )?;
+    }
+
+    let data = serde_json::json!({
+        "dry_run": !args.write,
+        "root": root,
+        "actions": {
+            "openstrata.toml": project_action,
+            "openstrata.renderer.yaml": renderer_action,
+            "openstrata.renderer-adoption.json": if args.write { "write" } else { "would-write" },
+        },
+        "mapping": resolution,
+        "unresolved": adoption["unresolved"],
+    });
+    if fmt.is_json() {
+        output::success(&data);
+    } else {
+        println!(
+            "Renderer adoption {} for {}",
+            if args.write { "applied" } else { "dry run" },
+            root
+        );
+        println!("  {PROJECT_MANIFEST}: {project_action}");
+        println!("  {RENDERER_MANIFEST}: {renderer_action}");
+        for item in data["mapping"].as_array().into_iter().flatten() {
+            println!(
+                "  {:<12} {:<32} {}",
+                item["role"].as_str().unwrap_or_default(),
+                item["target"].as_str().unwrap_or_default(),
+                if item["resolved"] == true {
+                    "resolved"
+                } else {
+                    "UNRESOLVED"
+                }
+            );
+        }
+        if !args.write {
+            println!("\nReview the plan, then rerun with --write.");
+        }
+    }
+    Ok(())
+}
+
+fn merge_reports(args: RendererMergeArgs, fmt: Format) -> Result<()> {
+    let root = renderer_command_root()?;
+    let base_path = rooted(&root, &args.base);
+    let overlay_path = rooted(&root, &args.overlay);
+    let out_path = rooted(&root, &args.out);
+    let manifest = RendererManifest::load(&root)?;
+    let base = RendererReport::load(&base_path)?;
+    let overlay = RendererReport::load(&overlay_path)?;
+    let merged = base.merge(&overlay, args.replace)?;
+    merged.validate_against(&manifest)?;
+    let body = serde_json::to_string_pretty(&merged)
+        .map_err(|error| Error::parse(out_path.to_string(), anyhow::Error::new(error)))?;
+    write_atomic(out_path.as_std_path(), format!("{body}\n").as_bytes())?;
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "merged": true,
+            "base": base_path,
+            "overlay": overlay_path,
+            "out": out_path,
+            "checks": merged.checks.len(),
+        }));
+    } else {
+        println!(
+            "Merged {} + {} -> {} ({} checks)",
+            base_path,
+            overlay_path,
+            out_path,
+            merged.checks.len()
+        );
+    }
+    Ok(())
+}
+
+fn renderer_command_root() -> Result<Utf8PathBuf> {
+    let cwd = std::env::current_dir().map_err(|error| Error::io(".", error))?;
+    let root = find_project_root(&cwd).unwrap_or(cwd);
+    Utf8PathBuf::from_path_buf(root)
+        .map_err(|path| Error::config(format!("non-UTF-8 project path: {}", path.display())))
+}
+
+fn renderer_assertions() -> Vec<String> {
+    [
+        "renderer.core.boundary",
+        "renderer.backend.capability",
+        "renderer.gpu.frame",
+        "renderer.validation.messages",
+        "renderer.render_product.color",
+        "renderer.render_product.depth",
+        "renderer.frame.persistence",
+        "renderer.install_tree",
+        "renderer.plugin.discovery",
+        "renderer.delegate.creation",
+        "renderer.render_buffer.cpu",
+        "renderer.host.first_frame",
+        "renderer.host.stable_update",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn cmake_sources_contain(root: &Utf8Path, target: &str) -> bool {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(dir.as_std_path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
+                continue;
+            };
+            if file_type.is_dir() {
+                if !matches!(
+                    path.file_name(),
+                    Some(".git" | ".strata" | "build" | "target" | "dist")
+                ) {
+                    pending.push(path);
+                }
+                continue;
+            }
+            let is_cmake = path.file_name() == Some("CMakeLists.txt")
+                || path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("cmake"));
+            if is_cmake
+                && std::fs::read_to_string(path.as_std_path())
+                    .is_ok_and(|source| source.contains(target))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn view(args: ViewArgs) -> Result<()> {
-    // Renderer projects intentionally default to the host-neutral `core`
-    // profile. Interactive Hydra inspection is the exception: it requires an
-    // imaging/usdview runtime, so use the existing `lookdev` capability profile
-    // unless explicitly replaced (an adopted full SDK may also use `usd`).
-    let (root, platform, profile) = resolve_selection(
-        args.target,
-        Some(args.profile.unwrap_or_else(|| "lookdev".into())),
-    )?;
+    // Renderer projects intentionally default to host-neutral `core`. For a
+    // view, prefer the single already-pulled real Hydra-capable profile; this
+    // makes an adopted `usd` runtime work without repeating `--profile` while
+    // refusing to guess when several distinct choices exist.
+    let (root, platform, project_profile) = resolve_selection(args.target.clone(), None)?;
+    let profile = select_view_profile(&platform, args.profile, &project_profile)?;
     let manifest = RendererManifest::load(&root)?;
     let adapter = manifest.composition.adapters.get("hydra2").ok_or_else(|| {
         Error::config("renderer composition has no `hydra2` adapter in openstrata.renderer.yaml")
     })?;
     let runtime = require_real_runtime(&platform, &profile)?;
 
-    let build_dir = rooted(&root, &args.build_dir);
-    validate_hydra_build(&build_dir, &runtime.artifact_prefix)?;
     let explicit_scene = args.scene.map(|scene| rooted(&root, &scene));
     if let Some(scene) = &explicit_scene {
         if !scene.as_std_path().is_file() {
@@ -110,6 +537,23 @@ fn view(args: ViewArgs) -> Result<()> {
             )));
         }
     }
+
+    let build_dir = match args.build_dir {
+        Some(build_dir) => {
+            let build_dir = rooted(&root, &build_dir);
+            println!("==> using external Hydra build tree: {build_dir}");
+            validate_hydra_build(&build_dir, &runtime.artifact_prefix, &runtime.runtime.id())?;
+            build_dir
+        }
+        None => managed_hydra_build(
+            &root,
+            &platform,
+            &profile,
+            &args.config,
+            args.generator,
+            &runtime,
+        )?,
+    };
 
     let cmake = tools::which("cmake").ok_or_else(|| {
         Error::coded(
@@ -210,6 +654,112 @@ fn view(args: ViewArgs) -> Result<()> {
     Ok(())
 }
 
+fn select_view_profile(
+    platform: &str,
+    explicit: Option<String>,
+    project_profile: &str,
+) -> Result<String> {
+    if let Some(profile) = explicit {
+        return Ok(profile);
+    }
+
+    let mut names = Vec::new();
+    for name in [project_profile, "lookdev", "usd"] {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    let mut available = Vec::new();
+    for name in names {
+        let Ok(candidate) = resolve(platform, name) else {
+            continue;
+        };
+        if !candidate.pulled {
+            continue;
+        }
+        let manifest = std::fs::read_to_string(candidate.prefix.join(MANIFEST_FILE).as_std_path())
+            .ok()
+            .and_then(|source| RuntimeManifest::from_json(&source).ok());
+        if manifest.is_some_and(|manifest| manifest.source.is_real())
+            && locate_runtime_tool(&candidate, &["usdview.cmd", "usdview.exe", "usdview"]).is_some()
+        {
+            available.push(name.to_string());
+        }
+    }
+    match available.as_slice() {
+        [profile] => Ok(profile.clone()),
+        [] => Ok("lookdev".into()),
+        profiles => Err(Error::precondition(format!(
+            "multiple real usdview runtimes are available for {platform}: {}",
+            profiles.join(", ")
+        ))
+        .with_hint("select the build/runtime identity explicitly with `--profile <profile>`")),
+    }
+}
+
+fn managed_hydra_build(
+    root: &Utf8Path,
+    platform: &str,
+    profile: &str,
+    config: &str,
+    generator: Option<String>,
+    runtime: &Resolved,
+) -> Result<Utf8PathBuf> {
+    let (target, _) = build_target(platform, profile)?;
+    let build_dir = root.join("build").join(target.id());
+    let mut cache = BTreeMap::new();
+    cache.insert("OST_RENDERER_ADAPTERS".into(), "hydra2".into());
+    cache.insert(
+        "OST_RUNTIME_ROOT".into(),
+        portable_path(&runtime.artifact_prefix),
+    );
+    cache.insert("OST_RUNTIME_ID".into(), runtime.runtime.id());
+    cache.insert("OST_RUNTIME_DIGEST".into(), target.runtime_digest.clone());
+    cache.insert("CMAKE_BUILD_TYPE".into(), config.into());
+    let mut intent = ost_build::BuildIntent {
+        name: "renderer-hydra2".into(),
+        cache,
+    };
+
+    println!("==> preparing managed Hydra build: {build_dir}");
+    build::run_with_intent(
+        BuildArgs::managed(
+            platform.to_string(),
+            profile.to_string(),
+            generator.clone(),
+            config.to_string(),
+        ),
+        Format::Human,
+        intent.clone(),
+    )?;
+
+    // Adopted v0.16 projects may expose the established *_ENABLE_HYDRA2 cache
+    // option but not yet consume OST_RENDERER_ADAPTERS. Discover the one exact
+    // option from CMake's own cache and repeat through the same build service;
+    // new/generated projects take the one-pass standard-intent path above.
+    let source = read_cmake_cache(&build_dir)?;
+    let options = hydra_option_entries(&source);
+    if !options.iter().any(|(_, enabled)| *enabled) {
+        if let [(option, false)] = options.as_slice() {
+            println!("==> adopted renderer mapping: enabling {option}");
+            intent.cache.insert(option.clone(), "ON".into());
+            build::run_with_intent(
+                BuildArgs::managed(
+                    platform.to_string(),
+                    profile.to_string(),
+                    generator,
+                    config.to_string(),
+                ),
+                Format::Human,
+                intent,
+            )?;
+        }
+    }
+
+    validate_hydra_build(&build_dir, &runtime.artifact_prefix, &runtime.runtime.id())?;
+    Ok(build_dir)
+}
+
 fn rooted(root: &Utf8Path, path: &Utf8Path) -> Utf8PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -236,25 +786,42 @@ fn config_dir_name(config: &str) -> String {
     }
 }
 
-fn validate_hydra_build(build_dir: &Utf8Path, runtime_root: &Utf8Path) -> Result<()> {
+fn read_cmake_cache(build_dir: &Utf8Path) -> Result<String> {
     let cache = build_dir.join("CMakeCache.txt");
-    let source = std::fs::read_to_string(cache.as_std_path()).map_err(|_| {
+    std::fs::read_to_string(cache.as_std_path()).map_err(|_| {
         Error::precondition(format!("Hydra build tree not configured at '{build_dir}'"))
             .with_hint(
-                "configure and build the optional adapter first (see the generated README), \
-             or pass its tree with `--build-dir`",
+                "omit `--build-dir` for an OST-managed build, or configure and build the \
+                 external optional adapter first",
             )
             .with_phase("renderer-view-preflight")
-    })?;
+    })
+}
+
+fn hydra_option_entries(source: &str) -> Vec<(String, bool)> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let (entry, value) = line.split_once('=')?;
+            let name = entry.split_once(':').map_or(entry, |(name, _)| name);
+            name.to_ascii_uppercase()
+                .ends_with("_ENABLE_HYDRA2")
+                .then(|| (name.to_string(), cmake_cache_truthy(value)))
+        })
+        .collect()
+}
+
+fn validate_hydra_build(
+    build_dir: &Utf8Path,
+    runtime_root: &Utf8Path,
+    runtime_id: &str,
+) -> Result<()> {
+    let source = read_cmake_cache(build_dir)?;
     // A `-D<RENDERER>_ENABLE_HYDRA2=YES` configure stores an UNINITIALIZED
     // cache entry, so accept any entry type and the CMake truthy value set.
-    let enabled = source.lines().any(|line| {
-        let Some((entry, value)) = line.split_once('=') else {
-            return false;
-        };
-        let name = entry.split_once(':').map_or(entry, |(name, _)| name);
-        name.to_ascii_uppercase().ends_with("_ENABLE_HYDRA2") && cmake_cache_truthy(value)
-    });
+    let enabled = hydra_option_entries(&source)
+        .iter()
+        .any(|(_, enabled)| *enabled);
     if !enabled {
         return Err(Error::precondition(format!(
             "CMake build tree '{build_dir}' does not enable the Hydra 2 adapter"
@@ -262,15 +829,14 @@ fn validate_hydra_build(build_dir: &Utf8Path, runtime_root: &Utf8Path) -> Result
         .with_hint("reconfigure it with `-D<RENDERER>_ENABLE_HYDRA2=ON`")
         .with_phase("renderer-view-preflight"));
     }
-    if let Some(pxr_dir) = cache_path(&source, "pxr_DIR") {
-        let pxr_dir = Utf8PathBuf::from(pxr_dir);
-        if pxr_dir.as_str() != "pxr_DIR-NOTFOUND" && !path_is_within(&pxr_dir, runtime_root) {
+    if let Some(recorded_id) = cache_path(&source, "OST_RUNTIME_ID") {
+        if recorded_id != runtime_id {
             return Err(Error::coded(
                 "RUNTIME_BUILD_MISMATCH",
                 Category::Precondition,
                 format!(
-                    "Hydra build uses OpenUSD at '{pxr_dir}', but profile runtime root is \
-                     '{runtime_root}'"
+                    "Hydra build records runtime '{recorded_id}', but the selected runtime is '{}'",
+                    runtime_id
                 ),
             )
             .with_hint(
@@ -279,6 +845,58 @@ fn validate_hydra_build(build_dir: &Utf8Path, runtime_root: &Utf8Path) -> Result
             )
             .with_phase("renderer-view-preflight"));
         }
+    }
+
+    let mut roots = Vec::new();
+    for key in ["OST_RUNTIME_ROOT", "pxr_DIR", "PXR_DIR", "OpenUSD_DIR"] {
+        if let Some(value) = cache_path(&source, key) {
+            if !value.ends_with("-NOTFOUND") && !value.trim().is_empty() {
+                roots.push(Utf8PathBuf::from(value));
+            }
+        }
+    }
+    if let Some(prefixes) = cache_path(&source, "CMAKE_PREFIX_PATH") {
+        roots.extend(
+            prefixes
+                .split(';')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(Utf8PathBuf::from),
+        );
+    }
+    if roots.is_empty() {
+        return Err(Error::coded(
+            "RUNTIME_BUILD_FINGERPRINT_MISSING",
+            Category::Precondition,
+            format!("Hydra build tree '{build_dir}' does not record how OpenUSD was discovered"),
+        )
+        .with_hint(
+            "omit `--build-dir` for a fingerprinted managed build, or reconfigure the \
+             external tree with CMAKE_PREFIX_PATH/pxr_DIR pointing at the selected runtime",
+        )
+        .with_phase("renderer-view-preflight"));
+    }
+    if !roots
+        .iter()
+        .any(|candidate| path_is_within(candidate, runtime_root))
+    {
+        return Err(Error::coded(
+            "RUNTIME_BUILD_MISMATCH",
+            Category::Precondition,
+            format!(
+                "Hydra build OpenUSD roots ({}) do not match profile runtime root '{runtime_root}'",
+                roots
+                    .iter()
+                    .map(|path| path.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+        .with_hint(
+            "select the runtime used for this build with `--target/--profile`, or \
+             reconfigure the Hydra build against that runtime",
+        )
+        .with_phase("renderer-view-preflight"));
     }
     Ok(())
 }
@@ -535,23 +1153,26 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(validate_hydra_build(&build, &runtime).is_ok());
+        assert!(validate_hydra_build(&build, &runtime, "runtime").is_ok());
 
         // A plain `-D` configure stores UNINITIALIZED entries with any CMake
         // truthy spelling; the advanced marker must never count as enabled.
         std::fs::write(
             build.join("CMakeCache.txt").as_std_path(),
-            "SAMPLE_RENDERER_ENABLE_HYDRA2:UNINITIALIZED=YES\n",
+            format!(
+                "SAMPLE_RENDERER_ENABLE_HYDRA2:UNINITIALIZED=YES\nOST_RUNTIME_ROOT:UNINITIALIZED={}\n",
+                portable_path(&runtime)
+            ),
         )
         .unwrap();
-        assert!(validate_hydra_build(&build, &runtime).is_ok());
+        assert!(validate_hydra_build(&build, &runtime, "runtime").is_ok());
 
         std::fs::write(
             build.join("CMakeCache.txt").as_std_path(),
             "SAMPLE_RENDERER_ENABLE_HYDRA2:BOOL=OFF\nSAMPLE_RENDERER_ENABLE_HYDRA2-ADVANCED:INTERNAL=1\n",
         )
         .unwrap();
-        assert!(validate_hydra_build(&build, &runtime).is_err());
+        assert!(validate_hydra_build(&build, &runtime, "runtime").is_err());
         std::fs::remove_dir_all(build.as_std_path()).unwrap();
         std::fs::remove_dir_all(runtime.as_std_path()).unwrap();
     }
@@ -570,7 +1191,7 @@ mod tests {
         )
         .unwrap();
 
-        let error = validate_hydra_build(&build, &runtime).unwrap_err();
+        let error = validate_hydra_build(&build, &runtime, "runtime").unwrap_err();
         assert_eq!(error.code(), "RUNTIME_BUILD_MISMATCH");
         std::fs::remove_dir_all(build.as_std_path()).unwrap();
         std::fs::remove_dir_all(runtime.as_std_path()).unwrap();

@@ -29,19 +29,21 @@ Run CTest for build-tree and install-tree evidence:
 ctest --test-dir build/<target-id> -C Release --output-on-failure
 ```
 
-## Build the Hydra 2 adapter
+## Build and view the Hydra 2 adapter
 
 The adapter is opt-in so a default renderer build remains independent of
-OpenUSD. Point `CMAKE_PREFIX_PATH` at a matching OpenUSD imaging/usdview SDK:
+OpenUSD. Pull or adopt one real imaging/usdview runtime, then let the view loop
+select it and incrementally build the adapter through the ordinary OST build
+service:
 
 ```bash
-cmake -S . -B out-hydra \
-  -D{{NAME}}_ENABLE_HYDRA2=ON \
-  -DCMAKE_PREFIX_PATH=<openusd-root> \
-  -DPython3_EXECUTABLE=<openusd-python>
-cmake --build out-hydra --config Release
-ctest --test-dir out-hydra -C Release --output-on-failure
+ost runtime pull cy2026 --profile lookdev --from-usd <openusd-root>
+ost renderer view
 ```
+
+The managed build passes `OST_RENDERER_ADAPTERS=hydra2`, records the selected
+runtime fingerprint, and writes atomic build-completion evidence only after
+configure, build, and output verification finish.
 
 The Hydra tests independently verify plugin discovery, module loading and
 delegate creation, CPU color/depth/id RenderBuffers, and an isolated install-tree
@@ -52,34 +54,35 @@ writes `renderer-hydra-report.json` and merges those PASS results into
 
 ## View in usdview
 
-After the Hydra build above succeeds, open its installed smoke scene with the
-adapter selected:
+The command opens the installed smoke scene with the adapter selected:
 
 ```bash
 ost renderer view
 ```
 
-`ost renderer view` installs the current `out-hydra` build into a private
-`.strata/renderer-view/` tree, reads the renderer display name and discovery
-directory from the installed `plugInfo.json`, composes the selected real
-OpenUSD runtime environment, and launches that runtime's usdview. The renderer
-project itself can keep the host-neutral `core` profile; this command defaults
-to the same platform with the Hydra-capable `lookdev` profile. Pass
-`--profile usd` when a full imaging SDK was adopted under that profile instead.
+`ost renderer view` requests the `hydra2` intent from the common managed build
+service, installs the result into a private `.strata/renderer-view/` tree, reads
+the renderer display name and discovery directory from the installed
+`plugInfo.json`, composes the selected real OpenUSD runtime environment, and
+launches that runtime's usdview. The renderer project itself can keep the
+host-neutral `core` profile; the command auto-selects a unique pulled real
+runtime that provides usdview. Pass `--profile lookdev` or `--profile usd` when
+more than one eligible runtime is installed.
 
-Open another scene, build tree, configuration, or camera explicitly when needed:
+Open another scene, configuration, generator, or camera explicitly when needed:
 
 ```bash
 ost renderer view scenes/shot.usda \
-  --build-dir out-hydra --config Release --camera /Camera --profile lookdev
+  --config Release --generator Ninja --camera /Camera --profile lookdev
 ```
 
-The command expects a prior Hydra-enabled CMake build, just as
-`ost plugin view` expects a prior plugin build. If the runtime has not been
-adopted yet, register the OpenUSD installation used for the build first:
+An explicit `--build-dir` keeps the external/prebuilt escape hatch. OST does not
+rebuild that tree or claim it was produced by `ost build`; it validates the
+Hydra option and OpenUSD discovery fingerprint before installing it:
 
 ```bash
-ost runtime pull <platform> --profile lookdev --from-usd <openusd-root>
+ost renderer view scenes/shot.usda \
+  --build-dir out-hydra --config Release --profile lookdev
 ```
 
 For manual diagnosis, the equivalent install-tree session is:

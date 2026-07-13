@@ -44,7 +44,9 @@ Some reference pages are **generated** from these sources by `ost internal docs
 generate` and drift-checked in CI — do not edit them by hand:
 [reference/cli.md](../reference/cli.md) (clap command tree),
 [reference/exit-codes.md](../reference/exit-codes.md) (`ost_core::Category`),
-[reference/schemas.md](../reference/schemas.md) (`schemas/*.json`), and
+[reference/schemas.md](../reference/schemas.md) (`schemas/*.json`),
+[reference/environment-variables.md](../reference/environment-variables.md)
+(`support/environment-variables.toml`), and
 [reference/support-matrix.md](../reference/support-matrix.md)
 (`support/platforms.toml`). Change the source, then regenerate:
 

@@ -255,6 +255,59 @@ impl RendererReport {
             .iter()
             .any(|check| check.status == RendererCheckStatus::Fail)
     }
+
+    /// Merge independently produced renderer evidence without hiding conflicts.
+    /// Existing ids require an explicit replacement policy, and a recorded FAIL
+    /// can never be silently downgraded.
+    pub fn merge(&self, overlay: &RendererReport, replace: bool) -> Result<RendererReport> {
+        if self.renderer != overlay.renderer {
+            return Err(invalid(format!(
+                "renderer report identity conflict: '{}' != '{}'",
+                self.renderer.name, overlay.renderer.name
+            )));
+        }
+        let device = match (&self.device, &overlay.device) {
+            (Some(left), Some(right)) if left != right => {
+                return Err(invalid(format!(
+                    "renderer report device/runtime context conflicts for '{}'",
+                    self.renderer.name
+                )))
+            }
+            (Some(device), _) | (None, Some(device)) => Some(device.clone()),
+            (None, None) => None,
+        };
+
+        let mut checks = self.checks.clone();
+        for incoming in &overlay.checks {
+            if let Some(index) = checks.iter().position(|check| check.id == incoming.id) {
+                if !replace {
+                    return Err(invalid(format!(
+                        "renderer report repeats '{}' across inputs; pass an explicit replacement policy",
+                        incoming.id
+                    )));
+                }
+                if checks[index].status == RendererCheckStatus::Fail
+                    && incoming.status != RendererCheckStatus::Fail
+                {
+                    return Err(invalid(format!(
+                        "renderer report cannot downgrade FAIL for '{}' to {}",
+                        incoming.id,
+                        incoming.status.as_str()
+                    )));
+                }
+                checks[index] = incoming.clone();
+            } else {
+                checks.push(incoming.clone());
+            }
+        }
+
+        Ok(RendererReport {
+            schema: self.schema.clone(),
+            renderer: self.renderer.clone(),
+            device,
+            checks,
+        })
+    }
 }
 
 fn validate_label_map(label: &str, values: &BTreeMap<String, String>) -> Result<()> {
@@ -418,5 +471,44 @@ validation:
         ))
         .unwrap();
         assert!(unexplained.validate_against(&manifest).is_err());
+    }
+
+    #[test]
+    fn report_merge_requires_replacement_and_preserves_failures() {
+        let base = RendererReport::parse(
+            r#"{
+              "schema":"openstrata.renderer-report/v1alpha1",
+              "renderer":{"name":"sample-renderer"},
+              "checks":[
+                {"id":"renderer.core.boundary","status":"pass"},
+                {"id":"renderer.gpu.frame","status":"fail","detail":"device lost"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        let overlay = RendererReport::parse(
+            r#"{
+              "schema":"openstrata.renderer-report/v1alpha1",
+              "renderer":{"name":"sample-renderer"},
+              "checks":[
+                {"id":"renderer.core.boundary","status":"pass"},
+                {"id":"renderer.host.first_frame","status":"pass"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        assert!(base.merge(&overlay, false).is_err());
+        let merged = base.merge(&overlay, true).unwrap();
+        assert_eq!(merged.checks.len(), 3);
+
+        let downgrade = RendererReport::parse(
+            r#"{
+              "schema":"openstrata.renderer-report/v1alpha1",
+              "renderer":{"name":"sample-renderer"},
+              "checks":[{"id":"renderer.gpu.frame","status":"pass"}]
+            }"#,
+        )
+        .unwrap();
+        assert!(base.merge(&downgrade, true).is_err());
     }
 }

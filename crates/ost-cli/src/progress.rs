@@ -23,6 +23,7 @@
 //! With `--notify`, a best-effort OS notification fires on completion (success
 //! or failure); it is a no-op over SSH or in CI (see [`crate::notify`]).
 
+use std::collections::VecDeque;
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -59,6 +60,7 @@ enum Style {
 
 /// Idle time with no child output before a heartbeat is emitted.
 const HEARTBEAT: Duration = Duration::from_secs(15);
+const OUTPUT_TAIL_BYTES: usize = 4096;
 
 struct PhaseState {
     name: String,
@@ -293,32 +295,92 @@ impl Reporter {
     }
 
     /// Emit an idle heartbeat for the running phase (no child output for a while).
-    fn heartbeat(&self, idle: Duration) {
+    fn heartbeat(&self, idle: Duration, pid: u32, tail: &str) {
         if self.quiet {
             return;
         }
         let Some(state) = &self.current else { return };
         let elapsed = state.started.elapsed();
         match self.style {
-            Style::Human => println!(
-                "[{}/{}] {} … elapsed {} (waiting on output)",
-                self.index,
-                self.total,
-                state.name,
-                hms(elapsed)
-            ),
+            Style::Human => {
+                println!(
+                    "[{}/{}] {} … elapsed {} (pid {pid}, waiting on output)",
+                    self.index,
+                    self.total,
+                    state.name,
+                    hms(elapsed)
+                );
+                if let Some(log) = &self.log {
+                    println!("      log: {}", log.display());
+                }
+                if !tail.is_empty() {
+                    println!("      last output: {}", one_line(tail));
+                }
+            }
             Style::Plain => println!(
-                "timestamp={} phase={} status=running elapsed_ms={} last_output_ms={}",
+                "timestamp={} phase={} status=running pid={} elapsed_ms={} last_output_ms={} log={} tail={}",
                 now_unix(),
                 state.slug,
+                pid,
                 elapsed.as_millis(),
-                idle.as_millis()
+                idle.as_millis(),
+                self.log.as_ref().map(|path| path.display().to_string()).unwrap_or_default(),
+                serde_json::to_string(tail).unwrap_or_else(|_| "\"\"".into())
             ),
             Style::Json => emit_json(serde_json::json!({
                 "event": "heartbeat",
                 "phase": state.slug,
+                "pid": pid,
                 "elapsed_ms": elapsed.as_millis() as u64,
                 "last_output_ms": idle.as_millis() as u64,
+                "log": self.log.as_ref().map(|path| path.display().to_string()),
+                "last_output_tail": tail,
+                "timestamp": now_unix(),
+            })),
+        }
+    }
+
+    fn child_started(
+        &self,
+        pid: u32,
+        program: &Path,
+        args: &[String],
+        cwd: &Utf8Path,
+        timeout: Option<Duration>,
+    ) {
+        if self.quiet {
+            return;
+        }
+        let Some(state) = &self.current else { return };
+        let command = render_command(program, args);
+        let timeout_secs = timeout.map(|value| value.as_secs());
+        let log = self.log.as_ref().map(|path| path.display().to_string());
+        match self.style {
+            Style::Human => println!(
+                "      pid {pid} · timeout {} · log {}",
+                timeout_secs
+                    .map(|seconds| format!("{seconds}s"))
+                    .unwrap_or_else(|| "disabled".into()),
+                log.as_deref().unwrap_or("disabled")
+            ),
+            Style::Plain => println!(
+                "timestamp={} phase={} status=child-started pid={} timeout_seconds={} cwd={} log={} command={}",
+                now_unix(),
+                state.slug,
+                pid,
+                timeout_secs.map(|value| value.to_string()).unwrap_or_else(|| "0".into()),
+                cwd,
+                log.as_deref().unwrap_or_default(),
+                serde_json::to_string(&command).unwrap_or_else(|_| "\"\"".into())
+            ),
+            Style::Json => emit_json(serde_json::json!({
+                "event": "child_started",
+                "phase": state.slug,
+                "pid": pid,
+                "timeout_seconds": timeout_secs,
+                "cwd": cwd,
+                "log": log,
+                "command": command,
                 "timestamp": now_unix(),
             })),
         }
@@ -333,6 +395,7 @@ impl Reporter {
         args: &[String],
         cwd: &Utf8Path,
         env: &[(String, String)],
+        timeout: Option<Duration>,
     ) -> Result<()> {
         let mut cmd = Command::new(program);
         cmd.args(args)
@@ -340,14 +403,18 @@ impl Reporter {
             .envs(env.iter().cloned())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        configure_process_group(&mut cmd);
 
         let mut child = cmd
             .spawn()
             .map_err(|e| Error::io(format!("run {}", program.display()), e))?;
+        let pid = child.id();
+        self.child_started(pid, program, args, cwd, timeout);
 
         // Shared "last output" clock and an optional log sink, both updated by the
         // reader threads as bytes arrive.
         let last_output = Arc::new(Mutex::new(Instant::now()));
+        let tail = Arc::new(Mutex::new(VecDeque::with_capacity(OUTPUT_TAIL_BYTES)));
         let log = self.open_log();
         // Pass child output through to our stdout/stderr, except when stdout is a
         // machine stream (Json) or silenced (--quiet) — then it goes to the log
@@ -358,6 +425,7 @@ impl Reporter {
             child.stdout.take(),
             Sink::Out,
             last_output.clone(),
+            tail.clone(),
             log.clone(),
             forward,
         );
@@ -365,6 +433,7 @@ impl Reporter {
             child.stderr.take(),
             Sink::Err,
             last_output.clone(),
+            tail.clone(),
             log.clone(),
             forward,
         );
@@ -372,14 +441,39 @@ impl Reporter {
         // Poll for completion; while the child runs, emit a heartbeat whenever it
         // has produced no output for HEARTBEAT.
         let mut last_beat = Instant::now();
+        let child_started = Instant::now();
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) => {
                     thread::sleep(Duration::from_millis(200));
+                    if timeout.is_some_and(|limit| child_started.elapsed() >= limit) {
+                        let phase = self
+                            .current
+                            .as_ref()
+                            .map(|state| state.slug.clone())
+                            .unwrap_or_else(|| "external-tool".into());
+                        let cleanup = terminate_process_tree(&mut child);
+                        // Never make a timeout unbounded again by joining a
+                        // reader whose pipe is still held by an escaped
+                        // descendant. Dropping JoinHandle detaches the reader;
+                        // normal cleanup closes the pipe immediately, and a
+                        // failed tree cleanup is already named in the error.
+                        drop(out);
+                        drop(err);
+                        let tail = output_tail(&tail);
+                        self.close_current(Outcome::Failed(None));
+                        return Err(Error::external_tool(format!(
+                            "command timed out after {}s: {} (pid {pid}, cwd '{cwd}', cleanup: {cleanup}, last output: {})",
+                            timeout.unwrap_or_default().as_secs(),
+                            render_command(program, args),
+                            if tail.is_empty() { "<none>".into() } else { one_line(&tail) }
+                        ))
+                        .with_phase(phase));
+                    }
                     let idle = last_output.lock().map(|t| t.elapsed()).unwrap_or_default();
                     if idle >= HEARTBEAT && last_beat.elapsed() >= HEARTBEAT {
-                        self.heartbeat(idle);
+                        self.heartbeat(idle, pid, &output_tail(&tail));
                         last_beat = Instant::now();
                     }
                 }
@@ -438,6 +532,7 @@ fn spawn_reader<R: Read + Send + 'static>(
     src: Option<R>,
     sink: Sink,
     last_output: Arc<Mutex<Instant>>,
+    tail: Arc<Mutex<VecDeque<u8>>>,
     log: Option<Arc<Mutex<std::fs::File>>>,
     forward: bool,
 ) -> thread::JoinHandle<()> {
@@ -452,6 +547,14 @@ fn spawn_reader<R: Read + Send + 'static>(
                         *t = Instant::now();
                     }
                     let chunk = &buf[..n];
+                    if let Ok(mut tail) = tail.lock() {
+                        for byte in chunk {
+                            if tail.len() == OUTPUT_TAIL_BYTES {
+                                tail.pop_front();
+                            }
+                            tail.push_back(*byte);
+                        }
+                    }
                     if forward {
                         match sink {
                             Sink::Out => {
@@ -476,6 +579,111 @@ fn spawn_reader<R: Read + Send + 'static>(
             }
         }
     })
+}
+
+fn output_tail(tail: &Arc<Mutex<VecDeque<u8>>>) -> String {
+    tail.lock()
+        .map(|bytes| String::from_utf8_lossy(&bytes.iter().copied().collect::<Vec<_>>()).into())
+        .unwrap_or_default()
+}
+
+fn one_line(value: &str) -> String {
+    value
+        .replace('\r', "")
+        .replace('\n', " ⏎ ")
+        .trim()
+        .to_string()
+}
+
+fn render_command(program: &Path, args: &[String]) -> String {
+    std::iter::once(program.display().to_string())
+        .chain(args.iter().cloned())
+        .map(|part| {
+            if part.contains(' ') {
+                format!("\"{part}\"")
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(windows)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn configure_process_group(_command: &mut Command) {}
+
+#[cfg(windows)]
+fn terminate_process_tree(child: &mut std::process::Child) -> String {
+    let pid = child.id().to_string();
+    let result = Command::new("taskkill")
+        .args(["/PID", &pid, "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if !matches!(&result, Ok(status) if status.success()) {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    match result {
+        Ok(status) if status.success() => "process tree terminated".into(),
+        Ok(status) => format!("taskkill exited {}", status.code().unwrap_or(-1)),
+        Err(error) => format!("taskkill failed: {error}"),
+    }
+}
+
+#[cfg(unix)]
+fn terminate_process_tree(child: &mut std::process::Child) -> String {
+    let group = format!("-{}", child.id());
+    let term = Command::new("kill")
+        .args(["-TERM", &group])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    for _ in 0..20 {
+        if child.try_wait().ok().flatten().is_some() {
+            return "process group terminated".into();
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let kill = Command::new("kill")
+        .args(["-KILL", &group])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if !matches!(&kill, Ok(status) if status.success()) {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    match (term, kill) {
+        (_, Ok(status)) if status.success() => "process group killed".into(),
+        (Ok(status), _) if status.success() => "process group terminated".into(),
+        (_, Err(error)) => format!("process-group cleanup failed: {error}"),
+        _ => "process-group cleanup returned unsuccessfully".into(),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn terminate_process_tree(child: &mut std::process::Child) -> String {
+    match child.kill() {
+        Ok(()) => {
+            let _ = child.wait();
+            "child terminated".into()
+        }
+        Err(error) => format!("child cleanup failed: {error}"),
+    }
 }
 
 /// Emit one JSON event as a single line on stdout (JSON Lines).
@@ -558,5 +766,32 @@ mod tests {
         // Requested but environment-gated: never on under SSH / CI.
         let gated = Reporter::new(ProgressMode::Auto, 1, false).with_notify(true, "ost build");
         assert_eq!(gated.notify, notify::enabled());
+    }
+
+    #[test]
+    fn timeout_returns_attributed_external_tool_error() {
+        let cwd = camino::Utf8PathBuf::from_path_buf(std::env::current_dir().unwrap()).unwrap();
+        let (program, args): (PathBuf, Vec<String>) = if cfg!(windows) {
+            (
+                std::env::var_os("SystemRoot")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+                    .join("System32")
+                    .join("ping.exe"),
+                vec!["-n".into(), "30".into(), "127.0.0.1".into()],
+            )
+        } else {
+            (PathBuf::from("/bin/sleep"), vec!["30".into()])
+        };
+        let mut reporter = Reporter::new(ProgressMode::Plain, 1, true);
+        reporter.phase("Timeout fixture");
+        let started = Instant::now();
+        let error = reporter
+            .run(&program, &args, &cwd, &[], Some(Duration::from_millis(100)))
+            .unwrap_err();
+        assert_eq!(error.category(), ost_core::Category::ExternalTool);
+        assert_eq!(error.phase(), Some("timeout-fixture"));
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

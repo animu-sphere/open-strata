@@ -8,7 +8,8 @@
 
 use clap::Args;
 
-use ost_build::TargetLock;
+use camino::Utf8PathBuf;
+use ost_build::{BuildCompletion, TargetLock, BUILD_COMPLETION_FILE};
 use ost_core::paths::STATE_DIR;
 use ost_core::{digest, Result};
 use ost_manifest::{RendererCheckStatus, RendererManifest, RendererReport, RENDERER_MANIFEST};
@@ -25,6 +26,11 @@ pub struct ValidateArgs {
     /// Profile to validate. Defaults to the project's profile.
     #[arg(long)]
     profile: Option<String>,
+
+    /// External/manual build tree whose evidence should be validated without
+    /// claiming it was produced by `ost build`.
+    #[arg(long)]
+    build_dir: Option<Utf8PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -84,12 +90,22 @@ impl Check {
 pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     let (root, platform, profile) = resolve_selection(args.target, args.profile)?;
     let project = load_project(&root)?;
+    let project_version = project.effective_version(&root)?;
     let (target, r) = build_target(&platform, &profile)?;
     let id = target.id();
 
     let mut checks = Vec::new();
 
-    // 1. configured — target.lock.json exists and parses.
+    let external_build = args.build_dir.map(|path| {
+        if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        }
+    });
+
+    // 1. configured — target.lock.json exists and parses. An explicit external
+    // tree is manual evidence, so this OST-managed claim is intentionally SKIP.
     let lock_path = root
         .join(STATE_DIR)
         .join("targets")
@@ -98,23 +114,70 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     let lock: Option<TargetLock> = std::fs::read_to_string(lock_path.as_std_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
-    match &lock {
-        Some(_) => checks.push(Check::pass("configured")),
-        None => checks.push(Check::fail(
+    match (&lock, &external_build) {
+        (_, Some(build_dir)) => checks.push(Check::skip(
+            "configured",
+            format!("external/manual build selected at {build_dir}"),
+        )),
+        (Some(_), None) => checks.push(Check::pass("configured")),
+        (None, None) => checks.push(Check::fail(
             "configured",
             "target.lock.json missing or invalid — run `ost configure`",
         )),
     }
 
-    // 2. built — the build directory exists.
-    let build_dir = root.join("build").join(&id);
-    if build_dir.as_std_path().is_dir() {
-        checks.push(Check::pass("built"));
-    } else {
-        checks.push(Check::fail(
+    // 2. built — a build directory, cache, object, or copied renderer report is
+    // not completion evidence. Only the atomic record written after configure,
+    // build and output verification can satisfy this check.
+    let relative_build_dir = Utf8PathBuf::from(format!("build/{id}"));
+    let managed_build_dir = root.join(&relative_build_dir);
+    let build_dir = external_build.as_ref().unwrap_or(&managed_build_dir);
+    if external_build.is_some() {
+        checks.push(Check::skip(
             "built",
-            "build directory missing — run `ost build`",
+            "external/manual evidence does not claim `ost build` completion",
         ));
+        if build_dir.as_std_path().is_dir() {
+            checks.push(Check::pass("external-build"));
+        } else {
+            checks.push(Check::fail(
+                "external-build",
+                format!("external build directory is missing: {build_dir}"),
+            ));
+        }
+    } else {
+        let completion_path = build_dir.join(BUILD_COMPLETION_FILE);
+        let completion = std::fs::read_to_string(completion_path.as_std_path())
+            .map_err(|error| error.to_string())
+            .and_then(|source| {
+                serde_json::from_str::<BuildCompletion>(&source).map_err(|error| error.to_string())
+            });
+        match (&lock, completion) {
+            (Some(lock), Ok(completion)) => match completion.validate_against(
+                lock,
+                &project.project.name,
+                &project_version,
+                &relative_build_dir,
+            ) {
+                Ok(()) if build_dir.as_std_path().is_dir() => checks.push(Check::pass("built")),
+                Ok(()) => checks.push(Check::fail(
+                    "built",
+                    format!("completed build directory is missing: {build_dir}"),
+                )),
+                Err(detail) => checks.push(Check::fail("built", detail)),
+            },
+            (Some(_), Err(detail)) => checks.push(Check::fail(
+                "built",
+                format!(
+                    "{} missing or invalid ({detail}) — run `ost build`",
+                    completion_path
+                ),
+            )),
+            (None, _) => checks.push(Check::fail(
+                "built",
+                "target is not configured — run `ost build`",
+            )),
+        }
     }
 
     // Renderer-specific composition/evidence is additive to the generic target
@@ -135,7 +198,7 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                         ),
                     ));
                 }
-                let report_path = manifest.report_path(&build_dir);
+                let report_path = manifest.report_path(build_dir);
                 if report_path.as_std_path().is_file() {
                     match RendererReport::load(&report_path).and_then(|report| {
                         report.validate_against(&manifest)?;
@@ -179,7 +242,12 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
 
     // 3. runtime-compatible — the runtime is pulled and its digest matches the
     //    one recorded at configure time (detects drift).
-    if !r.pulled {
+    if external_build.is_some() {
+        checks.push(Check::skip(
+            "runtime-compatible",
+            "external/manual build runtime provenance is not claimed by target.lock.json",
+        ));
+    } else if !r.pulled {
         checks.push(Check::fail(
             "runtime-compatible",
             format!("runtime '{}' not pulled", target.runtime_id),
@@ -210,7 +278,7 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     let dist_dir = root
         .join("dist")
         .join(&project.project.name)
-        .join(&project.project.version)
+        .join(&project_version)
         .join(&id);
     let manifest_path = dist_dir.join("manifest.json");
     match std::fs::read_to_string(manifest_path.as_std_path()) {

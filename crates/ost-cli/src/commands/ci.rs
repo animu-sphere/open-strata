@@ -17,7 +17,7 @@ use clap::Subcommand;
 
 use ost_artifact::{ArtifactKind, ArtifactStore};
 use ost_ci::{
-    generate_github, starter_matrix, Lane, Publish, SupportMatrix, MATRIX_FILE,
+    generate_github, starter_matrix, Lane, Publish, SupportDeclaration, SupportMatrix, MATRIX_FILE,
     RELEASE_WORKFLOW_PATH, SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
 };
 use ost_core::{Error, Result};
@@ -40,6 +40,9 @@ pub enum CiCmd {
         /// Also require every pinned digest to resolve in the local registry.
         #[arg(long)]
         resolve: bool,
+        /// Check hosted cells against a public support/platform declaration.
+        #[arg(long)]
+        support: Option<String>,
     },
     /// Report preflight execution facts (lanes, runners, billing).
     Plan {
@@ -72,13 +75,20 @@ pub enum GenerateCmd {
         /// placeholder digests.
         #[arg(long)]
         allow_placeholders: bool,
+        /// Refuse generation when hosted claims exceed this support declaration.
+        #[arg(long)]
+        support: Option<String>,
     },
 }
 
 pub fn run(cmd: CiCmd, fmt: Format) -> Result<()> {
     match cmd {
         CiCmd::Init { dir } => init(dir.as_deref(), fmt),
-        CiCmd::Validate { matrix, resolve } => validate(matrix.as_deref(), resolve, fmt),
+        CiCmd::Validate {
+            matrix,
+            resolve,
+            support,
+        } => validate(matrix.as_deref(), resolve, support.as_deref(), fmt),
         CiCmd::Plan { matrix } => plan(matrix.as_deref(), fmt),
         CiCmd::Generate(GenerateCmd::Github {
             matrix,
@@ -86,12 +96,14 @@ pub fn run(cmd: CiCmd, fmt: Format) -> Result<()> {
             force,
             stdout,
             allow_placeholders,
+            support,
         }) => generate(
             matrix.as_deref(),
             out.as_deref(),
             force,
             stdout,
             allow_placeholders,
+            support.as_deref(),
             fmt,
         ),
     }
@@ -142,8 +154,24 @@ fn init(dir: Option<&str>, fmt: Format) -> Result<()> {
     Ok(())
 }
 
-fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()> {
+fn validate(
+    matrix_flag: Option<&str>,
+    resolve: bool,
+    support_flag: Option<&str>,
+    fmt: Format,
+) -> Result<()> {
     let (path, matrix) = load_matrix(matrix_flag)?;
+
+    let (support_path, support_issues) = match support_flag {
+        Some(flag) => {
+            let path = Utf8PathBuf::from(flag);
+            let src = std::fs::read_to_string(path.as_std_path())
+                .map_err(|error| Error::io(path.to_string(), error))?;
+            let declaration = SupportDeclaration::from_toml(&src)?;
+            (Some(path), declaration.matrix_issues(&matrix))
+        }
+        None => (None, Vec::new()),
+    };
 
     // `--resolve`: every pinned digest must exist in the local registry, so a
     // matrix can be gated before the runners ever see it.
@@ -182,7 +210,7 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
     let ack_missing = matrix.hosted_ack_missing();
     let ack_errors = matrix.hosted_ack_errors();
 
-    let ok = unresolved.is_empty() && ack_errors.is_empty();
+    let ok = unresolved.is_empty() && ack_errors.is_empty() && support_issues.is_empty();
     if fmt.is_json() {
         let mut warnings: Vec<serde_json::Value> = placeholders
             .iter()
@@ -208,6 +236,8 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
                 "matrix": path.to_string(),
                 "cells": matrix.cells.len(),
                 "resolved": resolve,
+                "support_declaration": support_path.as_ref().map(ToString::to_string),
+                "support_issues": support_issues,
                 "unresolved": unresolved,
                 "placeholders": placeholders,
                 "hosted_unacknowledged": ack_missing,
@@ -235,6 +265,14 @@ fn validate(matrix_flag: Option<&str>, resolve: bool, fmt: Format) -> Result<()>
         }
         for miss in &unresolved {
             println!("  UNRESOLVED: {miss}");
+        }
+        for issue in &support_issues {
+            println!("  UNSUPPORTED: {issue}");
+        }
+        if let Some(support_path) = &support_path {
+            if support_issues.is_empty() {
+                println!("  public support claims agree with {support_path}");
+            }
         }
         if resolve && ok {
             println!("  all pinned digests resolve in the local registry");
@@ -489,9 +527,30 @@ fn generate(
     force: bool,
     to_stdout: bool,
     allow_placeholders: bool,
+    support_flag: Option<&str>,
     fmt: Format,
 ) -> Result<()> {
     let (path, matrix) = load_matrix(matrix_flag)?;
+
+    if let Some(flag) = support_flag {
+        let support_path = Utf8PathBuf::from(flag);
+        let src = std::fs::read_to_string(support_path.as_std_path())
+            .map_err(|error| Error::io(support_path.to_string(), error))?;
+        let issues = SupportDeclaration::from_toml(&src)?.matrix_issues(&matrix);
+        if !issues.is_empty() {
+            return Err(Error::coded(
+                "CI_SUPPORT_CLAIM_UNSUPPORTED",
+                ost_core::Category::Validation,
+                format!(
+                    "CI cells exceed or omit public support claims ({})",
+                    issues.join("; ")
+                ),
+            )
+            .with_hint(format!(
+                "correct cells[].support or update {support_path} deliberately"
+            )));
+        }
+    }
 
     // A workflow rendered from placeholder digests can only fail on a runner
     // (or worse, be committed as if it were a real support claim) — refuse

@@ -8,3 +8,4 @@ are procedures; the factual contracts they reference live in
 | --- | --- |
 | [examples.md](examples.md) | A copy-pasteable tour of every `ost` command. |
 | [co-located-schema-migration.md](co-located-schema-migration.md) | Migrate an existing plugin bundle to a co-located USD schema. |
+| [portable-linux-runtime.md](portable-linux-runtime.md) | Build and validate a portable Linux OpenUSD runtime at an explicit glibc floor. |

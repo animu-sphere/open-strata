@@ -38,16 +38,36 @@ ost init --template renderer --name sample-renderer
 
 Backend and adapter selection may become explicit flags after the committed
 renderer manifest is defined. Renderer projects do not need a distinct build or
-package lifecycle. They do need one narrow host-session bridge:
+package lifecycle. The narrow host-session bridge submits a renderer intent to
+the common build service before composing the host session:
 
 ```text
 ost renderer view [scene] [--build-dir out-hydra]
 ```
 
-This mirrors `ost plugin view`: it installs an already-built Hydra adapter,
-derives discovery and display-name metadata from the install tree, composes the
-matching real OpenUSD runtime session, and launches usdview. It does not turn a
-co-built adapter into a bundle or duplicate `ost build`.
+Without `--build-dir`, `ost renderer view` resolves the compatible real OpenUSD
+runtime, incrementally configures/builds the co-built Hydra adapter through the
+same build service as `ost build`, installs it into the private view tree,
+derives discovery and display-name metadata, and launches usdview. An explicit
+`--build-dir` selects the external/prebuilt behavior and is labeled as manual
+evidence. Neither path turns a co-built adapter into a bundle or creates a
+second renderer build lifecycle.
+
+### 2026-07-13 v0.17 lifecycle decision
+
+The hdMerlin adoption proved that requiring callers to preconfigure an
+arbitrary `out-hydra`, extract an OST runtime prefix, and repeat the build tree,
+profile, and configuration at launch is too much lifecycle leakage for the
+normal view loop. v0.17 therefore makes the no-`--build-dir` path managed and
+incremental.
+
+The common build request carries a `hydra2` renderer intent and fingerprints
+the selected runtime, compiler, generator, source project, and effective build
+directory. Generated and adopted CMake projects consume one stable OST-facing
+input (`OST_RENDERER_ADAPTERS=hydra2`) and map it to their own project option;
+OpenStrata does not infer or serialize private CMake option names. Atomic
+build-completion evidence and runtime/build fingerprint matching are
+prerequisites for launching the managed result.
 
 ### 2026-07-13 dogfood and application decision
 
