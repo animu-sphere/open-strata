@@ -175,6 +175,10 @@ const RENDERER: &[TemplateFile] = &[
         include_str!("../../../templates/renderer/include/{{name}}/vulkan_backend.hpp"),
     ),
     tf(
+        "include/{{name}}/vulkan_present.hpp",
+        include_str!("../../../templates/renderer/include/{{name}}/vulkan_present.hpp"),
+    ),
+    tf(
         "core/render-world/CMakeLists.txt",
         include_str!("../../../templates/renderer/core/render-world/CMakeLists.txt"),
     ),
@@ -199,12 +203,16 @@ const RENDERER: &[TemplateFile] = &[
         include_str!("../../../templates/renderer/backend/vulkan/vulkan_backend.cpp"),
     ),
     tf(
-        "backend/vulkan/shaders/triangle.vert",
-        include_str!("../../../templates/renderer/backend/vulkan/shaders/triangle.vert"),
+        "backend/vulkan/vulkan_internal.hpp",
+        include_str!("../../../templates/renderer/backend/vulkan/vulkan_internal.hpp"),
     ),
     tf(
-        "backend/vulkan/shaders/triangle.frag",
-        include_str!("../../../templates/renderer/backend/vulkan/shaders/triangle.frag"),
+        "backend/vulkan/vulkan_present.cpp",
+        include_str!("../../../templates/renderer/backend/vulkan/vulkan_present.cpp"),
+    ),
+    tf(
+        "backend/vulkan/shaders/triangle.slang",
+        include_str!("../../../templates/renderer/backend/vulkan/shaders/triangle.slang"),
     ),
     tf(
         "adapters/headless/CMakeLists.txt",
@@ -213,6 +221,22 @@ const RENDERER: &[TemplateFile] = &[
     tf(
         "adapters/headless/main.cpp",
         include_str!("../../../templates/renderer/adapters/headless/main.cpp"),
+    ),
+    tf(
+        "adapters/viewport/CMakeLists.txt",
+        include_str!("../../../templates/renderer/adapters/viewport/CMakeLists.txt"),
+    ),
+    tf(
+        "adapters/viewport/main.cpp",
+        include_str!("../../../templates/renderer/adapters/viewport/main.cpp"),
+    ),
+    tf(
+        "adapters/viewport/window.hpp",
+        include_str!("../../../templates/renderer/adapters/viewport/window.hpp"),
+    ),
+    tf(
+        "adapters/viewport/window_glfw.cpp",
+        include_str!("../../../templates/renderer/adapters/viewport/window_glfw.cpp"),
     ),
     tf(
         "adapters/hydra2/CMakeLists.txt",

@@ -2,7 +2,7 @@ find_package(pxr CONFIG REQUIRED)
 
 if(NOT {{NAME}}_WITH_VULKAN)
   message(FATAL_ERROR
-    "{{NAME}}_ENABLE_HYDRA2 requires a Vulkan 1.3 SDK and glslc")
+    "{{NAME}}_ENABLE_HYDRA2 requires a Vulkan 1.3 SDK and slangc")
 endif()
 if(NOT TARGET hd OR NOT TARGET plug)
   message(FATAL_ERROR

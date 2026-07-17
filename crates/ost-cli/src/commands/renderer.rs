@@ -72,6 +72,31 @@ pub enum RendererCmd {
         #[arg(long)]
         renderer: Option<String>,
     },
+
+    /// Build and launch the standalone native viewport adapter.
+    Viewport {
+        /// CMake configuration to build.
+        #[arg(long, default_value = "Release")]
+        config: String,
+
+        /// CMake generator for the managed build. Ninja remains the default.
+        #[arg(long)]
+        generator: Option<String>,
+
+        /// Platform target, e.g. `cy2026`. Defaults to the project's platform.
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Profile for the managed build. Defaults to the project's profile;
+        /// the standalone viewport needs no OpenUSD runtime.
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Arguments passed to the viewport executable after `--`, e.g.
+        /// `ost renderer viewport -- --frames 8 --hidden`.
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -99,6 +124,10 @@ pub struct RendererAdoptArgs {
     /// Existing optional Hydra 2 adapter target.
     #[arg(long)]
     hydra2: Option<String>,
+
+    /// Existing optional standalone native viewport target.
+    #[arg(long)]
+    viewport: Option<String>,
 
     /// Platform for a missing openstrata.toml.
     #[arg(long)]
@@ -171,7 +200,28 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
             camera,
             renderer,
         }),
+        RendererCmd::Viewport {
+            config,
+            generator,
+            target,
+            profile,
+            args,
+        } => viewport(ViewportArgs {
+            config,
+            generator,
+            target,
+            profile,
+            args,
+        }),
     }
+}
+
+struct ViewportArgs {
+    config: String,
+    generator: Option<String>,
+    target: Option<String>,
+    profile: Option<String>,
+    args: Vec<String>,
 }
 
 struct ViewArgs {
@@ -265,6 +315,11 @@ fn adopt(args: RendererAdoptArgs, fmt: Format) -> Result<()> {
     adapters.insert("headless".into(), args.headless.clone());
     if let Some(hydra2) = &args.hydra2 {
         adapters.insert("hydra2".into(), hydra2.clone());
+    }
+    // The viewport hosts the project's own bootstrap scene, so it joins the
+    // adapter map without becoming a scene input.
+    if let Some(viewport) = &args.viewport {
+        adapters.insert("viewport".into(), viewport.clone());
     }
     let mut scene_inputs = vec!["headless".into()];
     if args.hydra2.is_some() {
@@ -660,6 +715,125 @@ fn view(args: ViewArgs) -> Result<()> {
     Ok(())
 }
 
+fn viewport(args: ViewportArgs) -> Result<()> {
+    let (root, platform, profile) = resolve_selection(args.target, args.profile)?;
+    let manifest = RendererManifest::load(&root)?;
+    let adapter = manifest
+        .composition
+        .adapters
+        .get("viewport")
+        .ok_or_else(|| {
+            Error::config(
+                "renderer composition has no `viewport` adapter in openstrata.renderer.yaml",
+            )
+            .with_hint(
+                "declare `composition.adapters.viewport: <cmake-target>`, or adopt the \
+                 existing target with `ost renderer adopt ... --viewport <target>`",
+            )
+        })?
+        .clone();
+
+    // One ordinary managed build with the viewport intent. The standalone
+    // viewport renders the project bootstrap scene, so the project's
+    // host-neutral profile suffices and no runtime fingerprint is recorded.
+    let (target, _) = build_target(&platform, &profile)?;
+    let build_dir = root.join("build").join(target.id());
+    let mut cache = BTreeMap::new();
+    cache.insert("OST_RENDERER_ADAPTERS".into(), "viewport".into());
+    cache.insert("CMAKE_BUILD_TYPE".into(), args.config.clone());
+    let mut intent = ost_build::BuildIntent {
+        name: "renderer-viewport".into(),
+        cache,
+    };
+    println!("==> preparing managed viewport build: {build_dir}");
+    build::run_with_intent(
+        BuildArgs::managed(
+            platform.clone(),
+            profile.clone(),
+            args.generator.clone(),
+            args.config.clone(),
+        ),
+        Format::Human,
+        intent.clone(),
+    )?;
+
+    // Adopted projects may expose a project-specific viewport option without
+    // consuming OST_RENDERER_ADAPTERS. Discover the one exact option from
+    // CMake's cache and repeat through the same managed build service.
+    let source = read_cmake_cache_for(
+        &build_dir,
+        "viewport",
+        "renderer-viewport-preflight",
+        "rerun `ost renderer viewport` to configure the managed viewport build",
+    )?;
+    let options = viewport_option_entries(&source);
+    if !options.iter().any(|(_, enabled)| *enabled) {
+        if let [(option, false)] = options.as_slice() {
+            println!("==> adopted renderer mapping: enabling {option}");
+            intent.cache.insert(option.clone(), "ON".into());
+            build::run_with_intent(
+                BuildArgs::managed(platform, profile, args.generator, args.config.clone()),
+                Format::Human,
+                intent,
+            )?;
+        }
+    }
+
+    let exe_name = if Host::detect().os == Os::Windows {
+        format!("{adapter}.exe")
+    } else {
+        adapter.clone()
+    };
+    let executable = pick_built_executable(find_all_named_files(&build_dir, &exe_name)?, &args.config)
+        .ok_or_else(|| {
+            Error::precondition(format!(
+                "the managed build did not produce viewport executable '{exe_name}' under '{build_dir}'"
+            ))
+            .with_hint(
+                "ensure the project builds its viewport target when configured with \
+                 OST_RENDERER_ADAPTERS=viewport",
+            )
+            .with_phase("renderer-viewport-discovery")
+        })?;
+
+    println!("==> viewport: {executable}");
+    let status = Command::new(executable.as_std_path())
+        .args(&args.args)
+        .status()
+        .map_err(|error| Error::io(format!("run {executable}"), error))?;
+    match status.code() {
+        Some(0) => Ok(()),
+        // The viewport smoke contract: 77 means this environment cannot
+        // present (no display, no Vulkan-capable device), not a failure.
+        Some(77) => Err(Error::coded(
+            "PRESENTATION_UNAVAILABLE",
+            Category::Precondition,
+            "the viewport reported that this environment cannot present",
+        )
+        .with_hint("run on a host with a display and a Vulkan 1.3 capable device")
+        .with_phase("renderer-viewport-host")),
+        _ => Err(Error::external_tool(format!(
+            "the viewport exited unsuccessfully{}",
+            exit_detail(&status)
+        ))
+        .with_phase("renderer-viewport-host")),
+    }
+}
+
+// A multi-config generator nests executables under a per-config directory;
+// prefer the requested configuration when several builds exist.
+fn pick_built_executable(candidates: Vec<Utf8PathBuf>, config: &str) -> Option<Utf8PathBuf> {
+    if candidates.len() > 1 {
+        if let Some(matching) = candidates.iter().find(|path| {
+            path.components()
+                .any(|component| component.as_str().eq_ignore_ascii_case(config))
+        }) {
+            return Some(matching.clone());
+        }
+    }
+    candidates.into_iter().next()
+}
+
 fn select_view_profile(
     platform: &str,
     explicit: Option<String>,
@@ -799,25 +973,47 @@ fn config_dir_name(config: &str) -> String {
 }
 
 fn read_cmake_cache(build_dir: &Utf8Path) -> Result<String> {
+    read_cmake_cache_for(
+        build_dir,
+        "Hydra",
+        "renderer-view-preflight",
+        "omit `--build-dir` for an OST-managed build, or configure and build the \
+         external optional adapter first",
+    )
+}
+
+fn read_cmake_cache_for(
+    build_dir: &Utf8Path,
+    adapter: &str,
+    phase: &str,
+    hint: &str,
+) -> Result<String> {
     let cache = build_dir.join("CMakeCache.txt");
     std::fs::read_to_string(cache.as_std_path()).map_err(|_| {
-        Error::precondition(format!("Hydra build tree not configured at '{build_dir}'"))
-            .with_hint(
-                "omit `--build-dir` for an OST-managed build, or configure and build the \
-                 external optional adapter first",
-            )
-            .with_phase("renderer-view-preflight")
+        Error::precondition(format!(
+            "{adapter} build tree not configured at '{build_dir}'"
+        ))
+        .with_hint(hint)
+        .with_phase(phase)
     })
 }
 
 fn hydra_option_entries(source: &str) -> Vec<(String, bool)> {
+    adapter_option_entries(source, "_ENABLE_HYDRA2")
+}
+
+fn viewport_option_entries(source: &str) -> Vec<(String, bool)> {
+    adapter_option_entries(source, "_ENABLE_VIEWPORT")
+}
+
+fn adapter_option_entries(source: &str, suffix: &str) -> Vec<(String, bool)> {
     source
         .lines()
         .filter_map(|line| {
             let (entry, value) = line.split_once('=')?;
             let name = entry.split_once(':').map_or(entry, |(name, _)| name);
             name.to_ascii_uppercase()
-                .ends_with("_ENABLE_HYDRA2")
+                .ends_with(suffix)
                 .then(|| (name.to_string(), cmake_cache_truthy(value)))
         })
         .collect()
@@ -1205,6 +1401,19 @@ mod tests {
         assert!(validate_hydra_build(&build, &runtime, "runtime", "sha256:runtime").is_err());
         std::fs::remove_dir_all(build.as_std_path()).unwrap();
         std::fs::remove_dir_all(runtime.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn viewport_option_entries_accept_cmake_cache_truthy_values() {
+        let source = concat!(
+            "SAMPLE_RENDERER_ENABLE_VIEWPORT:BOOL=ON\n",
+            "SAMPLE_RENDERER_ENABLE_VIEWPORT-ADVANCED:INTERNAL=1\n",
+            "OTHER_ENABLE_HYDRA2:BOOL=ON\n",
+        );
+        assert_eq!(
+            viewport_option_entries(source),
+            vec![("SAMPLE_RENDERER_ENABLE_VIEWPORT".into(), true)]
+        );
     }
 
     #[test]

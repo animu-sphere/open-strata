@@ -33,18 +33,23 @@ Skeletons have stable generation and lifecycle seams, but their domain
 architecture has not met the promotion evidence required of a template.
 
 The renderer skeleton emits one project-level CMake build/install graph. Its
-core, extraction, backend, headless, and optional Hydra 2 directories are
-internal target boundaries, not separate package or plugin artifacts. The
-generated validator renders a deterministic Vulkan bootstrap triangle when the
-capability exists and reports unavailable GPU/OpenUSD/host work as explained
-skips. With Hydra enabled, install-tree tests separate plugin discovery, delegate
-creation, CPU RenderBuffer presentation, usdview first frame, and stable update.
+core, extraction, backend, headless, and optional Hydra 2 and viewport
+directories are internal target boundaries, not separate package or plugin
+artifacts. Shaders are single-source Slang compiled with the Vulkan SDK's
+bundled `slangc`. The generated validator renders a deterministic Vulkan
+bootstrap triangle when the capability exists and reports unavailable
+GPU/OpenUSD/host work as explained skips. With Hydra enabled, install-tree
+tests separate plugin discovery, delegate creation, CPU RenderBuffer
+presentation, usdview first frame, and stable update.
 `ost renderer view` requests the optional Hydra adapter through the shared build
 service, stages its install tree, and opens its smoke scene (or a supplied scene)
 in the matching runtime's usdview with the generated renderer selected.
 `--build-dir` retains an external/prebuilt escape hatch without claiming OST
 build provenance. Developers do not need to hand-compose OpenUSD discovery,
 Python, or dynamic-loader paths.
+`ost renderer viewport` requests the optional GLFW/Vulkan viewport adapter the
+same way and launches it as a native window over the project bootstrap draw;
+it needs no OpenUSD runtime and stays outside the validation contract.
 The bootstrap proves the seam; generated rendering policy becomes project-owned
 source.
 

@@ -13,18 +13,33 @@ option({{NAME}}_ENABLE_VULKAN "Probe and link the Vulkan backend capability" ON)
 
 # OST-facing build intent. The renderer keeps its project-owned option while
 # `ost renderer view` can request the co-built adapter without knowing that
-# private option name.
+# private option name. A non-empty OST intent synchronizes both adapter options
+# so switching intents cannot retain a stale CMake cache value; an empty intent
+# leaves direct CMake option overrides in control.
 set(OST_RENDERER_ADAPTERS "" CACHE STRING
   "Semicolon-separated renderer adapters requested by OpenStrata")
+set(_{{NAME}}_MANAGED_ADAPTER_INTENT OFF)
+if(NOT OST_RENDERER_ADAPTERS STREQUAL "")
+  set(_{{NAME}}_MANAGED_ADAPTER_INTENT ON)
+endif()
 set(_{{NAME}}_HYDRA2_DEFAULT OFF)
 if("hydra2" IN_LIST OST_RENDERER_ADAPTERS)
   set(_{{NAME}}_HYDRA2_DEFAULT ON)
 endif()
-option({{NAME}}_ENABLE_HYDRA2 "Build the optional co-built OpenUSD Hydra 2 adapter"
-  ${_{{NAME}}_HYDRA2_DEFAULT})
-if("hydra2" IN_LIST OST_RENDERER_ADAPTERS)
-  set({{NAME}}_ENABLE_HYDRA2 ON CACHE BOOL
+set(_{{NAME}}_VIEWPORT_DEFAULT OFF)
+if("viewport" IN_LIST OST_RENDERER_ADAPTERS)
+  set(_{{NAME}}_VIEWPORT_DEFAULT ON)
+endif()
+if(_{{NAME}}_MANAGED_ADAPTER_INTENT)
+  set({{NAME}}_ENABLE_HYDRA2 ${_{{NAME}}_HYDRA2_DEFAULT} CACHE BOOL
     "Build the optional co-built OpenUSD Hydra 2 adapter" FORCE)
+  set({{NAME}}_ENABLE_VIEWPORT ${_{{NAME}}_VIEWPORT_DEFAULT} CACHE BOOL
+    "Build the optional GLFW/Vulkan viewport adapter" FORCE)
+else()
+  option({{NAME}}_ENABLE_HYDRA2 "Build the optional co-built OpenUSD Hydra 2 adapter"
+    ${_{{NAME}}_HYDRA2_DEFAULT})
+  option({{NAME}}_ENABLE_VIEWPORT "Build the optional GLFW/Vulkan viewport adapter"
+    ${_{{NAME}}_VIEWPORT_DEFAULT})
 endif()
 option({{NAME}}_BUILD_TESTS "Build renderer contract and install-tree tests" ON)
 
@@ -44,11 +59,21 @@ endif()
 
 set({{NAME}}_WITH_VULKAN OFF)
 if({{NAME}}_ENABLE_VULKAN)
-  find_package(Vulkan 1.3 QUIET COMPONENTS glslc)
-  if(Vulkan_FOUND)
+  find_package(Vulkan 1.3 QUIET)
+  # Slang is the shader source of truth. The Vulkan SDK bundles slangc since
+  # 1.3.296, so one SDK install provides both the loader and the compiler.
+  find_program({{NAME}}_SLANGC_EXECUTABLE
+    NAMES slangc
+    HINTS ENV VULKAN_SDK
+    PATH_SUFFIXES bin Bin)
+  if(Vulkan_FOUND AND {{NAME}}_SLANGC_EXECUTABLE)
     set({{NAME}}_WITH_VULKAN ON)
-  else()
+  elseif(NOT Vulkan_FOUND)
     message(STATUS "Vulkan 1.3 was not found; GPU assertions will report SKIP")
+  else()
+    message(STATUS
+      "slangc was not found (the Vulkan SDK bundles it since 1.3.296); "
+      "GPU assertions will report SKIP")
   endif()
 endif()
 
@@ -59,6 +84,9 @@ add_subdirectory(adapters/headless)
 if({{NAME}}_ENABLE_HYDRA2)
   add_subdirectory(adapters/hydra2)
   target_compile_definitions({{name}}-headless PRIVATE {{NAME}}_HAS_HYDRA2=1)
+endif()
+if({{NAME}}_ENABLE_VIEWPORT)
+  add_subdirectory(adapters/viewport)
 endif()
 
 if({{NAME}}_BUILD_TESTS)

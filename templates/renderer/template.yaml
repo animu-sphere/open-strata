@@ -1,7 +1,7 @@
 schema: openstrata.template/v1alpha1
 template:
   id: renderer
-  version: 0.4.0
+  version: 0.5.0
   maturity: skeleton
   artifact_kind: project
 variables:
@@ -18,16 +18,22 @@ outputs:
     - include/{{name}}/render_world.hpp
     - include/{{name}}/extraction.hpp
     - include/{{name}}/vulkan_backend.hpp
+    - include/{{name}}/vulkan_present.hpp
     - core/render-world/CMakeLists.txt
     - core/render-world/render_world.cpp
     - core/render-extraction/CMakeLists.txt
     - core/render-extraction/extraction.cpp
     - backend/vulkan/CMakeLists.txt
     - backend/vulkan/vulkan_backend.cpp
-    - backend/vulkan/shaders/triangle.vert
-    - backend/vulkan/shaders/triangle.frag
+    - backend/vulkan/vulkan_internal.hpp
+    - backend/vulkan/vulkan_present.cpp
+    - backend/vulkan/shaders/triangle.slang
     - adapters/headless/CMakeLists.txt
     - adapters/headless/main.cpp
+    - adapters/viewport/CMakeLists.txt
+    - adapters/viewport/main.cpp
+    - adapters/viewport/window.hpp
+    - adapters/viewport/window_glfw.cpp
     - adapters/hydra2/CMakeLists.txt
     - adapters/hydra2/src/adapter.hpp
     - adapters/hydra2/src/adapter.cpp

@@ -211,6 +211,24 @@ Use `--build-dir other-build` for an external/prebuilt CMake tree. That mode is
 validated and labeled as manual evidence; OST installs it but does not rebuild
 it or claim `ost build` completion.
 
+### renderer — launch the standalone viewport
+
+The optional viewport adapter presents the project bootstrap draw in a native
+GLFW window and needs no OpenUSD runtime — the project's host-neutral profile
+is enough:
+
+```bash
+ost runtime pull cy2026 --profile core
+ost renderer viewport                          # managed build + native window
+ost renderer viewport -- --frames 8 --hidden   # smoke run; args pass through
+```
+
+The command records the `viewport` build intent, builds through the same
+managed service, and launches the executable mapped under
+`composition.adapters.viewport`. Exit code 77 from the viewport reports an
+environment that cannot present (no display or Vulkan device) as an explicit
+precondition rather than a failure.
+
 Adopt an existing renderer without overwriting its CMake or source tree. The
 first command is a read-only plan; add `--write` only after reviewing target
 mappings. `--version-file` keeps an existing release version source
@@ -226,6 +244,10 @@ ost renderer adopt --name merlin --platform cy2026 \
   --backend vulkan=merlin-vulkan --headless merlin-headless \
   --hydra2 hdMerlin --version-file VERSION --write
 ```
+
+An existing standalone viewport executable joins the adapter map with
+`--viewport <target>`, which enables `ost renderer viewport` for the adopted
+project.
 
 Independently produced renderer reports merge only under explicit conflict
 rules: duplicate assertion ids need `--replace`, and an existing FAIL cannot be
