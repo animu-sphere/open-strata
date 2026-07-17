@@ -13,28 +13,33 @@ option({{NAME}}_ENABLE_VULKAN "Probe and link the Vulkan backend capability" ON)
 
 # OST-facing build intent. The renderer keeps its project-owned option while
 # `ost renderer view` can request the co-built adapter without knowing that
-# private option name.
+# private option name. A non-empty OST intent synchronizes both adapter options
+# so switching intents cannot retain a stale CMake cache value; an empty intent
+# leaves direct CMake option overrides in control.
 set(OST_RENDERER_ADAPTERS "" CACHE STRING
   "Semicolon-separated renderer adapters requested by OpenStrata")
+set(_{{NAME}}_MANAGED_ADAPTER_INTENT OFF)
+if(NOT OST_RENDERER_ADAPTERS STREQUAL "")
+  set(_{{NAME}}_MANAGED_ADAPTER_INTENT ON)
+endif()
 set(_{{NAME}}_HYDRA2_DEFAULT OFF)
 if("hydra2" IN_LIST OST_RENDERER_ADAPTERS)
   set(_{{NAME}}_HYDRA2_DEFAULT ON)
-endif()
-option({{NAME}}_ENABLE_HYDRA2 "Build the optional co-built OpenUSD Hydra 2 adapter"
-  ${_{{NAME}}_HYDRA2_DEFAULT})
-if("hydra2" IN_LIST OST_RENDERER_ADAPTERS)
-  set({{NAME}}_ENABLE_HYDRA2 ON CACHE BOOL
-    "Build the optional co-built OpenUSD Hydra 2 adapter" FORCE)
 endif()
 set(_{{NAME}}_VIEWPORT_DEFAULT OFF)
 if("viewport" IN_LIST OST_RENDERER_ADAPTERS)
   set(_{{NAME}}_VIEWPORT_DEFAULT ON)
 endif()
-option({{NAME}}_ENABLE_VIEWPORT "Build the optional GLFW/Vulkan viewport adapter"
-  ${_{{NAME}}_VIEWPORT_DEFAULT})
-if("viewport" IN_LIST OST_RENDERER_ADAPTERS)
-  set({{NAME}}_ENABLE_VIEWPORT ON CACHE BOOL
+if(_{{NAME}}_MANAGED_ADAPTER_INTENT)
+  set({{NAME}}_ENABLE_HYDRA2 ${_{{NAME}}_HYDRA2_DEFAULT} CACHE BOOL
+    "Build the optional co-built OpenUSD Hydra 2 adapter" FORCE)
+  set({{NAME}}_ENABLE_VIEWPORT ${_{{NAME}}_VIEWPORT_DEFAULT} CACHE BOOL
     "Build the optional GLFW/Vulkan viewport adapter" FORCE)
+else()
+  option({{NAME}}_ENABLE_HYDRA2 "Build the optional co-built OpenUSD Hydra 2 adapter"
+    ${_{{NAME}}_HYDRA2_DEFAULT})
+  option({{NAME}}_ENABLE_VIEWPORT "Build the optional GLFW/Vulkan viewport adapter"
+    ${_{{NAME}}_VIEWPORT_DEFAULT})
 endif()
 option({{NAME}}_BUILD_TESTS "Build renderer contract and install-tree tests" ON)
 

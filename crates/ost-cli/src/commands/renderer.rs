@@ -741,7 +741,7 @@ fn viewport(args: ViewportArgs) -> Result<()> {
     let mut cache = BTreeMap::new();
     cache.insert("OST_RENDERER_ADAPTERS".into(), "viewport".into());
     cache.insert("CMAKE_BUILD_TYPE".into(), args.config.clone());
-    let intent = ost_build::BuildIntent {
+    let mut intent = ost_build::BuildIntent {
         name: "renderer-viewport".into(),
         cache,
     };
@@ -750,12 +750,34 @@ fn viewport(args: ViewportArgs) -> Result<()> {
         BuildArgs::managed(
             platform.clone(),
             profile.clone(),
-            args.generator,
+            args.generator.clone(),
             args.config.clone(),
         ),
         Format::Human,
-        intent,
+        intent.clone(),
     )?;
+
+    // Adopted projects may expose a project-specific viewport option without
+    // consuming OST_RENDERER_ADAPTERS. Discover the one exact option from
+    // CMake's cache and repeat through the same managed build service.
+    let source = read_cmake_cache_for(
+        &build_dir,
+        "viewport",
+        "renderer-viewport-preflight",
+        "rerun `ost renderer viewport` to configure the managed viewport build",
+    )?;
+    let options = viewport_option_entries(&source);
+    if !options.iter().any(|(_, enabled)| *enabled) {
+        if let [(option, false)] = options.as_slice() {
+            println!("==> adopted renderer mapping: enabling {option}");
+            intent.cache.insert(option.clone(), "ON".into());
+            build::run_with_intent(
+                BuildArgs::managed(platform, profile, args.generator, args.config.clone()),
+                Format::Human,
+                intent,
+            )?;
+        }
+    }
 
     let exe_name = if Host::detect().os == Os::Windows {
         format!("{adapter}.exe")
@@ -951,25 +973,47 @@ fn config_dir_name(config: &str) -> String {
 }
 
 fn read_cmake_cache(build_dir: &Utf8Path) -> Result<String> {
+    read_cmake_cache_for(
+        build_dir,
+        "Hydra",
+        "renderer-view-preflight",
+        "omit `--build-dir` for an OST-managed build, or configure and build the \
+         external optional adapter first",
+    )
+}
+
+fn read_cmake_cache_for(
+    build_dir: &Utf8Path,
+    adapter: &str,
+    phase: &str,
+    hint: &str,
+) -> Result<String> {
     let cache = build_dir.join("CMakeCache.txt");
     std::fs::read_to_string(cache.as_std_path()).map_err(|_| {
-        Error::precondition(format!("Hydra build tree not configured at '{build_dir}'"))
-            .with_hint(
-                "omit `--build-dir` for an OST-managed build, or configure and build the \
-                 external optional adapter first",
-            )
-            .with_phase("renderer-view-preflight")
+        Error::precondition(format!(
+            "{adapter} build tree not configured at '{build_dir}'"
+        ))
+        .with_hint(hint)
+        .with_phase(phase)
     })
 }
 
 fn hydra_option_entries(source: &str) -> Vec<(String, bool)> {
+    adapter_option_entries(source, "_ENABLE_HYDRA2")
+}
+
+fn viewport_option_entries(source: &str) -> Vec<(String, bool)> {
+    adapter_option_entries(source, "_ENABLE_VIEWPORT")
+}
+
+fn adapter_option_entries(source: &str, suffix: &str) -> Vec<(String, bool)> {
     source
         .lines()
         .filter_map(|line| {
             let (entry, value) = line.split_once('=')?;
             let name = entry.split_once(':').map_or(entry, |(name, _)| name);
             name.to_ascii_uppercase()
-                .ends_with("_ENABLE_HYDRA2")
+                .ends_with(suffix)
                 .then(|| (name.to_string(), cmake_cache_truthy(value)))
         })
         .collect()
@@ -1357,6 +1401,19 @@ mod tests {
         assert!(validate_hydra_build(&build, &runtime, "runtime", "sha256:runtime").is_err());
         std::fs::remove_dir_all(build.as_std_path()).unwrap();
         std::fs::remove_dir_all(runtime.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn viewport_option_entries_accept_cmake_cache_truthy_values() {
+        let source = concat!(
+            "SAMPLE_RENDERER_ENABLE_VIEWPORT:BOOL=ON\n",
+            "SAMPLE_RENDERER_ENABLE_VIEWPORT-ADVANCED:INTERNAL=1\n",
+            "OTHER_ENABLE_HYDRA2:BOOL=ON\n",
+        );
+        assert_eq!(
+            viewport_option_entries(source),
+            vec![("SAMPLE_RENDERER_ENABLE_VIEWPORT".into(), true)]
+        );
     }
 
     #[test]
