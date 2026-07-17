@@ -837,6 +837,7 @@ Inspect renderer projects in host applications
 - [`ost renderer adopt`](#ost-renderer-adopt) — Safely adopt an existing CMake renderer without overwriting source
 - [`ost renderer merge`](#ost-renderer-merge) — Merge independently produced renderer reports with conflict checks
 - [`ost renderer view`](#ost-renderer-view) — Open a scene in usdview with the built Hydra renderer selected
+- [`ost renderer viewport`](#ost-renderer-viewport) — Build and launch the standalone native viewport adapter
 
 #### `ost renderer adopt`
 
@@ -860,6 +861,7 @@ Safely adopt an existing CMake renderer without overwriting source
 | `--replace-manifest` | Replace an existing, different renderer manifest (never source/CMake) |
 | `--version <VERSION>` | Inline project version for a missing openstrata.toml (default 0.1.0) |
 | `--version-file <VERSION_FILE>` | Existing repo-relative authoritative version file to adopt |
+| `--viewport <VIEWPORT>` | Existing optional standalone native viewport target |
 | `--write` | Apply the plan. Without this flag the command is a read-only dry run |
 
 #### `ost renderer merge`
@@ -899,6 +901,27 @@ Open a scene in usdview with the built Hydra renderer selected
 | `--generator <GENERATOR>` | CMake generator for the managed build. Ninja remains the default |
 | `--profile <PROFILE>` | Runtime profile. Auto-selects a unique pulled usdview runtime |
 | `--renderer <RENDERER>` | Override the renderer display name read from installed plugInfo.json |
+| `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
+
+#### `ost renderer viewport`
+
+Build and launch the standalone native viewport adapter
+
+**Usage:** `ost renderer viewport [OPTIONS] [<ARGS>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<ARGS>` | no | Arguments passed to the viewport executable after `--`, e.g. `ost renderer viewport -- --frames 8 --hidden` |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--config <CONFIG>` | CMake configuration to build |
+| `--generator <GENERATOR>` | CMake generator for the managed build. Ninja remains the default |
+| `--profile <PROFILE>` | Profile for the managed build. Defaults to the project's profile; the standalone viewport needs no OpenUSD runtime |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 
 ### `ost runtime`

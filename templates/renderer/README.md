@@ -30,6 +30,28 @@ Run CTest for build-tree and install-tree evidence:
 ctest --test-dir build/<target-id> -C Release --output-on-failure
 ```
 
+## Standalone viewport
+
+The optional `adapters/viewport` host presents the same bootstrap draw in a
+native GLFW window through the backend-owned swapchain. It stays outside the
+renderer validation contract — composition evidence remains headless-owned —
+and needs no OpenUSD runtime:
+
+```bash
+ost renderer viewport
+ost renderer viewport -- --frames 8 --hidden --vsync off
+```
+
+The command requests the `viewport` intent (`OST_RENDERER_ADAPTERS=viewport`)
+from the ordinary managed build service and launches the built executable;
+everything after `--` is passed through. GLFW resolves via `find_package` or a
+pinned FetchContent fallback, so the first configure may download it. Direct
+CMake builds can set `-D<NAME>_ENABLE_VIEWPORT=ON` instead. GLFW types stay
+inside the adapter: the backend receives instance extensions plus a
+surface-creation callback and owns the `VkSurfaceKHR` and every swapchain
+object, which is the boundary a real renderer should keep as input handling,
+camera control, and scene hosting grow project-owned.
+
 ## Build and view the Hydra 2 adapter
 
 The adapter is opt-in so a default renderer build remains independent of
