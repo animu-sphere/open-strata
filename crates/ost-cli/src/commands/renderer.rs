@@ -72,6 +72,31 @@ pub enum RendererCmd {
         #[arg(long)]
         renderer: Option<String>,
     },
+
+    /// Build and launch the standalone native viewport adapter.
+    Viewport {
+        /// CMake configuration to build.
+        #[arg(long, default_value = "Release")]
+        config: String,
+
+        /// CMake generator for the managed build. Ninja remains the default.
+        #[arg(long)]
+        generator: Option<String>,
+
+        /// Platform target, e.g. `cy2026`. Defaults to the project's platform.
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Profile for the managed build. Defaults to the project's profile;
+        /// the standalone viewport needs no OpenUSD runtime.
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Arguments passed to the viewport executable after `--`, e.g.
+        /// `ost renderer viewport -- --frames 8 --hidden`.
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -99,6 +124,10 @@ pub struct RendererAdoptArgs {
     /// Existing optional Hydra 2 adapter target.
     #[arg(long)]
     hydra2: Option<String>,
+
+    /// Existing optional standalone native viewport target.
+    #[arg(long)]
+    viewport: Option<String>,
 
     /// Platform for a missing openstrata.toml.
     #[arg(long)]
@@ -171,7 +200,28 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
             camera,
             renderer,
         }),
+        RendererCmd::Viewport {
+            config,
+            generator,
+            target,
+            profile,
+            args,
+        } => viewport(ViewportArgs {
+            config,
+            generator,
+            target,
+            profile,
+            args,
+        }),
     }
+}
+
+struct ViewportArgs {
+    config: String,
+    generator: Option<String>,
+    target: Option<String>,
+    profile: Option<String>,
+    args: Vec<String>,
 }
 
 struct ViewArgs {
@@ -265,6 +315,11 @@ fn adopt(args: RendererAdoptArgs, fmt: Format) -> Result<()> {
     adapters.insert("headless".into(), args.headless.clone());
     if let Some(hydra2) = &args.hydra2 {
         adapters.insert("hydra2".into(), hydra2.clone());
+    }
+    // The viewport hosts the project's own bootstrap scene, so it joins the
+    // adapter map without becoming a scene input.
+    if let Some(viewport) = &args.viewport {
+        adapters.insert("viewport".into(), viewport.clone());
     }
     let mut scene_inputs = vec!["headless".into()];
     if args.hydra2.is_some() {
@@ -658,6 +713,103 @@ fn view(args: ViewArgs) -> Result<()> {
         .with_phase("renderer-view-host"));
     }
     Ok(())
+}
+
+fn viewport(args: ViewportArgs) -> Result<()> {
+    let (root, platform, profile) = resolve_selection(args.target, args.profile)?;
+    let manifest = RendererManifest::load(&root)?;
+    let adapter = manifest
+        .composition
+        .adapters
+        .get("viewport")
+        .ok_or_else(|| {
+            Error::config(
+                "renderer composition has no `viewport` adapter in openstrata.renderer.yaml",
+            )
+            .with_hint(
+                "declare `composition.adapters.viewport: <cmake-target>`, or adopt the \
+                 existing target with `ost renderer adopt ... --viewport <target>`",
+            )
+        })?
+        .clone();
+
+    // One ordinary managed build with the viewport intent. The standalone
+    // viewport renders the project bootstrap scene, so the project's
+    // host-neutral profile suffices and no runtime fingerprint is recorded.
+    let (target, _) = build_target(&platform, &profile)?;
+    let build_dir = root.join("build").join(target.id());
+    let mut cache = BTreeMap::new();
+    cache.insert("OST_RENDERER_ADAPTERS".into(), "viewport".into());
+    cache.insert("CMAKE_BUILD_TYPE".into(), args.config.clone());
+    let intent = ost_build::BuildIntent {
+        name: "renderer-viewport".into(),
+        cache,
+    };
+    println!("==> preparing managed viewport build: {build_dir}");
+    build::run_with_intent(
+        BuildArgs::managed(
+            platform.clone(),
+            profile.clone(),
+            args.generator,
+            args.config.clone(),
+        ),
+        Format::Human,
+        intent,
+    )?;
+
+    let exe_name = if Host::detect().os == Os::Windows {
+        format!("{adapter}.exe")
+    } else {
+        adapter.clone()
+    };
+    let executable = pick_built_executable(find_all_named_files(&build_dir, &exe_name)?, &args.config)
+        .ok_or_else(|| {
+            Error::precondition(format!(
+                "the managed build did not produce viewport executable '{exe_name}' under '{build_dir}'"
+            ))
+            .with_hint(
+                "ensure the project builds its viewport target when configured with \
+                 OST_RENDERER_ADAPTERS=viewport",
+            )
+            .with_phase("renderer-viewport-discovery")
+        })?;
+
+    println!("==> viewport: {executable}");
+    let status = Command::new(executable.as_std_path())
+        .args(&args.args)
+        .status()
+        .map_err(|error| Error::io(format!("run {executable}"), error))?;
+    match status.code() {
+        Some(0) => Ok(()),
+        // The viewport smoke contract: 77 means this environment cannot
+        // present (no display, no Vulkan-capable device), not a failure.
+        Some(77) => Err(Error::coded(
+            "PRESENTATION_UNAVAILABLE",
+            Category::Precondition,
+            "the viewport reported that this environment cannot present",
+        )
+        .with_hint("run on a host with a display and a Vulkan 1.3 capable device")
+        .with_phase("renderer-viewport-host")),
+        _ => Err(Error::external_tool(format!(
+            "the viewport exited unsuccessfully{}",
+            exit_detail(&status)
+        ))
+        .with_phase("renderer-viewport-host")),
+    }
+}
+
+// A multi-config generator nests executables under a per-config directory;
+// prefer the requested configuration when several builds exist.
+fn pick_built_executable(candidates: Vec<Utf8PathBuf>, config: &str) -> Option<Utf8PathBuf> {
+    if candidates.len() > 1 {
+        if let Some(matching) = candidates.iter().find(|path| {
+            path.components()
+                .any(|component| component.as_str().eq_ignore_ascii_case(config))
+        }) {
+            return Some(matching.clone());
+        }
+    }
+    candidates.into_iter().next()
 }
 
 fn select_view_profile(
