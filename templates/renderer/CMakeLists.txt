@@ -26,6 +26,16 @@ if("hydra2" IN_LIST OST_RENDERER_ADAPTERS)
   set({{NAME}}_ENABLE_HYDRA2 ON CACHE BOOL
     "Build the optional co-built OpenUSD Hydra 2 adapter" FORCE)
 endif()
+set(_{{NAME}}_VIEWPORT_DEFAULT OFF)
+if("viewport" IN_LIST OST_RENDERER_ADAPTERS)
+  set(_{{NAME}}_VIEWPORT_DEFAULT ON)
+endif()
+option({{NAME}}_ENABLE_VIEWPORT "Build the optional GLFW/Vulkan viewport adapter"
+  ${_{{NAME}}_VIEWPORT_DEFAULT})
+if("viewport" IN_LIST OST_RENDERER_ADAPTERS)
+  set({{NAME}}_ENABLE_VIEWPORT ON CACHE BOOL
+    "Build the optional GLFW/Vulkan viewport adapter" FORCE)
+endif()
 option({{NAME}}_BUILD_TESTS "Build renderer contract and install-tree tests" ON)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -69,6 +79,9 @@ add_subdirectory(adapters/headless)
 if({{NAME}}_ENABLE_HYDRA2)
   add_subdirectory(adapters/hydra2)
   target_compile_definitions({{name}}-headless PRIVATE {{NAME}}_HAS_HYDRA2=1)
+endif()
+if({{NAME}}_ENABLE_VIEWPORT)
+  add_subdirectory(adapters/viewport)
 endif()
 
 if({{NAME}}_BUILD_TESTS)

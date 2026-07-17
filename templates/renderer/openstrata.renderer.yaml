@@ -11,6 +11,7 @@ composition:
   adapters:
     headless: {{name}}-headless
     hydra2: hd{{Name}}
+    viewport: {{name}}-viewport
 render_products:
   required: [color, depth]
 frame:

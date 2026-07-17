@@ -2,7 +2,6 @@
 #include <{{name}}/vulkan_backend.hpp>
 
 #include <cstring>
-#include <fstream>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -11,6 +10,8 @@
 
 #if defined({{NAME}}_HAS_VULKAN)
 #include <vulkan/vulkan.h>
+
+#include "vulkan_internal.hpp"
 #endif
 
 namespace {{Name}} {
@@ -34,54 +35,20 @@ BackendCapability ProbeVulkanBackend() {
 #if defined({{NAME}}_HAS_VULKAN)
 namespace {
 
+using vulkan_internal::CreateInstanceWithValidation;
+using vulkan_internal::CreateShader;
+using vulkan_internal::DestroyInstance;
+using vulkan_internal::FindMemoryType;
+using vulkan_internal::InstanceState;
+using vulkan_internal::LoadSpirv;
+using vulkan_internal::SupportsShaderDrawParameters;
+using vulkan_internal::ValidationState;
+using vulkan_internal::VulkanOk;
+
 constexpr std::uint32_t kWidth = 64;
 constexpr std::uint32_t kHeight = 64;
 constexpr VkFormat kColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
 constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
-
-struct ValidationState {
-  std::uint32_t message_count = 0;
-  std::string first_message;
-};
-
-VKAPI_ATTR VkBool32 VKAPI_CALL ValidationCallback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-    VkDebugUtilsMessageTypeFlagsEXT message_type,
-    const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
-    void* user_data) {
-  const bool error =
-      (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0;
-  const bool renderer_warning =
-      (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0 &&
-      (message_type & (VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)) != 0;
-  // General loader/environment warnings remain observable outside this report,
-  // but do not become renderer validation failures.
-  if (!error && !renderer_warning) {
-    return VK_FALSE;
-  }
-  auto* state = static_cast<ValidationState*>(user_data);
-  ++state->message_count;
-  if (state->first_message.empty() && callback_data != nullptr &&
-      callback_data->pMessage != nullptr) {
-    state->first_message = callback_data->pMessage;
-  }
-  return VK_FALSE;
-}
-
-VkDebugUtilsMessengerCreateInfoEXT DebugMessengerCreateInfo(
-    ValidationState* state) {
-  VkDebugUtilsMessengerCreateInfoEXT create{
-      VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
-  create.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-  create.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-  create.pfnUserCallback = ValidationCallback;
-  create.pUserData = state;
-  return create;
-}
 
 GpuFrameEvidence Evidence(FrameStatus status, std::string detail) {
   GpuFrameEvidence evidence;
@@ -90,23 +57,9 @@ GpuFrameEvidence Evidence(FrameStatus status, std::string detail) {
   return evidence;
 }
 
-bool VulkanOk(VkResult result, const char* operation, std::string& detail) {
-  if (result == VK_SUCCESS) {
-    return true;
-  }
-  std::ostringstream message;
-  message << operation << " failed with VkResult " << result;
-  detail = message.str();
-  return false;
-}
-
 struct Context {
-  VkInstance instance = VK_NULL_HANDLE;
-  VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
-  PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_messenger = nullptr;
+  InstanceState instance_state;
   ValidationState validation;
-  bool validation_available = false;
-  std::string validation_detail;
   VkPhysicalDevice physical_device = VK_NULL_HANDLE;
   VkDevice device = VK_NULL_HANDLE;
   VkQueue queue = VK_NULL_HANDLE;
@@ -150,13 +103,7 @@ struct Context {
       vkDestroyCommandPool(device, command_pool, nullptr);
       vkDestroyDevice(device, nullptr);
     }
-    if (instance != VK_NULL_HANDLE) {
-      if (destroy_debug_messenger != nullptr &&
-          debug_messenger != VK_NULL_HANDLE) {
-        destroy_debug_messenger(instance, debug_messenger, nullptr);
-      }
-      vkDestroyInstance(instance, nullptr);
-    }
+    DestroyInstance(instance_state);
   }
 };
 
@@ -172,33 +119,6 @@ std::optional<std::uint32_t> FindGraphicsQueue(VkPhysicalDevice device) {
     }
   }
   return std::nullopt;
-}
-
-std::uint32_t FindMemoryType(VkPhysicalDevice device,
-                             std::uint32_t allowed,
-                             VkMemoryPropertyFlags required,
-                             VkMemoryPropertyFlags preferred,
-                             bool* coherent = nullptr) {
-  VkPhysicalDeviceMemoryProperties properties{};
-  vkGetPhysicalDeviceMemoryProperties(device, &properties);
-  const auto find = [&](VkMemoryPropertyFlags wanted) {
-    for (std::uint32_t index = 0; index < properties.memoryTypeCount; ++index) {
-      if ((allowed & (1U << index)) != 0 &&
-          (properties.memoryTypes[index].propertyFlags & wanted) == wanted) {
-        return index;
-      }
-    }
-    return std::numeric_limits<std::uint32_t>::max();
-  };
-  std::uint32_t index = find(required | preferred);
-  if (index == std::numeric_limits<std::uint32_t>::max()) {
-    index = find(required);
-  }
-  if (coherent != nullptr && index != std::numeric_limits<std::uint32_t>::max()) {
-    *coherent = (properties.memoryTypes[index].propertyFlags &
-                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
-  }
-  return index;
 }
 
 bool CreateImage(Context& context,
@@ -279,42 +199,6 @@ bool CreateReadbackBuffer(Context& context,
   return true;
 }
 
-bool LoadSpirv(const std::string& path,
-               std::vector<std::uint32_t>& words,
-               std::string& detail) {
-  std::ifstream input(path, std::ios::binary | std::ios::ate);
-  if (!input) {
-    detail = "cannot open SPIR-V shader: " + path;
-    return false;
-  }
-  const std::streamsize size = input.tellg();
-  if (size <= 0 || (size % 4) != 0) {
-    detail = "SPIR-V shader has an invalid byte length: " + path;
-    return false;
-  }
-  words.resize(static_cast<std::size_t>(size) / sizeof(std::uint32_t));
-  input.seekg(0);
-  if (!input.read(reinterpret_cast<char*>(words.data()), size)) {
-    detail = "cannot read SPIR-V shader: " + path;
-    return false;
-  }
-  return true;
-}
-
-VkShaderModule CreateShader(VkDevice device,
-                            const std::vector<std::uint32_t>& words,
-                            std::string& detail) {
-  VkShaderModuleCreateInfo create{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-  create.codeSize = words.size() * sizeof(std::uint32_t);
-  create.pCode = words.data();
-  VkShaderModule shader = VK_NULL_HANDLE;
-  if (!VulkanOk(vkCreateShaderModule(device, &create, nullptr, &shader),
-                "vkCreateShaderModule", detail)) {
-    return VK_NULL_HANDLE;
-  }
-  return shader;
-}
-
 bool InvalidateIfNeeded(VkDevice device,
                         VkDeviceMemory memory,
                         bool coherent,
@@ -366,75 +250,14 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   }
 
   Context context;
-  std::uint32_t layer_count = 0;
-  vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
-  std::vector<VkLayerProperties> layers(layer_count);
-  vkEnumerateInstanceLayerProperties(&layer_count, layers.data());
-  bool has_validation_layer = false;
-  for (const VkLayerProperties& layer : layers) {
-    if (std::strcmp(layer.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
-      has_validation_layer = true;
-      break;
-    }
-  }
-  std::uint32_t extension_count = 0;
-  vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
-  std::vector<VkExtensionProperties> extensions(extension_count);
-  vkEnumerateInstanceExtensionProperties(nullptr, &extension_count,
-                                         extensions.data());
-  bool has_debug_utils = false;
-  for (const VkExtensionProperties& extension : extensions) {
-    if (std::strcmp(extension.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) {
-      has_debug_utils = true;
-      break;
-    }
-  }
-  const bool enable_validation = has_validation_layer && has_debug_utils;
-  const char* validation_layer = "VK_LAYER_KHRONOS_validation";
-  const char* debug_extension = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-  VkDebugUtilsMessengerCreateInfoEXT debug_create =
-      DebugMessengerCreateInfo(&context.validation);
-  VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-  application.pApplicationName = "{{name}}-headless";
-  application.applicationVersion = VK_MAKE_API_VERSION(0, 0, 1, 0);
-  application.pEngineName = "{{name}}";
-  application.engineVersion = VK_MAKE_API_VERSION(0, 0, 1, 0);
-  application.apiVersion = VK_API_VERSION_1_3;
-  VkInstanceCreateInfo instance_create{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-  instance_create.pApplicationInfo = &application;
-  if (enable_validation) {
-    instance_create.enabledLayerCount = 1;
-    instance_create.ppEnabledLayerNames = &validation_layer;
-    instance_create.enabledExtensionCount = 1;
-    instance_create.ppEnabledExtensionNames = &debug_extension;
-    instance_create.pNext = &debug_create;
-  }
-  if (!VulkanOk(vkCreateInstance(&instance_create, nullptr, &context.instance),
-                "vkCreateInstance", detail)) {
+  if (!CreateInstanceWithValidation("{{name}}-headless", {}, &context.validation,
+                                    context.instance_state, detail)) {
     return Evidence(FrameStatus::Skip, detail);
   }
-  if (enable_validation) {
-    const auto create_debug = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
-        vkGetInstanceProcAddr(context.instance, "vkCreateDebugUtilsMessengerEXT"));
-    context.destroy_debug_messenger =
-        reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
-            context.instance, "vkDestroyDebugUtilsMessengerEXT"));
-    if (create_debug != nullptr && context.destroy_debug_messenger != nullptr &&
-        create_debug(context.instance, &debug_create, nullptr,
-                     &context.debug_messenger) == VK_SUCCESS) {
-      context.validation_available = true;
-    } else {
-      context.validation_detail =
-          "VK_EXT_debug_utils messenger could not be created";
-    }
-  } else if (!has_validation_layer) {
-    context.validation_detail = "VK_LAYER_KHRONOS_validation is unavailable";
-  } else {
-    context.validation_detail = "VK_EXT_debug_utils is unavailable";
-  }
+  const VkInstance instance = context.instance_state.instance;
 
   std::uint32_t physical_count = 0;
-  if (!VulkanOk(vkEnumeratePhysicalDevices(context.instance, &physical_count, nullptr),
+  if (!VulkanOk(vkEnumeratePhysicalDevices(instance, &physical_count, nullptr),
                 "vkEnumeratePhysicalDevices", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
@@ -442,7 +265,7 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
     return Evidence(FrameStatus::Skip, "no Vulkan physical device is available");
   }
   std::vector<VkPhysicalDevice> physical_devices(physical_count);
-  vkEnumeratePhysicalDevices(context.instance, &physical_count, physical_devices.data());
+  vkEnumeratePhysicalDevices(instance, &physical_count, physical_devices.data());
   std::optional<std::uint32_t> queue_family;
   for (VkPhysicalDevice physical : physical_devices) {
     const auto candidate = FindGraphicsQueue(physical);
@@ -457,16 +280,7 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
                     "no Vulkan physical device exposes a graphics queue");
   }
 
-  // Slang lowers SV_VertexID to VertexIndex minus BaseVertex (D3D semantics),
-  // so the generated SPIR-V declares the DrawParameters capability and the
-  // device must enable the matching shaderDrawParameters feature.
-  VkPhysicalDeviceVulkan11Features supported_vulkan11{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
-  VkPhysicalDeviceFeatures2 supported_features{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-  supported_features.pNext = &supported_vulkan11;
-  vkGetPhysicalDeviceFeatures2(context.physical_device, &supported_features);
-  if (supported_vulkan11.shaderDrawParameters != VK_TRUE) {
+  if (!SupportsShaderDrawParameters(context.physical_device)) {
     return Evidence(FrameStatus::Skip,
                     "the device does not support shaderDrawParameters, which "
                     "the Slang vertex-index lowering requires");
@@ -830,11 +644,12 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   GpuFrameEvidence evidence = Evidence(FrameStatus::Pass, "");
   evidence.completion = completion;
   evidence.frames_rendered = frame_count;
-  evidence.validation_available = context.validation_available;
+  evidence.validation_available = context.instance_state.validation_available;
   evidence.validation_message_count = context.validation.message_count;
-  evidence.validation_detail = context.validation.first_message.empty()
-                                   ? context.validation_detail
-                                   : context.validation.first_message;
+  evidence.validation_detail =
+      context.validation.first_message.empty()
+          ? context.instance_state.validation_detail
+          : context.validation.first_message;
   evidence.color.width = kWidth;
   evidence.color.height = kHeight;
   evidence.color.row_pitch = kWidth * 4U;
