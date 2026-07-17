@@ -16,7 +16,8 @@ ost build
 ost validate --json
 ```
 
-The build writes `renderer-report.json`. With Vulkan 1.3 plus `glslc`, the
+The build writes `renderer-report.json`. With Vulkan 1.3 plus `slangc` (the
+Vulkan SDK bundles it since 1.3.296; shaders are single-source Slang), the
 generated bootstrap path renders a 64x64 offscreen triangle for 1,000 frames,
 reads back RGBA8 and depth32 products, captures renderer validation messages,
 and records structured device/API/driver identity. Without that capability the

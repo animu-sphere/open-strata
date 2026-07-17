@@ -457,6 +457,21 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
                     "no Vulkan physical device exposes a graphics queue");
   }
 
+  // Slang lowers SV_VertexID to VertexIndex minus BaseVertex (D3D semantics),
+  // so the generated SPIR-V declares the DrawParameters capability and the
+  // device must enable the matching shaderDrawParameters feature.
+  VkPhysicalDeviceVulkan11Features supported_vulkan11{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+  VkPhysicalDeviceFeatures2 supported_features{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  supported_features.pNext = &supported_vulkan11;
+  vkGetPhysicalDeviceFeatures2(context.physical_device, &supported_features);
+  if (supported_vulkan11.shaderDrawParameters != VK_TRUE) {
+    return Evidence(FrameStatus::Skip,
+                    "the device does not support shaderDrawParameters, which "
+                    "the Slang vertex-index lowering requires");
+  }
+
   VkFormatProperties color_properties{};
   VkFormatProperties depth_properties{};
   vkGetPhysicalDeviceFormatProperties(context.physical_device, kColorFormat,
@@ -479,7 +494,11 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   queue_create.queueFamilyIndex = *queue_family;
   queue_create.queueCount = 1;
   queue_create.pQueuePriorities = &priority;
+  VkPhysicalDeviceVulkan11Features enabled_vulkan11{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+  enabled_vulkan11.shaderDrawParameters = VK_TRUE;
   VkDeviceCreateInfo device_create{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+  device_create.pNext = &enabled_vulkan11;
   device_create.queueCreateInfoCount = 1;
   device_create.pQueueCreateInfos = &queue_create;
   if (!VulkanOk(vkCreateDevice(context.physical_device, &device_create, nullptr,

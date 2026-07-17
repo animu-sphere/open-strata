@@ -44,11 +44,21 @@ endif()
 
 set({{NAME}}_WITH_VULKAN OFF)
 if({{NAME}}_ENABLE_VULKAN)
-  find_package(Vulkan 1.3 QUIET COMPONENTS glslc)
-  if(Vulkan_FOUND)
+  find_package(Vulkan 1.3 QUIET)
+  # Slang is the shader source of truth. The Vulkan SDK bundles slangc since
+  # 1.3.296, so one SDK install provides both the loader and the compiler.
+  find_program({{NAME}}_SLANGC_EXECUTABLE
+    NAMES slangc
+    HINTS ENV VULKAN_SDK
+    PATH_SUFFIXES bin Bin)
+  if(Vulkan_FOUND AND {{NAME}}_SLANGC_EXECUTABLE)
     set({{NAME}}_WITH_VULKAN ON)
-  else()
+  elseif(NOT Vulkan_FOUND)
     message(STATUS "Vulkan 1.3 was not found; GPU assertions will report SKIP")
+  else()
+    message(STATUS
+      "slangc was not found (the Vulkan SDK bundles it since 1.3.296); "
+      "GPU assertions will report SKIP")
   endif()
 endif()
 

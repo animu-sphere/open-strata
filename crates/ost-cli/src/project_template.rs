@@ -199,12 +199,8 @@ const RENDERER: &[TemplateFile] = &[
         include_str!("../../../templates/renderer/backend/vulkan/vulkan_backend.cpp"),
     ),
     tf(
-        "backend/vulkan/shaders/triangle.vert",
-        include_str!("../../../templates/renderer/backend/vulkan/shaders/triangle.vert"),
-    ),
-    tf(
-        "backend/vulkan/shaders/triangle.frag",
-        include_str!("../../../templates/renderer/backend/vulkan/shaders/triangle.frag"),
+        "backend/vulkan/shaders/triangle.slang",
+        include_str!("../../../templates/renderer/backend/vulkan/shaders/triangle.slang"),
     ),
     tf(
         "adapters/headless/CMakeLists.txt",
