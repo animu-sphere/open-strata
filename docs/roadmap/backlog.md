@@ -8,13 +8,31 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.18.0 - DCC host integration) is detailed in
+The next milestone (v0.18.0 - evidence integrity fix release) is detailed in
 [current.md](current.md).
 
-- ⬜ **v1.0.0 (after v0.18.0).** Cut once the produce → trust → provenance →
-  trusted-CI arc and the initial DCC host matrix are shipped and dogfooded — i.e.
-  "build it, publish it, verify its provenance, pull it in trusted CI, run it
-  against a DCC host" is a single supported, digest-addressed arc.
+- ⬜ **v0.19.0 - DCC host integration (Phase 10).** Deferred from the original
+  v0.18.0 slot by the v0.17.0 dogfooding findings now scheduled as the v0.18.0
+  fix release. Extends OpenStrata beyond runtime-native OpenUSD applications
+  without redistributing DCC SDKs or inventing one false cross-DCC API: an
+  `ost-host` model with a versioned host record (product, version, install
+  root, executable/API locations, Python ABI, platform fingerprint, discovery
+  evidence); `ost host discover|list|inspect` with deterministic Maya and
+  Houdini detectors that never mutate a host install or accept ambient PATH
+  guesses; a host adapter boundary running minimal headless
+  load/open/validate probes with preserved output and explained SKIP for
+  unavailable licenses/display/capability; and support-matrix cells with
+  pinned host records, stable/nightly/release/legacy tiers, and trusted
+  release candidates fed in without weakening the artifact publisher boundary.
+  Host integration must consume the renderer identity and evidence model
+  established in v0.17.0 and corrected in v0.18.0 rather than introduce a
+  parallel DCC renderer contract. Direction:
+  [dcc-hosts.md](../design/proposed/dcc-hosts.md).
+- ⬜ **v1.0.0 (after the DCC host milestone).** Cut once the produce → trust →
+  provenance → trusted-CI arc and the initial DCC host matrix are shipped and
+  dogfooded — i.e. "build it, publish it, verify its provenance, pull it in
+  trusted CI, run it against a DCC host" is a single supported,
+  digest-addressed arc.
 
 ## Future phases
 
@@ -88,12 +106,14 @@ Shipped context for each area is in the
   `dlopen`; (c) reconcile `ost artifact push` vs `oras push` OCI manifests —
   document the canonical producer path (prefer `ost artifact push`) or reproduce
   the `oras` manifest byte-for-byte so CI pins don't drift.
-- ⬜ **Packaged workspace/product composition.** Source-workspace closure is
-  separate from clean-install artifact composition. Define member bundle
-  digests, extraction layout, dependency closure, and aggregate evidence before
-  making `plugin test --workspace --from-package` or support lanes compose
-  several packages. Preserve member manifests/provenance and do not fall back to
-  workspace source paths or a hand-maintained per-bundle loop.
+- ⬜ **Packaged workspace/product composition — aggregate product artifact.**
+  The workspace packaging closure (per-bundle `--workspace` packaging,
+  resolved `bundles` in `dependencies.json`, `--from-package` composition) is
+  scheduled for v0.18.0 in [current.md](current.md). Remaining here: the
+  aggregate single-artifact product (member bundle digests, extraction layout,
+  aggregate evidence) if v0.18.0 defers it. Preserve member
+  manifests/provenance and do not fall back to workspace source paths or a
+  hand-maintained per-bundle loop.
 
 ## Documentation & tooling
 
