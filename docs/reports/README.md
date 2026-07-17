@@ -11,4 +11,8 @@ and [reference/](../reference/)).
 | [incident-notes.md](incident-notes.md) | Short debugging notes: incidents, root causes, fixes, and future guardrails. |
 
 Additional dogfooding evidence remains in downstream validation repositories and
-is backfilled here as the reorganization proceeds.
+is backfilled here as the reorganization proceeds. The two v0.17.0 passes that
+drove the v0.18.0 fix-release plan live downstream:
+`2026-07-15-v0.17.0-dogfooding-v0.18.0-asks.md` (`animu-sphere/hydra-merlin`)
+and `22-2026-07-17-v0.17.0-evidence-gate-v0.18.0-asks.md`
+(`animu-sphere/usd-vrm-plugins`).
