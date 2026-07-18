@@ -262,7 +262,7 @@ impl TargetLease {
 
         // The lock is ours. Anything already in the file is a record the previous
         // owner never got to clear, so verify who it was before overwriting it.
-        let takeover = read_owner_from(&file, path).map(|previous| {
+        let takeover = read_owner_from(&file).map(|previous| {
             let reason = classify_stale(&previous);
             StaleTakeover { previous, reason }
         });
@@ -303,14 +303,27 @@ impl TargetLease {
         &self.path
     }
 
-    /// Release the lease and remove the record.
+    /// Release the lease and clear the record.
     ///
-    /// Dropping does the same, minus the removal; the explicit call is what a
+    /// Dropping does the same, minus the clearing; the explicit call is what a
     /// clean exit uses so the next run finds no stale record to reason about.
+    ///
+    /// The file itself is deliberately *not* unlinked. On Unix the lock lives on
+    /// the inode, not the path, so a release that dropped the lock and then
+    /// removed the file would leave a window in which a second writer acquires
+    /// the doomed inode, the unlink lands, and a third writer creates a fresh
+    /// file at the same path and acquires that — two live owners of one target,
+    /// neither able to see the other. Truncating in place keeps one inode behind
+    /// the path for the target's whole life, and an empty record already reads
+    /// as "no previous owner" ([`read_owner_from`]).
     pub fn release(mut self) {
         if let Some(file) = self.file.take() {
+            // Clear the record *before* dropping: the lock must still be held
+            // while the file is modified, or the truncation can land on top of
+            // the next owner's freshly written record.
+            let _ = file.set_len(0);
+            let _ = file.sync_all();
             drop(file);
-            let _ = std::fs::remove_file(self.path.as_std_path());
         }
     }
 }
@@ -354,10 +367,10 @@ fn classify_stale(previous: &LeaseOwner) -> StaleReason {
 /// Read the owner record without taking the lock (a waiter naming the holder).
 fn read_owner(path: &Utf8Path) -> Option<LeaseOwner> {
     let file = open_shared_read(path).ok()?;
-    read_owner_from(&file, path)
+    read_owner_from(&file)
 }
 
-fn read_owner_from(file: &File, _path: &Utf8Path) -> Option<LeaseOwner> {
+fn read_owner_from(file: &File) -> Option<LeaseOwner> {
     let mut file = file;
     file.seek(SeekFrom::Start(0)).ok()?;
     let mut body = String::new();
@@ -668,6 +681,22 @@ mod tests {
         let path = dir.join(TARGET_LEASE_FILE);
         let first = TargetLease::acquire(&path, "target", "ost build", LeaseMode::Fail).unwrap();
         first.release();
+
+        // The path stays, holding one inode for the target's whole life: on Unix
+        // the lock is on the inode, so unlinking it would let a later writer
+        // create a second file at the same path and acquire a lock that excludes
+        // nobody. What a release clears is the record, not the file.
+        assert!(
+            path.as_std_path().exists(),
+            "release must not unlink the lease file"
+        );
+        assert!(
+            std::fs::read_to_string(path.as_std_path())
+                .unwrap()
+                .trim()
+                .is_empty(),
+            "release must clear the owner record"
+        );
 
         let second = TargetLease::acquire(&path, "target", "ost build", LeaseMode::Fail)
             .expect("lease is free again");

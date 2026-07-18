@@ -116,6 +116,59 @@ impl BuildCompletion {
         });
         ost_core::digest::sha256_hex(material.to_string().as_bytes())
     }
+
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Fail closed when a record is stale, copied, or belongs to another
+    /// configured target/project/build directory.
+    pub fn validate_against(
+        &self,
+        lock: &TargetLock,
+        project_name: &str,
+        project_version: &str,
+        build_dir: &Utf8Path,
+    ) -> Result<(), String> {
+        if self.schema != BUILD_COMPLETION_SCHEMA {
+            return Err(format!("unsupported completion schema '{}'", self.schema));
+        }
+        if self.target != lock.target {
+            return Err(format!(
+                "completion target '{}' != configured target '{}'",
+                self.target, lock.target
+            ));
+        }
+        if self.project.name != project_name || self.project.version != project_version {
+            return Err(format!(
+                "completion project '{} {}' != current project '{} {}'",
+                self.project.name, self.project.version, project_name, project_version
+            ));
+        }
+        if self.runtime != lock.runtime {
+            return Err("completion runtime does not match target.lock.json".into());
+        }
+        if self.compiler.fingerprint() != lock.compiler.fingerprint() {
+            return Err("completion compiler does not match target.lock.json".into());
+        }
+        if self.generator != lock.generator {
+            return Err(format!(
+                "completion generator '{}' != configured generator '{}'",
+                self.generator, lock.generator
+            ));
+        }
+        let expected = build_dir.as_str().replace('\\', "/");
+        if self.build_dir != expected {
+            return Err(format!(
+                "completion build directory '{}' != expected '{}'",
+                self.build_dir, expected
+            ));
+        }
+        if self.intent.name.trim().is_empty() {
+            return Err("completion build intent is empty".into());
+        }
+        Ok(())
+    }
 }
 
 /// Atomic evidence that an OpenStrata-managed test run completed.
@@ -224,61 +277,6 @@ impl TestCompletion {
         // either way it cannot stand behind a `tested` claim.
         if self.totals.total == 0 {
             return Err("test completion records no tests".into());
-        }
-        Ok(())
-    }
-}
-
-impl BuildCompletion {
-    pub fn to_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string_pretty(self)
-    }
-
-    /// Fail closed when a record is stale, copied, or belongs to another
-    /// configured target/project/build directory.
-    pub fn validate_against(
-        &self,
-        lock: &TargetLock,
-        project_name: &str,
-        project_version: &str,
-        build_dir: &Utf8Path,
-    ) -> Result<(), String> {
-        if self.schema != BUILD_COMPLETION_SCHEMA {
-            return Err(format!("unsupported completion schema '{}'", self.schema));
-        }
-        if self.target != lock.target {
-            return Err(format!(
-                "completion target '{}' != configured target '{}'",
-                self.target, lock.target
-            ));
-        }
-        if self.project.name != project_name || self.project.version != project_version {
-            return Err(format!(
-                "completion project '{} {}' != current project '{} {}'",
-                self.project.name, self.project.version, project_name, project_version
-            ));
-        }
-        if self.runtime != lock.runtime {
-            return Err("completion runtime does not match target.lock.json".into());
-        }
-        if self.compiler.fingerprint() != lock.compiler.fingerprint() {
-            return Err("completion compiler does not match target.lock.json".into());
-        }
-        if self.generator != lock.generator {
-            return Err(format!(
-                "completion generator '{}' != configured generator '{}'",
-                self.generator, lock.generator
-            ));
-        }
-        let expected = build_dir.as_str().replace('\\', "/");
-        if self.build_dir != expected {
-            return Err(format!(
-                "completion build directory '{}' != expected '{}'",
-                self.build_dir, expected
-            ));
-        }
-        if self.intent.name.trim().is_empty() {
-            return Err("completion build intent is empty".into());
         }
         Ok(())
     }

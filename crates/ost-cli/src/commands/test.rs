@@ -292,12 +292,30 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         rep.done();
         // The record is already on disk, so the failure can be described from
         // it rather than from an exit code alone.
-        return Err(Error::external_tool(format!(
-            "{} of {} tests failed in target '{id}'",
-            totals.failed.max(1),
-            totals.total
-        ))
-        .with_hint(format!("see {log} for the failing output")));
+        //
+        // CTest can also exit non-zero with no failure of its own recorded — a
+        // run cut short by the overall timeout, or killed. Rounding that up to
+        // "1 test failed" would invent a count no report backs, which is the
+        // kind of claim this release exists to stop making; say what is known
+        // instead.
+        let detail = if totals.failed > 0 {
+            format!(
+                "{} of {} tests failed in target '{id}'",
+                totals.failed, totals.total
+            )
+        } else {
+            format!(
+                "the test run for target '{id}' did not complete successfully \
+                 (ctest exited {}), though none of its {} tests reported a failure",
+                status
+                    .code()
+                    .map_or_else(|| "on a signal".to_string(), |code| code.to_string()),
+                totals.total
+            )
+        };
+        return Err(
+            Error::external_tool(detail).with_hint(format!("see {log} for the failing output"))
+        );
     }
 
     rep.done();

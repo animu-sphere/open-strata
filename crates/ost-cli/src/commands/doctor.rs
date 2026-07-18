@@ -119,11 +119,15 @@ impl Issue {
 /// Both the resolved profile's own capabilities and any the caller named count.
 /// A `core` profile promises no OpenUSD execution, so a mock runtime is not a
 /// deficiency there — it is the profile working as specified.
+///
+/// Which capabilities qualify is [`crate::commands::needs_openusd`], shared with
+/// `uv`: the set is not just `usd-*`, and answering "no OpenUSD needed" for a
+/// lookdev profile would be worse than the standing advice this replaced.
 fn wants_openusd(profile_capabilities: &[String], requested: &[String]) -> bool {
     profile_capabilities
         .iter()
         .chain(requested.iter())
-        .any(|capability| capability.starts_with("usd"))
+        .any(|capability| crate::commands::needs_openusd(capability))
 }
 
 /// Whether any issue is an error (warnings do not fail the run).
@@ -215,8 +219,8 @@ pub fn run(args: DoctorArgs, fmt: Format) -> Result<()> {
                 } else {
                     issue.explaining(format!(
                         "nothing selected depends on OpenUSD — the '{}' profile exercises no \
-                         usd* capability — so a real runtime would not change any result here; \
-                         pass --capability <name> if you intend to exercise one",
+                         OpenUSD-dependent capability — so a real runtime would not change any \
+                         result here; pass --capability <name> if you intend to exercise one",
                         args.profile
                     ))
                 });
@@ -572,6 +576,23 @@ mod tests {
         );
         // …and a non-OpenUSD request does not.
         assert!(!wants_openusd(&core, &["build-cxx".to_string()]));
+    }
+
+    /// Not every OpenUSD-dependent capability is spelled `usd-*`. `hydra-preview`
+    /// enables USD imaging, so a lookdev profile on a mock runtime is a real
+    /// limitation — telling that caller "a real runtime would not change any
+    /// result here" is worse than the standing advice this replaced.
+    #[test]
+    fn hydra_preview_counts_as_depending_on_openusd() {
+        let lookdev = vec!["hydra-preview".to_string()];
+        assert!(
+            wants_openusd(&lookdev, &[]),
+            "hydra-preview needs a real OpenUSD"
+        );
+        assert!(wants_openusd(&[], &["hydra-preview".to_string()]));
+        // The predicate is shared with `uv`, which must not answer differently.
+        assert!(crate::commands::needs_openusd("hydra-preview"));
+        assert!(!crate::commands::needs_openusd("qt-ui"));
     }
 
     /// A warning with no action must still say why there is nothing to do —

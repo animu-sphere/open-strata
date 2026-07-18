@@ -314,10 +314,12 @@ fn a_second_writer_is_refused_while_the_target_is_leased() {
         .unwrap()
         .to_string_lossy()
         .to_string();
-    // A clean run leaves no lease behind.
+    // A clean run leaves no owner behind. The file itself persists by design —
+    // the lock lives on the inode, so unlinking it would let a later writer
+    // acquire a fresh file at the same path and exclude nobody.
     let lease_path = Utf8PathBuf::from_path_buf(target_dir.join(TARGET_LEASE_FILE)).unwrap();
     assert!(
-        !lease_path.as_std_path().exists(),
+        lease_is_unowned(lease_path.as_std_path()),
         "a completed configure must release its lease"
     );
 
@@ -403,9 +405,20 @@ fn a_stale_lease_record_is_taken_over_and_reported() {
         "the takeover must name the run it inherited:\n{text}"
     );
     assert!(
-        !lease_path.exists(),
+        lease_is_unowned(&lease_path),
         "the completed run must release the lease it took over"
     );
+}
+
+/// Whether a lease file names no owner — either absent, or present and cleared.
+///
+/// A release clears the record in place rather than unlinking the file, so
+/// "nobody holds this target" is an empty record, not a missing path.
+fn lease_is_unowned(path: &Path) -> bool {
+    match std::fs::read_to_string(path) {
+        Ok(body) => body.trim().is_empty(),
+        Err(_) => true,
+    }
 }
 
 /// An external tree gets `runtime-compatible` only after an explicit import, and
