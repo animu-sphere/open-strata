@@ -5,7 +5,7 @@ OpenStrata producer commands carry evidence beside the content archive and
 
 | File | Format | OCI media type | Generation |
 | --- | --- | --- | --- |
-| `sbom.spdx.json` | SPDX 2.3 JSON | `application/spdx+json` | Generated for plugin, project-package, and runtime artifacts. |
+| `sbom.spdx.json` | SPDX 2.3 JSON | `application/spdx+json` | Generated for plugin, aggregate-product, project-package, and runtime artifacts. |
 | `provenance.intoto.jsonl` | in-toto Statement v1 with SLSA provenance v1 predicate | `application/vnd.in-toto+json` | Generated when complete build metadata is available. |
 
 The archive's `sha256:<digest>` remains the OpenStrata artifact identity.
@@ -57,4 +57,3 @@ Stable evidence errors include:
 | `ARTIFACT_PROVENANCE_SUBJECT_MISMATCH` | No statement subject matches the artifact archive digest. |
 | `ARTIFACT_PROVENANCE_SOURCE_MISMATCH` | Attested source repository/revision differs from manifest build metadata. |
 | `ARTIFACT_PROVENANCE_BUILDER_UNTRUSTED` | Builder identity is missing, invalid, or not allowed by policy. |
-

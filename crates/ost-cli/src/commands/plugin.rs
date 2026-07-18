@@ -111,6 +111,11 @@ pub enum PluginCmd {
         /// validated graph `plugin test --workspace` checks.
         #[arg(long)]
         workspace: bool,
+        /// Also emit one aggregate product artifact containing the exact member
+        /// archives, manifests, checksums and evidence in dependency order.
+        /// Requires --workspace.
+        #[arg(long)]
+        product: bool,
         /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
         #[arg(long)]
         target: Option<String>,
@@ -288,19 +293,25 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
         PluginCmd::Package {
             bundle,
             workspace,
+            product,
             target,
             profile,
             clean_stage,
             with_debug,
-        } => match (workspace, bundle) {
-            (true, Some(_)) => Err(Error::usage(
+        } => match (workspace, product, bundle) {
+            (true, _, Some(_)) => Err(Error::usage(
                 "--workspace discovers bundles itself — drop the bundle path",
             )),
-            (true, None) => package_workspace(target, profile, clean_stage, with_debug, fmt),
-            (false, Some(bundle)) => {
+            (true, product, None) => {
+                package_workspace(target, profile, clean_stage, with_debug, product, fmt)
+            }
+            (false, true, _) => Err(Error::usage(
+                "--product aggregates a workspace — pass it together with --workspace",
+            )),
+            (false, false, Some(bundle)) => {
                 package(&bundle, target, profile, clean_stage, with_debug, fmt)
             }
-            (false, None) => Err(Error::usage(
+            (false, false, None) => Err(Error::usage(
                 "missing bundle path (or pass --workspace to package every bundle)",
             )),
         },
@@ -1093,7 +1104,61 @@ struct PackageOutcome {
     archive_path: Utf8PathBuf,
     packed: ost_build::PackResult,
     debug: Option<(String, ost_build::PackResult)>,
+    debug_status: DebugPackageStatus,
+    manifest: serde_json::Value,
     stage_warnings: Vec<serde_json::Value>,
+}
+
+struct ProductOutcome {
+    name: String,
+    version: String,
+    target: String,
+    archive_path: Utf8PathBuf,
+    packed: ost_build::PackResult,
+    members: usize,
+    stage_warnings: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DebugPackageStatus {
+    /// Symbols were kept in the main archive because the caller requested it.
+    Included,
+    /// Recognized split-symbol files produced a sibling debug archive.
+    Split,
+    /// The stage contained no separate `.pdb`/`.dwo` files to split or include.
+    NotProduced,
+}
+
+impl DebugPackageStatus {
+    fn json(self) -> serde_json::Value {
+        match self {
+            Self::Included => serde_json::json!({
+                "mode": "included",
+                "produced": false,
+                "reason": "--with-debug keeps recognized debug-symbol files in the main archive",
+            }),
+            Self::Split => serde_json::json!({
+                "mode": "split",
+                "produced": true,
+                "reason": "recognized .pdb/.dwo files were split into the sibling debug archive",
+            }),
+            Self::NotProduced => serde_json::json!({
+                "mode": "not-produced",
+                "produced": false,
+                "reason": "the staged build contained no separate .pdb or .dwo files; embedded ELF/Mach-O debug info is not split",
+            }),
+        }
+    }
+
+    fn human_reason(self) -> &'static str {
+        match self {
+            Self::Included => "not produced (--with-debug keeps symbols in the main archive)",
+            Self::Split => "produced as a sibling symbol package",
+            Self::NotProduced => {
+                "not produced (the stage contained no separate .pdb/.dwo files; embedded debug info is not split)"
+            }
+        }
+    }
 }
 
 fn package(
@@ -1111,6 +1176,7 @@ fn package(
         &outcome.archive_path,
         &outcome.packed,
         outcome.debug.as_ref(),
+        outcome.debug_status,
         &outcome.stage_warnings,
         fmt,
     );
@@ -1245,6 +1311,7 @@ fn package_bundle(
         root: stage.clone(),
         manifest: packaged_manifest.clone(),
     };
+    write_activation_files(&packaged_bundle, tgt.variant.os)?;
     let session = session_env_with(&r.env, &packaged_bundle, &[], host.os);
     write_validation_files(&packaged_bundle, &report, &session, &stage)?;
 
@@ -1272,6 +1339,7 @@ fn package_bundle(
     // the main archive into a sibling `*-debug` package, so the shipped artifact
     // stays small without discarding the symbols. `--with-debug` keeps them in
     // the main archive instead.
+    let has_debug_symbol_files = staged.iter().any(|path| is_debug_symbol_file(path));
     let (main_files, debug_files): (Vec<_>, Vec<_>) = if with_debug {
         (staged, Vec::new())
     } else {
@@ -1292,6 +1360,13 @@ fn package_bundle(
         let dp = pack_dir_with(&stage, &debug_path, &debug_files, pack_opts, &mut |_| {})
             .map_err(|e| Error::io(debug_path.to_string(), e))?;
         Some((debug_name, dp))
+    };
+    let debug_status = if with_debug && has_debug_symbol_files {
+        DebugPackageStatus::Included
+    } else if debug_pack.is_some() {
+        DebugPackageStatus::Split
+    } else {
+        DebugPackageStatus::NotProduced
     };
 
     let runtime_manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
@@ -1375,6 +1450,14 @@ fn package_bundle(
     if let Some(debug_json) = &debug_json {
         manifest["debug"] = debug_json.clone();
     }
+    manifest["activation"] = serde_json::json!({
+        "schema": "openstrata.activation/v1alpha1",
+        "contract": "openstrata.activation.json",
+        "powershell": "activate.ps1",
+        "bash": "activate.sh",
+        "python": "openstrata_activate.py",
+    });
+    manifest["debug_package"] = debug_status.json();
     let evidence = ost_artifact::generate_evidence(&dist_dir, &mut manifest)?;
     write_text(&dist_dir.join("manifest.json"), &pretty_json(&manifest)?)?;
 
@@ -1399,6 +1482,8 @@ fn package_bundle(
         archive_path,
         packed,
         debug: debug_pack,
+        debug_status,
+        manifest,
         stage_warnings,
     })
 }
@@ -1414,15 +1499,15 @@ fn package_bundle(
 /// recorded closure points at. Packaging a consumer first would record a closure
 /// naming an artifact that does not exist yet.
 ///
-/// This ships per-bundle artifacts. There is deliberately no aggregate
-/// "workspace product" archive yet — defining one means deciding how a consumer
-/// installs and pins a set rather than a bundle, and that belongs with the
-/// v0.19.0 Formation work rather than being invented here.
+/// Per-bundle artifacts are always emitted. `--product` additionally wraps the
+/// exact member archives and their sidecars into one aggregate artifact; it
+/// never rebuilds an install view from source workspace paths.
 fn package_workspace(
     target: Option<String>,
     profile: Option<String>,
     clean_stage: bool,
     with_debug: bool,
+    product: bool,
     fmt: Format,
 ) -> Result<()> {
     let roots = discover_workspace_bundles(Utf8Path::new("."))?;
@@ -1501,9 +1586,20 @@ fn package_workspace(
                 "== {} {} ==\n  {}",
                 outcome.name, outcome.version, outcome.archive_path
             );
+            if let Some((debug_name, _)) = &outcome.debug {
+                println!("  debug: {debug_name} (sibling symbol package)");
+            } else {
+                println!("  debug: {}", outcome.debug_status.human_reason());
+            }
         }
         outcomes.push(outcome);
     }
+
+    let product_outcome = if product {
+        Some(package_workspace_product(&order, &outcomes, clean_stage)?)
+    } else {
+        None
+    };
 
     if fmt.is_json() {
         let packages: Vec<serde_json::Value> = outcomes
@@ -1517,29 +1613,314 @@ fn package_workspace(
                     "archive_digest": outcome.packed.archive_digest,
                     "archive_size": outcome.packed.archive_size,
                     "debug_archive": outcome.debug.as_ref().map(|(name, _)| name.clone()),
+                    "debug_package": outcome.debug_status.json(),
                 })
             })
             .collect();
         let warnings: Vec<serde_json::Value> = outcomes
             .iter()
             .flat_map(|outcome| outcome.stage_warnings.clone())
+            .chain(
+                product_outcome
+                    .iter()
+                    .flat_map(|outcome| outcome.stage_warnings.clone()),
+            )
             .collect();
+        let product_json = product_outcome.as_ref().map(|outcome| {
+            serde_json::json!({
+                "name": outcome.name,
+                "version": outcome.version,
+                "target": outcome.target,
+                "archive": portable(&outcome.archive_path),
+                "archive_digest": outcome.packed.archive_digest,
+                "archive_size": outcome.packed.archive_size,
+                "members": outcome.members,
+            })
+        });
         output::report(
             true,
             &serde_json::json!({
                 "workspace": true,
                 "order": order,
                 "packages": packages,
+                "product": product_json,
                 "warnings": warnings,
             }),
         );
     } else {
+        for warning in outcomes
+            .iter()
+            .flat_map(|outcome| outcome.stage_warnings.iter())
+            .chain(
+                product_outcome
+                    .iter()
+                    .flat_map(|outcome| outcome.stage_warnings.iter()),
+            )
+        {
+            if let Some(message) = warning["message"].as_str() {
+                eprintln!("warning: {message}");
+            }
+        }
         println!(
             "\nWorkspace: {} package(s), in dependency order",
             order.len()
         );
+        if let Some(product) = &product_outcome {
+            println!("Product:   {}", product.archive_path);
+            println!("  digest:  {}", product.packed.archive_digest);
+            println!("  members: {} exact package(s)", product.members);
+        }
     }
     Ok(())
+}
+
+/// Build one aggregate artifact from the exact per-bundle package outputs.
+///
+/// The product deliberately contains member archives rather than recreating
+/// bundle trees from the source workspace. A member's digest, producer manifest,
+/// checksums, SBOM and optional provenance therefore remain independently
+/// verifiable after the one product download is extracted.
+fn package_workspace_product(
+    order: &[String],
+    outcomes: &[PackageOutcome],
+    clean_stage: bool,
+) -> Result<ProductOutcome> {
+    let first = outcomes.first().ok_or_else(|| {
+        Error::precondition("cannot create a plugin product from an empty workspace")
+    })?;
+    if order.len() != outcomes.len() {
+        return Err(Error::validation(format!(
+            "workspace product order has {} member(s), but packaging produced {}",
+            order.len(),
+            outcomes.len()
+        )));
+    }
+    if outcomes.iter().any(|outcome| outcome.id != first.id) {
+        return Err(Error::validation(
+            "all aggregate product members must target the same platform/profile variant",
+        ));
+    }
+
+    let cwd = std::env::current_dir().map_err(|e| Error::io("current directory", e))?;
+    let project_root = find_project_root(&cwd).ok_or_else(|| {
+        Error::precondition("--product requires an enclosing openstrata.toml project")
+            .with_hint("run from the workspace project root")
+    })?;
+    let project_root = Utf8PathBuf::from_path_buf(project_root).map_err(|path| {
+        Error::config(format!(
+            "project root is not valid UTF-8: {}",
+            path.display()
+        ))
+    })?;
+    let project = load_project(&project_root)?;
+    let name = project.project.name.clone();
+    let version = project.effective_version(&project_root)?;
+    let target = first.id.clone();
+
+    let preferred_stage = project_root
+        .join(STATE_DIR)
+        .join("targets")
+        .join(&target)
+        .join("plugin-product-stage");
+    let (stage, stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
+
+    let mut members = Vec::new();
+    let mut licenses = Vec::new();
+    for (position, (id, outcome)) in order.iter().zip(outcomes.iter()).enumerate() {
+        if id != &outcome.name {
+            return Err(Error::validation(format!(
+                "workspace product order names '{id}', but packaged member is '{}'",
+                outcome.name
+            )));
+        }
+        let member_root = Utf8Path::new("members").join(id);
+        let archive_name = outcome.archive_path.file_name().ok_or_else(|| {
+            Error::config(format!(
+                "cannot determine package archive filename: {}",
+                outcome.archive_path
+            ))
+        })?;
+        copy_file_required(
+            &outcome.archive_path,
+            &member_root.join(archive_name),
+            &stage,
+        )?;
+
+        let dist_dir = outcome.archive_path.parent().ok_or_else(|| {
+            Error::config(format!(
+                "cannot determine package dist directory: {}",
+                outcome.archive_path
+            ))
+        })?;
+        for required in ["manifest.json", "SHA256SUMS", ost_artifact::SBOM_FILE] {
+            copy_file_required(
+                &dist_dir.join(required),
+                &member_root.join(required),
+                &stage,
+            )?;
+        }
+        let mut evidence = vec![format!(
+            "{}/{}",
+            portable(&member_root),
+            ost_artifact::SBOM_FILE
+        )];
+        let provenance = dist_dir.join(ost_artifact::PROVENANCE_FILE);
+        if provenance.as_std_path().is_file() {
+            copy_file_required(
+                &provenance,
+                &member_root.join(ost_artifact::PROVENANCE_FILE),
+                &stage,
+            )?;
+            evidence.push(format!(
+                "{}/{}",
+                portable(&member_root),
+                ost_artifact::PROVENANCE_FILE
+            ));
+        }
+
+        let debug = outcome.debug.as_ref().map(|(debug_name, packed)| {
+            (
+                debug_name.clone(),
+                packed.archive_digest.clone(),
+                packed.archive_size,
+            )
+        });
+        if let Some((debug_name, _, _)) = &debug {
+            copy_file_required(
+                &dist_dir.join(debug_name),
+                &member_root.join(debug_name),
+                &stage,
+            )?;
+        }
+
+        if let Some(license) = outcome
+            .manifest
+            .pointer("/plugin/license")
+            .and_then(|value| value.as_str())
+        {
+            if !licenses.iter().any(|existing| existing == license) {
+                licenses.push(license.to_string());
+            }
+        }
+
+        let debug_json = debug.map(|(archive, digest, size)| {
+            serde_json::json!({
+                "archive": format!("{}/{archive}", portable(&member_root)),
+                "archive_digest": digest,
+                "archive_size": size,
+            })
+        });
+        members.push(serde_json::json!({
+            "id": id,
+            "position": position,
+            "name": outcome.name,
+            "version": outcome.version,
+            "kind": outcome.manifest.pointer("/plugin/kind"),
+            "archive": format!("{}/{archive_name}", portable(&member_root)),
+            "archive_digest": outcome.packed.archive_digest,
+            "archive_size": outcome.packed.archive_size,
+            "manifest": format!("{}/manifest.json", portable(&member_root)),
+            "checksums": format!("{}/SHA256SUMS", portable(&member_root)),
+            "evidence": evidence,
+            "debug": debug_json,
+            "dependencies": outcome.manifest.get("dependencies"),
+        }));
+    }
+
+    let contract = serde_json::json!({
+        "schema": "openstrata.plugin-product/v1alpha1",
+        "name": name,
+        "version": version,
+        "target": target,
+        "install": {
+            "layout": "members/<bundle-id>/",
+            "order": order,
+            "contract": "verify each member SHA256SUMS, then extract its archive in dependency order",
+        },
+        "members": members,
+    });
+    write_text(
+        &stage.join("openstrata.product.json"),
+        &pretty_json(&contract)?,
+    )?;
+
+    let staged = stage_files(&stage).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            Error::validation(e.to_string())
+        } else {
+            Error::io(stage.to_string(), e)
+        }
+    })?;
+    let archive_name = format!("{name}-{version}-{target}-plugin-product.tar.zst");
+    let dist_dir = project_root
+        .join("dist")
+        .join("products")
+        .join(&name)
+        .join(&version)
+        .join(&target);
+    let archive_path = dist_dir.join(&archive_name);
+    let pack_opts = PackOptions {
+        mtime: ost_build::source_date_epoch(),
+        ..PackOptions::default()
+    };
+    let packed = pack_dir_with(&stage, &archive_path, &staged, pack_opts, &mut |_| {})
+        .map_err(|e| Error::io(archive_path.to_string(), e))?;
+
+    let created = ost_build::source_date_epoch_opt().unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    });
+    let mut provenance = first
+        .manifest
+        .get("provenance")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({ "validation": { "passed": true } }));
+    provenance["validation"] = serde_json::json!({
+        "passed": true,
+        "product": "openstrata.product.json",
+        "members": outcomes.len(),
+    });
+    let mut manifest = serde_json::json!({
+        "schema": 1,
+        "kind": ost_artifact::PLUGIN_PRODUCT_KIND,
+        "name": name,
+        "version": version,
+        "target": target,
+        "licenses": licenses,
+        "archive": archive_name,
+        "archive_digest": packed.archive_digest,
+        "archive_size": packed.archive_size,
+        "total_size": packed.total_size,
+        "created_unix": created,
+        "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
+        "provenance": provenance,
+        "product": "openstrata.product.json",
+        "install_order": order,
+        "members": members,
+        "files": packed.files.iter().map(|file| file.manifest_json()).collect::<Vec<_>>(),
+    });
+    let evidence = ost_artifact::generate_evidence(&dist_dir, &mut manifest)?;
+    write_text(&dist_dir.join("manifest.json"), &pretty_json(&manifest)?)?;
+    let mut sha_lines = vec![format!(
+        "{}  {archive_name}",
+        bare_sha256(&packed.archive_digest)
+    )];
+    for layer in &evidence {
+        sha_lines.push(format!("{}  {}", bare_sha256(&layer.digest), layer.path));
+    }
+    write_text(&dist_dir.join("SHA256SUMS"), &sha_lines.join("\n"))?;
+
+    Ok(ProductOutcome {
+        name,
+        version,
+        target,
+        archive_path,
+        packed,
+        members: outcomes.len(),
+        stage_warnings,
+    })
 }
 
 /// The hex digest without the `sha256:` scheme prefix (the `sha256sum -c`
@@ -1761,6 +2142,25 @@ fn run_session(
     // An external installed/extracted tree is itself a bundle (same layout +
     // openstrata.plugin.yaml), so it composes through the same bundle_vars.
     let plugin_path_bundles = load_with_bundles(plugin_paths)?;
+    if no_inject
+        && !plugin_path_bundles.is_empty()
+        && !plugin_path_bundles
+            .iter()
+            .any(|candidate| same_plugin_identity(&bundle, candidate))
+    {
+        eprintln!(
+            "warning [PLUGIN_RUN_PLUGIN_PATH_MISMATCH]: --no-inject excludes source bundle \
+             '{} {}', and none of the --plugin-path roots provides that bundle; \
+             the bundle argument selects the runtime only",
+            bundle.manifest.name(),
+            bundle.manifest.plugin.version
+        );
+        eprintln!(
+            "  hint: point --plugin-path at the extracted '{} {}' package, or drop --no-inject",
+            bundle.manifest.name(),
+            bundle.manifest.plugin.version
+        );
+    }
     let host = Host::detect();
     let r = require_real_runtime(target, profile)?;
     let library_dirs = if no_inject {
@@ -1800,6 +2200,12 @@ fn run_session(
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+fn same_plugin_identity(left: &Bundle, right: &Bundle) -> bool {
+    left.manifest.name() == right.manifest.name()
+        && left.manifest.plugin.version == right.manifest.plugin.version
+        && left.manifest.kind() == right.manifest.kind()
 }
 
 fn prepare_session_command(
@@ -3813,6 +4219,267 @@ fn write_packaged_manifest(path: &Utf8Path, manifest: &ost_plugin::PluginManifes
     write_text(path, body.trim_end())
 }
 
+/// Emit the consumer-facing activation contract carried by every packaged
+/// bundle. The JSON file is the stable, portable description; the PowerShell
+/// and Bash snippets make it directly usable without parsing the plugin YAML,
+/// and the Python bootstrap covers Python 3.8+'s Windows DLL-search behavior by
+/// retaining `os.add_dll_directory()` handles for the life of the process.
+fn write_activation_files(bundle: &Bundle, target_os: Os) -> Result<()> {
+    let plugin_paths = unique_portable_paths(
+        std::iter::once(plug_info_root_rel(bundle))
+            .chain(
+                bundle
+                    .manifest
+                    .requires
+                    .runtime_plugin_paths
+                    .iter()
+                    .map(Utf8PathBuf::from),
+            )
+            .collect(),
+    );
+    let library_paths = unique_portable_paths(
+        std::iter::once(Utf8PathBuf::from("lib"))
+            .chain(
+                bundle
+                    .manifest
+                    .requires
+                    .runtime_libs
+                    .iter()
+                    .map(Utf8PathBuf::from),
+            )
+            .collect(),
+    );
+    let python_paths = vec!["python".to_string()];
+    let loader_env = activation_loader_key(target_os);
+
+    let contract = serde_json::json!({
+        "schema": "openstrata.activation/v1alpha1",
+        "target_os": target_os.as_str(),
+        "root": ".",
+        "environment": {
+            "plugin": "PXR_PLUGINPATH_NAME",
+            "loader": loader_env,
+            "python": "PYTHONPATH",
+        },
+        "plugin_paths": plugin_paths,
+        "library_paths": library_paths,
+        "python_paths": python_paths,
+        "entrypoints": {
+            "powershell": "activate.ps1",
+            "bash": "activate.sh",
+            "python": "openstrata_activate.py",
+        },
+        "python_dll_search": {
+            "windows": "import openstrata_activate before importing pxr; the module retains os.add_dll_directory handles",
+        },
+    });
+    write_text(
+        &bundle.root.join("openstrata.activation.json"),
+        &pretty_json(&contract)?,
+    )?;
+
+    write_text(
+        &bundle.root.join("activate.ps1"),
+        &render_powershell_activation(&plugin_paths, &library_paths, &python_paths, loader_env),
+    )?;
+    write_text(
+        &bundle.root.join("activate.sh"),
+        &render_bash_activation(
+            &plugin_paths,
+            &library_paths,
+            &python_paths,
+            loader_env,
+            target_os,
+        ),
+    )?;
+    write_text(
+        &bundle.root.join("openstrata_activate.py"),
+        &render_python_activation(&plugin_paths, &library_paths, &python_paths),
+    )
+}
+
+fn activation_loader_key(os: Os) -> &'static str {
+    match os {
+        Os::Linux => "LD_LIBRARY_PATH",
+        Os::Macos => "DYLD_LIBRARY_PATH",
+        Os::Windows => "PATH",
+    }
+}
+
+fn unique_portable_paths(paths: Vec<Utf8PathBuf>) -> Vec<String> {
+    let mut result = Vec::new();
+    for path in paths {
+        let path = portable(&path);
+        if !result.contains(&path) {
+            result.push(path);
+        }
+    }
+    result
+}
+
+fn render_powershell_activation(
+    plugin_paths: &[String],
+    library_paths: &[String],
+    python_paths: &[String],
+    loader_env: &str,
+) -> String {
+    let mut script = String::from(
+        "# Generated by `ost plugin package`; dot-source this file.\n\
+$openStrataRoot = $PSScriptRoot\n\
+function Add-OpenStrataPath([string]$Name, [string]$Relative) {\n\
+    $full = [IO.Path]::GetFullPath((Join-Path $openStrataRoot $Relative))\n\
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) { return }\n\
+    $current = [Environment]::GetEnvironmentVariable($Name, 'Process')\n\
+    $value = if ([string]::IsNullOrEmpty($current)) { $full } else { $full + [IO.Path]::PathSeparator + $current }\n\
+    [Environment]::SetEnvironmentVariable($Name, $value, 'Process')\n\
+}\n",
+    );
+    for path in plugin_paths.iter().rev() {
+        script.push_str(&format!(
+            "Add-OpenStrataPath 'PXR_PLUGINPATH_NAME' '{}'\n",
+            powershell_single_quote(path)
+        ));
+    }
+    for path in library_paths.iter().rev() {
+        script.push_str(&format!(
+            "Add-OpenStrataPath '{}' '{}'\n",
+            powershell_single_quote(loader_env),
+            powershell_single_quote(path)
+        ));
+    }
+    for path in python_paths.iter().rev() {
+        script.push_str(&format!(
+            "Add-OpenStrataPath 'PYTHONPATH' '{}'\n",
+            powershell_single_quote(path)
+        ));
+    }
+    script.push_str(
+        "Remove-Item Function:\\Add-OpenStrataPath\n\
+Remove-Variable openStrataRoot\n\
+# On Windows, Python 3.8+ consumers must also `import openstrata_activate` before `pxr`.\n",
+    );
+    script
+}
+
+fn powershell_single_quote(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn render_bash_activation(
+    plugin_paths: &[String],
+    library_paths: &[String],
+    python_paths: &[String],
+    loader_env: &str,
+    target_os: Os,
+) -> String {
+    let separator = if target_os == Os::Windows { ";" } else { ":" };
+    let mut script = format!(
+        "# Generated by `ost plugin package`; source this file from Bash.\n\
+_ost_root=\"$(cd -- \"$(dirname -- \"${{BASH_SOURCE[0]}}\")\" && pwd -P)\"\n\
+_ost_prepend() {{\n\
+    local _key=\"$1\" _relative=\"$2\" _full _current\n\
+    _full=\"${{_ost_root}}/${{_relative}}\"\n\
+    [[ -d \"$_full\" ]] || return 0\n\
+    _current=\"${{!_key-}}\"\n\
+    if [[ -n \"$_current\" ]]; then printf -v \"$_key\" '%s{separator}%s' \"$_full\" \"$_current\"; else printf -v \"$_key\" '%s' \"$_full\"; fi\n\
+    export \"$_key\"\n\
+}}\n"
+    );
+    for path in plugin_paths.iter().rev() {
+        script.push_str(&format!(
+            "_ost_prepend PXR_PLUGINPATH_NAME {}\n",
+            bash_single_quote(path)
+        ));
+    }
+    for path in library_paths.iter().rev() {
+        script.push_str(&format!(
+            "_ost_prepend {} {}\n",
+            bash_single_quote(loader_env),
+            bash_single_quote(path)
+        ));
+    }
+    for path in python_paths.iter().rev() {
+        script.push_str(&format!(
+            "_ost_prepend PYTHONPATH {}\n",
+            bash_single_quote(path)
+        ));
+    }
+    script.push_str("unset -f _ost_prepend\nunset _ost_root\n");
+    script
+}
+
+fn bash_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn render_python_activation(
+    plugin_paths: &[String],
+    library_paths: &[String],
+    python_paths: &[String],
+) -> String {
+    let plugin_paths = serde_json::to_string(plugin_paths).expect("string arrays serialize");
+    let library_paths = serde_json::to_string(library_paths).expect("string arrays serialize");
+    let python_paths = serde_json::to_string(python_paths).expect("string arrays serialize");
+    format!(
+        r#""""Activate this extracted plugin package for the current Python process.
+
+Import this module before importing ``pxr``. On Windows/Python 3.8+ the retained
+``os.add_dll_directory`` handles make transitive packaged DLLs discoverable.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent
+_PLUGIN_PATHS = {plugin_paths}
+_LIBRARY_PATHS = {library_paths}
+_PYTHON_PATHS = {python_paths}
+_DLL_DIRECTORY_HANDLES = []
+_DLL_DIRECTORY_PATHS = set()
+
+
+def _existing(relative_paths):
+    return [str((_ROOT / relative).resolve()) for relative in relative_paths if (_ROOT / relative).is_dir()]
+
+
+def _prepend(name, paths):
+    current = os.environ.get(name)
+    values = list(paths)
+    if current:
+        values.append(current)
+    if values:
+        os.environ[name] = os.pathsep.join(values)
+
+
+def activate():
+    plugin_paths = _existing(_PLUGIN_PATHS)
+    library_paths = _existing(_LIBRARY_PATHS)
+    python_paths = _existing(_PYTHON_PATHS)
+    _prepend("PXR_PLUGINPATH_NAME", plugin_paths)
+    _prepend("PATH" if os.name == "nt" else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"), library_paths)
+    _prepend("PYTHONPATH", python_paths)
+    for path in reversed(python_paths):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    if os.name == "nt" and hasattr(os, "add_dll_directory"):
+        for path in library_paths:
+            if path not in _DLL_DIRECTORY_PATHS:
+                _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(path))
+                _DLL_DIRECTORY_PATHS.add(path)
+    return {{
+        "plugin_paths": plugin_paths,
+        "library_paths": library_paths,
+        "python_paths": python_paths,
+    }}
+
+
+ACTIVATION = activate()
+"#
+    )
+}
+
 fn write_validation_files(
     bundle: &Bundle,
     report: &DoctorReport,
@@ -3886,6 +4553,7 @@ fn report_package(
     archive: &Utf8Path,
     packed: &ost_build::PackResult,
     debug: Option<&(String, ost_build::PackResult)>,
+    debug_status: DebugPackageStatus,
     warnings: &[serde_json::Value],
     fmt: Format,
 ) {
@@ -3897,6 +4565,7 @@ fn report_package(
             "archive_digest": packed.archive_digest,
             "archive_size": packed.archive_size,
             "files": packed.files.len(),
+            "debug_package": debug_status.json(),
         });
         if let Some((debug_name, dp)) = debug {
             obj["debug"] = serde_json::json!({
@@ -3929,6 +4598,8 @@ fn report_package(
             dp.archive_size,
             dp.files.len()
         );
+    } else {
+        println!("  debug:    {}", debug_status.human_reason());
     }
     println!("  manifest.json + SHA256SUMS written alongside the archive");
 }
@@ -4408,6 +5079,39 @@ mod tests {
         remove_stale_debug_archive(&sidecar).unwrap();
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn packaged_python_activation_covers_windows_dll_search() {
+        let script = render_python_activation(
+            &["plugin/resources/toy".into()],
+            &["lib".into(), "runtime/libraries/bin".into()],
+            &["python".into()],
+        );
+        assert!(script.starts_with("\"\"\"Activate"), "{script}");
+        assert!(script.contains("os.add_dll_directory(path)"));
+        assert!(script.contains("_DLL_DIRECTORY_HANDLES.append"));
+        assert!(script.contains("runtime/libraries/bin"));
+        assert!(!script.contains("\\\"\\\"\\\""));
+    }
+
+    #[test]
+    fn activation_scripts_preserve_declared_priority() {
+        let plugins = vec![
+            "plugin/resources/toy".into(),
+            "runtime/bundles/schema".into(),
+        ];
+        let libraries = vec!["lib".into(), "runtime/libraries/bin".into()];
+        let python = vec!["python".into()];
+        let ps = render_powershell_activation(&plugins, &libraries, &python, "PATH");
+        assert!(
+            ps.find("runtime/bundles/schema").unwrap() < ps.find("plugin/resources/toy").unwrap(),
+            "prepend calls run in reverse so the primary ends first: {ps}"
+        );
+        let bash =
+            render_bash_activation(&plugins, &libraries, &python, "LD_LIBRARY_PATH", Os::Linux);
+        assert!(bash.contains("printf -v \"$_key\" '%s:%s'"));
+        assert!(bash.contains("_ost_prepend 'LD_LIBRARY_PATH' 'runtime/libraries/bin'"));
     }
 
     #[test]

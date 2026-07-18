@@ -142,9 +142,41 @@ contract agreement—path order must not silently pick a provider.
 A plugin package materializes its selected plain-library runtime under
 `runtime/libraries/`, adds those directories to the packaged manifest's loader
 paths, and records the library closure in `dependencies.json` and the artifact
-manifest. Multi-plugin-package clean-install verification still requires a
-future product/artifact-closure descriptor that pins every member by digest; it
-must not fall back to sibling source paths.
+manifest.
+
+Every package also carries
+[`openstrata.activation.json`](../../schemas/plugin-activation.schema.json), `activate.ps1`,
+`activate.sh`, and `openstrata_activate.py`. The JSON document is the portable
+consumer contract: it names the package-relative USD plugin, dynamic-library,
+and Python roots plus the target OS loader variable. Dot-source `activate.ps1`
+or source `activate.sh` to prepend the existing roots without requiring `ost`.
+On Windows with Python 3.8 or newer, import `openstrata_activate` before `pxr`;
+the module calls `os.add_dll_directory()` for every packaged library root and
+retains the handles for the life of the process. This is the supported bridge
+from `requires.runtime_libs` to non-`ost` consumers; parsing the plugin YAML and
+guessing loader behavior is not.
+
+`ost plugin package --workspace --product` additionally emits one aggregate
+`openstrata.plugin-product` artifact. Its archive has this fixed layout:
+
+```text
+openstrata.product.json
+members/<bundle-id>/<bundle archive>.tar.zst
+members/<bundle-id>/manifest.json
+members/<bundle-id>/SHA256SUMS
+members/<bundle-id>/sbom.spdx.json
+members/<bundle-id>/provenance.intoto.jsonl  # when the member has provenance
+```
+
+[`openstrata.product.json`](../../schemas/plugin-product.schema.json) records the validated dependency order and each
+member's archive digest, manifest, checksums, evidence, optional debug archive,
+and dependency closure. The product is built from the exact per-bundle package
+outputs—not from sibling source paths—so every member remains independently
+verifiable after a single product download. Verify the product `SHA256SUMS`,
+then each member `SHA256SUMS`, and extract members in `install.order`. The
+aggregate itself has a producer manifest, SBOM, digest, and registry kind
+`product`, so `ost artifact import` / `verify` / transport treat it as a
+first-class artifact.
 
 A `requires.bundles` provider travels as **both halves**. Its link half — shared
 libraries and CMake package files — arrives through the library staging above.

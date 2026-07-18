@@ -44,6 +44,35 @@ A machine-readable VFX Reference Platform calendar-year definition.
 | `notes` | string | no |  |
 | `source` | object | yes |  |
 
+## `plugin-activation.schema.json`
+
+OpenStrata packaged plugin activation contract
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `entrypoints` | object | yes |  |
+| `environment` | object | yes |  |
+| `library_paths` | — | yes |  |
+| `plugin_paths` | — | yes |  |
+| `python_dll_search` | object | yes |  |
+| `python_paths` | — | yes |  |
+| `root` | — | yes |  |
+| `schema` | — | yes |  |
+| `target_os` | — | yes |  |
+
+## `plugin-product.schema.json`
+
+OpenStrata aggregate plugin product contract
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `install` | object | yes |  |
+| `members` | array | yes |  |
+| `name` | string | yes |  |
+| `schema` | — | yes |  |
+| `target` | string | yes |  |
+| `version` | string | yes |  |
+
 ## `plugin-report.schema.json`
 
 OpenStrata Plugin Verification Report

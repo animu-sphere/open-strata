@@ -5,7 +5,7 @@ The next milestone and active carry-over work. Shipped detail is in
 
 ## Next milestone: v0.19.0 - composition and reach
 
-**Status:** ⬜ not started · **Depends on:** the v0.18.0 evidence-integrity,
+**Status:** 🚧 in progress · **Depends on:** the v0.18.0 evidence-integrity,
 target-lease, test-lifecycle and workspace-closure contracts (shipped).
 
 v0.19.0 was scheduled as the Formation composition milestone. Three v0.18.0
@@ -102,6 +102,11 @@ default search finds them; emit a per-platform activation snippet into the
 package; or publish the staged layout as a stable, portable, documented
 contract. Today it is a real, load-bearing, `ost`-internal convention.
 
+**Implemented on the v0.19.0 branch:** each package now emits a versioned
+`openstrata.activation.json` plus PowerShell, Bash, and Python entrypoints. The
+Python entrypoint retains `os.add_dll_directory()` handles on Windows, closing
+the Python 3.8+ DLL-search gap rather than documenting `PATH` as sufficient.
+
 ### P1 - external provenance can see the trees that exist
 
 From the hdMerlin report OST19-RND-001/OST19-RND-002. `ost external import`
@@ -164,6 +169,12 @@ the Half A / Half B seam. Preserve member bundle digests, member manifests and
 provenance; define the extraction layout and aggregate evidence; do not fall
 back to workspace source paths or a hand-maintained per-bundle loop.
 
+**Implemented on the v0.19.0 branch:** `plugin package --workspace --product`
+wraps the exact member archives, manifests, checksums, SBOM/provenance and debug
+sidecars under `members/<id>/`, records the graph-derived install order, and
+emits its own digest, manifest and aggregate evidence as artifact kind
+`product`.
+
 ### P1 carry - named build intents
 
 From the hdMerlin report OST19-RND-003 (carried unchanged from OST18-RND-007).
@@ -215,11 +226,18 @@ on a malformed intent declaration while it fails closed on nothing.
   bundle argument still selects whose `requires` get staged. This cost the
   downstream three invalid experiments before the harness was corrected. Warn
   when `--plugin-path` roots exclude the bundle argument's own tree.
+  **Implemented on the v0.19.0 branch:** the warning carries stable code
+  `PLUGIN_RUN_PLUGIN_PATH_MISMATCH` and stays quiet when an extracted root has
+  the selected bundle's identity/version/kind.
 - **Say something when no debug package is produced** (usd-vrm-plugins report 24
   §1.1). `debug_archive: null` on every package, every cell, all three OS, while
   `plugin package --help` documents lean/split as the default — which reads as
   though a sibling `*-debug` package is the normal outcome. If splitting requires
   something of the build profile, say so at `package` time.
+  **Implemented on the v0.19.0 branch:** human and JSON output plus the producer
+  manifest distinguish `split`, `included`, and `not-produced`, with the latter
+  naming the absence of separate `.pdb`/`.dwo` files and the embedded-debug
+  limitation.
 - **Redacted diagnostic export** (hdMerlin OST19-RND-005, carried unchanged from
   OST18-RND-008). No `--redact-paths`, no `ost report` subcommand; machine JSON
   still carries the absolute project root, absolute rendered command paths, and
@@ -227,10 +245,10 @@ on a malformed intent declaration while it fails closed on nothing.
 - **Correct the `--from-package` help text.** `ost plugin test --from-package`
   still documents itself as "incompatible with `--workspace`". The composition
   shipped in v0.18.0 and works; only the help text is stale. usd-vrm-plugins
-  report 23 §3 read the help, believed it, and built a hand-maintained
-  `scripts/clean_install_smoke.py` around a gap that does not exist — filing it
-  as the ask that "actually gates us". A stale doc string cost a downstream
-  repository a bespoke test harness.
+  report 23 §3 read the help, believed it, reused the already-existing
+  `scripts/clean_install_smoke.py`, and re-filed a capability that had shipped.
+  Report 25 corrects the narrower cost: one wrong downstream conclusion and a
+  duplicate ask, not the creation of that smoke harness.
 
 ### P3 - cosmetic
 

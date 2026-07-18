@@ -31,8 +31,8 @@ pub use policy::{
 };
 pub use record::{
     is_sha256_ref, manifest_debug_archive, manifest_files, ArtifactKind, ArtifactRecord,
-    ArtifactSource, DebugArchive, ManifestFile, MANIFEST_FILE, PLUGIN_BUNDLE_KIND, RECORD_FILE,
-    RECORD_SCHEMA, RUNTIME_KIND,
+    ArtifactSource, DebugArchive, ManifestFile, MANIFEST_FILE, PLUGIN_BUNDLE_KIND,
+    PLUGIN_PRODUCT_KIND, RECORD_FILE, RECORD_SCHEMA, RUNTIME_KIND,
 };
 pub use reference::{FileReference, OciReference, RemoteReference};
 pub use store::{extract_archive, ArtifactStore, ImportOutcome, Index, VerifyReport, INDEX_FILE};

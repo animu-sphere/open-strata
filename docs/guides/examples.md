@@ -334,6 +334,14 @@ ost plugin schema add toy --codeless                # resource-only (no C++)
 # package a built plugin as a target-specific binary bundle artifact
 ost plugin package toy --target cy2026 --profile usd
 
+# package every workspace member and also emit one exact aggregate download
+ost plugin package --workspace --product --target cy2026 --profile usd
+
+# after extracting one member package, activate it without requiring ost
+. ./activate.sh                         # Bash
+. .\activate.ps1                        # PowerShell
+python -c "import openstrata_activate; from pxr import Usd"  # Windows DLL-safe
+
 # publish the packaged artifact into the local registry, addressed by digest.
 # Refused (exit 5, stable per-cause codes) unless the package records a passed
 # validation, complete runtime provenance, a concrete frozen cxx_abi, a license,
@@ -348,7 +356,11 @@ Plugin package artifacts land under
 `<bundle>/dist/plugins/<name>/<version>/<target>/` with a `tar.zst`,
 `manifest.json`, `SHA256SUMS`, `sbom.spdx.json`, and—when complete build
 metadata is available—`provenance.intoto.jsonl`. See
-[artifact evidence](../reference/artifact-evidence.md).
+[artifact evidence](../reference/artifact-evidence.md). Every member archive
+also carries `openstrata.activation.json` plus Bash, PowerShell, and Python
+entrypoints. Aggregate products land under
+`dist/products/<project>/<version>/<target>/` and keep exact member archives and
+evidence under `members/<bundle-id>/`.
 
 ### Golden USDA line endings
 
@@ -383,7 +395,7 @@ ost artifact import toy/dist/plugins/toy/0.1.0/<target>/
 ost artifact import dist/my-show/1.0.0/<target>/manifest.json
 
 ost artifact list                       # everything in the registry
-ost artifact list --kind plugin         # filter: runtime | plugin | package
+ost artifact list --kind plugin         # filter: runtime | plugin | product | package
 
 # digests resolve in full or by unique hex prefix (>= 6 chars)
 ost artifact show sha256:3fa9c1d2…
