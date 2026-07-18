@@ -206,8 +206,9 @@ pub enum PluginCmd {
         /// already-built `ost plugin package` output to a clean directory and run
         /// discovery / open / validate against it. Catches a build-tree path
         /// baked into `plugInfo`/`LibraryPath` that source-tree discovery cannot
-        /// see. Requires a prior `ost plugin package`; incompatible with
-        /// `--workspace`.
+        /// see. Requires a prior `ost plugin package`. Composes with
+        /// `--workspace`, which extracts every bundle and tests each against its
+        /// dependencies' *extracted* trees rather than their source directories.
         #[arg(long)]
         from_package: bool,
     },
@@ -1164,7 +1165,11 @@ fn package_bundle(
     packaged_manifest.runtime.python_abi = ctx.python_abi.clone();
     let library_runtime = selected_library_package_runtime(&bundle, &id)?;
     for (_, relative) in &library_runtime {
-        let relative = relative.to_string();
+        // `portable`, not `to_string`: this path is *joined* on the producing
+        // host, so a Windows producer would otherwise bake `runtime/libraries\bin`
+        // into a portable, digest-addressed manifest that a Linux consumer reads
+        // back — and that a consumer must split on `/` to build a loader path.
+        let relative = portable(relative);
         if !packaged_manifest.requires.runtime_libs.contains(&relative) {
             packaged_manifest.requires.runtime_libs.push(relative);
         }
@@ -1192,12 +1197,30 @@ fn package_bundle(
     // The bundle half of the closure travels with the artifact too. Without it a
     // consumer installing this package alone has no way to know a provider is
     // missing until USD fails to apply a schema it cannot find.
-    let packaged_bundle_evidence = selected_workspace_dependencies(&bundle)?
+    let bundle_dependencies = selected_workspace_dependencies(&bundle)?;
+    let packaged_bundle_evidence = bundle_dependencies
         .iter()
         .map(|dependency| {
             bundle_evidence(dependency, ost_plugin::PLUGIN_MANIFEST, "source-workspace")
         })
         .collect::<Vec<_>>();
+    // …and so does the registration half those records point at. Recording a
+    // resolved `bundles` closure while shipping only its libraries is what made
+    // a v0.18.0 package look closed and still fail at `Usd.Stage.Open()`.
+    let bundle_registration = selected_bundle_package_registration(&bundle_dependencies);
+    for (_, relative) in &bundle_registration {
+        let relative = portable(relative);
+        if !packaged_manifest
+            .requires
+            .runtime_plugin_paths
+            .contains(&relative)
+        {
+            packaged_manifest
+                .requires
+                .runtime_plugin_paths
+                .push(relative);
+        }
+    }
 
     // Reruns must not fail on a stage the previous run left temporarily
     // undeletable (scanner-held handles, dogfooding report #9): stage into a
@@ -1207,6 +1230,9 @@ fn package_bundle(
     let (stage, stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
     stage_plugin_bundle(&bundle, &stage)?;
     for (source, relative) in &library_runtime {
+        copy_tree_required(source, relative, &stage)?;
+    }
+    for (source, relative) in &bundle_registration {
         copy_tree_required(source, relative, &stage)?;
     }
     write_packaged_manifest(&stage.join(ost_plugin::PLUGIN_MANIFEST), &packaged_manifest)?;
@@ -2856,6 +2882,38 @@ fn selected_library_package_runtime(
         .collect())
 }
 
+/// The USD *registration* half of a `requires.bundles` closure, as staged paths.
+///
+/// Returns `(source plugInfo root, package-relative destination)` per resolved
+/// dependency bundle. `selected_library_package_runtime` above carries the link
+/// half — a provider's shared libraries — and that half alone is what made
+/// v0.18.0 packages assert a closure they did not have: the libraries shipped,
+/// `dependencies.json` recorded the bundle as resolved, and USD still could not
+/// apply the provider's schemas because its `plugInfo.json` and
+/// `generatedSchema.usda` were nowhere in the artifact. A `kind: usd-schema`
+/// dependency is exactly the kind whose entire value is that registration half.
+///
+/// The provider's `LibraryPath` is resolved through the loader path rather than
+/// relative to this staged tree: its shared libraries are staged by
+/// `selected_library_package_runtime` and declared in `requires.runtime_libs`,
+/// so they are already on the session's library search path.
+fn selected_bundle_package_registration(
+    dependencies: &[Bundle],
+) -> Vec<(Utf8PathBuf, Utf8PathBuf)> {
+    let mut mappings = Vec::new();
+    for dependency in dependencies {
+        let source = dependency.plug_info_root();
+        if !source.as_std_path().is_dir() {
+            continue;
+        }
+        let relative = Utf8Path::new("runtime/bundles")
+            .join(dependency.manifest.name())
+            .join(plug_info_root_rel(dependency));
+        mappings.push((source, relative));
+    }
+    mappings
+}
+
 /// Write the resolved dependency closure beside a report or into a package.
 ///
 /// Both halves of the closure are recorded. `libraries` was always here;
@@ -3640,6 +3698,11 @@ fn stage_plugin_bundle(bundle: &Bundle, stage: &Utf8Path) -> Result<()> {
     copy_tree_if_exists(&bundle.lib_dir(), Utf8Path::new("lib"), stage)?;
     copy_tree_if_exists(&bundle.python_dir(), Utf8Path::new("python"), stage)?;
     for dir in &bundle.manifest.requires.runtime_libs {
+        copy_tree_required(&bundle.path(dir), Utf8Path::new(dir), stage)?;
+    }
+    // Present when the input is itself an extracted package: repackaging must not
+    // silently drop a staged provider's registration half.
+    for dir in &bundle.manifest.requires.runtime_plugin_paths {
         copy_tree_required(&bundle.path(dir), Utf8Path::new(dir), stage)?;
     }
     for fixture in bundle.manifest.all_fixtures() {

@@ -146,6 +146,25 @@ manifest. Multi-plugin-package clean-install verification still requires a
 future product/artifact-closure descriptor that pins every member by digest; it
 must not fall back to sibling source paths.
 
+A `requires.bundles` provider travels as **both halves**. Its link half — shared
+libraries and CMake package files — arrives through the library staging above.
+Its USD *registration* half is staged under
+`runtime/bundles/<id>/<provider plugInfo root>` and declared in the packaged
+manifest's `requires.runtime_plugin_paths`, which the session adds to
+`PXR_PLUGINPATH_NAME` behind the bundle's own root. Both are required for the
+package to be independently installable: the link half satisfies the loader, and
+only the registration half lets USD find a `kind: usd-schema` provider's
+`plugInfo.json` and `generatedSchema.usda` and apply its schemas. Staging one
+without the other produces an artifact that records a resolved closure, resolves
+its own file format, and then fails at `Usd.Stage.Open()`.
+
+`requires.runtime_plugin_paths` is written by `ost plugin package` from the
+resolved workspace graph; authored bundles do not normally set it. The L0
+`bundle.runtime_plugin_paths` diagnostic fails when a declared path is missing,
+is not a directory, or contains no `plugInfo.json` — a staged tree that
+registers nothing is indistinguishable at discovery time from one that was never
+staged.
+
 ## Graph result
 
 With `--json`, the normal workspace result includes `data.graph`:

@@ -32,10 +32,21 @@ fn portable(p: &Utf8Path) -> String {
 /// its `plugInfo` root on `PXR_PLUGINPATH_NAME`, declared runtime library dirs
 /// plus `lib/` on the dynamic-lib path, and `python/` on `PYTHONPATH`.
 pub fn bundle_vars(bundle: &Bundle, os: Os) -> Vec<EnvVar> {
-    let mut vars = vec![EnvVar {
+    // Staged dependency `plugInfo` roots go on first so that `Prepend` leaves
+    // them *behind* the bundle's own root in the final search order: a package
+    // registers itself ahead of the providers it carries.
+    let mut vars = bundle
+        .runtime_plugin_path_dirs()
+        .iter()
+        .map(|dir| EnvVar {
+            key: "PXR_PLUGINPATH_NAME".into(),
+            op: EnvOp::Prepend(portable(dir)),
+        })
+        .collect::<Vec<_>>();
+    vars.push(EnvVar {
         key: "PXR_PLUGINPATH_NAME".into(),
         op: EnvOp::Prepend(portable(&bundle.plug_info_root())),
-    }];
+    });
     for dir in bundle.runtime_lib_dirs() {
         vars.push(EnvVar {
             key: lib_key(os).into(),
@@ -155,6 +166,34 @@ usd: { plug_info: plugin/resources/usdluma/plugInfo.json }
         let vars = bundle_vars(&bundle(), Os::Windows);
         assert!(vars.iter().any(|v| v.key == "PATH"));
         assert!(!vars.iter().any(|v| v.key == "LD_LIBRARY_PATH"));
+    }
+
+    /// A packaged bundle carries its providers' registration halves, and they
+    /// must reach `PXR_PLUGINPATH_NAME` — otherwise the package resolves its own
+    /// file format and then cannot open anything, which is exactly the v0.18.0
+    /// failure at `Usd.Stage.Open()`. The bundle's own root stays first.
+    #[test]
+    fn staged_provider_plugin_paths_follow_the_bundles_own_root() {
+        let mut b = bundle();
+        b.manifest.requires.runtime_plugin_paths =
+            vec!["runtime/bundles/vrmSchema/plugin/resources/vrmSchema".into()];
+        let vars = bundle_vars(&b, Os::Linux);
+        let paths: Vec<_> = vars
+            .iter()
+            .filter_map(|v| match (&v.key[..], &v.op) {
+                ("PXR_PLUGINPATH_NAME", EnvOp::Prepend(p)) => Some(p.as_str()),
+                _ => None,
+            })
+            .collect();
+        // `Prepend` means the *last* entry wins priority, so the bundle's own
+        // root must be emitted after the staged providers.
+        assert_eq!(
+            paths,
+            vec![
+                "/bundles/usdluma/runtime/bundles/vrmSchema/plugin/resources/vrmSchema",
+                "/bundles/usdluma/plugin/resources/usdluma",
+            ]
+        );
     }
 
     #[test]

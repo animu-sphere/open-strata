@@ -1626,6 +1626,27 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     assert_eq!(bundles[0]["contract"], 1);
     assert_eq!(bundles[0]["provenance"], "source-workspace");
 
+    // …and it carries the provider's USD *registration* half, not just the
+    // record and the link half. v0.18.0 shipped `libSchemaLib` plus a resolved
+    // `bundles` entry while leaving `plugInfo.json` out, so the package asserted
+    // a closure it did not have and still failed at `Usd.Stage.Open()`
+    // (usd-vrm-plugins report 23 §2).
+    let staged: Vec<&str> = value["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["path"].as_str())
+        .collect();
+    assert!(
+        staged.contains(&"runtime/bundles/schema/plugin/resources/schema/plugInfo.json"),
+        "the provider's registration half must be staged; got: {staged:?}"
+    );
+    // Every staged path is portable: this list is read on hosts that never saw
+    // the producer's separators.
+    for path in &staged {
+        assert!(!path.contains('\\'), "staged path kept separators: {path}");
+    }
+
     // A provider with no dependencies records an empty closure, not a missing
     // one — "nothing required" and "unknown" must not look the same.
     let schema_manifest = find_first(&sb.work_file("schema/dist"), "manifest.json").unwrap();

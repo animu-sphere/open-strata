@@ -312,6 +312,9 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
 
     // bundle.runtime_libs — every loader-path directory declared by the bundle exists.
     diags.push(check_runtime_lib_dirs(bundle));
+    // bundle.runtime_plugin_paths — every staged provider registration half is
+    // present and actually registers something.
+    diags.push(check_runtime_plugin_paths(bundle));
 
     // schema.library_prefix — non-failing guidance for a usdGenSchema naming
     // footgun: the generated C++/TfType name composes libraryPrefix + class name.
@@ -793,6 +796,67 @@ fn check_plug_info_schema_types(json: &serde_json::Value) -> Diagnostic {
     )
 }
 
+/// Every declared staged-provider `plugInfo` root exists *and* actually carries
+/// a `plugInfo.json`.
+///
+/// Existence alone is not the contract here. A staged registration half that is
+/// present but empty registers nothing, which is indistinguishable at
+/// discovery time from the v0.18.0 behavior this check exists to prevent: a
+/// package that declares a closure, resolves its file format, and then cannot
+/// open anything because no provider was ever registered.
+fn check_runtime_plugin_paths(bundle: &Bundle) -> Diagnostic {
+    const ID: &str = "bundle.runtime_plugin_paths";
+
+    let dirs = &bundle.manifest.requires.runtime_plugin_paths;
+    if dirs.is_empty() {
+        return Diagnostic::skip(ID, 0, "no staged provider plugin paths declared");
+    }
+
+    let mut missing = Vec::new();
+    let mut not_dirs = Vec::new();
+    let mut unregistered = Vec::new();
+    for dir in dirs {
+        let path = bundle.path(dir);
+        let std_path = path.as_std_path();
+        if !std_path.exists() {
+            missing.push(dir.as_str());
+        } else if !std_path.is_dir() {
+            not_dirs.push(dir.as_str());
+        } else if !path.join("plugInfo.json").as_std_path().is_file() {
+            unregistered.push(dir.as_str());
+        }
+    }
+
+    if missing.is_empty() && not_dirs.is_empty() && unregistered.is_empty() {
+        return Diagnostic::pass(
+            ID,
+            0,
+            format!("{} staged provider plugin path(s) registered", dirs.len()),
+        );
+    }
+
+    let mut parts = Vec::new();
+    if !missing.is_empty() {
+        parts.push(format!("missing: {}", missing.join(", ")));
+    }
+    if !not_dirs.is_empty() {
+        parts.push(format!("not directories: {}", not_dirs.join(", ")));
+    }
+    if !unregistered.is_empty() {
+        parts.push(format!("no plugInfo.json: {}", unregistered.join(", ")));
+    }
+    Diagnostic::fail(
+        ID,
+        0,
+        parts.join("; "),
+        vec![
+            "repackage with `ost plugin package` so each `requires.bundles` provider's \
+             registration half is staged, or update `requires.runtime_plugin_paths`"
+                .into(),
+        ],
+    )
+}
+
 fn check_runtime_lib_dirs(bundle: &Bundle) -> Diagnostic {
     const ID: &str = "bundle.runtime_libs";
 
@@ -1110,6 +1174,67 @@ usd: { plug_info: plugin/resources/toy/plugInfo.json }
         let diag = library_path_diag(&report);
         assert_eq!(diag.status, Status::Fail);
         assert!(diag.observed.contains("does not match a built library"));
+    }
+
+    fn runtime_plugin_paths_diag(report: &DoctorReport) -> &Diagnostic {
+        report
+            .diagnostics
+            .iter()
+            .find(|d| d.id == "bundle.runtime_plugin_paths")
+            .expect("has bundle.runtime_plugin_paths")
+    }
+
+    #[test]
+    fn runtime_plugin_paths_pass_when_staged_provider_registers() {
+        let (dir, mut bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.so",
+            Some("libToyFileFormat.so"),
+        );
+        let staged = dir
+            .path
+            .join("runtime/bundles/toySchema/plugin/resources/toySchema");
+        std::fs::create_dir_all(staged.as_std_path()).unwrap();
+        std::fs::write(staged.join("plugInfo.json").as_std_path(), "{}").unwrap();
+        bundle.manifest.requires.runtime_plugin_paths =
+            vec!["runtime/bundles/toySchema/plugin/resources/toySchema".into()];
+
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+
+        assert_eq!(runtime_plugin_paths_diag(&report).status, Status::Pass);
+    }
+
+    /// The v0.18.0 regression, as a test: the library half staged, the
+    /// registration half absent, and the package still claiming a closure.
+    #[test]
+    fn runtime_plugin_paths_fail_when_staged_provider_has_no_plug_info() {
+        let (dir, mut bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.so",
+            Some("libToyFileFormat.so"),
+        );
+        let staged = dir
+            .path
+            .join("runtime/bundles/toySchema/plugin/resources/toySchema");
+        std::fs::create_dir_all(staged.as_std_path()).unwrap();
+        bundle.manifest.requires.runtime_plugin_paths =
+            vec!["runtime/bundles/toySchema/plugin/resources/toySchema".into()];
+
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+        let diag = runtime_plugin_paths_diag(&report);
+
+        assert_eq!(diag.status, Status::Fail);
+        assert!(diag.observed.contains("no plugInfo.json"));
+    }
+
+    #[test]
+    fn runtime_plugin_paths_skip_when_none_declared() {
+        let (_dir, bundle) = bundle_with_plug_info(
+            "../../../lib/libToyFileFormat.so",
+            Some("libToyFileFormat.so"),
+        );
+
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+
+        assert_eq!(runtime_plugin_paths_diag(&report).status, Status::Skip);
     }
 
     #[test]
