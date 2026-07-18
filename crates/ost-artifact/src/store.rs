@@ -636,15 +636,26 @@ impl ArtifactStore {
         let path = object_dir.join(RECORD_FILE);
         let bytes =
             std::fs::read(path.as_std_path()).map_err(|e| Error::io(path.to_string(), e))?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| Error::parse(path.to_string(), anyhow::Error::new(e)))
+        let mut record: ArtifactRecord = serde_json::from_slice(&bytes)
+            .map_err(|e| Error::parse(path.to_string(), anyhow::Error::new(e)))?;
+        record.migrate_legacy_producer();
+        Ok(record)
     }
 
     fn read_index(&self) -> Result<Index> {
         let path = self.root.join(INDEX_FILE);
         match std::fs::read(path.as_std_path()) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| Error::parse(path.to_string(), anyhow::Error::new(e))),
+            Ok(bytes) => {
+                let mut index: Index = serde_json::from_slice(&bytes)
+                    .map_err(|e| Error::parse(path.to_string(), anyhow::Error::new(e)))?;
+                // Records written before v0.18.0 stored the importing tool under
+                // `producer`; reinterpret them on the way in so nothing downstream
+                // reads that value as the artifact's origin.
+                for record in &mut index.artifacts {
+                    record.migrate_legacy_producer();
+                }
+                Ok(index)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Index {
                 schema: RECORD_SCHEMA,
                 artifacts: Vec::new(),

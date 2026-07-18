@@ -622,7 +622,13 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     if let (Some(path), Some(digest)) = (&r.provenance, &r.provenance_digest) {
         println!("  provenance:  {path} ({digest})");
     }
-    println!("  producer:    {}", r.producer);
+    // An artifact whose manifest predates v0.18.0 has no recorded producer.
+    // Say so rather than showing the importing ost as if it were the origin.
+    match &r.producer {
+        Some(producer) => println!("  producer:    {producer}"),
+        None => println!("  producer:    unrecorded (manifest predates v0.18.0)"),
+    }
+    println!("  imported by: {}", r.imported_by);
     println!("  store:       {}", store.object_dir(r.digest_hex()));
     Ok(())
 }

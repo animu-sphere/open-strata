@@ -418,6 +418,12 @@ fn ost_version_step(bootstrap: Option<&Bootstrap>) -> String {
 /// precondition: a miss (or the `OST_CI_DISABLE_CACHE` repository variable)
 /// falls back to the digest-pinned remote pull, and a poisoned hosted cache
 /// is wiped and re-pulled rather than trusted.
+///
+/// The cache-hit short-circuit asks the *same* question the gate later asks,
+/// evidence flags included. A weaker predicate wedges the lane permanently: a
+/// cached evidence-less record satisfies the short-circuit, so the pull that
+/// would deliver the evidence never runs, so the gate fails — on every
+/// subsequent run, because the cache keeps hitting.
 fn runtime_fetch_steps(bootstrap: Option<&Bootstrap>) -> String {
     let mut out = String::new();
     if let Some(bootstrap) = bootstrap {
@@ -442,7 +448,7 @@ fn runtime_fetch_steps(bootstrap: Option<&Bootstrap>) -> String {
           set -euo pipefail
           mkdir -p .ost-ci
           if ost artifact show \"${{ matrix.runtime_artifact }}\" --json > /dev/null 2>&1 \\
-             && ost artifact verify \"${{ matrix.runtime_artifact }}\" --json > .ost-ci/runtime-cache-verify.json; then
+             && ost artifact verify \"${{ matrix.runtime_artifact }}\" ${{ matrix.evidence_flags }} --json > .ost-ci/runtime-cache-verify.json; then
             echo \"pinned runtime already present and verified (cache hit) -- skipping the remote pull\"
           else
             if [ \"${{ matrix.hosted }}\" = \"true\" ] && [ -n \"${OST_HOME:-}\" ]; then
@@ -1342,6 +1348,27 @@ mod tests {
         assert!(run.contains("--expect-artifact"));
         assert!(run.contains("--require-kind runtime"));
         assert!(run.contains(".ost-ci/runtime-pull.json"));
+
+        // The cache-hit short-circuit must ask exactly what the gate asks. A
+        // weaker predicate here lets a cached evidence-less record skip the
+        // pull that would deliver its evidence, and the lane can never
+        // recover on its own.
+        assert!(
+            run.contains("ost artifact verify \"${{ matrix.runtime_artifact }}\" ${{ matrix.evidence_flags }}"),
+            "cache short-circuit must carry the gate's evidence flags: {run}"
+        );
+        let gate = steps
+            .iter()
+            .find(|s| {
+                s["name"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Verify and materialize")
+            })
+            .expect("gate step")["run"]
+            .as_str()
+            .unwrap();
+        assert!(gate.contains("${{ matrix.evidence_flags }}"));
 
         // The include entry carries the pinned remote uri; the self-hosted
         // mainline path stays possible (empty remote renders as "").

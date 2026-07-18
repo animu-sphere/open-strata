@@ -168,6 +168,16 @@ fn import_show_verify_export_roundtrip() {
     assert_eq!(v["data"]["artifact"]["digest"], digest.as_str());
     assert_eq!(v["data"]["artifact"]["kind"], "plugin");
     assert_eq!(v["data"]["artifact"]["licenses"][0], "Apache-2.0");
+    // This fixture's manifest records no producer, so the record must not
+    // claim one — the importing ost is reported separately, as itself.
+    assert!(
+        v["data"]["artifact"]["producer"].is_null(),
+        "an unrecorded origin must not be filled in with the importer"
+    );
+    assert!(v["data"]["artifact"]["imported_by"]
+        .as_str()
+        .unwrap()
+        .starts_with("ost "));
 
     // Verify passes on intact bytes.
     let v = stdout_json(&sb.ost(&["--json", "artifact", "verify", &digest]));
