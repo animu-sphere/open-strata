@@ -245,22 +245,13 @@ impl ArtifactStore {
 
             // The debug sidecar is a claim *of this producer manifest*, so
             // repairing it in place stays gated on the manifests being equal.
-            if stored_manifest == manifest_bytes {
+            // `manifest_committed` tracks whether the incoming manifest is the
+            // one on disk; the evidence path below can still make it so, and
+            // SHA256SUMS must describe whichever manifest wins.
+            let mut manifest_committed = stored_manifest == manifest_bytes;
+            if manifest_committed {
                 if let Some(debug) = &debug {
-                    let debug_dest = object_dir.join(&debug.archive);
-                    if !debug_dest.as_std_path().is_file() {
-                        let debug_src = dist_dir.join(&debug.archive);
-                        let temp = object_dir.join(format!(
-                            ".tmp-debug-{}-{}",
-                            std::process::id(),
-                            debug.archive
-                        ));
-                        std::fs::copy(debug_src.as_std_path(), temp.as_std_path())
-                            .map_err(|e| Error::io(debug_src.to_string(), e))?;
-                        std::fs::rename(temp.as_std_path(), debug_dest.as_std_path())
-                            .map_err(|e| Error::io(debug_dest.to_string(), e))?;
-                    }
-                    verify_archive_claim(&object_dir, debug)?;
+                    materialize_debug_archive(&object_dir, &dist_dir, debug)?;
                     write_atomic(
                         object_dir.join("SHA256SUMS").as_std_path(),
                         checksum_contents(&existing, Some(debug)).as_bytes(),
@@ -313,13 +304,18 @@ impl ArtifactStore {
             // is identical either way, so both manifests describe these exact
             // bytes; the incoming one is the half of the pair that agrees with
             // the sidecar we just accepted.
-            if evidence_attached.iter().any(|name| name == PROVENANCE_FILE)
-                && stored_manifest != manifest_bytes
-            {
+            if evidence_attached.iter().any(|name| name == PROVENANCE_FILE) && !manifest_committed {
+                // Committing the incoming manifest also commits its promises:
+                // materialize the debug archive it names first, so the object
+                // directory is never described by a manifest it disagrees with.
+                if let Some(debug) = &debug {
+                    materialize_debug_archive(&object_dir, &dist_dir, debug)?;
+                }
                 write_atomic(
                     object_dir.join(MANIFEST_FILE).as_std_path(),
                     &manifest_bytes,
                 )?;
+                manifest_committed = true;
             }
 
             if !evidence_attached.is_empty() {
@@ -339,9 +335,23 @@ impl ArtifactStore {
                     object_dir.join(RECORD_FILE).as_std_path(),
                     format!("{record_json}\n").as_bytes(),
                 )?;
+                // SHA256SUMS describes the manifest that is actually on disk.
+                // When the incoming manifest was not committed the stored one
+                // still rules, and *its* debug archive — not the incoming
+                // one's — is what accompanies these bytes. Listing a file the
+                // object directory does not hold breaks `export`.
+                let committed_debug = if manifest_committed {
+                    debug.clone()
+                } else {
+                    let stored: serde_json::Value = serde_json::from_slice(&stored_manifest)
+                        .map_err(|e| {
+                            Error::parse(stored_manifest_path.to_string(), anyhow::Error::new(e))
+                        })?;
+                    manifest_debug_archive(&stored)?
+                };
                 write_atomic(
                     object_dir.join("SHA256SUMS").as_std_path(),
-                    checksum_contents(&existing, debug.as_ref()).as_bytes(),
+                    checksum_contents(&existing, committed_debug.as_ref()).as_bytes(),
                 )?;
             }
 
@@ -448,8 +458,13 @@ impl ArtifactStore {
         let object_dir = self.object_dir(record.digest_hex());
 
         // Index first: a crash between the two steps leaves an unreferenced
-        // object directory (harmless, re-importable) rather than an index
-        // entry pointing at bytes that no longer exist.
+        // object directory rather than an index entry pointing at bytes that
+        // no longer exist. The store stays coherent, but the *reset* does not
+        // survive — the leftover directory still holds its record, so the next
+        // import takes the already-present path and puts the entry back. Rerun
+        // `rm` after a crash. The reverse order would be worse: a fresh import
+        // renames a staging directory into place and fails outright against a
+        // leftover directory that no longer carries a record to defer to.
         let mut index = self.read_index()?;
         index.artifacts.retain(|r| r.digest != record.digest);
         self.write_index(index)?;
@@ -704,6 +719,36 @@ fn evidence_in_dist(dist: &Utf8Path, name: &str) -> Result<Option<EvidenceDigest
 
 /// Re-hash one optional archive against the producer-manifest claim before it
 /// enters or leaves the store.
+/// Copy a producer manifest's promised debug archive into an object directory
+/// when it is missing, then verify what landed there.
+///
+/// Called wherever a manifest is committed to the object directory, so the
+/// files on disk always match the manifest that describes them. A manifest
+/// promising a debug archive the store does not hold makes `ost artifact
+/// export` fail on a file that was never stored.
+fn materialize_debug_archive(
+    object_dir: &Utf8Path,
+    dist_dir: &Utf8Path,
+    debug: &DebugArchive,
+) -> Result<()> {
+    let destination = object_dir.join(&debug.archive);
+    if !destination.as_std_path().is_file() {
+        let source = dist_dir.join(&debug.archive);
+        let temp = object_dir.join(format!(
+            ".tmp-debug-{}-{}",
+            std::process::id(),
+            debug.archive
+        ));
+        std::fs::copy(source.as_std_path(), temp.as_std_path())
+            .map_err(|e| Error::io(source.to_string(), e))?;
+        if let Err(error) = std::fs::rename(temp.as_std_path(), destination.as_std_path()) {
+            let _ = std::fs::remove_file(temp.as_std_path());
+            return Err(Error::io(destination.to_string(), error));
+        }
+    }
+    verify_archive_claim(object_dir, debug)
+}
+
 pub(crate) fn verify_archive_claim(dist_dir: &Utf8Path, archive: &DebugArchive) -> Result<()> {
     let path = dist_dir.join(&archive.archive);
     let mut f = File::open(path.as_std_path()).map_err(|e| Error::io(path.to_string(), e))?;

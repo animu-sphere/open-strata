@@ -59,6 +59,9 @@ struct Session {
   std::string target;
   long long started = 0;
   long long completed = 0;
+  // Whether this harness reached its verdicts, not whether the verdicts were
+  // PASS. A run that decided every check succeeded, however many of them
+  // failed; only a run that could not produce checks at all is a failure.
   bool succeeded = false;
 };
 
@@ -251,8 +254,15 @@ int main(int argc, char** argv) {
 
   // The session concludes here, with every check already decided — the report
   // is published only once this run has actually finished, and it says so.
+  //
+  // The outcome describes *this harness*, not the verdicts it reached: it ran
+  // every check to a decision, so it succeeded even when some of those checks
+  // failed. Conflating the two would mark the session a failure and make its
+  // own PASSes unmergeable, so a run with any FAIL could not report the
+  // checks that passed alongside it. Failing checks are carried by `checks`;
+  // a failed session is one that could not produce them at all.
   session.completed = static_cast<long long>(std::time(nullptr));
-  session.succeeded = !failed;
+  session.succeeded = true;
   if (!WriteReport(report_path, checks, frame, session)) {
     std::cerr << "cannot write renderer report: " << report_path << '\n';
     return 1;

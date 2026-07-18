@@ -101,6 +101,7 @@
         },
         "outcome": {
           "type": "string",
+          "description": "How the producing run ended, not what it concluded. A harness that evaluated every check is 'success' even when some of those checks are FAIL — the failures belong in `checks`. Use 'failure' only when the run could not establish its checks at all, and 'incomplete' when it never concluded.",
           "enum": [
             "success",
             "failure",
