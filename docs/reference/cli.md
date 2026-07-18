@@ -52,6 +52,7 @@ Import, inspect, verify, export, and pull artifacts (local registry + remote OCI
 - [`ost artifact pull`](#ost-artifact-pull) — Pull a digest-pinned artifact from a remote source, verify it, and import it into the local registry
 - [`ost artifact push`](#ost-artifact-push) — Push a stored artifact to a remote OCI registry (the producer verb)
 - [`ost artifact resolve`](#ost-artifact-resolve) — Resolve a remote reference (tag) to its immutable digest
+- [`ost artifact rm`](#ost-artifact-rm) — Remove an artifact from the local registry so it can be re-imported
 - [`ost artifact show`](#ost-artifact-show) — Show the full identity record for one artifact
 - [`ost artifact verify`](#ost-artifact-verify) — Verify a stored artifact's integrity (archive digest + per-file hashes)
 
@@ -170,6 +171,18 @@ Resolve a remote reference (tag) to its immutable digest
 | Option | Description |
 | --- | --- |
 | `--plain-http` | Use plain http:// instead of https:// (fixture registries and air-gapped mirrors only) |
+
+#### `ost artifact rm`
+
+Remove an artifact from the local registry so it can be re-imported
+
+**Usage:** `ost artifact rm <DIGEST>`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<DIGEST>` | yes | Digest reference: sha256:<hex> or a unique hex prefix (>= 6 chars) |
 
 #### `ost artifact show`
 

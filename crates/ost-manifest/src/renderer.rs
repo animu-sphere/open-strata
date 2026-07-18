@@ -144,6 +144,101 @@ impl RendererCheckStatus {
     }
 }
 
+/// How a producer session ended.
+///
+/// This describes the *producing run*, not the verdicts it reached. A harness
+/// that evaluated every check and found some of them failing still succeeded:
+/// it did the work it promised, and the failures live in `checks`. Reporting
+/// such a run as [`SessionOutcome::Failure`] would make its own PASSes
+/// unassertable, so a partially failing run could not report what passed
+/// alongside — the report would be refused outright instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionOutcome {
+    /// The producing command ran to completion and produced its verdicts —
+    /// whatever those verdicts were.
+    Success,
+    /// It ran to completion but could not do its job: it crashed, errored out,
+    /// or otherwise failed to establish the checks it was meant to establish.
+    /// Its FAIL/SKIP findings are truthful; its PASSes are not, because the run
+    /// that would have justified them did not finish successfully.
+    Failure,
+    /// It never reached a conclusion — killed, timed out, or still running.
+    Incomplete,
+}
+
+impl SessionOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+            Self::Incomplete => "incomplete",
+        }
+    }
+}
+
+/// The producing invocation behind one overlay: who wrote it, against what, and
+/// whether it actually finished.
+///
+/// v0.17.0 had no such binding, so a renderer assertion could read PASS from a
+/// CTest that later timed out: the overlay was written mid-run and nothing
+/// downstream could tell it apart from one written by a completed check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProducerSession {
+    /// Unique per invocation, so a later session supersedes an earlier one.
+    pub id: String,
+    /// What produced it, e.g. `ctest`, `ost-build`, `renderer-harness`.
+    pub kind: String,
+    /// The managed target this session wrote.
+    pub target: String,
+    pub started_unix: u64,
+    /// When the session concluded. `None` means it never did — the overlay was
+    /// observed mid-flight and is not a completed record of anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_unix: Option<u64>,
+    pub outcome: SessionOutcome,
+}
+
+impl ProducerSession {
+    /// Whether this session may stand behind a PASS: it both concluded and
+    /// concluded successfully. Anything else can contribute FAIL/SKIP only.
+    pub fn can_assert_pass(&self) -> bool {
+        self.outcome == SessionOutcome::Success && self.completed_unix.is_some()
+    }
+
+    /// Why this session cannot stand behind a PASS, for an error message.
+    fn pass_refusal(&self) -> &'static str {
+        match (self.outcome, self.completed_unix) {
+            (SessionOutcome::Success, Some(_)) => "completed successfully",
+            (SessionOutcome::Success, None) => {
+                "claims success but never recorded a completion time"
+            }
+            (SessionOutcome::Failure, _) => "failed",
+            (SessionOutcome::Incomplete, _) => "never completed",
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_portable_id("renderer producer session id", &self.id)?;
+        validate_portable_id("renderer producer session kind", &self.kind)?;
+        if self.target.trim().is_empty() {
+            return Err(invalid(
+                "renderer producer session target must not be empty",
+            ));
+        }
+        if let Some(completed) = self.completed_unix {
+            if completed < self.started_unix {
+                return Err(invalid(format!(
+                    "renderer producer session '{}' completed before it started",
+                    self.id
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RendererCheck {
@@ -151,6 +246,11 @@ pub struct RendererCheck {
     pub status: RendererCheckStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Id of the producer session that contributed this check, stamped by
+    /// merge. Lets `ost validate` name the producer behind every assertion
+    /// instead of presenting a merged report as one anonymous verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +277,11 @@ pub struct RendererReport {
     pub renderer: RendererReportIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<RendererDevice>,
+    /// The invocation that produced this report. Required for an overlay to
+    /// contribute a PASS; absent on reports written before v0.18.0, which is
+    /// why those cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<ProducerSession>,
     pub checks: Vec<RendererCheck>,
 }
 
@@ -217,6 +322,12 @@ impl RendererReport {
                 ));
             }
         }
+        if let Some(session) = &self.producer {
+            session.validate()?;
+        }
+        // A report standing on an unfinished, failed, or entirely absent
+        // producer must not present PASSes as established.
+        self.refuse_unowned_pass("assert")?;
         let mut observed = BTreeSet::new();
         for check in &self.checks {
             validate_evidence_id(&check.id)?;
@@ -256,9 +367,60 @@ impl RendererReport {
             .any(|check| check.status == RendererCheckStatus::Fail)
     }
 
+    /// Refuse this report's PASSes when no completed, successful producer
+    /// session stands behind them. `action` names what is being refused, so
+    /// the same rule reads correctly whether a report is being merged or
+    /// accepted as evidence.
+    ///
+    /// A report with no producer at all is refused on the same terms as one
+    /// whose producer failed: an unattributed PASS is exactly the shape the
+    /// hdMerlin defect took, and silence about the producer is not a weaker
+    /// claim than a bad one. FAIL and SKIP are unaffected — those stay true
+    /// however the run that found them ended.
+    fn refuse_unowned_pass(&self, action: &str) -> Result<()> {
+        if self
+            .producer
+            .as_ref()
+            .is_some_and(ProducerSession::can_assert_pass)
+        {
+            return Ok(());
+        }
+        let Some(check) = self
+            .checks
+            .iter()
+            .find(|check| check.status == RendererCheckStatus::Pass)
+        else {
+            return Ok(());
+        };
+        let reason = match &self.producer {
+            Some(session) => format!(
+                "its producer session '{}' {}",
+                session.id,
+                session.pass_refusal()
+            ),
+            None => "it records no producer session".to_string(),
+        };
+        Err(invalid(format!(
+            "renderer report cannot {action} PASS for '{}' because {reason}; \
+             a PASS requires a producer that ran to completion and succeeded",
+            check.id
+        )))
+    }
+
     /// Merge independently produced renderer evidence without hiding conflicts.
     /// Existing ids require an explicit replacement policy, and a recorded FAIL
     /// can never be silently downgraded.
+    ///
+    /// Every PASS either side contributes must be backed by a producer session
+    /// that ran to completion and succeeded. A session that failed, never
+    /// finished, wrote a different target, or has already been superseded may
+    /// still contribute FAIL and SKIP — those remain true — but its PASSes are
+    /// refused, because the run that would have justified them did not happen.
+    ///
+    /// The rule applies to *both* inputs. Gating only the overlay let a failed
+    /// base session's PASS survive into a merged report whose owning session
+    /// was the newer, successful one — laundering precisely the unowned PASS
+    /// the session model exists to refuse.
     pub fn merge(&self, overlay: &RendererReport, replace: bool) -> Result<RendererReport> {
         if self.renderer != overlay.renderer {
             return Err(invalid(format!(
@@ -266,6 +428,35 @@ impl RendererReport {
                 self.renderer.name, overlay.renderer.name
             )));
         }
+        if let Some(session) = &overlay.producer {
+            session.validate()?;
+        }
+        if let Some(session) = &self.producer {
+            session.validate()?;
+        }
+
+        // A session that wrote a different target describes a different build;
+        // its findings are not evidence about this one.
+        if let (Some(base), Some(incoming)) = (&self.producer, &overlay.producer) {
+            if base.target != incoming.target {
+                return Err(invalid(format!(
+                    "renderer producer session '{}' wrote target '{}', but this report's \
+                     session '{}' wrote '{}' — these describe different builds",
+                    incoming.id, incoming.target, base.id, base.target
+                )));
+            }
+            // Replaying an older session over a newer one would resurrect
+            // findings the newer run already superseded.
+            if incoming.started_unix < base.started_unix {
+                return Err(invalid(format!(
+                    "renderer producer session '{}' is superseded by '{}', which started later",
+                    incoming.id, base.id
+                )));
+            }
+        }
+
+        self.refuse_unowned_pass("carry")?;
+        overlay.refuse_unowned_pass("merge")?;
         let device = match (&self.device, &overlay.device) {
             (Some(left), Some(right)) if left != right => {
                 return Err(invalid(format!(
@@ -277,8 +468,27 @@ impl RendererReport {
             (None, None) => None,
         };
 
-        let mut checks = self.checks.clone();
+        // Stamp provenance on *both* sides, so a merged report can name the
+        // producer behind each assertion. A check that already carries one
+        // keeps it: it came from a still-earlier producer through a prior
+        // merge. Leaving the base's checks unstamped made them inherit the
+        // merged report's owning session at display time — attributing one
+        // session's findings to another.
+        let stamp = |check: &RendererCheck, session: Option<&ProducerSession>| {
+            let mut check = check.clone();
+            if check.producer.is_none() {
+                check.producer = session.map(|s| s.id.clone());
+            }
+            check
+        };
+
+        let mut checks: Vec<RendererCheck> = self
+            .checks
+            .iter()
+            .map(|check| stamp(check, self.producer.as_ref()))
+            .collect();
         for incoming in &overlay.checks {
+            let incoming = stamp(incoming, overlay.producer.as_ref());
             if let Some(index) = checks.iter().position(|check| check.id == incoming.id) {
                 if !replace {
                     return Err(invalid(format!(
@@ -295,16 +505,29 @@ impl RendererReport {
                         incoming.status.as_str()
                     )));
                 }
-                checks[index] = incoming.clone();
+                checks[index] = incoming;
             } else {
-                checks.push(incoming.clone());
+                checks.push(incoming);
             }
         }
+
+        // The merged report is owned by the later session: it is the one whose
+        // completion the combined evidence now rests on.
+        let producer = match (&self.producer, &overlay.producer) {
+            (Some(base), Some(incoming)) => Some(if incoming.started_unix >= base.started_unix {
+                incoming.clone()
+            } else {
+                base.clone()
+            }),
+            (Some(session), None) | (None, Some(session)) => Some(session.clone()),
+            (None, None) => None,
+        };
 
         Ok(RendererReport {
             schema: self.schema.clone(),
             renderer: self.renderer.clone(),
             device,
+            producer,
             checks,
         })
     }
@@ -443,20 +666,35 @@ validation:
     #[test]
     fn report_requires_manifest_assertions_and_skip_reasons() {
         let manifest = RendererManifest::parse(MANIFEST).unwrap();
-        let source = r#"{
+        let producer = r#""producer":{"id":"h1","kind":"renderer-harness","target":"hdSample",
+                        "started_unix":100,"completed_unix":150,"outcome":"success"},"#;
+        let source = format!(
+            r#"{{
           "schema":"openstrata.renderer-report/v1alpha1",
-          "renderer":{"name":"sample-renderer"},
-          "device":{"backend":"vulkan","name":"Example GPU","api_version":"1.3.0","driver_version":"42","vendor_id":1,"device_id":2},
+          "renderer":{{"name":"sample-renderer"}},
+          {producer}
+          "device":{{"backend":"vulkan","name":"Example GPU","api_version":"1.3.0","driver_version":"42","vendor_id":1,"device_id":2}},
           "checks":[
-            {"id":"renderer.core.boundary","status":"pass"},
-            {"id":"renderer.backend.capability","status":"skip","detail":"Vulkan loader unavailable"},
-            {"id":"renderer.gpu.frame","status":"skip","detail":"backend implementation is project-owned"}
+            {{"id":"renderer.core.boundary","status":"pass"}},
+            {{"id":"renderer.backend.capability","status":"skip","detail":"Vulkan loader unavailable"}},
+            {{"id":"renderer.gpu.frame","status":"skip","detail":"backend implementation is project-owned"}}
           ]
-        }"#;
-        let report = RendererReport::parse(source).unwrap();
+        }}"#
+        );
+        let report = RendererReport::parse(&source).unwrap();
         report.validate_against(&manifest).unwrap();
         assert!(report.passed());
         assert_eq!(report.device.as_ref().unwrap().backend, "vulkan");
+
+        // The same report without a producer session is what a pre-v0.18.0
+        // harness writes. Its PASS stands on nothing, so accepting it as
+        // evidence is refused — the merge path is not the only way in.
+        let unowned = RendererReport::parse(&source.replace(producer, "")).unwrap();
+        assert!(unowned
+            .validate_against(&manifest)
+            .unwrap_err()
+            .to_string()
+            .contains("records no producer session"));
 
         let missing = RendererReport::parse(&source.replace(
             ",\n            {\"id\":\"renderer.gpu.frame\",\"status\":\"skip\",\"detail\":\"backend implementation is project-owned\"}",
@@ -479,6 +717,8 @@ validation:
             r#"{
               "schema":"openstrata.renderer-report/v1alpha1",
               "renderer":{"name":"sample-renderer"},
+              "producer":{"id":"s1","kind":"ctest","target":"hdSample",
+                          "started_unix":100,"completed_unix":150,"outcome":"success"},
               "checks":[
                 {"id":"renderer.core.boundary","status":"pass"},
                 {"id":"renderer.gpu.frame","status":"fail","detail":"device lost"}
@@ -490,6 +730,8 @@ validation:
             r#"{
               "schema":"openstrata.renderer-report/v1alpha1",
               "renderer":{"name":"sample-renderer"},
+              "producer":{"id":"s2","kind":"ctest","target":"hdSample",
+                          "started_unix":200,"completed_unix":300,"outcome":"success"},
               "checks":[
                 {"id":"renderer.core.boundary","status":"pass"},
                 {"id":"renderer.host.first_frame","status":"pass"}
@@ -500,15 +742,256 @@ validation:
         assert!(base.merge(&overlay, false).is_err());
         let merged = base.merge(&overlay, true).unwrap();
         assert_eq!(merged.checks.len(), 3);
+        // Merged checks name the producer that contributed them.
+        let first_frame = merged
+            .checks
+            .iter()
+            .find(|c| c.id == "renderer.host.first_frame")
+            .unwrap();
+        assert_eq!(first_frame.producer.as_deref(), Some("s2"));
 
         let downgrade = RendererReport::parse(
             r#"{
               "schema":"openstrata.renderer-report/v1alpha1",
               "renderer":{"name":"sample-renderer"},
+              "producer":{"id":"s3","kind":"ctest","target":"hdSample",
+                          "started_unix":400,"completed_unix":500,"outcome":"success"},
               "checks":[{"id":"renderer.gpu.frame","status":"pass"}]
             }"#,
         )
         .unwrap();
         assert!(base.merge(&downgrade, true).is_err());
+    }
+
+    /// Build a report with an explicit producer session.
+    fn report_with(session: &str, checks: &str) -> RendererReport {
+        RendererReport::parse(&format!(
+            r#"{{
+              "schema":"openstrata.renderer-report/v1alpha1",
+              "renderer":{{"name":"sample-renderer"}},
+              {session}
+              "checks":[{checks}]
+            }}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_pass_requires_a_producer_that_completed_successfully() {
+        // The hdMerlin defect: a renderer assertion read PASS from a CTest that
+        // later timed out. The overlay looked identical to one from a finished
+        // check, so nothing downstream could refuse it.
+        let base = report_with(
+            r#""producer":{"id":"base","kind":"ost-build","target":"hdSample",
+                "started_unix":100,"completed_unix":150,"outcome":"success"},"#,
+            r#"{"id":"renderer.core.boundary","status":"pass"}"#,
+        );
+
+        // Timed out mid-run: no completion, so its PASS is refused.
+        let timed_out = report_with(
+            r#""producer":{"id":"t1","kind":"ctest","target":"hdSample",
+                "started_unix":200,"outcome":"incomplete"},"#,
+            r#"{"id":"renderer.gpu.frame","status":"pass"}"#,
+        );
+        let error = base.merge(&timed_out, true).unwrap_err().to_string();
+        assert!(error.contains("never completed"), "{error}");
+
+        // Ran to completion but failed: PASS is still refused.
+        let failed = report_with(
+            r#""producer":{"id":"f1","kind":"ctest","target":"hdSample",
+                "started_unix":200,"completed_unix":260,"outcome":"failure"},"#,
+            r#"{"id":"renderer.gpu.frame","status":"pass"}"#,
+        );
+        assert!(base
+            .merge(&failed, true)
+            .unwrap_err()
+            .to_string()
+            .contains("failed"));
+
+        // …but that same failed session's FAIL is truthful and merges.
+        let honest_failure = report_with(
+            r#""producer":{"id":"f1","kind":"ctest","target":"hdSample",
+                "started_unix":200,"completed_unix":260,"outcome":"failure"},"#,
+            r#"{"id":"renderer.gpu.frame","status":"fail","detail":"device lost"}"#,
+        );
+        let merged = base.merge(&honest_failure, true).unwrap();
+        assert_eq!(merged.checks.len(), 2);
+        assert!(!merged.passed());
+
+        // A completed, successful session is what a PASS actually requires.
+        let good = report_with(
+            r#""producer":{"id":"g1","kind":"ctest","target":"hdSample",
+                "started_unix":300,"completed_unix":360,"outcome":"success"},"#,
+            r#"{"id":"renderer.gpu.frame","status":"pass"}"#,
+        );
+        let merged = base.merge(&good, true).unwrap();
+        assert!(merged.passed());
+        assert_eq!(
+            merged
+                .checks
+                .iter()
+                .find(|c| c.id == "renderer.gpu.frame")
+                .unwrap()
+                .producer
+                .as_deref(),
+            Some("g1")
+        );
+        // The merged report is owned by the later session.
+        assert_eq!(merged.producer.unwrap().id, "g1");
+    }
+
+    #[test]
+    fn a_successful_session_may_report_both_passes_and_failures() {
+        // The headless harness decides every check and then publishes. Some of
+        // those verdicts are FAIL, and that does not make the *session* a
+        // failure: it ran to completion. Marking it one would make the run's
+        // own PASSes unassertable, so a partially failing run could not report
+        // what passed alongside — the report would not even parse as evidence.
+        let mixed = report_with(
+            r#""producer":{"id":"h1","kind":"renderer-harness","target":"hdSample",
+                "started_unix":300,"completed_unix":360,"outcome":"success"},"#,
+            r#"{"id":"renderer.core.boundary","status":"pass"},
+               {"id":"renderer.gpu.frame","status":"fail","detail":"device lost"}"#,
+        );
+        let base = report_with(
+            r#""producer":{"id":"b1","kind":"ost-build","target":"hdSample",
+                "started_unix":100,"completed_unix":150,"outcome":"success"},"#,
+            r#"{"id":"renderer.install_tree","status":"pass"}"#,
+        );
+        let merged = base.merge(&mixed, true).unwrap();
+        assert_eq!(merged.checks.len(), 3);
+        assert!(!merged.passed(), "the FAIL still decides the verdict");
+
+        // Each side keeps its own producer rather than inheriting the merged
+        // report's owner.
+        let producer_of = |id: &str| {
+            merged
+                .checks
+                .iter()
+                .find(|check| check.id == id)
+                .unwrap()
+                .producer
+                .clone()
+        };
+        assert_eq!(producer_of("renderer.install_tree").as_deref(), Some("b1"));
+        assert_eq!(producer_of("renderer.core.boundary").as_deref(), Some("h1"));
+    }
+
+    #[test]
+    fn merge_refuses_an_unowned_pass_from_either_input() {
+        // Gating only the overlay let a failed base session's PASS survive into
+        // a merged report owned by the newer, successful session — laundering
+        // the finding into an attribution to a producer that never made it.
+        let good = report_with(
+            r#""producer":{"id":"g1","kind":"ctest","target":"hdSample",
+                "started_unix":300,"completed_unix":360,"outcome":"success"},"#,
+            r#"{"id":"renderer.gpu.frame","status":"pass"}"#,
+        );
+        let failed_base = report_with(
+            r#""producer":{"id":"f1","kind":"ctest","target":"hdSample",
+                "started_unix":100,"completed_unix":150,"outcome":"failure"},"#,
+            r#"{"id":"renderer.core.boundary","status":"pass"}"#,
+        );
+        let error = failed_base.merge(&good, true).unwrap_err().to_string();
+        assert!(error.contains("carry PASS"), "{error}");
+        assert!(
+            error.contains("'f1'"),
+            "the refusal names the side: {error}"
+        );
+
+        // A base with no producer at all is refused on the same terms: silence
+        // about the producer is not a weaker claim than a bad one.
+        let unowned = RendererReport::parse(
+            r#"{
+              "schema":"openstrata.renderer-report/v1alpha1",
+              "renderer":{"name":"sample-renderer"},
+              "checks":[{"id":"renderer.core.boundary","status":"pass"}]
+            }"#,
+        )
+        .unwrap();
+        assert!(unowned
+            .merge(&good, true)
+            .unwrap_err()
+            .to_string()
+            .contains("records no producer session"));
+
+        // That same failed session's FAIL is truthful and still merges.
+        let honest = report_with(
+            r#""producer":{"id":"f1","kind":"ctest","target":"hdSample",
+                "started_unix":100,"completed_unix":150,"outcome":"failure"},"#,
+            r#"{"id":"renderer.core.boundary","status":"fail","detail":"boundary drift"}"#,
+        );
+        let merged = honest.merge(&good, true).unwrap();
+        assert_eq!(merged.checks.len(), 2);
+        assert_eq!(merged.producer.unwrap().id, "g1");
+        assert_eq!(
+            merged
+                .checks
+                .iter()
+                .find(|check| check.id == "renderer.core.boundary")
+                .unwrap()
+                .producer
+                .as_deref(),
+            Some("f1"),
+            "a FAIL keeps the failed session that found it"
+        );
+    }
+
+    #[test]
+    fn merge_refuses_mismatched_and_superseded_producer_sessions() {
+        let base = report_with(
+            r#""producer":{"id":"base","kind":"ost-build","target":"hdSample",
+                "started_unix":200,"completed_unix":250,"outcome":"success"},"#,
+            r#"{"id":"renderer.core.boundary","status":"pass"}"#,
+        );
+
+        // A session that wrote a different target is evidence about a
+        // different build, however successful it was.
+        let other_target = report_with(
+            r#""producer":{"id":"x1","kind":"ctest","target":"hdOther",
+                "started_unix":300,"completed_unix":360,"outcome":"success"},"#,
+            r#"{"id":"renderer.gpu.frame","status":"pass"}"#,
+        );
+        assert!(base
+            .merge(&other_target, true)
+            .unwrap_err()
+            .to_string()
+            .contains("different builds"));
+
+        // Replaying an older session would resurrect superseded findings.
+        let older = report_with(
+            r#""producer":{"id":"old","kind":"ctest","target":"hdSample",
+                "started_unix":100,"completed_unix":150,"outcome":"success"},"#,
+            r#"{"id":"renderer.gpu.frame","status":"pass"}"#,
+        );
+        assert!(base
+            .merge(&older, true)
+            .unwrap_err()
+            .to_string()
+            .contains("superseded"));
+
+        // A session claiming success without a completion time is incoherent.
+        let no_completion = report_with(
+            r#""producer":{"id":"n1","kind":"ctest","target":"hdSample",
+                "started_unix":300,"outcome":"success"},"#,
+            r#"{"id":"renderer.gpu.frame","status":"pass"}"#,
+        );
+        assert!(base
+            .merge(&no_completion, true)
+            .unwrap_err()
+            .to_string()
+            .contains("never recorded a completion time"));
+
+        // And one that finished before it started is rejected outright.
+        let backwards = report_with(
+            r#""producer":{"id":"b1","kind":"ctest","target":"hdSample",
+                "started_unix":300,"completed_unix":10,"outcome":"success"},"#,
+            r#"{"id":"renderer.gpu.frame","status":"pass"}"#,
+        );
+        assert!(base
+            .merge(&backwards, true)
+            .unwrap_err()
+            .to_string()
+            .contains("completed before it started"));
     }
 }

@@ -4,14 +4,31 @@
 #include <{{name}}/vulkan_backend.hpp>
 
 #include <algorithm>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace {
+
+// Process id, for a session identifier that is unique among concurrent runs.
+long long CurrentProcessId() {
+#if defined(_WIN32)
+  return static_cast<long long>(_getpid());
+#else
+  return static_cast<long long>(getpid());
+#endif
+}
 
 struct Check {
   std::string id;
@@ -34,35 +51,71 @@ std::string Escape(std::string_view value) {
   return escaped;
 }
 
+// The producing invocation behind this report. OpenStrata refuses a PASS that
+// no completed producer stands behind, so the report records who wrote it,
+// against what, and whether the run actually finished.
+struct Session {
+  std::string id;
+  std::string target;
+  long long started = 0;
+  long long completed = 0;
+  // Whether this harness reached its verdicts, not whether the verdicts were
+  // PASS. A run that decided every check succeeded, however many of them
+  // failed; only a run that could not produce checks at all is a failure.
+  bool succeeded = false;
+};
+
 bool WriteReport(const std::string& path,
                  const std::vector<Check>& checks,
-                 const {{Name}}::GpuFrameEvidence& frame) {
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  if (!output) {
+                 const {{Name}}::GpuFrameEvidence& frame,
+                 const Session& session) {
+  // Write to a sibling temp file and rename into place, so a run killed
+  // mid-write leaves no partial overlay for `ost renderer merge` to pick up.
+  const std::filesystem::path final_path(path);
+  std::filesystem::path temp_path = final_path;
+  temp_path += ".tmp";
+  {
+    std::ofstream output(temp_path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+      return false;
+    }
+    output << "{\n"
+           << "  \"schema\": \"openstrata.renderer-report/v1alpha1\",\n"
+           << "  \"renderer\": {\"name\": \"{{name}}\"},\n"
+           << "  \"producer\": {\"id\":\"" << Escape(session.id)
+           << "\",\"kind\":\"renderer-harness\",\"target\":\""
+           << Escape(session.target) << "\",\"started_unix\":" << session.started
+           << ",\"completed_unix\":" << session.completed << ",\"outcome\":\""
+           << (session.succeeded ? "success" : "failure") << "\"},\n";
+    if (!frame.device_name.empty()) {
+      output << "  \"device\": {\"backend\":\"vulkan\",\"name\":\""
+             << Escape(frame.device_name) << "\",\"api_version\":\""
+             << Escape(frame.api_version) << "\",\"driver_version\":\""
+             << Escape(frame.driver_version) << "\",\"vendor_id\":"
+             << frame.vendor_id << ",\"device_id\":" << frame.device_id << "},\n";
+    }
+    output << "  \"checks\": [\n";
+    for (std::size_t index = 0; index < checks.size(); ++index) {
+      const Check& check = checks[index];
+      output << "    {\"id\":\"" << Escape(check.id) << "\",\"status\":\""
+             << Escape(check.status) << "\"";
+      if (!check.detail.empty()) {
+        output << ",\"detail\":\"" << Escape(check.detail) << "\"";
+      }
+      output << '}' << (index + 1 == checks.size() ? "\n" : ",\n");
+    }
+    output << "  ]\n}\n";
+    if (!output.good()) {
+      return false;
+    }
+  }
+  std::error_code error;
+  std::filesystem::rename(temp_path, final_path, error);
+  if (error) {
+    std::filesystem::remove(temp_path, error);
     return false;
   }
-  output << "{\n"
-         << "  \"schema\": \"openstrata.renderer-report/v1alpha1\",\n"
-         << "  \"renderer\": {\"name\": \"{{name}}\"},\n";
-  if (!frame.device_name.empty()) {
-    output << "  \"device\": {\"backend\":\"vulkan\",\"name\":\""
-           << Escape(frame.device_name) << "\",\"api_version\":\""
-           << Escape(frame.api_version) << "\",\"driver_version\":\""
-           << Escape(frame.driver_version) << "\",\"vendor_id\":"
-           << frame.vendor_id << ",\"device_id\":" << frame.device_id << "},\n";
-  }
-  output << "  \"checks\": [\n";
-  for (std::size_t index = 0; index < checks.size(); ++index) {
-    const Check& check = checks[index];
-    output << "    {\"id\":\"" << Escape(check.id) << "\",\"status\":\""
-           << Escape(check.status) << "\"";
-    if (!check.detail.empty()) {
-      output << ",\"detail\":\"" << Escape(check.detail) << "\"";
-    }
-    output << '}' << (index + 1 == checks.size() ? "\n" : ",\n");
-  }
-  output << "  ]\n}\n";
-  return output.good();
+  return true;
 }
 
 std::string Status({{Name}}::FrameStatus status) {
@@ -77,6 +130,14 @@ std::string Status({{Name}}::FrameStatus status) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  Session session;
+  session.started = static_cast<long long>(std::time(nullptr));
+  session.target = "{{name}}-headless";
+  // Start time plus pid: unique per invocation, so a later session supersedes
+  // an earlier one, and a portable identifier the report model accepts.
+  session.id = "headless-" + std::to_string(session.started) + "-" +
+               std::to_string(CurrentProcessId());
+
   std::string report_path = "renderer-report.json";
   bool install_tree = false;
   for (int index = 1; index < argc; ++index) {
@@ -186,13 +247,25 @@ int main(int argc, char** argv) {
   checks.push_back({"renderer.host.first_frame", "skip", hydra_detail});
   checks.push_back({"renderer.host.stable_update", "skip", hydra_detail});
 
-  if (!WriteReport(report_path, checks, frame)) {
-    std::cerr << "cannot write renderer report: " << report_path << '\n';
-    return 1;
-  }
   const bool failed = std::any_of(checks.begin(), checks.end(),
                                   [](const Check& check) {
                                     return check.status == "fail";
                                   });
+
+  // The session concludes here, with every check already decided — the report
+  // is published only once this run has actually finished, and it says so.
+  //
+  // The outcome describes *this harness*, not the verdicts it reached: it ran
+  // every check to a decision, so it succeeded even when some of those checks
+  // failed. Conflating the two would mark the session a failure and make its
+  // own PASSes unmergeable, so a run with any FAIL could not report the
+  // checks that passed alongside it. Failing checks are carried by `checks`;
+  // a failed session is one that could not produce them at all.
+  session.completed = static_cast<long long>(std::time(nullptr));
+  session.succeeded = true;
+  if (!WriteReport(report_path, checks, frame, session)) {
+    std::cerr << "cannot write renderer report: " << report_path << '\n';
+    return 1;
+  }
   return failed ? 1 : 0;
 }

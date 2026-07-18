@@ -177,6 +177,9 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         "archive_size": packed.archive_size,
         "total_size": packed.total_size,
         "created_unix": created,
+        // The producing tool names itself here so the registry can
+        // record the artifact's origin instead of whoever imported it.
+        "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
         "provenance": {
             "platform": lock.platform,
             "profile": lock.profile,

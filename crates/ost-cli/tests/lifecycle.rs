@@ -626,6 +626,10 @@ fn validate_surfaces_renderer_pass_fail_skip_evidence() {
         r#"{
           "schema":"openstrata.renderer-report/v1alpha1",
           "renderer":{"name":"sample-renderer"},
+          "producer":{"id":"headless-1","kind":"renderer-harness",
+                      "target":"sample-renderer-headless",
+                      "started_unix":1750000000,"completed_unix":1750000030,
+                      "outcome":"success"},
           "checks":[
             {"id":"renderer.core.boundary","status":"pass"},
             {"id":"renderer.backend.capability","status":"skip","detail":"GPU unavailable"},
@@ -662,6 +666,18 @@ fn validate_surfaces_renderer_pass_fail_skip_evidence() {
     assert!(checks
         .iter()
         .any(|check| { check["name"] == "renderer.install_tree" && check["status"] == "pass" }));
+    // Every assertion names the producer session behind it, rather than
+    // presenting the report as one anonymous verdict.
+    assert!(
+        checks.iter().any(|check| {
+            check["name"] == "renderer.install_tree"
+                && check["detail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("producer headless-1")
+        }),
+        "a surfaced check must name its producer: {checks:#?}"
+    );
 
     let external_dir = format!("build/{id}");
     let external = sb.ost(&["--json", "validate", "--build-dir", &external_dir]);
@@ -678,6 +694,36 @@ fn validate_surfaces_renderer_pass_fail_skip_evidence() {
     assert!(checks
         .iter()
         .any(|check| check["name"] == "external-build" && check["status"] == "pass"));
+
+    // The same report with its producer session stripped is what a pre-v0.18.0
+    // harness writes, and the shape the hdMerlin defect took: PASSes nothing
+    // stands behind. `ost validate` must refuse it rather than surface them.
+    let report_path = build.join("renderer-report.json");
+    let report = std::fs::read_to_string(&report_path).unwrap();
+    let mut stripped: serde_json::Value = serde_json::from_str(&report).unwrap();
+    stripped.as_object_mut().unwrap().remove("producer");
+    std::fs::write(&report_path, serde_json::to_string(&stripped).unwrap()).unwrap();
+
+    let unowned = sb.ost(&["--json", "validate"]);
+    assert!(
+        !unowned.status.success(),
+        "an unowned PASS must not validate:\n{}",
+        out_text(&unowned)
+    );
+    let output: serde_json::Value = serde_json::from_slice(&unowned.stdout).unwrap();
+    let checks = output["data"]["checks"].as_array().unwrap();
+    let evidence = checks
+        .iter()
+        .find(|check| check["name"] == "renderer-evidence")
+        .expect("renderer-evidence check");
+    assert_eq!(evidence["status"], "fail");
+    assert!(
+        evidence["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("records no producer session"),
+        "the refusal must name the missing producer: {evidence:#?}"
+    );
 }
 
 #[test]

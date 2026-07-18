@@ -4,54 +4,167 @@
   "title": "OpenStrata Renderer Report",
   "description": "Deterministic PASS/FAIL/SKIP evidence emitted by a renderer project.",
   "type": "object",
-  "required": ["schema", "renderer", "checks"],
+  "required": [
+    "schema",
+    "renderer",
+    "checks"
+  ],
   "additionalProperties": false,
   "properties": {
-    "schema": { "type": "string", "const": "openstrata.renderer-report/v1alpha1" },
+    "schema": {
+      "type": "string",
+      "const": "openstrata.renderer-report/v1alpha1"
+    },
     "renderer": {
       "type": "object",
-      "required": ["name"],
+      "required": [
+        "name"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*$" }
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+        }
       }
     },
     "device": {
       "type": "object",
-      "required": ["backend", "name", "api_version", "driver_version", "vendor_id", "device_id"],
+      "required": [
+        "backend",
+        "name",
+        "api_version",
+        "driver_version",
+        "vendor_id",
+        "device_id"
+      ],
       "additionalProperties": false,
       "properties": {
-        "backend": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*$" },
-        "name": { "type": "string", "minLength": 1 },
-        "api_version": { "type": "string", "minLength": 1 },
-        "driver_version": { "type": "string", "minLength": 1 },
-        "vendor_id": { "type": "integer", "minimum": 0 },
-        "device_id": { "type": "integer", "minimum": 0 }
+        "backend": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "api_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "driver_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vendor_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "device_id": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "description": "The invocation that produced this report. Required for a PASS: OpenStrata refuses an assertion that no completed, successful producer stands behind.",
+      "required": [
+        "id",
+        "kind",
+        "target",
+        "started_unix",
+        "outcome"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+        },
+        "kind": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "started_unix": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completed_unix": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Absent means the session never concluded; such a report cannot carry a PASS."
+        },
+        "outcome": {
+          "type": "string",
+          "description": "How the producing run ended, not what it concluded. A harness that evaluated every check is 'success' even when some of those checks are FAIL — the failures belong in `checks`. Use 'failure' only when the run could not establish its checks at all, and 'incomplete' when it never concluded.",
+          "enum": [
+            "success",
+            "failure",
+            "incomplete"
+          ]
+        }
       }
     },
     "checks": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "status"],
+        "required": [
+          "id",
+          "status"
+        ],
         "additionalProperties": false,
         "properties": {
           "id": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$"
           },
-          "status": { "type": "string", "enum": ["pass", "fail", "skip"] },
-          "detail": { "type": "string" }
+          "status": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "skip"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "producer": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]*$",
+            "description": "Id of the producer session that contributed this check, stamped by `ost renderer merge`."
+          }
         },
         "allOf": [
           {
             "if": {
-              "properties": { "status": { "enum": ["fail", "skip"] } },
-              "required": ["status"]
+              "properties": {
+                "status": {
+                  "enum": [
+                    "fail",
+                    "skip"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ]
             },
             "then": {
-              "required": ["detail"],
-              "properties": { "detail": { "minLength": 1 } }
+              "required": [
+                "detail"
+              ],
+              "properties": {
+                "detail": {
+                  "minLength": 1
+                }
+              }
             }
           }
         ]

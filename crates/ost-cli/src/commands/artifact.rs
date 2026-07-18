@@ -51,6 +51,15 @@ pub enum ArtifactCmd {
         /// Digest reference: sha256:<hex> or a unique hex prefix (>= 6 chars).
         digest: String,
     },
+    /// Remove an artifact from the local registry so it can be re-imported.
+    ///
+    /// The supported reset for a machine holding a digest that was imported
+    /// before its evidence existed: remove it, then import the dist directory
+    /// again to pick up the SBOM and provenance sidecars.
+    Rm {
+        /// Digest reference: sha256:<hex> or a unique hex prefix (>= 6 chars).
+        digest: String,
+    },
     /// Verify a stored artifact's integrity (archive digest + per-file hashes).
     Verify {
         /// Digest reference: sha256:<hex> or a unique hex prefix (>= 6 chars).
@@ -147,6 +156,7 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
         ArtifactCmd::Import { path } => import(&store, &path, fmt),
         ArtifactCmd::List { kind } => list(&store, kind.as_deref(), fmt),
         ArtifactCmd::Show { digest } => show(&store, &digest, fmt),
+        ArtifactCmd::Rm { digest } => rm(&store, &digest, fmt),
         ArtifactCmd::Verify {
             digest,
             policy,
@@ -478,6 +488,8 @@ fn import(store: &ArtifactStore, path: &str, fmt: Format) -> Result<()> {
         output::success(&serde_json::json!({
             "imported": true,
             "already_present": out.already_present,
+            "evidence_attached": out.evidence_attached,
+            "evidence_skipped": out.evidence_skipped,
             "artifact": record_json(&out.record),
         }));
         return Ok(());
@@ -500,6 +512,37 @@ fn import(store: &ArtifactStore, path: &str, fmt: Format) -> Result<()> {
         );
         println!("  digest: {}", out.record.digest);
     }
+    // Evidence is reported either way: a caller that supplied sidecars always
+    // learns whether they were bound, never has to infer it from silence.
+    if !out.evidence_attached.is_empty() {
+        println!("  evidence attached: {}", out.evidence_attached.join(", "));
+    }
+    if !out.evidence_skipped.is_empty() {
+        println!(
+            "  evidence already present: {}",
+            out.evidence_skipped.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn rm(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
+    let record = store.remove(digest)?;
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "removed": true,
+            "artifact": record_json(&record),
+        }));
+        return Ok(());
+    }
+    println!(
+        "Removed {} {} {} ({}) from the local registry",
+        record.kind.as_str(),
+        record.name,
+        record.version,
+        record.short_digest()
+    );
+    println!("  re-import it with `ost artifact import <dist-dir>`");
     Ok(())
 }
 
@@ -579,7 +622,13 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     if let (Some(path), Some(digest)) = (&r.provenance, &r.provenance_digest) {
         println!("  provenance:  {path} ({digest})");
     }
-    println!("  producer:    {}", r.producer);
+    // An artifact whose manifest predates v0.18.0 has no recorded producer.
+    // Say so rather than showing the importing ost as if it were the origin.
+    match &r.producer {
+        Some(producer) => println!("  producer:    {producer}"),
+        None => println!("  producer:    unrecorded (manifest predates v0.18.0)"),
+    }
+    println!("  imported by: {}", r.imported_by);
     println!("  store:       {}", store.object_dir(r.digest_hex()));
     Ok(())
 }

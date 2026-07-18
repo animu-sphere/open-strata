@@ -648,7 +648,7 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     std::fs::write(
         sb.base.join("openstrata.ci.yaml"),
         format!(
-            "schema: 1\ncells:\n  - name: linux-usd-toy\n    runtime_artifact: {runtime_digest}\n    plugin_artifact: {plugin_digest}\n    platform: cy2026\n    profile: usd\n    up_to: 4\n    host:\n      os: linux\n      labels: [self-hosted, linux]\n"
+            "schema: 1\nrequire_evidence: none\ncells:\n  - name: linux-usd-toy\n    runtime_artifact: {runtime_digest}\n    plugin_artifact: {plugin_digest}\n    platform: cy2026\n    profile: usd\n    up_to: 4\n    host:\n      os: linux\n      labels: [self-hosted, linux]\n"
         ),
     )
     .unwrap();
@@ -660,7 +660,7 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     std::fs::write(
         sb.base.join("openstrata.ci.yaml"),
         format!(
-            "schema: 1\ncells:\n  - name: swapped-kinds\n    runtime_artifact: {plugin_digest}\n    plugin_artifact: {runtime_digest}\n    platform: cy2026\n    profile: usd\n"
+            "schema: 1\nrequire_evidence: none\ncells:\n  - name: swapped-kinds\n    runtime_artifact: {plugin_digest}\n    plugin_artifact: {runtime_digest}\n    platform: cy2026\n    profile: usd\n"
         ),
     )
     .unwrap();
@@ -679,7 +679,7 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     std::fs::write(
         sb.base.join("openstrata.ci.yaml"),
         format!(
-            "schema: 1\ncells:\n  - name: linux-usd-toy\n    runtime_artifact: {runtime_digest}\n    plugin_artifact: {plugin_digest}\n    platform: cy2026\n    profile: usd\n    up_to: 4\n    host:\n      os: linux\n      labels: [self-hosted, linux]\n"
+            "schema: 1\nrequire_evidence: none\ncells:\n  - name: linux-usd-toy\n    runtime_artifact: {runtime_digest}\n    plugin_artifact: {plugin_digest}\n    platform: cy2026\n    profile: usd\n    up_to: 4\n    host:\n      os: linux\n      labels: [self-hosted, linux]\n"
         ),
     )
     .unwrap();
@@ -714,4 +714,120 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
         path_str(&dest),
     ]);
     assert_eq!(out.status.code(), Some(2));
+}
+
+/// The v0.17.0 adoption failure, caught locally instead of on nine red runners:
+/// a matrix whose pinned artifact predates evidence renders a gate the artifact
+/// cannot pass. `generate` warns, `validate` fails, and both name a way out.
+#[test]
+fn evidence_gate_gap_warns_on_generate_and_fails_validate() {
+    let sb = Sandbox::new("evidence-gate");
+
+    // A plugin artifact with no evidence sidecars — the pre-0.17 shape.
+    let stage = camino::Utf8PathBuf::from_path_buf(sb.base.join("stage")).unwrap();
+    std::fs::create_dir_all(stage.join("lib").as_std_path()).unwrap();
+    std::fs::write(stage.join("lib/toy.dll").as_std_path(), b"lib bytes").unwrap();
+    std::fs::write(stage.join("plugInfo.json").as_std_path(), b"{}").unwrap();
+    let dist = camino::Utf8PathBuf::from_path_buf(sb.base.join("dist")).unwrap();
+    let archive = dist.join("toy-0.1.0.tar.zst");
+    let files = ost_build::stage_files(&stage).unwrap();
+    let packed = ost_build::pack_dir(&stage, &archive, &files).unwrap();
+    let files_json: Vec<_> = packed
+        .files
+        .iter()
+        .map(|f| serde_json::json!({ "path": f.path, "sha256": f.sha256, "size": f.size }))
+        .collect();
+    let manifest = serde_json::json!({
+        "schema": 1,
+        "kind": "openstrata.plugin-bundle",
+        "plugin": { "name": "toy", "version": "0.1.0", "kind": "usd-fileformat", "license": "Apache-2.0" },
+        "target": "cy2026-test",
+        "archive": "toy-0.1.0.tar.zst",
+        "archive_digest": packed.archive_digest,
+        "archive_size": packed.archive_size,
+        "total_size": packed.total_size,
+        "files": files_json,
+    });
+    std::fs::write(
+        dist.join("manifest.json").as_std_path(),
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let v = stdout_json(&sb.ost(&["--json", "artifact", "import", dist.as_str()]));
+    let plugin_digest = v["data"]["artifact"]["digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let write_matrix = |require: &str| {
+        std::fs::write(
+            sb.base.join("openstrata.ci.yaml"),
+            format!(
+                "schema: 1\n{require}cells:\n  - name: linux-usd-toy\n    runtime_artifact: {plugin_digest}\n    plugin_artifact: {plugin_digest}\n    platform: cy2026\n    profile: usd\n    host:\n      os: linux\n      labels: [self-hosted, linux]\n"
+            ),
+        )
+        .unwrap();
+    };
+
+    // Default `all`: validate refuses, and says which sidecar is missing.
+    write_matrix("");
+    let out = sb.ost(&["--json", "ci", "validate"]);
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "an unsatisfiable gate must fail"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], false);
+    let gaps = v["data"]["evidence_gaps"].as_array().unwrap();
+    assert_eq!(gaps.len(), 2, "runtime and plugin pins both lack evidence");
+    assert!(gaps
+        .iter()
+        .all(|g| g.as_str().unwrap().contains("require_evidence is 'all'")));
+
+    // Generate warns rather than failing: the generating machine's registry is
+    // not necessarily the one the lane will run against.
+    let out = sb.ost(&["--json", "ci", "generate", "github"]);
+    assert!(out.status.success(), "generate must not fail on a gap");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], true);
+    let warnings = v["warnings"].as_array().unwrap();
+    assert!(!warnings.is_empty(), "generate must warn about the gap");
+    assert!(warnings
+        .iter()
+        .all(|w| w["code"] == "CI_EVIDENCE_GATE_UNSATISFIABLE"));
+
+    // With `--stdout` the workflow *is* stdout, so the warning must reach
+    // stderr instead of vanishing into whatever the caller redirected to.
+    let out = sb.ost(&["ci", "generate", "github", "--stdout"]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("the rendered gate cannot pass"),
+        "a redirected stdout must not hide the warning: {stderr}"
+    );
+
+    // The documented way out: declare a level the pins can meet. The gate is
+    // still rendered, it just demands what exists today.
+    write_matrix("require_evidence: none\n");
+    let v = stdout_json(&sb.ost(&["--json", "ci", "validate"]));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["data"]["evidence_gaps"].as_array().unwrap().len(), 0);
+
+    let out = sb.ost(&["ci", "generate", "github", "--stdout"]);
+    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).unwrap();
+    let entry = &doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"][0];
+    assert_eq!(entry["require_evidence"], "none");
+    assert_eq!(entry["evidence_flags"], "");
+
+    // A partial level is honoured too: demanding only an SBOM still reports
+    // the missing SBOM, and nothing about provenance.
+    write_matrix("require_evidence: sbom\n");
+    let out = sb.ost(&["--json", "ci", "validate"]);
+    assert_eq!(out.status.code(), Some(5));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let gaps = v["data"]["evidence_gaps"].as_array().unwrap();
+    assert!(gaps
+        .iter()
+        .all(|g| g.as_str().unwrap().contains("has no SBOM ")));
 }

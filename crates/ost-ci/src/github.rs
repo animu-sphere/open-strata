@@ -110,6 +110,8 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
          \x20           runtime_artifact: {runtime}\n\
          \x20           target_trust: {target_trust}\n\
          \x20           minimum_trust: {minimum_trust}\n\
+         \x20           require_evidence: {require_evidence}\n\
+         \x20           evidence_flags: \"{evidence_flags}\"\n\
          \x20           platform: {platform}\n\
          \x20           profile: {profile}\n\
          \x20           up_to: {up_to}\n\
@@ -122,6 +124,8 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
         runtime = cell.runtime_artifact,
         target_trust = cell.trust,
         minimum_trust = matrix.minimum_trust(cell),
+        require_evidence = matrix.require_evidence(cell).as_str(),
+        evidence_flags = matrix.require_evidence(cell).verify_flags(),
         platform = cell.platform,
         profile = cell.profile,
         up_to = cell.up_to,
@@ -268,8 +272,8 @@ fn support_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportC
           ost artifact show ${{{{ matrix.plugin_artifact }}}}
       - name: Verify artifact integrity
         run: |
-          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} --require-sbom --require-provenance{policy}
-          ost artifact verify ${{{{ matrix.plugin_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} --require-sbom --require-provenance{policy}
+          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}}{policy}
+          ost artifact verify ${{{{ matrix.plugin_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}}{policy}
       - name: Materialize the runtime from the registry
         run: ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
       - name: Extract the plugin bundle under test
@@ -414,6 +418,12 @@ fn ost_version_step(bootstrap: Option<&Bootstrap>) -> String {
 /// precondition: a miss (or the `OST_CI_DISABLE_CACHE` repository variable)
 /// falls back to the digest-pinned remote pull, and a poisoned hosted cache
 /// is wiped and re-pulled rather than trusted.
+///
+/// The cache-hit short-circuit asks the *same* question the gate later asks,
+/// evidence flags included. A weaker predicate wedges the lane permanently: a
+/// cached evidence-less record satisfies the short-circuit, so the pull that
+/// would deliver the evidence never runs, so the gate fails — on every
+/// subsequent run, because the cache keeps hitting.
 fn runtime_fetch_steps(bootstrap: Option<&Bootstrap>) -> String {
     let mut out = String::new();
     if let Some(bootstrap) = bootstrap {
@@ -438,7 +448,7 @@ fn runtime_fetch_steps(bootstrap: Option<&Bootstrap>) -> String {
           set -euo pipefail
           mkdir -p .ost-ci
           if ost artifact show \"${{ matrix.runtime_artifact }}\" --json > /dev/null 2>&1 \\
-             && ost artifact verify \"${{ matrix.runtime_artifact }}\" --json > .ost-ci/runtime-cache-verify.json; then
+             && ost artifact verify \"${{ matrix.runtime_artifact }}\" ${{ matrix.evidence_flags }} --json > .ost-ci/runtime-cache-verify.json; then
             echo \"pinned runtime already present and verified (cache hit) -- skipping the remote pull\"
           else
             if [ \"${{ matrix.hosted }}\" = \"true\" ] && [ -n \"${OST_HOME:-}\" ]; then
@@ -563,7 +573,7 @@ fn source_steps(matrix: &SupportMatrix) -> String {
           set -euo pipefail
           mkdir -p .ost-ci
           printf '{{\"schema\":1,\"runtime_artifact\":\"%s\",\"source\":\"%s\"}}\\n' \"${{{{ matrix.runtime_artifact }}}}\" \"${{{{ matrix.runtime_remote != '' && 'remote-pull' || 'local-registry' }}}}\" > .ost-ci/runtime-source.json
-          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} --require-sbom --require-provenance{policy}
+          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}}{policy}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
 {prebuild}\
 \x20     - name: Build the plugin from source
@@ -752,7 +762,7 @@ fn release_candidate_steps(matrix: &SupportMatrix) -> String {
         run: |
           set -euo pipefail
           mkdir -p .ost-ci
-          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} --require-sbom --require-provenance --policy {policy}
+          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}} --policy {policy}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
 {prebuild}\
 \x20     - name: Build the release candidate from source
@@ -1002,8 +1012,8 @@ mod tests {
     use super::*;
     use crate::matrix::{
         Acknowledgement, Billing, HostOs, HostSpec, Lane, OstBootstrap, Publish, ReleaseLane,
-        RunnerKind, RunnerProfile, RuntimeRemote, SourceCheck, SupportCell, TrustRequirements,
-        MATRIX_SCHEMA,
+        RequireEvidence, RunnerKind, RunnerProfile, RuntimeRemote, SourceCheck, SupportCell,
+        TrustRequirements, MATRIX_SCHEMA,
     };
     use ost_artifact::TrustLevel;
     use std::collections::BTreeMap;
@@ -1014,6 +1024,7 @@ mod tests {
             lane: Lane::default(),
             runner: None,
             support: None,
+            require_evidence: None,
             runtime_artifact: format!("sha256:{}", "ab".repeat(32)),
             runtime_remote: None,
             plugin_artifact: Some(format!("sha256:{}", "cd".repeat(32))),
@@ -1032,6 +1043,7 @@ mod tests {
         SupportMatrix {
             schema: MATRIX_SCHEMA,
             trust: Default::default(),
+            require_evidence: Default::default(),
             bootstrap: None,
             runners: BTreeMap::new(),
             source_checks: vec![],
@@ -1071,6 +1083,7 @@ mod tests {
         SupportMatrix {
             schema: MATRIX_SCHEMA,
             trust: Default::default(),
+            require_evidence: Default::default(),
             bootstrap: Some(Bootstrap {
                 ost: OstBootstrap {
                     version: "0.9.0".into(),
@@ -1335,6 +1348,27 @@ mod tests {
         assert!(run.contains("--expect-artifact"));
         assert!(run.contains("--require-kind runtime"));
         assert!(run.contains(".ost-ci/runtime-pull.json"));
+
+        // The cache-hit short-circuit must ask exactly what the gate asks. A
+        // weaker predicate here lets a cached evidence-less record skip the
+        // pull that would deliver its evidence, and the lane can never
+        // recover on its own.
+        assert!(
+            run.contains("ost artifact verify \"${{ matrix.runtime_artifact }}\" ${{ matrix.evidence_flags }}"),
+            "cache short-circuit must carry the gate's evidence flags: {run}"
+        );
+        let gate = steps
+            .iter()
+            .find(|s| {
+                s["name"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Verify and materialize")
+            })
+            .expect("gate step")["run"]
+            .as_str()
+            .unwrap();
+        assert!(gate.contains("${{ matrix.evidence_flags }}"));
 
         // The include entry carries the pinned remote uri; the self-hosted
         // mainline path stays possible (empty remote renders as "").
@@ -1641,12 +1675,18 @@ mod tests {
             .unwrap();
         for required in [
             "--minimum-trust ${{ matrix.minimum_trust }}",
-            "--require-sbom",
-            "--require-provenance",
+            "${{ matrix.evidence_flags }}",
             "--policy policies/artifacts.toml",
         ] {
             assert!(verify.contains(required), "missing {required}: {verify}");
         }
+        // The demand itself is a matrix column, so a cell can carry its own
+        // level; the default is still both sidecars.
+        assert_eq!(include["require_evidence"], "all");
+        assert_eq!(
+            include["evidence_flags"],
+            "--require-sbom --require-provenance"
+        );
         assert!(!yaml.contains("artifact push"));
         assert!(!yaml.contains("plugin publish"));
 
@@ -1667,13 +1707,65 @@ mod tests {
             .unwrap()["run"]
             .as_str()
             .unwrap();
-        assert_eq!(verify.matches("--require-sbom").count(), 2);
-        assert_eq!(verify.matches("--require-provenance").count(), 2);
+        assert_eq!(verify.matches("${{ matrix.evidence_flags }}").count(), 2);
+        assert_eq!(
+            doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"][0]["evidence_flags"],
+            "--require-sbom --require-provenance"
+        );
         assert!(doc["jobs"]["scheduled"]["steps"]
             .as_sequence()
             .unwrap()
             .iter()
             .any(|step| step["name"] == "Check out the repository trust policy"));
+    }
+
+    #[test]
+    fn require_evidence_is_declarable_globally_and_per_cell() {
+        // A repo whose pins predate evidence must be able to render a gate it
+        // can actually satisfy while it republishes, rather than adopting a
+        // release that reds out every lane with no repo-side cause.
+        let mut matrix = matrix();
+        matrix.require_evidence = RequireEvidence::None;
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&generate_support(&matrix).unwrap()).unwrap();
+        let include = &doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"][0];
+        assert_eq!(include["require_evidence"], "none");
+        assert_eq!(include["evidence_flags"], "");
+
+        // The gate line is unchanged — only what the column expands to moves,
+        // so trust and integrity checks still run either way.
+        let verify = doc["jobs"]["scheduled"]["steps"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|step| step["name"] == "Verify artifact integrity")
+            .unwrap()["run"]
+            .as_str()
+            .unwrap();
+        assert!(verify.contains("--minimum-trust ${{ matrix.minimum_trust }}"));
+        assert!(verify.contains("${{ matrix.evidence_flags }}"));
+
+        // A cell overrides the document default in either direction.
+        let mut mixed = matrix.clone();
+        mixed.cells[0].require_evidence = Some(RequireEvidence::Sbom);
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&generate_support(&mixed).unwrap()).unwrap();
+        let include = &doc["jobs"]["scheduled"]["strategy"]["matrix"]["include"][0];
+        assert_eq!(include["require_evidence"], "sbom");
+        assert_eq!(include["evidence_flags"], "--require-sbom");
+        assert_eq!(
+            mixed.require_evidence(&mixed.cells[0]),
+            RequireEvidence::Sbom
+        );
+        // Uniformity is about the resolved level across all cells: an override
+        // on one cell of many makes the document non-uniform.
+        assert_eq!(
+            matrix.uniform_require_evidence(),
+            Some(RequireEvidence::None)
+        );
+        if mixed.cells.len() > 1 {
+            assert_eq!(mixed.uniform_require_evidence(), None);
+        }
     }
 
     #[test]

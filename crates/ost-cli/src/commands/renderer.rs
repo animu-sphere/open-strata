@@ -486,6 +486,7 @@ fn merge_reports(args: RendererMergeArgs, fmt: Format) -> Result<()> {
     let body = serde_json::to_string_pretty(&merged)
         .map_err(|error| Error::parse(out_path.to_string(), anyhow::Error::new(error)))?;
     write_atomic(out_path.as_std_path(), format!("{body}\n").as_bytes())?;
+    let producer = merged.producer.as_ref().map(|session| session.id.clone());
     if fmt.is_json() {
         output::success(&serde_json::json!({
             "merged": true,
@@ -493,6 +494,7 @@ fn merge_reports(args: RendererMergeArgs, fmt: Format) -> Result<()> {
             "overlay": overlay_path,
             "out": out_path,
             "checks": merged.checks.len(),
+            "producer": producer,
         }));
     } else {
         println!(
@@ -502,6 +504,9 @@ fn merge_reports(args: RendererMergeArgs, fmt: Format) -> Result<()> {
             out_path,
             merged.checks.len()
         );
+        if let Some(producer) = &producer {
+            println!("  owning producer session: {producer}");
+        }
     }
     Ok(())
 }

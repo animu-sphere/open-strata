@@ -112,8 +112,24 @@ pub struct ArtifactRecord {
     pub file_count: u64,
     /// Seconds since the Unix epoch when the artifact entered the registry.
     pub created_unix: u64,
-    /// Tool that produced the registry entry, e.g. `ost 0.6.0`.
-    pub producer: String,
+    /// Tool that produced the *artifact*, as recorded by that tool in its own
+    /// dist manifest — e.g. `ost 0.18.0`. `None` when the manifest does not say,
+    /// which is every manifest written before v0.18.0.
+    ///
+    /// Never inferred from the importing process: the same image used to read
+    /// `ost 0.10.0` on one machine and `ost 0.17.0` on another purely because
+    /// of who imported it. Absent is honest; a guess is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<String>,
+    /// Tool that created this registry entry, e.g. `ost 0.18.0`. This is what
+    /// `producer` held before v0.18.0.
+    ///
+    /// Defaulted for deserialization so pre-v0.18.0 records still load; they
+    /// carry only `producer`, and [`ArtifactRecord::migrate_legacy_producer`]
+    /// moves that value here, where it is true. Always serialized, so a record
+    /// written by this version is never mistaken for a legacy one.
+    #[serde(default)]
+    pub imported_by: String,
     pub source: ArtifactSource,
     /// Assurance currently established for this artifact. Old records predate
     /// trust policy and therefore deserialize conservatively as `local`.
@@ -161,16 +177,35 @@ impl ArtifactRecord {
         format!("sha256:{}", &hex[..hex.len().min(12)])
     }
 
+    /// Reinterpret a pre-v0.18.0 record, whose `producer` field held the tool
+    /// that *imported* the artifact rather than the one that produced it.
+    ///
+    /// Such a record has no `imported_by` at all, so an empty one after
+    /// deserialization identifies it unambiguously: every record this version
+    /// writes serializes `imported_by`. The value moves to the field it was
+    /// always describing, and the origin goes back to being unknown rather
+    /// than staying a claim the artifact never made.
+    ///
+    /// Idempotent, and a no-op on records written by this version.
+    pub fn migrate_legacy_producer(&mut self) {
+        if self.imported_by.is_empty() {
+            self.imported_by = self.producer.take().unwrap_or_default();
+        }
+    }
+
     /// Derive a record from a producer `manifest.json`.
     ///
     /// Accepts the two manifests OpenStrata produces today — the plugin-bundle
     /// manifest (`kind: openstrata.plugin-bundle`) and the project package
     /// manifest (no `kind` tag) — plus the future `openstrata.runtime` tag.
+    /// `imported_by` names the tool building this registry entry; the artifact's
+    /// own producer is read from the manifest's `producer` field and left `None`
+    /// when the manifest does not carry one.
     pub fn from_producer_manifest(
         manifest: &serde_json::Value,
         source: ArtifactSource,
         created_unix: u64,
-        producer: &str,
+        imported_by: &str,
     ) -> Result<ArtifactRecord> {
         let kind = detect_kind(manifest)?;
 
@@ -261,7 +296,12 @@ impl ArtifactRecord {
                 .map(|a| a.len() as u64)
                 .unwrap_or(0),
             created_unix,
-            producer: producer.to_string(),
+            producer: manifest
+                .get("producer")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            imported_by: imported_by.to_string(),
             source,
             trust: match source {
                 ArtifactSource::Imported => TrustLevel::Local,
@@ -619,5 +659,71 @@ mod tests {
         assert!(is_sha256_ref(&format!("sha256:{}", "0".repeat(64))));
         assert!(!is_sha256_ref("sha256:xyz"));
         assert!(!is_sha256_ref(&"0".repeat(64)));
+    }
+
+    #[test]
+    fn producer_comes_from_the_manifest_and_never_from_the_importer() {
+        // The same bytes used to read `ost 0.10.0` on one machine and
+        // `ost 0.17.0` on another, because the field recorded whoever imported
+        // it. Origin now comes from the manifest or not at all.
+        let mut manifest = plugin_manifest();
+        manifest["producer"] = "ost 0.18.0".into();
+        let r = ArtifactRecord::from_producer_manifest(
+            &manifest,
+            ArtifactSource::Published,
+            1_750_000_000,
+            "ost 0.99.0",
+        )
+        .unwrap();
+        assert_eq!(r.producer.as_deref(), Some("ost 0.18.0"));
+        assert_eq!(r.imported_by, "ost 0.99.0", "the importer is recorded too");
+
+        // A manifest that predates the field claims nothing.
+        let r = ArtifactRecord::from_producer_manifest(
+            &plugin_manifest(),
+            ArtifactSource::Published,
+            1_750_000_000,
+            "ost 0.99.0",
+        )
+        .unwrap();
+        assert_eq!(r.producer, None, "absent is honest; a guess is not");
+        assert_eq!(r.imported_by, "ost 0.99.0");
+
+        // An empty string is not a producer either.
+        let mut blank = plugin_manifest();
+        blank["producer"] = "".into();
+        let r = ArtifactRecord::from_producer_manifest(
+            &blank,
+            ArtifactSource::Published,
+            1_750_000_000,
+            "ost 0.99.0",
+        )
+        .unwrap();
+        assert_eq!(r.producer, None);
+
+        // A record written before v0.18.0 stored the *importer* under
+        // `producer`. Deserializing must land that value in `imported_by`,
+        // where it is true, and leave the origin unknown.
+        let mut legacy = serde_json::to_value(&r).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("imported_by");
+        object.insert("producer".into(), "ost 0.10.0".into());
+        let mut migrated: ArtifactRecord = serde_json::from_value(legacy).unwrap();
+        migrated.migrate_legacy_producer();
+        assert_eq!(migrated.imported_by, "ost 0.10.0");
+        assert_eq!(migrated.producer, None, "the origin was never recorded");
+
+        // Idempotent, and never disturbs a record written by this version.
+        let before = migrated.clone();
+        migrated.migrate_legacy_producer();
+        assert_eq!(migrated, before);
+        let mut current = ArtifactRecord {
+            producer: Some("ost 0.18.0".into()),
+            imported_by: "ost 0.18.0".into(),
+            ..before
+        };
+        let expected = current.clone();
+        current.migrate_legacy_producer();
+        assert_eq!(current, expected);
     }
 }

@@ -17,8 +17,8 @@ use clap::Subcommand;
 
 use ost_artifact::{ArtifactKind, ArtifactStore};
 use ost_ci::{
-    generate_github, starter_matrix, Lane, Publish, SupportDeclaration, SupportMatrix, MATRIX_FILE,
-    RELEASE_WORKFLOW_PATH, SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
+    generate_github, starter_matrix, Lane, Publish, RequireEvidence, SupportDeclaration,
+    SupportMatrix, MATRIX_FILE, RELEASE_WORKFLOW_PATH, SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
 };
 use ost_core::{Error, Result};
 
@@ -154,6 +154,58 @@ fn init(dir: Option<&str>, fmt: Format) -> Result<()> {
     Ok(())
 }
 
+/// Pinned artifacts whose stored evidence cannot satisfy the gate the matrix
+/// will render for them.
+///
+/// v0.17.0 shipped a gate no existing artifact could pass and gave no warning
+/// at generate time, so the first sign of trouble was a red hosted lane with
+/// nothing wrong in the repo. `ost ci generate` warns on these and
+/// `ost ci validate` fails fast, so the mismatch is caught locally.
+///
+/// Digests absent from the local registry are not reported here: that is
+/// `--resolve`'s job, and an unknown digest says nothing about its evidence.
+fn evidence_gate_gaps(matrix: &SupportMatrix) -> Vec<String> {
+    let store = ArtifactStore::discover();
+    let mut gaps = Vec::new();
+    for cell in &matrix.cells {
+        let demand = matrix.require_evidence(cell);
+        if demand == RequireEvidence::None {
+            continue;
+        }
+        let mut refs = vec![("runtime_artifact", &cell.runtime_artifact)];
+        if let Some(plugin) = &cell.plugin_artifact {
+            refs.push(("plugin_artifact", plugin));
+        }
+        for (what, digest) in refs {
+            let Ok(record) = store.resolve(digest) else {
+                continue;
+            };
+            let mut missing = Vec::new();
+            if demand.requires_sbom() && record.sbom.is_none() {
+                missing.push("SBOM");
+            }
+            if demand.requires_provenance() && record.provenance.is_none() {
+                missing.push("provenance");
+            }
+            if !missing.is_empty() {
+                gaps.push(format!(
+                    "{}: {what} {} has no {} but require_evidence is '{}'",
+                    cell.name,
+                    record.short_digest(),
+                    missing.join(" or "),
+                    demand.as_str()
+                ));
+            }
+        }
+    }
+    gaps
+}
+
+/// The two ways out of an evidence gap, in the order a reader should try them.
+const EVIDENCE_GAP_HINT: &str = "re-import the dist directory to attach its sidecars \
+     (`ost artifact rm <digest>` first if it predates evidence), or lower \
+     `require_evidence` while the artifact is republished";
+
 fn validate(
     matrix_flag: Option<&str>,
     resolve: bool,
@@ -210,7 +262,14 @@ fn validate(
     let ack_missing = matrix.hosted_ack_missing();
     let ack_errors = matrix.hosted_ack_errors();
 
-    let ok = unresolved.is_empty() && ack_errors.is_empty() && support_issues.is_empty();
+    // A gate the pinned artifacts cannot satisfy is a validation failure, not a
+    // warning: shipping it means a red lane on every runner.
+    let evidence_gaps = evidence_gate_gaps(&matrix);
+
+    let ok = unresolved.is_empty()
+        && ack_errors.is_empty()
+        && support_issues.is_empty()
+        && evidence_gaps.is_empty();
     if fmt.is_json() {
         let mut warnings: Vec<serde_json::Value> = placeholders
             .iter()
@@ -242,6 +301,7 @@ fn validate(
                 "placeholders": placeholders,
                 "hosted_unacknowledged": ack_missing,
                 "billing_errors": ack_errors,
+                "evidence_gaps": evidence_gaps,
             }),
             &warnings,
         );
@@ -268,6 +328,12 @@ fn validate(
         }
         for issue in &support_issues {
             println!("  UNSUPPORTED: {issue}");
+        }
+        for gap in &evidence_gaps {
+            println!("  EVIDENCE GAP: {gap}");
+        }
+        if !evidence_gaps.is_empty() {
+            println!("  {EVIDENCE_GAP_HINT}");
         }
         if let Some(support_path) = &support_path {
             if support_issues.is_empty() {
@@ -585,6 +651,11 @@ fn generate(
 
     let workflows = generate_github(&matrix);
 
+    // Warn — do not fail — when a pin cannot satisfy the gate just rendered:
+    // generation may legitimately run on a machine whose registry is not the
+    // one the lane will use. `ost ci validate` is the gate that fails.
+    let evidence_gaps = evidence_gate_gaps(&matrix);
+
     if to_stdout {
         // The workflows themselves are the output; a multi-workflow matrix
         // prints a `---`-separated YAML stream (one document per workflow).
@@ -595,6 +666,14 @@ fn generate(
             }
             print!("{}", wf.yaml);
             first = false;
+        }
+        // stdout is the workflow here — often piped to a file — so the warning
+        // goes to stderr rather than being swallowed by the redirect.
+        for gap in &evidence_gaps {
+            eprintln!("WARNING: the rendered gate cannot pass — {gap}");
+        }
+        if !evidence_gaps.is_empty() {
+            eprintln!("{EVIDENCE_GAP_HINT}");
         }
         return Ok(());
     }
@@ -633,14 +712,28 @@ fn generate(
     }
 
     if fmt.is_json() {
-        output::success(&serde_json::json!({
-            "generated": true,
-            "matrix": path.to_string(),
-            // `workflow` predates the lane split; keep it as the first path.
-            "workflow": out_paths[0].to_string(),
-            "workflows": out_paths.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
-            "cells": matrix.cells.len(),
-        }));
+        let warnings: Vec<serde_json::Value> = evidence_gaps
+            .iter()
+            .map(|gap| {
+                serde_json::json!({
+                    "code": "CI_EVIDENCE_GATE_UNSATISFIABLE",
+                    "message": gap,
+                })
+            })
+            .collect();
+        output::report_with_warnings(
+            true,
+            &serde_json::json!({
+                "generated": true,
+                "matrix": path.to_string(),
+                // `workflow` predates the lane split; keep it as the first path.
+                "workflow": out_paths[0].to_string(),
+                "workflows": out_paths.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+                "cells": matrix.cells.len(),
+                "evidence_gaps": evidence_gaps,
+            }),
+            &warnings,
+        );
         return Ok(());
     }
     for out_path in &out_paths {
@@ -648,5 +741,11 @@ fn generate(
     }
     println!("  {} cell(s) total", matrix.cells.len());
     println!("  runners need `ost` on PATH and the pinned artifacts in their OST_HOME registry");
+    for gap in &evidence_gaps {
+        println!("  WARNING: the rendered gate cannot pass — {gap}");
+    }
+    if !evidence_gaps.is_empty() {
+        println!("  {EVIDENCE_GAP_HINT}");
+    }
     Ok(())
 }
