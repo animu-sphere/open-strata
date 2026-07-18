@@ -22,6 +22,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use camino::Utf8PathBuf;
+
+use ost_build::{LeaseMode, TargetLease, TARGET_LEASE_FILE};
+
 /// The `ost` binary built for this test run.
 fn ost_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ost")
@@ -287,6 +291,136 @@ fn build_dry_run_writes_nothing_and_plans_commands() {
             .any(|line| line.trim_end() == "#   CMakePresets.json"),
         "must not claim the user's root CMakePresets.json is generated:\n{text}"
     );
+}
+
+/// The target lease is cross-process exclusion, so the assertion that matters is
+/// made against a *real* second process: this test holds the lease and the `ost`
+/// child must be refused. Same-process locking would prove much less.
+#[test]
+fn a_second_writer_is_refused_while_the_target_is_leased() {
+    let sb = Sandbox::new("lease-busy");
+    init_and_pull(&sb);
+
+    // Configure once so the target directory (and its id) exist.
+    let first = sb.ost(&["configure"]);
+    assert!(
+        first.status.success(),
+        "configure failed:\n{}",
+        out_text(&first)
+    );
+    let target_dir = single_target_dir(&sb.work);
+    let id = target_dir
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    // A clean run leaves no lease behind.
+    let lease_path = Utf8PathBuf::from_path_buf(target_dir.join(TARGET_LEASE_FILE)).unwrap();
+    assert!(
+        !lease_path.as_std_path().exists(),
+        "a completed configure must release its lease"
+    );
+
+    let held = TargetLease::acquire(&lease_path, &id, "ost build", LeaseMode::Fail)
+        .expect("the freed lease can be taken");
+
+    // `fail` is the default: a second writer stops rather than interleaving.
+    let busy = sb.ost(&["configure", "--json"]);
+    assert!(
+        !busy.status.success(),
+        "a leased target must refuse writers"
+    );
+    let text = out_text(&busy);
+    assert!(
+        text.contains("TARGET_BUSY"),
+        "expected TARGET_BUSY:\n{text}"
+    );
+    // The refusal has to name the holder, or the user cannot act on it.
+    let invocation = held.invocation().expect("an invocation");
+    assert!(
+        text.contains(invocation),
+        "busy error must name the holding invocation:\n{text}"
+    );
+
+    // `read-only` is the documented way through: it never contends.
+    let attached = sb.ost(&["configure", "--on-busy", "read-only"]);
+    assert!(
+        attached.status.success(),
+        "read-only must proceed while the target is leased:\n{}",
+        out_text(&attached)
+    );
+
+    // Releasing frees the target for the next writer.
+    held.release();
+    let after = sb.ost(&["configure"]);
+    assert!(
+        after.status.success(),
+        "a released lease must free the target:\n{}",
+        out_text(&after)
+    );
+}
+
+/// A writer killed mid-build leaves its record behind. The next invocation must
+/// inherit the target and say whose run it inherited — not wedge on a lock no
+/// live process holds.
+#[test]
+fn a_stale_lease_record_is_taken_over_and_reported() {
+    let sb = Sandbox::new("lease-stale");
+    init_and_pull(&sb);
+    assert!(sb.ost(&["configure"]).status.success());
+
+    let target_dir = single_target_dir(&sb.work);
+    let id = target_dir
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let lease_path = target_dir.join(TARGET_LEASE_FILE);
+
+    // A record whose pid cannot be live: positive as a c_int (a negative value
+    // would address a process group), far above any platform's pid_max, and not
+    // a multiple of 4 as Windows pids always are.
+    let stale = serde_json::json!({
+        "schema": "openstrata.target-lease/v1",
+        "invocation": "deadbeefdeadbeef",
+        "command": "ost build",
+        "target": id,
+        "pid": 0x7FFF_FFFEu32,
+        "host": hostname_of_this_process(),
+        "acquired_unix": 1,
+    });
+    std::fs::write(&lease_path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
+
+    let out = sb.ost(&["configure"]);
+    assert!(
+        out.status.success(),
+        "a dead owner must not wedge the target:\n{}",
+        out_text(&out)
+    );
+    let text = out_text(&out);
+    assert!(
+        text.contains("took over the target lease") && text.contains("deadbeefdeadbeef"),
+        "the takeover must name the run it inherited:\n{text}"
+    );
+    assert!(
+        !lease_path.exists(),
+        "the completed run must release the lease it took over"
+    );
+}
+
+/// The lease record's `host` is compared against this machine's name, so the
+/// test has to produce it the same way the implementation does.
+fn hostname_of_this_process() -> String {
+    // Round-tripping through an acquired lease avoids duplicating the platform
+    // specific lookup, and asserts the two agree by construction.
+    let dir = std::env::temp_dir().join(format!("ost-host-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = Utf8PathBuf::from_path_buf(dir.join("probe.json")).unwrap();
+    let lease = TargetLease::acquire(&path, "probe", "probe", LeaseMode::Fail).unwrap();
+    let host = lease.owner().unwrap().host.clone();
+    lease.release();
+    std::fs::remove_dir_all(&dir).ok();
+    host
 }
 
 #[test]

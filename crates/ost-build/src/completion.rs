@@ -47,6 +47,14 @@ pub struct BuildCompletion {
     /// Project-relative, forward-slashed build directory.
     pub build_dir: String,
     pub intent: BuildIntent,
+    /// The invocation that held the target lease while this build ran, so a
+    /// completion can be traced to the run that produced it — and to the entries
+    /// that run wrote in the build log.
+    ///
+    /// Defaulted: records written before v0.18.0 held no lease and name no
+    /// invocation, which is exactly what their absence should say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: Option<String>,
     pub completed_unix: u64,
 }
 
@@ -67,8 +75,15 @@ impl BuildCompletion {
             generator: lock.generator.clone(),
             build_dir: build_dir.into().replace('\\', "/"),
             intent,
+            invocation: None,
             completed_unix,
         }
+    }
+
+    /// Name the lease-holding invocation this build ran under.
+    pub fn with_invocation(mut self, invocation: impl Into<String>) -> Self {
+        self.invocation = Some(invocation.into());
+        self
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {

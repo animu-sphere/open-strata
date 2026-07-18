@@ -228,6 +228,7 @@ Configure and build a target with CMake + Ninja
 | Option | Description |
 | --- | --- |
 | `--build-timeout <BUILD_TIMEOUT>` | Build timeout in seconds; 0 disables it |
+| `--busy-timeout <BUSY_TIMEOUT>` | How long `--on-busy wait` waits, in seconds; 0 waits indefinitely |
 | `--cc <CC>` | C compiler path (implies `--compiler explicit`) |
 | `--check` | Run preflight checks only, without generating files or building |
 | `--compiler <COMPILER>` | Compiler policy: `host` (default), `runtime`, or `explicit` |
@@ -240,6 +241,7 @@ Configure and build a target with CMake + Ninja
 | `--ninja <NINJA>` | Path to the ninja executable if it is not on PATH |
 | `--no-vcvars` | Do not auto-load the MSVC developer environment (Windows) |
 | `--notify` | Fire a desktop notification when the build finishes (no-op over SSH/CI) |
+| `--on-busy <ON_BUSY>` | What to do when another invocation is already writing this target: `fail` immediately, `wait` for it (see --busy-timeout), or `read-only` to proceed without taking the target lease |
 | `--profile <PROFILE>` | Profile to build. Defaults to the project's profile |
 | `--progress <PROGRESS>` | Progress rendering: `auto` (human on a TTY, plain otherwise), `plain`, or `json` (one JSON event per line) |
 | `--quiet` | Suppress progress output; child output goes to the log. Failures, the exit code and the log path are still reported |
@@ -333,9 +335,11 @@ Generate CMake toolchain and presets for a target
 
 | Option | Description |
 | --- | --- |
+| `--busy-timeout <BUSY_TIMEOUT>` | How long `--on-busy wait` waits, in seconds; 0 waits indefinitely |
 | `--cc <CC>` | C compiler path (implies `--compiler explicit`) |
 | `--compiler <COMPILER>` | Compiler policy: `host` (default), `runtime`, or `explicit` |
 | `--cxx <CXX>` | C++ compiler path (implies `--compiler explicit`) |
+| `--on-busy <ON_BUSY>` | What to do when another invocation is already writing this target: `fail` immediately, `wait` for it (see --busy-timeout), or `read-only` to proceed without taking the target lease |
 | `--profile <PROFILE>` | Profile to build. Defaults to the project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 

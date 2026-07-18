@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 
 use ost_build::{
     ensure_includes, includes_of, managed_include, render_target_presets, render_toolchain,
-    Compiler, Target, TargetLock,
+    Compiler, LeaseMode, Target, TargetLease, TargetLock, TARGET_LEASE_FILE,
 };
 use ost_core::fs::write_atomic;
 use ost_core::paths::{find_project_root, PROJECT_MANIFEST, STATE_DIR};
@@ -44,6 +44,16 @@ pub struct ConfigureArgs {
     #[arg(long)]
     profile: Option<String>,
 
+    /// What to do when another invocation is already writing this target:
+    /// `fail` immediately, `wait` for it (see --busy-timeout), or `read-only`
+    /// to proceed without taking the target lease.
+    #[arg(long, default_value = "fail", value_parser = ["fail", "wait", "read-only"])]
+    on_busy: String,
+
+    /// How long `--on-busy wait` waits, in seconds; 0 waits indefinitely.
+    #[arg(long, default_value_t = 600)]
+    busy_timeout: u64,
+
     #[command(flatten)]
     compiler: CompilerOpts,
 }
@@ -60,7 +70,27 @@ pub(crate) struct Generated {
 pub fn run(args: ConfigureArgs, fmt: Format) -> Result<()> {
     let (root, platform, profile) = resolve_selection(args.target, args.profile)?;
     let compiler = resolve_compiler(&root, &args.compiler)?;
+
+    // Resolve the target id without writing anything, so the lease is held
+    // before the first generated file lands. `ost build` takes the same lease
+    // around its own call to `generate`, which is why it is taken here rather
+    // than inside `generate` — nesting the two would deadlock a build against
+    // itself.
+    let (target, _) = build_target(&platform, &profile)?;
+    let id = target.id();
+    let mode = LeaseMode::parse(&args.on_busy, args.busy_timeout)?;
+    let lease_path = root
+        .join(STATE_DIR)
+        .join("targets")
+        .join(&id)
+        .join(TARGET_LEASE_FILE);
+    let lease = TargetLease::acquire(&lease_path, &id, "ost configure", mode)?;
+    if let Some(takeover) = lease.takeover() {
+        eprintln!("warning: {}", takeover.describe());
+    }
+
     let g = generate(&root, &platform, &profile, &compiler)?;
+    lease.release();
     report(&g, fmt);
     Ok(())
 }

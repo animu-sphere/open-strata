@@ -12,6 +12,7 @@
 
 mod completion;
 pub mod glibc;
+mod lease;
 mod lock;
 pub mod msvc;
 pub mod package;
@@ -25,6 +26,10 @@ pub use completion::{
     BUILD_COMPLETION_SCHEMA,
 };
 pub use glibc::{max_glibc_floor, GlibcVersion};
+pub use lease::{
+    LeaseMode, LeaseOwner, StaleReason, StaleTakeover, TargetLease, TARGET_BUSY_CODE,
+    TARGET_LEASE_FILE, TARGET_LEASE_SCHEMA,
+};
 pub use lock::{LockCompiler, LockRuntime, TargetLock};
 pub use package::{
     is_sdk_path, pack_dir, pack_dir_with, sdk_stage_files, source_date_epoch,

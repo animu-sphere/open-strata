@@ -23,7 +23,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::Args;
 
 use ost_build::{
-    BuildCompletion, BuildIntent, BuildProjectIdentity, Target, TargetLock, BUILD_COMPLETION_FILE,
+    BuildCompletion, BuildIntent, BuildProjectIdentity, LeaseMode, Target, TargetLease, TargetLock,
+    BUILD_COMPLETION_FILE, TARGET_LEASE_FILE,
 };
 use ost_core::fs::write_atomic;
 use ost_core::host::Os;
@@ -100,6 +101,16 @@ pub struct BuildArgs {
     #[arg(long, default_value_t = 7200)]
     build_timeout: u64,
 
+    /// What to do when another invocation is already writing this target:
+    /// `fail` immediately, `wait` for it (see --busy-timeout), or `read-only`
+    /// to proceed without taking the target lease.
+    #[arg(long, default_value = "fail", value_parser = ["fail", "wait", "read-only"])]
+    on_busy: String,
+
+    /// How long `--on-busy wait` waits, in seconds; 0 waits indefinitely.
+    #[arg(long, default_value_t = 600)]
+    busy_timeout: u64,
+
     #[command(flatten)]
     compiler: CompilerOpts,
 }
@@ -129,6 +140,10 @@ impl BuildArgs {
             notify: false,
             configure_timeout: 600,
             build_timeout: 7200,
+            // A managed build is still a writer of the target, so it queues
+            // behind an in-flight one rather than interleaving with it.
+            on_busy: "wait".into(),
+            busy_timeout: 600,
             compiler: CompilerOpts::default(),
         }
     }
@@ -266,7 +281,23 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
     // phase + exit code, and (with --notify) fires a desktop toast at the end.
     let mut rep = Reporter::new(args.progress, 4, args.quiet).with_notify(args.notify, "ost build");
 
-    // 5. Generate the target's `.strata/` files now that checks have passed.
+    // 5. Take the target lease before the first write and hold it through
+    //    completion publication. Configure, build, verification and the
+    //    completion record are one transaction over one managed target; a lease
+    //    released between them would let a second writer reconfigure the tree
+    //    this run is about to compile, or publish a completion for a build it
+    //    did not perform.
+    let lease = acquire_target_lease(&root, &id, &args)?;
+    if let Some(takeover) = lease.takeover() {
+        // An inherited target is worth saying out loud: the tree on disk was
+        // shaped by a run that never finished.
+        rep.note(&takeover.describe());
+    }
+    if let Some(invocation) = lease.invocation() {
+        rep.note(&format!("target lease {invocation}"));
+    }
+
+    // 6. Generate the target's `.strata/` files now that checks have passed.
     rep.phase("Generating toolchain and presets");
     let build_dir = root.join("build").join(&id);
     invalidate_completion(&build_dir)?;
@@ -280,7 +311,7 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
         .join("build.log");
     rep.set_log(&log);
 
-    // 6. Inject the MSVC developer environment (cl.exe, Windows SDK) if needed.
+    // 7. Inject the MSVC developer environment (cl.exe, Windows SDK) if needed.
     let mut msvc_env: Vec<(String, String)> = Vec::new();
     if pre.will_bootstrap_msvc {
         match ost_build::msvc::bootstrap() {
@@ -299,7 +330,7 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
         }
     }
 
-    // 7. Apply the *runtime* environment to CMake and Ninja too, not just to
+    // 8. Apply the *runtime* environment to CMake and Ninja too, not just to
     //    `ost run`/`test`. Without it configure/build see a different PATH,
     //    PYTHONPATH, loader path and CMAKE_PREFIX_PATH than execution does.
     //    Layer it over the MSVC delta so USD's bin/lib prepend in front of the
@@ -311,7 +342,7 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
         resolved.env.vars.len()
     ));
 
-    // 8. Configure, then build — each a phase whose subprocess streams through
+    // 9. Configure, then build — each a phase whose subprocess streams through
     //    the reporter (heartbeat while quiet, log capture, failure reporting).
     rep.phase("Configuring CMake");
     rep.run(
@@ -330,15 +361,36 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
         timeout(args.build_timeout),
     )?;
 
-    // 9. Verify the build produced outputs — a successful build with an empty
-    //    tree means the preset built nothing useful.
+    // 10. Verify the build produced outputs — a successful build with an empty
+    //     tree means the preset built nothing useful.
     rep.phase("Verifying outputs");
     verify_build(&root, &id)?;
-    write_completion(&root, &id, &intent)?;
+    write_completion(&root, &id, &intent, lease.invocation())?;
+
+    // The completion is published; the target is free for the next writer. On
+    // any earlier `?` the lease drops instead, which releases the lock without
+    // clearing the record — leaving the evidence of an interrupted run for the
+    // next invocation to report as a takeover.
+    lease.release();
 
     rep.done();
     rep.note(&format!("Built target {id}"));
     Ok(())
+}
+
+/// Take the lease over `id` under the policy the caller asked for.
+///
+/// The lease lives in `.strata/targets/<id>/`, not in `build/<id>`: a compiler
+/// change invalidates the build tree, and a lease that vanished with it would
+/// stop excluding writers precisely when the tree is being rebuilt.
+fn acquire_target_lease(root: &Utf8Path, id: &str, args: &BuildArgs) -> Result<TargetLease> {
+    let mode = LeaseMode::parse(&args.on_busy, args.busy_timeout)?;
+    let path = root
+        .join(STATE_DIR)
+        .join("targets")
+        .join(id)
+        .join(TARGET_LEASE_FILE);
+    TargetLease::acquire(&path, id, "ost build", mode)
 }
 
 fn timeout(seconds: u64) -> Option<Duration> {
@@ -358,7 +410,12 @@ fn invalidate_completion(build_dir: &Utf8Path) -> Result<()> {
     }
 }
 
-fn write_completion(root: &Utf8Path, id: &str, intent: &BuildIntent) -> Result<()> {
+fn write_completion(
+    root: &Utf8Path,
+    id: &str,
+    intent: &BuildIntent,
+    invocation: Option<&str>,
+) -> Result<()> {
     let lock_path = root
         .join(STATE_DIR)
         .join("targets")
@@ -385,6 +442,11 @@ fn write_completion(root: &Utf8Path, id: &str, intent: &BuildIntent) -> Result<(
         intent.clone(),
         completed_unix,
     );
+    // A read-only attach holds no lease and so names no owning invocation.
+    let completion = match invocation {
+        Some(invocation) => completion.with_invocation(invocation),
+        None => completion,
+    };
     let body = completion
         .to_json()
         .map_err(|error| Error::parse(BUILD_COMPLETION_FILE, anyhow::Error::new(error)))?;
