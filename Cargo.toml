@@ -43,7 +43,7 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 serde_yaml = "=0.9.34"
 toml = "=0.9.5"
-toml_edit = "=0.23.4"
+toml_edit = "=0.25.12"
 indexmap = { version = "=2.14.0", features = ["serde"] }
 camino = { version = "=1.2.4", features = ["serde1"] }
 directories = "=6.0.0"
