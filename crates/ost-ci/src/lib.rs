@@ -17,8 +17,8 @@ pub use github::{
 };
 pub use matrix::{
     is_placeholder_digest, starter_matrix, Acknowledgement, Billing, Bootstrap, HostOs, HostSpec,
-    Lane, OstBootstrap, Publish, ReleaseLane, ReleaseMode, RunnerKind, RunnerProfile,
-    RuntimeRemote, SupportCell, SupportClaim, SupportMatrix, TrustRequirements, MATRIX_FILE,
-    MATRIX_SCHEMA, MAX_LEVEL,
+    Lane, OstBootstrap, Publish, ReleaseLane, ReleaseMode, RequireEvidence, RunnerKind,
+    RunnerProfile, RuntimeRemote, SupportCell, SupportClaim, SupportMatrix, TrustRequirements,
+    MATRIX_FILE, MATRIX_SCHEMA, MAX_LEVEL,
 };
 pub use support::SupportDeclaration;

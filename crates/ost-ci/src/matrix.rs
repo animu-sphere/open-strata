@@ -192,6 +192,61 @@ pub struct TrustRequirements {
     pub release_min_trust: TrustLevel,
 }
 
+/// Which evidence sidecars the generated verification gate demands of the
+/// artifacts a cell pins.
+///
+/// v0.17.0 hard-coded `all`, which is why adopting it turned lanes red for
+/// repos whose pins predate evidence: the rendered gate demanded something no
+/// existing artifact could supply and the matrix had no way to say otherwise.
+/// The default stays `all` — the gate is not weakened by upgrading — but a repo
+/// mid-migration can declare a lower bar per cell or globally while it
+/// republishes, instead of being locked out of the release.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RequireEvidence {
+    /// Demand both an SBOM and provenance.
+    #[default]
+    All,
+    /// Demand an SBOM; accept a missing provenance.
+    Sbom,
+    /// Demand provenance; accept a missing SBOM.
+    Provenance,
+    /// Demand neither. Integrity and trust checks still run.
+    None,
+}
+
+impl RequireEvidence {
+    pub fn requires_sbom(self) -> bool {
+        matches!(self, RequireEvidence::All | RequireEvidence::Sbom)
+    }
+
+    pub fn requires_provenance(self) -> bool {
+        matches!(self, RequireEvidence::All | RequireEvidence::Provenance)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RequireEvidence::All => "all",
+            RequireEvidence::Sbom => "sbom",
+            RequireEvidence::Provenance => "provenance",
+            RequireEvidence::None => "none",
+        }
+    }
+
+    /// The `ost artifact verify` flags this level renders into a gate (empty
+    /// for [`RequireEvidence::None`]).
+    pub fn verify_flags(self) -> String {
+        let mut flags: Vec<&str> = Vec::new();
+        if self.requires_sbom() {
+            flags.push("--require-sbom");
+        }
+        if self.requires_provenance() {
+            flags.push("--require-provenance");
+        }
+        flags.join(" ")
+    }
+}
+
 /// What kind of infrastructure a runner profile provides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -391,6 +446,10 @@ pub struct SupportCell {
     /// of this declaration and the current lane's minimum.
     #[serde(default)]
     pub trust: TrustLevel,
+    /// Evidence this cell's generated gate demands. Overrides the document-level
+    /// `require_evidence` when set; unset means inherit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_evidence: Option<RequireEvidence>,
     #[serde(default)]
     pub host: HostSpec,
 }
@@ -454,6 +513,10 @@ pub struct SupportMatrix {
     /// existing matrices remain valid while adopting the v0.16 contract.
     #[serde(default)]
     pub trust: TrustRequirements,
+    /// Document-level evidence demand for generated verification gates. Cells
+    /// may override it individually; defaults to `all`.
+    #[serde(default)]
+    pub require_evidence: RequireEvidence,
     /// The pinned `ost` bootstrap for GitHub-hosted source CI. Required as
     /// soon as any source cell resolves to a hosted runner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -846,6 +909,20 @@ impl SupportMatrix {
             Lane::Scheduled | Lane::WorkflowDispatch => TrustLevel::Local,
         };
         std::cmp::max(cell.trust, lane_minimum)
+    }
+
+    /// Evidence one cell's generated gate demands: the cell's own declaration
+    /// when it has one, otherwise the document-level default.
+    pub fn require_evidence(&self, cell: &SupportCell) -> RequireEvidence {
+        cell.require_evidence.unwrap_or(self.require_evidence)
+    }
+
+    /// Whether every cell demands the same evidence — the common case, and the
+    /// one a single rendered gate can express without per-cell matrix columns.
+    pub fn uniform_require_evidence(&self) -> Option<RequireEvidence> {
+        let mut cells = self.cells.iter().map(|cell| self.require_evidence(cell));
+        let first = cells.next()?;
+        cells.all(|level| level == first).then_some(first)
     }
 
     /// Whether any source cell declares a `host_python` ABI — the signal for

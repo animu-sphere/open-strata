@@ -48,11 +48,22 @@ pub struct Index {
     pub artifacts: Vec<ArtifactRecord>,
 }
 
-/// Outcome of an import: the record plus whether the bytes were already stored.
+/// Outcome of an import: the record, whether the bytes were already stored, and
+/// what happened to every evidence sidecar the caller supplied.
+///
+/// Evidence is never dropped silently: each sidecar the caller offered appears
+/// in exactly one of `evidence_attached` or `evidence_skipped`, and a sidecar
+/// that cannot be honoured is a coded error rather than an omission.
 #[derive(Debug, Clone)]
 pub struct ImportOutcome {
     pub record: ArtifactRecord,
     pub already_present: bool,
+    /// Sidecars this import bound to the record (newly stored or newly
+    /// referenced), by file name.
+    pub evidence_attached: Vec<String>,
+    /// Sidecars the caller supplied that were already stored, byte-identical,
+    /// and already referenced by the record — the import changed nothing.
+    pub evidence_skipped: Vec<String>,
 }
 
 /// Integrity verification result for one stored artifact.
@@ -231,6 +242,9 @@ impl ArtifactStore {
             let stored_manifest_path = object_dir.join(MANIFEST_FILE);
             let stored_manifest = std::fs::read(stored_manifest_path.as_std_path())
                 .map_err(|e| Error::io(stored_manifest_path.to_string(), e))?;
+
+            // The debug sidecar is a claim *of this producer manifest*, so
+            // repairing it in place stays gated on the manifests being equal.
             if stored_manifest == manifest_bytes {
                 if let Some(debug) = &debug {
                     let debug_dest = object_dir.join(&debug.archive);
@@ -252,50 +266,91 @@ impl ArtifactStore {
                         checksum_contents(&existing, Some(debug)).as_bytes(),
                     )?;
                 }
-                for evidence in [&sbom, &provenance].into_iter().flatten() {
-                    let destination = object_dir.join(&evidence.path);
-                    if !destination.as_std_path().is_file() {
-                        let source = dist_dir.join(&evidence.path);
-                        let temp = object_dir.join(format!(
-                            ".tmp-evidence-{}-{}",
-                            std::process::id(),
-                            evidence.path
-                        ));
-                        std::fs::copy(source.as_std_path(), temp.as_std_path())
-                            .map_err(|error| Error::io(source.to_string(), error))?;
-                        std::fs::rename(temp.as_std_path(), destination.as_std_path())
-                            .map_err(|error| Error::io(destination.to_string(), error))?;
-                    }
-                    crate::evidence::verify_evidence_digest(&object_dir, evidence)?;
-                }
-                if sbom.is_some() || provenance.is_some() {
-                    if sbom.is_some() {
-                        existing.sbom = record.sbom.clone();
-                        existing.sbom_digest = record.sbom_digest.clone();
-                        existing.sbom_size = record.sbom_size;
-                    }
-                    if provenance.is_some() {
-                        existing.provenance = record.provenance.clone();
-                        existing.provenance_digest = record.provenance_digest.clone();
-                        existing.provenance_size = record.provenance_size;
-                    }
-                    let record_json = serde_json::to_string_pretty(&existing).map_err(|error| {
-                        Error::parse("artifact record", anyhow::Error::new(error))
-                    })?;
-                    write_atomic(
-                        object_dir.join(RECORD_FILE).as_std_path(),
-                        format!("{record_json}\n").as_bytes(),
-                    )?;
-                    write_atomic(
-                        object_dir.join("SHA256SUMS").as_std_path(),
-                        checksum_contents(&existing, debug.as_ref()).as_bytes(),
-                    )?;
-                }
             }
+
+            // Evidence attach is deliberately *not* gated on the producer
+            // manifest. A sidecar verifies against the archive digest, which is
+            // the identity we just matched on, so it describes these exact
+            // bytes whatever the manifest says about who produced them.
+            // Gating here is what silently stranded evidence on machines that
+            // already held a pre-evidence digest.
+            let mut evidence_attached = Vec::new();
+            let mut evidence_skipped = Vec::new();
+            for (evidence, stored_digest) in [
+                (&sbom, existing.sbom_digest.as_deref()),
+                (&provenance, existing.provenance_digest.as_deref()),
+            ] {
+                let Some(evidence) = evidence else { continue };
+                let destination = object_dir.join(&evidence.path);
+                let already_bound =
+                    stored_digest == Some(evidence.digest.as_str()) && destination.is_file();
+                if already_bound {
+                    // Same sidecar, already stored and already referenced:
+                    // verify it still hashes true, then report the no-op.
+                    crate::evidence::verify_evidence_digest(&object_dir, evidence)?;
+                    evidence_skipped.push(evidence.path.clone());
+                    continue;
+                }
+                let source = dist_dir.join(&evidence.path);
+                let temp = object_dir.join(format!(
+                    ".tmp-evidence-{}-{}",
+                    std::process::id(),
+                    evidence.path
+                ));
+                std::fs::copy(source.as_std_path(), temp.as_std_path())
+                    .map_err(|error| Error::io(source.to_string(), error))?;
+                if let Err(error) = std::fs::rename(temp.as_std_path(), destination.as_std_path()) {
+                    let _ = std::fs::remove_file(temp.as_std_path());
+                    return Err(Error::io(destination.to_string(), error));
+                }
+                crate::evidence::verify_evidence_digest(&object_dir, evidence)?;
+                evidence_attached.push(evidence.path.clone());
+            }
+
+            // Provenance is verified *against the producer manifest's*
+            // build.source, so attaching it without the manifest it binds to
+            // would store provenance that can never verify. The archive digest
+            // is identical either way, so both manifests describe these exact
+            // bytes; the incoming one is the half of the pair that agrees with
+            // the sidecar we just accepted.
+            if evidence_attached.iter().any(|name| name == PROVENANCE_FILE)
+                && stored_manifest != manifest_bytes
+            {
+                write_atomic(
+                    object_dir.join(MANIFEST_FILE).as_std_path(),
+                    &manifest_bytes,
+                )?;
+            }
+
+            if !evidence_attached.is_empty() {
+                if sbom.is_some() {
+                    existing.sbom = record.sbom.clone();
+                    existing.sbom_digest = record.sbom_digest.clone();
+                    existing.sbom_size = record.sbom_size;
+                }
+                if provenance.is_some() {
+                    existing.provenance = record.provenance.clone();
+                    existing.provenance_digest = record.provenance_digest.clone();
+                    existing.provenance_size = record.provenance_size;
+                }
+                let record_json = serde_json::to_string_pretty(&existing)
+                    .map_err(|error| Error::parse("artifact record", anyhow::Error::new(error)))?;
+                write_atomic(
+                    object_dir.join(RECORD_FILE).as_std_path(),
+                    format!("{record_json}\n").as_bytes(),
+                )?;
+                write_atomic(
+                    object_dir.join("SHA256SUMS").as_std_path(),
+                    checksum_contents(&existing, debug.as_ref()).as_bytes(),
+                )?;
+            }
+
             self.index_upsert(&existing)?;
             return Ok(ImportOutcome {
                 record: existing,
                 already_present: true,
+                evidence_attached,
+                evidence_skipped,
             });
         }
 
@@ -367,11 +422,44 @@ impl ArtifactStore {
             }
         }
 
+        let evidence_attached = [&sbom, &provenance]
+            .into_iter()
+            .flatten()
+            .map(|evidence| evidence.path.clone())
+            .collect();
         self.index_upsert(&record)?;
         Ok(ImportOutcome {
             record,
             already_present: false,
+            evidence_attached,
+            evidence_skipped: Vec::new(),
         })
+    }
+
+    /// Drop an artifact from the registry: its object directory and its index
+    /// entry both go away, so the next import of the same digest is a fresh
+    /// one. Returns the record that was removed.
+    ///
+    /// This is the supported way to recover a machine that already holds a
+    /// digest imported before its evidence existed. Deleting `$OST_HOME`
+    /// internals by hand leaves the index pointing at objects that are gone.
+    pub fn remove(&self, digest_ref: &str) -> Result<ArtifactRecord> {
+        let record = self.resolve(digest_ref)?;
+        let object_dir = self.object_dir(record.digest_hex());
+
+        // Index first: a crash between the two steps leaves an unreferenced
+        // object directory (harmless, re-importable) rather than an index
+        // entry pointing at bytes that no longer exist.
+        let mut index = self.read_index()?;
+        index.artifacts.retain(|r| r.digest != record.digest);
+        self.write_index(index)?;
+
+        if let Err(error) = std::fs::remove_dir_all(object_dir.as_std_path()) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(Error::io(object_dir.to_string(), error));
+            }
+        }
+        Ok(record)
     }
 
     /// All records in the registry, sorted by digest (empty store ⇒ empty list).
@@ -568,9 +656,13 @@ impl ArtifactStore {
     /// Insert or replace the record for its digest, keeping the index sorted.
     fn index_upsert(&self, record: &ArtifactRecord) -> Result<()> {
         let mut index = self.read_index()?;
-        index.schema = RECORD_SCHEMA;
         index.artifacts.retain(|r| r.digest != record.digest);
         index.artifacts.push(record.clone());
+        self.write_index(index)
+    }
+
+    fn write_index(&self, mut index: Index) -> Result<()> {
+        index.schema = RECORD_SCHEMA;
         index.artifacts.sort_by(|a, b| a.digest.cmp(&b.digest));
 
         std::fs::create_dir_all(self.root.as_std_path())
@@ -1428,6 +1520,100 @@ mod tests {
         assert_eq!(
             imported.record.provenance_digest,
             out.record.provenance_digest
+        );
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn evidence_attaches_to_a_digest_already_stored_without_it() {
+        // The downstream regression: a machine imported the artifact before
+        // evidence existed, then re-imported the same bytes with sidecars. The
+        // second import carries a different producer manifest (evidence
+        // generation stamps `build` into it), and gating the attach on manifest
+        // equality stranded the evidence with no repo-side cause.
+        let root = tmp_root("evidence-late-attach");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+
+        let first = store.import(&dist, ArtifactSource::Imported).unwrap();
+        assert!(first.record.sbom.is_none(), "no evidence on the first pass");
+        assert!(first.evidence_attached.is_empty());
+
+        add_evidence(&dist);
+        let second = store.import(&dist, ArtifactSource::Imported).unwrap();
+        assert!(second.already_present, "same bytes, same digest");
+        assert_eq!(second.record.digest, first.record.digest);
+        assert_eq!(
+            second.evidence_attached,
+            vec![SBOM_FILE.to_string(), PROVENANCE_FILE.to_string()],
+            "sidecars must attach despite the differing producer manifest"
+        );
+        assert!(second.evidence_skipped.is_empty());
+        assert_eq!(second.record.sbom.as_deref(), Some(SBOM_FILE));
+        assert_eq!(second.record.provenance.as_deref(), Some(PROVENANCE_FILE));
+
+        // The attach is durable: re-reading the store sees the evidence, and
+        // the sidecars verify against the stored archive.
+        let object = store.object_dir(second.record.digest_hex());
+        let reread = store.resolve(&second.record.digest).unwrap();
+        let (sbom, provenance) = store.evidence(&reread).unwrap();
+        crate::verify_evidence_digest(&object, sbom.as_ref().unwrap()).unwrap();
+        crate::verify_evidence_digest(&object, provenance.as_ref().unwrap()).unwrap();
+        let sums = std::fs::read_to_string(object.join("SHA256SUMS").as_std_path()).unwrap();
+        assert_eq!(sums.lines().count(), 3, "SHA256SUMS covers the sidecars");
+
+        // A third import changes nothing and says so rather than staying quiet.
+        let third = store.import(&dist, ArtifactSource::Imported).unwrap();
+        assert!(third.evidence_attached.is_empty());
+        assert_eq!(
+            third.evidence_skipped,
+            vec![SBOM_FILE.to_string(), PROVENANCE_FILE.to_string()]
+        );
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn remove_drops_the_record_and_allows_a_fresh_import() {
+        let root = tmp_root("artifact-rm");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+
+        let first = store.import(&dist, ArtifactSource::Imported).unwrap();
+        let digest = first.record.digest.clone();
+        let object = store.object_dir(first.record.digest_hex());
+        assert!(object.as_std_path().is_dir());
+
+        let removed = store.remove(&digest).unwrap();
+        assert_eq!(removed.digest, digest);
+        assert!(!object.as_std_path().exists(), "object directory is gone");
+        assert!(store.list().unwrap().is_empty(), "index entry is gone");
+        assert_eq!(
+            store.resolve(&digest).unwrap_err().code(),
+            "ARTIFACT_NOT_FOUND"
+        );
+
+        // Removing something that was never there is a clean precondition
+        // error, not a panic or a silent success.
+        assert_eq!(
+            store.remove(&digest).unwrap_err().code(),
+            "ARTIFACT_NOT_FOUND"
+        );
+
+        // The point of the reset: the re-import is a first import again, so
+        // evidence added since the original import attaches normally.
+        add_evidence(&dist);
+        let again = store.import(&dist, ArtifactSource::Imported).unwrap();
+        assert!(
+            !again.already_present,
+            "removal made room for a fresh import"
+        );
+        assert_eq!(again.record.digest, digest);
+        assert_eq!(again.record.sbom.as_deref(), Some(SBOM_FILE));
+        assert_eq!(
+            again.evidence_attached,
+            vec![SBOM_FILE.to_string(), PROVENANCE_FILE.to_string()]
         );
 
         std::fs::remove_dir_all(root.as_std_path()).ok();

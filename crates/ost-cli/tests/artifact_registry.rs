@@ -350,6 +350,105 @@ fn verify_enforces_inline_minimum_trust_and_uses_the_stricter_floor() {
 }
 
 #[test]
+fn evidence_attaches_to_an_already_imported_digest_and_satisfies_the_gate() {
+    // The usd-vrm-plugins regression, end to end: a machine that imported the
+    // artifact before evidence existed adopts a build that now ships sidecars.
+    // Before the fix the second import silently dropped them and every
+    // evidence-gated lane went red with nothing wrong in the repo.
+    let sb = Sandbox::new("late-evidence");
+    let dist = sb.make_plugin_dist("toy", b"pre-evidence bytes");
+
+    let first = stdout_json(&sb.ost(&["--json", "artifact", "import", path_str(&dist)]));
+    let digest = first["data"]["artifact"]["digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(first["data"]["already_present"], false);
+    assert!(first["data"]["artifact"]["sbom"].is_null());
+    assert_eq!(
+        first["data"]["evidence_attached"].as_array().unwrap().len(),
+        0
+    );
+
+    // The gate cannot be satisfied yet — this is the red lane.
+    let gated = sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--require-sbom",
+        "--require-provenance",
+    ]);
+    assert_eq!(gated.status.code(), Some(5));
+
+    // Same bytes, now with sidecars. Generating evidence stamps `build` into
+    // the producer manifest, so this import carries a *different* manifest for
+    // an identical digest — precisely the case the old guard rejected.
+    sb.add_evidence(&dist);
+    let second = stdout_json(&sb.ost(&["--json", "artifact", "import", path_str(&dist)]));
+    assert_eq!(second["data"]["already_present"], true);
+    assert_eq!(second["data"]["artifact"]["digest"], digest.as_str());
+    assert_eq!(
+        second["data"]["evidence_attached"],
+        serde_json::json!([ost_artifact::SBOM_FILE, ost_artifact::PROVENANCE_FILE]),
+        "sidecars must attach to a digest already in the registry"
+    );
+    assert_eq!(second["data"]["artifact"]["sbom"], ost_artifact::SBOM_FILE);
+
+    // The gate now passes without any repo-side change.
+    let verified = stdout_json(&sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &digest,
+        "--require-sbom",
+        "--require-provenance",
+    ]));
+    assert_eq!(verified["data"]["evidence"]["sbom"]["passed"], true);
+    assert_eq!(verified["data"]["evidence"]["provenance"]["passed"], true);
+
+    // A further import reports the no-op rather than staying silent.
+    let third = stdout_json(&sb.ost(&["--json", "artifact", "import", path_str(&dist)]));
+    assert_eq!(
+        third["data"]["evidence_attached"].as_array().unwrap().len(),
+        0
+    );
+    assert_eq!(
+        third["data"]["evidence_skipped"],
+        serde_json::json!([ost_artifact::SBOM_FILE, ost_artifact::PROVENANCE_FILE])
+    );
+}
+
+#[test]
+fn artifact_rm_resets_the_registry_entry() {
+    let sb = Sandbox::new("rm");
+    let dist = sb.make_plugin_dist("toy", b"removable bytes");
+    let imported = stdout_json(&sb.ost(&["--json", "artifact", "import", path_str(&dist)]));
+    let digest = imported["data"]["artifact"]["digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let removed = stdout_json(&sb.ost(&["--json", "artifact", "rm", &digest]));
+    assert_eq!(removed["data"]["removed"], true);
+    assert_eq!(removed["data"]["artifact"]["digest"], digest.as_str());
+
+    let listed = stdout_json(&sb.ost(&["--json", "artifact", "list"]));
+    assert_eq!(listed["data"]["artifacts"].as_array().unwrap().len(), 0);
+
+    // Removing it again is a clean coded failure, not a silent success.
+    let missing = sb.ost(&["--json", "artifact", "rm", &digest]);
+    assert!(!missing.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(report["error"]["code"], "ARTIFACT_NOT_FOUND");
+
+    // And the digest can be imported fresh afterwards.
+    let again = stdout_json(&sb.ost(&["--json", "artifact", "import", path_str(&dist)]));
+    assert_eq!(again["data"]["already_present"], false);
+    assert_eq!(again["data"]["artifact"]["digest"], digest.as_str());
+}
+
+#[test]
 fn verify_can_require_and_validate_attached_evidence() {
     let sb = Sandbox::new("evidence");
     let legacy = sb.make_plugin_dist("legacy", b"no evidence");
