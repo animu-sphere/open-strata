@@ -91,7 +91,9 @@ ost formation run formation.toml -- usdview avatar.vrm
   category exit codes ([reference/json-output.md](../reference/json-output.md)).
 - Foreground execution only in v0.19.0. Mutable/forkable instances belong to the
   later Sessions layer.
-- Worked cross-repository cases (VRM inspection, hdMerlin view, VRM rendered by
-  hdMerlin) are in [combined-formations.md](../projects/combined-formations.md),
-  built from the [USD VRM Plugins](../projects/usd-vrm-plugins.md) and
+- Worked cross-repository cases (VRM inspection, Gaussian PLY stage inspection,
+  hdMerlin view, and VRM rendered by hdMerlin) are in
+  [combined-formations.md](../projects/combined-formations.md), built from the
+  [USD 3DGS Plugins](../projects/usd-3dgs-plugins.md),
+  [USD VRM Plugins](../projects/usd-vrm-plugins.md), and
   [hdMerlin](../projects/hydra-merlin.md) reference projects.

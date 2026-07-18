@@ -16,13 +16,16 @@ which exact identities compose into one working environment, and how is a proces
 launched inside it?*
 
 The motivating case is cross-repository. Today
-[`animu-sphere/usd-vrm-plugins`](https://github.com/animu-sphere/usd-vrm-plugins)
-and [`animu-sphere/hydra-merlin`](https://github.com/animu-sphere/hydra-merlin)
-each use `ost` on their own. The stronger story is that a VRM file format plugin,
-its schema and resolver bundles, an OpenUSD runtime, and the hdMerlin renderer —
-each released and pinned separately — resolve and compose into a single Vulkan
-viewport session. Those planned workflows are written up in
-[projects/combined-formations.md](../../projects/combined-formations.md); this
+[`animu-sphere/usd-3dgs-plugins`](https://github.com/animu-sphere/usd-3dgs-plugins)
+and [`animu-sphere/usd-vrm-plugins`](https://github.com/animu-sphere/usd-vrm-plugins)
+exercise two different plugin-workspace shapes, while
+[`animu-sphere/hydra-merlin`](https://github.com/animu-sphere/hydra-merlin)
+exercises the renderer boundary. The stronger story is that each independently
+released component resolves against a compatible runtime: Gaussian PLY can be
+inspected through its packaged file-format bundle and ordinary-library closure,
+and the VRM file-format, schema, and resolver bundles can compose with hdMerlin
+into a single Vulkan viewport session. Those planned workflows are written up
+in [projects/combined-formations.md](../../projects/combined-formations.md); this
 document defines the model beneath them.
 
 Formation stays inside OpenStrata's stated boundary: it is orchestration over
@@ -295,12 +298,13 @@ The first implementation must:
 
 Acceptance is proven by real cross-repository projects, not fixtures:
 
-1. a Formation using only `usd-vrm-plugins`;
-2. a Formation using only `hydra-merlin`;
-3. a Formation using both repositories;
-4. execution from digest-pinned packaged artifacts, **not** source-tree paths;
-5. a clean-machine or isolated-prefix run;
-6. evidence showing exactly which runtime, bundles, renderer, and executable were
+1. a Formation using only `usd-3dgs-plugins`;
+2. a Formation using only `usd-vrm-plugins`;
+3. a Formation using only `hydra-merlin`;
+4. a Formation using `usd-vrm-plugins` and `hydra-merlin` together;
+5. execution from digest-pinned packaged artifacts, **not** source-tree paths;
+6. a clean-machine or isolated-prefix run;
+7. evidence showing exactly which runtime, bundles, renderer, and executable were
    used.
 
 ## Non-goals (v0.19.0)
@@ -340,7 +344,8 @@ Deferred, to keep the first Formation model small and honest:
 6. Implement `resolve`, `inspect`, `env`, and `doctor`.
 7. Implement foreground `run`.
 8. Implement `lock` and run evidence.
-9. Dogfood `usd-vrm-plugins`, then `hydra-merlin`, then the combined Formation.
+9. Dogfood `usd-3dgs-plugins`, `usd-vrm-plugins`, and `hydra-merlin`, then the
+   combined VRM + hdMerlin Formation.
 10. Publish an acceptance report before declaring the milestone shipped.
 
 ## Positioning

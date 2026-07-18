@@ -18,8 +18,11 @@ OpenStrata ecosystem
 ├── open-strata
 │   └── runtime, build, test, package, artifact, CI, validation, and (planned) formation
 │
+├── usd-3dgs-plugins
+│   └── reference Gaussian file-format workspace
+│
 ├── usd-vrm-plugins
-│   └── reference OpenUSD plugin workspace
+│   └── reference multi-bundle OpenUSD plugin workspace
 │
 └── hydra-merlin
     └── reference renderer project
@@ -36,9 +39,17 @@ every build unit into an artificial package abstraction.
 | Project | Category | What it proves | Main OpenStrata workflows |
 | --- | --- | --- | --- |
 | [OpenStrata](../concepts/overview.md) | Toolchain | Runtime, artifact, CI, validation, and (planned) Formation | `runtime`, `build`, `artifact`, `ci` |
+| [USD 3DGS Plugins](usd-3dgs-plugins.md) | Plugin workspace | Fresh scaffold, bundle-to-library edge, Gaussian PLY import | `plugin build` / `test` / `run` / `view` / `package` |
 | [USD VRM Plugins](usd-vrm-plugins.md) | Plugin workspace | Typed schemas, file formats, resolver, bundle graph | `plugin build` / `test` / `run` / `view` / `package` |
 | [hdMerlin](hydra-merlin.md) | Renderer project | Managed renderer build, evidence, Hydra discovery | `build`, `validate`, `renderer view` |
 
+- **[USD 3DGS Plugins](usd-3dgs-plugins.md)** —
+  [`animu-sphere/usd-3dgs-plugins`](https://github.com/animu-sphere/usd-3dgs-plugins):
+  a read-only Gaussian PLY `SdfFileFormat` bundle backed by a
+  format-independent ordinary CMake library. Read it for empty-repository
+  scaffolding, bundle-to-library dependency composition, OpenUSD 26.05 Gaussian
+  schema authoring, generated three-OS CI, package-origin validation, and
+  reproducibility feedback.
 - **[USD VRM Plugins](usd-vrm-plugins.md)** —
   [`animu-sphere/usd-vrm-plugins`](https://github.com/animu-sphere/usd-vrm-plugins):
   a multi-bundle OpenUSD plugin workspace (schema bundle, `SdfFileFormat` plugin,
@@ -54,11 +65,15 @@ every build unit into an artificial package abstraction.
 
 ## Cross-project story
 
-The strongest narrative is not that both projects independently use `ost`. It is
-that **independently released OpenUSD components can be resolved, validated, and
-composed into one reproducible execution environment** — for example a VRM file
+The strongest narrative is not that three downstream projects independently use
+`ost`. It is that **independently released OpenUSD components can be resolved,
+validated, and composed into one reproducible execution environment**. The two
+plugin workspaces exercise different shapes — a single file-format bundle with
+an ordinary library dependency and a multi-bundle avatar stack — while hdMerlin
+exercises the renderer boundary. One concrete planned composition is a VRM file
 opened through the VRM bundles and rendered by hdMerlin in a single Vulkan
-viewport.
+viewport; Gaussian PLY stage inspection supplies another independent packaged
+plugin dogfood without claiming renderer compatibility.
 
 That composition is the planned [Formation](../design/proposed/formations.md)
 model. `ost formation` is **planned for v0.19.0 and is not available today**; the
@@ -92,7 +107,8 @@ other's source of truth:
   is minimal, labeled current or planned, and linked to the authoritative
   downstream guide. Downstream dogfooding reports are linked as evidence, not
   copied; the two v0.17.0 passes that drove the v0.18.0 plan are indexed in the
-  [delivery reports](../reports/README.md).
+  [delivery reports](../reports/README.md), including the USD 3DGS bootstrap and
+  package-provenance reports that extend the v0.19.0 reach plan.
 
 See the [documentation overview](../README.md) for how these pages relate to the
 rest of the docs, and [concepts/overview.md](../concepts/overview.md) for what

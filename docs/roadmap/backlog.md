@@ -37,12 +37,13 @@ milestone, Formation ships in v0.20.0 and DCC host integration moves to v0.21.0.
   category exit codes; `formation env|doctor` defer to v0.20.0.
   Formation must **reuse** the runtime, artifact, plugin, renderer, target, and
   evidence contracts rather than fork them, and introduce no DCC-specific logic
-  in the core model. Acceptance requires three first-party dogfoods run from
+  in the core model. Acceptance requires four first-party dogfoods run from
   packaged, digest-pinned artifacts (not source-tree paths): a
-  `usd-vrm-plugins`-only Formation, a `hydra-merlin`-only Formation, and a
-  combined VRM-rendered-by-hdMerlin Formation — each on a clean machine or
-  isolated prefix, with evidence naming the exact runtime, bundles, renderer, and
-  executable used. Non-goals: DCC discovery, Kubernetes execution, Linux
+  `usd-3dgs-plugins`-only Formation, a `usd-vrm-plugins`-only Formation, a
+  `hydra-merlin`-only Formation, and a combined VRM-rendered-by-hdMerlin
+  Formation — each on a clean machine or isolated prefix, with evidence naming
+  the exact runtime, bundles, renderer, and executable used. Non-goals: DCC
+  discovery, Kubernetes execution, Linux
   namespace / overlayfs sandboxing, detached session management, general-purpose
   package solving, automatic Formation-bundle publication, and implicit download
   from untrusted sources.
