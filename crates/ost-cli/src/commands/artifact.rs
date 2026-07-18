@@ -322,6 +322,16 @@ fn push_remote(
         outcome.registry, outcome.repository
     );
     println!("  expected_oci_digest: {}", outcome.oci_digest);
+    println!("  runtime_artifact:    {}", outcome.artifact_digest);
+    println!();
+    // These two pins behave differently, and a maintainer who assumes otherwise
+    // reads a routine republish as a broken pin.
+    println!(
+        "Note: expected_oci_digest changes on every republish — the evidence layers embed the\n\
+         producing commit, so re-pushing the same runtime yields a new OCI manifest digest.\n\
+         runtime_artifact is the artifact's own content digest and does not change, so only\n\
+         the expected_oci_digest line needs updating after a republish."
+    );
     Ok(())
 }
 
@@ -394,6 +404,11 @@ fn authorize_push(
 }
 
 /// Push outcome as JSON, carrying every digest a caller might pin.
+///
+/// The two digests are not interchangeable, and confusing them is what makes a
+/// republish look like a broken pin. `pins` says which is which in the output
+/// itself, so a caller updating `openstrata.ci.yaml` does not have to infer it
+/// from prose elsewhere.
 fn push_outcome_json(
     outcome: &PushOutcome,
     policy: Option<&PushPolicyEvidence>,
@@ -407,6 +422,21 @@ fn push_outcome_json(
         "repository": outcome.repository,
         "already_present": outcome.already_present,
         "auth_mode": outcome.auth_mode,
+        "pins": {
+            "runtime_artifact": {
+                "value": outcome.artifact_digest,
+                "stable_across_republish": true,
+                "note": "the artifact's own content digest — the same bytes re-pushed keep \
+                         this value, so this pin does not churn",
+            },
+            "runtime_remote.expected_oci_digest": {
+                "value": outcome.oci_digest,
+                "stable_across_republish": false,
+                "note": "the OCI manifest digest, which changes on every republish because \
+                         the evidence layers embed the producing commit; re-pin it whenever \
+                         the artifact is pushed again",
+            },
+        },
         "policy": policy.map(|policy| serde_json::json!({
             "path": policy.path,
             "protected_namespace": policy.namespace,

@@ -186,3 +186,32 @@ fn json_mode_keeps_stdout_free_of_log_noise() {
     // Parses as one document (no trailing tokens).
     let _: Value = serde_json::from_str(&stdout).expect("single JSON document");
 }
+
+/// A `--json` stdout is routinely redirected to a file. When it is, the failure
+/// envelope goes with it, and a command that failed would otherwise leave the
+/// terminal completely silent. The identifying line is mirrored to stderr so the
+/// failure is visible wherever stdout ended up.
+#[test]
+fn json_failures_are_mirrored_to_stderr() {
+    let sb = Sandbox::new("stderr-mirror");
+    let out = sb.ost(&["--json", "platform", "show", "cy2099"]);
+    assert!(!out.status.success(), "an unknown platform fails");
+
+    // stdout keeps its contract: exactly one parseable document.
+    let v = parse_stdout(&out);
+    assert_envelope_common(&v);
+    let code = v["error"]["code"].as_str().expect("a stable error code");
+
+    // stderr names the same failure, so a redirected run is not silent.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(code),
+        "stderr must carry the error code so a redirected stdout cannot hide the \
+         failure:\nstderr: {stderr}"
+    );
+    // It stays a signal, not a second copy of the document to parse.
+    assert!(
+        !stderr.trim_start().starts_with('{'),
+        "stderr must not duplicate the JSON envelope:\n{stderr}"
+    );
+}

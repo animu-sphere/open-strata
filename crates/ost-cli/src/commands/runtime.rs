@@ -10,6 +10,7 @@
 //! `export` is the reverse edge: it packs a pulled real runtime into the
 //! registry as a digest-addressed `openstrata.runtime` artifact.
 
+use std::collections::BTreeSet;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -106,6 +107,12 @@ pub enum RuntimeCmd {
         /// when SOURCE_DATE_EPOCH is set; `--jobs 0` also forces it explicitly.
         #[arg(long)]
         jobs: Option<u32>,
+        /// JSON file describing what produced this artifact, so a producer that
+        /// is not GitHub Actions can still emit provenance. Requires a non-empty
+        /// `source.repository`, `source.revision`, `builder.id`, and a populated
+        /// `builder.identity` object.
+        #[arg(long)]
+        build_metadata: Option<Utf8PathBuf>,
     },
     /// List runtimes present in the local store.
     List,
@@ -177,12 +184,14 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             slim,
             level,
             jobs,
+            build_metadata,
         } => export(
             &platform,
             &profile,
             dist.as_deref(),
             slim,
             ExportPack { level, jobs },
+            build_metadata.as_deref(),
             fmt,
         ),
         RuntimeCmd::List => list(fmt),
@@ -1121,8 +1130,18 @@ fn export(
     dist: Option<&str>,
     slim: bool,
     pack: ExportPack,
+    build_metadata: Option<&Utf8Path>,
     fmt: Format,
 ) -> Result<()> {
+    // Read and validate before packing: a malformed metadata file should fail
+    // in the first second, not after compressing a multi-gigabyte runtime.
+    let build_metadata = build_metadata
+        .map(|path| {
+            let source = std::fs::read_to_string(path.as_std_path())
+                .map_err(|error| Error::io(path.to_string(), error))?;
+            ost_artifact::parse_build_metadata(&source)
+        })
+        .transpose()?;
     let (platform, profile) = platform_profile(platform, profile);
     let r = resolve(&platform, &profile)?;
     let manifest_path = r.prefix.join(MANIFEST_FILE);
@@ -1182,6 +1201,22 @@ fn export(
             .collect();
         (files, Vec::new())
     };
+    // A slim export drops whole top-level trees. If the SDK's own CMake package
+    // config points into one of them, `find_package` succeeds against the
+    // shipped artifact and then resolves a path that is not there — a failure
+    // that surfaces at the consumer's configure step, far from this command.
+    let dropped_references = if slim {
+        referenced_excluded_dirs(&files, &excluded_dirs)
+    } else {
+        Vec::new()
+    };
+    for (directory, config) in &dropped_references {
+        eprintln!(
+            "warning: --slim drops '{directory}/', but the exported CMake config '{config}' \
+             refers to it; consumers resolving that path will not find it in this artifact"
+        );
+    }
+
     if files.is_empty() {
         let message = if slim {
             format!(
@@ -1352,6 +1387,12 @@ fn export(
             serde_json::json!(if slim { "sdk" } else { "full" }),
         );
     }
+    // Explicit metadata is set before evidence is generated, which is also what
+    // makes it win: `generate_evidence` only falls back to the ambient GitHub
+    // Actions environment when the manifest carries no `build` of its own.
+    if let Some(build) = build_metadata {
+        producer["build"] = build;
+    }
     let evidence = ost_artifact::generate_evidence(&dist_dir, &mut producer)?;
     let producer_json = serde_json::to_string_pretty(&producer)
         .map_err(|e| Error::parse("runtime artifact manifest", anyhow::Error::new(e)))?;
@@ -1404,6 +1445,14 @@ fn export(
             "dist": dist.map(|d| d.to_string()),
             "layout_profile": if slim { "sdk" } else { "full" },
             "excluded_top_level": excluded_dirs,
+            // Excluded trees the shipped CMake config still points at.
+            "dropped_referenced_layout": dropped_references
+                .iter()
+                .map(|(directory, config)| serde_json::json!({
+                    "directory": directory,
+                    "referenced_by": config,
+                }))
+                .collect::<Vec<_>>(),
         }));
         return Ok(());
     }
@@ -1422,6 +1471,47 @@ fn export(
         out.record.digest
     );
     Ok(())
+}
+
+/// Excluded top-level directories that the exported CMake package configs still
+/// refer to, as `(directory, config file name)`.
+///
+/// Only the `.cmake` files actually being shipped are read: those are what a
+/// consumer's `find_package` will evaluate, and a reference from a file that is
+/// not in the artifact cannot break anyone.
+///
+/// The match is on a path *segment* (`/build/`), not a bare substring, so a
+/// config mentioning `rebuild_flags` is not read as pointing at `build/`.
+fn referenced_excluded_dirs(files: &[Utf8PathBuf], excluded: &[String]) -> Vec<(String, String)> {
+    if excluded.is_empty() {
+        return Vec::new();
+    }
+    let mut found: BTreeSet<(String, String)> = BTreeSet::new();
+    for file in files {
+        if !file
+            .extension()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("cmake")
+        {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(file.as_std_path()) else {
+            continue;
+        };
+        let text = text.replace('\\', "/");
+        let name = file
+            .file_name()
+            .map(str::to_string)
+            .unwrap_or_else(|| file.to_string());
+        for directory in excluded {
+            // A trailing delimiter keeps `/build/` from matching `/buildinfo/`.
+            let segment = format!("/{directory}/");
+            if text.contains(&segment) {
+                found.insert((directory.clone(), name.clone()));
+            }
+        }
+    }
+    found.into_iter().collect()
 }
 
 /// The Python packages `build_usd.py` needs on the *build host* for a given
@@ -2202,6 +2292,17 @@ mod tests {
     use ost_core::host::{Arch, Os};
     use ost_runtime::Runtime;
 
+    /// A unique scratch directory for tests that need real files on disk.
+    fn temp_dir(tag: &str) -> Utf8PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("ost-rt-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Utf8PathBuf::from_path_buf(dir).unwrap()
+    }
+
     /// A manifest shaped like a self-contained, validated `build` runtime.
     fn exportable_manifest() -> RuntimeManifest {
         let host = ost_core::Host {
@@ -2659,5 +2760,69 @@ mod tests {
     fn reproducible_export_uses_a_host_independent_worker_default() {
         assert_eq!(default_pack_workers(true), 0);
         assert!(default_pack_workers(false) >= 1);
+    }
+
+    /// A slim export drops whole trees. If the shipped CMake config still points
+    /// into one, `find_package` resolves a path the artifact does not contain —
+    /// and it fails at the consumer's configure step, far from `runtime export`.
+    #[test]
+    fn slim_export_reports_dropped_layout_a_shipped_config_references() {
+        let dir = temp_dir("slim-ref");
+        let config = dir.join("pxrConfig.cmake");
+        std::fs::write(
+            config.as_std_path(),
+            "set(PXR_INCLUDE_DIRS \"${PXR_ROOT}/include\")
+             set(PXR_SRC \"${PXR_ROOT}/src/pxr\")
+",
+        )
+        .unwrap();
+
+        let files = vec![config.clone()];
+        let found = referenced_excluded_dirs(&files, &["src".to_string(), "build".to_string()]);
+        assert_eq!(
+            found,
+            vec![("src".to_string(), "pxrConfig.cmake".to_string())],
+            "only the referenced excluded tree is reported"
+        );
+
+        // Nothing excluded, nothing to warn about.
+        assert!(referenced_excluded_dirs(&files, &[]).is_empty());
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    /// The match is on a path segment, so a config that merely mentions a
+    /// similar word does not produce a warning nobody can act on.
+    #[test]
+    fn a_similar_word_is_not_mistaken_for_a_dropped_directory() {
+        let dir = temp_dir("slim-noise");
+        let config = dir.join("pxrTargets.cmake");
+        std::fs::write(
+            config.as_std_path(),
+            "set(REBUILD_FLAGS on)
+set(X \"${ROOT}/buildinfo/x\")
+",
+        )
+        .unwrap();
+        assert!(
+            referenced_excluded_dirs(&[config], &["build".to_string()]).is_empty(),
+            "'buildinfo' and 'REBUILD_FLAGS' are not references to 'build/'"
+        );
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    /// Only shipped `.cmake` files matter: a reference from something the
+    /// artifact does not carry cannot break a consumer.
+    #[test]
+    fn non_cmake_files_are_not_scanned_for_references() {
+        let dir = temp_dir("slim-nontext");
+        let readme = dir.join("README.md");
+        std::fs::write(
+            readme.as_std_path(),
+            "see ${ROOT}/src/pxr for sources
+",
+        )
+        .unwrap();
+        assert!(referenced_excluded_dirs(&[readme], &["src".to_string()]).is_empty());
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
 }

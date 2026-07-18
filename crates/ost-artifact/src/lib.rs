@@ -21,8 +21,8 @@ pub mod store;
 pub mod transport;
 
 pub use evidence::{
-    generate_evidence, verify_evidence_digest, verify_provenance, verify_sbom, EvidenceDigest,
-    PROVENANCE_FILE, SBOM_FILE,
+    generate_evidence, parse_build_metadata, verify_evidence_digest, verify_provenance,
+    verify_sbom, EvidenceDigest, PROVENANCE_FILE, SBOM_FILE,
 };
 pub use policy::{
     AllowedPublisher, ArtifactPolicy, ProtectedNamespace, PublisherAuthorization,

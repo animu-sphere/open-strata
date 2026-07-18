@@ -380,6 +380,7 @@ Diagnose host, tools, and (optionally) a runtime
 
 | Option | Description |
 | --- | --- |
+| `--capability <CAPABILITIES>` | The capability you intend to exercise, e.g. `usd-stage-read`. Advice is scoped to it: without an OpenUSD-dependent capability — in the profile or named here — `doctor` does not tell you to go and find a real OpenUSD |
 | `--profile <PROFILE>` | Profile to diagnose (only with a platform) |
 
 ### `ost env`
@@ -953,7 +954,7 @@ Open a scene in usdview with the built Hydra renderer selected
 | Option | Description |
 | --- | --- |
 | `--build-dir <BUILD_DIR>` | External/prebuilt Hydra CMake tree. Omit for an OST-managed build |
-| `--camera <CAMERA>` | Camera prim passed to usdview |
+| `--camera <CAMERA>` | Camera prim to view through. Omitted by default: the scene is inspected and a camera is used only if one is actually there, otherwise usdview opens on its free camera |
 | `--config <CONFIG>` | CMake configuration to install and inspect |
 | `--generator <GENERATOR>` | CMake generator for the managed build. Ninja remains the default |
 | `--profile <PROFILE>` | Runtime profile. Auto-selects a unique pulled usdview runtime |
@@ -1031,6 +1032,7 @@ Export a pulled real runtime into the local artifact registry
 
 | Option | Description |
 | --- | --- |
+| `--build-metadata <BUILD_METADATA>` | JSON file describing what produced this artifact, so a producer that is not GitHub Actions can still emit provenance. Requires a non-empty `source.repository`, `source.revision`, `builder.id`, and a populated `builder.identity` object |
 | `--dist <DIST>` | Also keep the producer output (archive + manifest.json + SHA256SUMS) in this directory instead of a temporary staging dir |
 | `--jobs <JOBS>` | zstd worker threads for compression. Defaults to the host's available parallelism, or the byte-stable single-threaded encoder when SOURCE_DATE_EPOCH is set; `--jobs 0` also forces it explicitly |
 | `--level <LEVEL>` | zstd compression level (1–22). Lower is faster; the default (19) favors a small artifact, packed once and pulled many times |

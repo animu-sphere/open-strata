@@ -54,6 +54,15 @@ pub fn error(err: &ost_core::Error, fmt: Format) {
                 "error": error,
                 "warnings": [],
             }));
+            // A `--json` stdout is routinely redirected to a file for later
+            // parsing. When it is, the failure envelope goes with it and the
+            // terminal shows nothing at all — a command that failed looks like
+            // one that printed nothing. Mirror the identifying line to stderr so
+            // the failure is visible wherever stdout ended up.
+            //
+            // Only the code and message: stderr is a signal here, not a second
+            // copy of the document, and stdout remains the one place to parse.
+            eprintln!("error[{}]: {err}", err.code());
         }
         Format::Human => {
             // The generic migration code adds no signal for a human reader.

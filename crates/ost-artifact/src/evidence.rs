@@ -70,6 +70,64 @@ fn nonempty_env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|value| !value.is_empty())
 }
 
+/// Parse and validate build metadata supplied by a producer that is not GitHub
+/// Actions.
+///
+/// Provenance was previously reachable only from a GitHub Actions environment,
+/// which left every other producer — a build farm, a local release box, GitLab —
+/// unable to emit any at all. This accepts the same document
+/// [`github_build_metadata`] constructs, from a file.
+///
+/// The required-fields rule is the same one, and for the same reason: a partial
+/// document must never produce provenance that *looks* authoritative. Each
+/// required field is checked individually so the refusal names what is missing,
+/// rather than rejecting the file as a whole.
+pub fn parse_build_metadata(source: &str) -> Result<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_str(source)
+        .map_err(|error| Error::parse("build metadata", anyhow::Error::new(error)))?;
+
+    for field in ["source.repository", "source.revision", "builder.id"] {
+        let (parent, child) = field.split_once('.').expect("a dotted field path");
+        let present = value
+            .get(parent)
+            .and_then(|value| value.get(child))
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty());
+        if !present {
+            return Err(Error::coded(
+                "BUILD_METADATA_INCOMPLETE",
+                Category::Validation,
+                format!("build metadata is missing a non-empty '{field}'"),
+            )
+            .with_hint(
+                "provenance names what produced an artifact; a document missing its source or \
+                 builder cannot do that, and partial provenance is worse than none",
+            ));
+        }
+    }
+
+    // The builder's identity is what a verifier checks a signature against, so
+    // an empty object here would be a builder that identifies nobody.
+    let identity_populated = value
+        .get("builder")
+        .and_then(|builder| builder.get("identity"))
+        .and_then(|identity| identity.as_object())
+        .is_some_and(|identity| !identity.is_empty());
+    if !identity_populated {
+        return Err(Error::coded(
+            "BUILD_METADATA_INCOMPLETE",
+            Category::Validation,
+            "build metadata is missing a non-empty 'builder.identity' object",
+        )
+        .with_hint(
+            "describe the builder concretely — for a self-hosted producer that is typically \
+             its host, pipeline and triggering ref",
+        ));
+    }
+
+    Ok(value)
+}
+
 /// Generate the deterministic SPDX SBOM and, when complete GitHub build
 /// metadata is available, SLSA/in-toto provenance. The artifact archive digest
 /// remains the identity; evidence is attached alongside it.
@@ -482,6 +540,88 @@ pub fn verify_provenance(
 mod tests {
     use super::*;
     use crate::{AllowedPublisher, TrustLevel};
+
+    /// A complete document from a producer that is not GitHub Actions.
+    const SELF_HOSTED: &str = r#"{
+      "source": { "repository": "git.example.com/team/renderer", "revision": "9f1c2a" },
+      "builder": {
+        "id": "https://build.example.com/pipelines/release",
+        "identity": { "host": "builder-07", "pipeline": "release", "git_ref": "refs/tags/v2.1.0" }
+      }
+    }"#;
+
+    #[test]
+    fn self_hosted_build_metadata_is_accepted() {
+        let value = parse_build_metadata(SELF_HOSTED).expect("a complete document is accepted");
+        assert_eq!(
+            value["source"]["repository"],
+            "git.example.com/team/renderer"
+        );
+        assert_eq!(value["builder"]["identity"]["host"], "builder-07");
+    }
+
+    /// Partial provenance is worse than none: it looks authoritative while
+    /// naming nothing. Each missing field must be refused by name.
+    #[test]
+    fn incomplete_build_metadata_is_refused_by_field() {
+        for (missing, document) in [
+            (
+                "source.revision",
+                r#"{"source":{"repository":"a/b"},"builder":{"id":"x","identity":{"host":"h"}}}"#,
+            ),
+            (
+                "source.repository",
+                r#"{"source":{"revision":"abc"},"builder":{"id":"x","identity":{"host":"h"}}}"#,
+            ),
+            (
+                "builder.id",
+                r#"{"source":{"repository":"a/b","revision":"abc"},"builder":{"identity":{"host":"h"}}}"#,
+            ),
+        ] {
+            let error =
+                parse_build_metadata(document).expect_err("an incomplete document must be refused");
+            assert_eq!(error.code(), "BUILD_METADATA_INCOMPLETE");
+            assert!(
+                error.to_string().contains(missing),
+                "the refusal must name the missing field '{missing}': {error}"
+            );
+        }
+    }
+
+    /// An empty value is not a value — a blank revision would produce provenance
+    /// pointing at no commit at all.
+    #[test]
+    fn blank_build_metadata_fields_are_refused() {
+        let document = r#"{"source":{"repository":"a/b","revision":"   "},"builder":{"id":"x","identity":{"host":"h"}}}"#;
+        let error = parse_build_metadata(document).expect_err("a blank field is not a value");
+        assert!(error.to_string().contains("source.revision"), "{error}");
+    }
+
+    /// A builder that identifies nobody cannot be verified against anything.
+    #[test]
+    fn empty_builder_identity_is_refused() {
+        let document = r#"{"source":{"repository":"a/b","revision":"abc"},"builder":{"id":"x","identity":{}}}"#;
+        let error = parse_build_metadata(document).expect_err("an empty identity is refused");
+        assert_eq!(error.code(), "BUILD_METADATA_INCOMPLETE");
+        assert!(error.to_string().contains("builder.identity"), "{error}");
+    }
+
+    /// Supplied metadata has to reach the provenance statement, or the flag
+    /// would validate a document it then ignored.
+    #[test]
+    fn supplied_metadata_produces_provenance() {
+        let mut manifest = manifest();
+        manifest["build"] = parse_build_metadata(SELF_HOSTED).unwrap();
+        let statement = provenance_statement(&manifest).expect("provenance is generated");
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["externalParameters"]["source"]["revision"],
+            "9f1c2a"
+        );
+        assert_eq!(
+            statement["predicate"]["runDetails"]["builder"]["id"],
+            "https://build.example.com/pipelines/release"
+        );
+    }
 
     fn manifest() -> serde_json::Value {
         serde_json::json!({

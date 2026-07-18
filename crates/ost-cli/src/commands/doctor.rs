@@ -28,6 +28,12 @@ pub struct DoctorArgs {
     /// Profile to diagnose (only with a platform).
     #[arg(long, default_value = "core")]
     profile: String,
+
+    /// The capability you intend to exercise, e.g. `usd-stage-read`. Advice is
+    /// scoped to it: without an OpenUSD-dependent capability — in the profile or
+    /// named here — `doctor` does not tell you to go and find a real OpenUSD.
+    #[arg(long = "capability")]
+    capabilities: Vec<String>,
 }
 
 /// Host tools we look for. `required` ones count as issues when missing.
@@ -73,6 +79,12 @@ struct Issue {
     severity: Severity,
     summary: String,
     next_action: Option<String>,
+    /// Why this matters for what the caller is actually doing — in particular,
+    /// what a real runtime would change about the result. A `next_action`
+    /// without this reads as an unconditional instruction; on the core profile
+    /// that produced the standing advice to go and find an OpenUSD install for a
+    /// capability nobody asked for.
+    explanation: Option<String>,
 }
 
 impl Issue {
@@ -82,6 +94,7 @@ impl Issue {
             severity: Severity::Error,
             summary: summary.into(),
             next_action,
+            explanation: None,
         }
     }
 
@@ -91,8 +104,26 @@ impl Issue {
             severity: Severity::Warning,
             summary: summary.into(),
             next_action,
+            explanation: None,
         }
     }
+
+    fn explaining(mut self, explanation: impl Into<String>) -> Issue {
+        self.explanation = Some(explanation.into());
+        self
+    }
+}
+
+/// Whether anything in play actually depends on a real OpenUSD.
+///
+/// Both the resolved profile's own capabilities and any the caller named count.
+/// A `core` profile promises no OpenUSD execution, so a mock runtime is not a
+/// deficiency there — it is the profile working as specified.
+fn wants_openusd(profile_capabilities: &[String], requested: &[String]) -> bool {
+    profile_capabilities
+        .iter()
+        .chain(requested.iter())
+        .any(|capability| capability.starts_with("usd"))
 }
 
 /// Whether any issue is an error (warnings do not fail the run).
@@ -156,17 +187,39 @@ pub fn run(args: DoctorArgs, fmt: Format) -> Result<()> {
                 // A mock runtime is healthy but can only drive static validation;
                 // execution-type checks (`ost plugin test` L2+) need a real one.
                 // Informational — does not fail the run (§14.5).
-                issues.push(Issue::warning(
+                //
+                // Whether that is worth acting on depends entirely on what is
+                // being exercised. Telling someone on the `core` profile to go
+                // and find an OpenUSD install advises them to fix a limitation
+                // their profile never claimed not to have.
+                let openusd_matters = wants_openusd(&r.capabilities, &args.capabilities);
+                let issue = Issue::warning(
                     "MOCK_RUNTIME_ACTIVE",
                     format!(
                         "runtime '{}' is a mock — static validation only, no real OpenUSD execution",
                         r.runtime.id()
                     ),
-                    Some(format!(
-                        "ost runtime pull {platform} --profile {} --from-usd <path>",
+                    openusd_matters.then(|| {
+                        format!(
+                            "ost runtime pull {platform} --profile {} --from-usd <path>",
+                            args.profile
+                        )
+                    }),
+                );
+                issues.push(if openusd_matters {
+                    issue.explaining(
+                        "a real runtime would let OpenUSD-dependent checks actually execute: \
+                         plugin discovery, stage open and the L2+ levels currently report SKIP \
+                         because there is no OpenUSD to run them against",
+                    )
+                } else {
+                    issue.explaining(format!(
+                        "nothing selected depends on OpenUSD — the '{}' profile exercises no \
+                         usd* capability — so a real runtime would not change any result here; \
+                         pass --capability <name> if you intend to exercise one",
                         args.profile
-                    )),
-                ));
+                    ))
+                });
             }
             // A recorded OpenUSD version that disagrees with the install's pxr.h is
             // stale — it skews the L1 range check. Warning, not error (§14.5).
@@ -377,6 +430,9 @@ fn emit_human(
                 issue.id,
                 issue.summary
             );
+            if let Some(explanation) = &issue.explanation {
+                println!("        why: {explanation}");
+            }
             if let Some(action) = &issue.next_action {
                 println!("        ↳ {action}");
             }
@@ -435,6 +491,11 @@ fn emit_json(
                 "severity": i.severity.as_str(),
                 "summary": i.summary,
                 "next_action": i.next_action,
+                // Why the issue matters here, and what a real runtime would
+                // change — a null `next_action` with an explanation means
+                // "nothing to do for what you selected", which is a different
+                // statement from having no advice to give.
+                "explanation": i.explanation,
             })
         })
         .collect();
@@ -490,5 +551,41 @@ mod tests {
         assert!(has_errors(&mixed));
 
         assert!(!has_errors(&[]));
+    }
+
+    /// Advice must follow what is actually being exercised. The core profile
+    /// promises no OpenUSD execution, so a mock runtime there is the profile
+    /// working as specified — not a deficiency to send someone hunting an
+    /// install for.
+    #[test]
+    fn openusd_advice_follows_the_profile_and_the_requested_capability() {
+        let core = vec!["build-cxx".to_string()];
+        let usd = vec!["usd-stage-read".to_string()];
+
+        assert!(!wants_openusd(&core, &[]), "core alone needs no OpenUSD");
+        assert!(wants_openusd(&usd, &[]), "a usd* profile does");
+        // An explicit request counts even when the profile does not provide it:
+        // the caller has said what they intend to do.
+        assert!(
+            wants_openusd(&core, &["usd-stage-read".to_string()]),
+            "a requested usd* capability makes it relevant"
+        );
+        // …and a non-OpenUSD request does not.
+        assert!(!wants_openusd(&core, &["build-cxx".to_string()]));
+    }
+
+    /// A warning with no action must still say why there is nothing to do —
+    /// silence there reads as missing advice rather than a considered verdict.
+    #[test]
+    fn an_issue_can_explain_itself_without_prescribing_an_action() {
+        let issue = Issue::warning("MOCK_RUNTIME_ACTIVE", "mock runtime", None)
+            .explaining("nothing selected depends on OpenUSD");
+        assert!(issue.next_action.is_none());
+        assert_eq!(
+            issue.explanation.as_deref(),
+            Some("nothing selected depends on OpenUSD")
+        );
+        // A warning never fails the run (§14.5).
+        assert!(!has_errors(&[issue]));
     }
 }
