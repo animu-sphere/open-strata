@@ -726,7 +726,10 @@ fn quote(s: &str) -> String {
 /// runtime env resolved *over* that delta, so the runtime's PATH/loader prepends
 /// sit in front of the compiler's. Later entries win in `Command::envs`, so the
 /// runtime values override the shared keys while MSVC-only keys survive.
-fn layer_runtime_env(runtime: &EnvSet, msvc: &[(String, String)]) -> Vec<(String, String)> {
+pub(crate) fn layer_runtime_env(
+    runtime: &EnvSet,
+    msvc: &[(String, String)],
+) -> Vec<(String, String)> {
     let mut base: std::collections::HashMap<String, String> = std::env::vars().collect();
     for (k, v) in msvc {
         base.insert(k.clone(), v.clone());

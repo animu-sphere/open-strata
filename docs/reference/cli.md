@@ -26,6 +26,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost doctor`](#ost-doctor) — Diagnose host, tools, and (optionally) a runtime
 - [`ost env`](#ost-env) — Print the environment that activates a runtime (for `eval`)
 - [`ost extension`](#ost-extension) — Inspect and request controlled extensions
+- [`ost external`](#ost-external) — Import and inspect provenance for a build OpenStrata did not perform
 - [`ost init`](#ost-init) — Initialise an OpenStrata project in the current directory
 - [`ost lock`](#ost-lock) — Generate or verify the project lockfile (strata.lock)
 - [`ost package`](#ost-package) — Install and pack a built target into a tar.zst artifact
@@ -34,6 +35,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost presets`](#ost-presets) — Manage OpenStrata's CMake preset includes in CMakePresets.json
 - [`ost renderer`](#ost-renderer) — Inspect renderer projects in host applications
 - [`ost runtime`](#ost-runtime) — Pull, list, and inspect runtimes in the local store
+- [`ost test`](#ost-test) — Run a built target's tests under the runtime that built it
 - [`ost uv`](#ost-uv) — Run `uv` pinned to the project's runtime Python
 - [`ost validate`](#ost-validate) — Validate a built/packaged target
 
@@ -446,6 +448,43 @@ Explain why an extension is required by a profile
 | Option | Description |
 | --- | --- |
 | `--profile <PROFILE>` | Profile to trace. Defaults to the project's profile |
+
+### `ost external`
+
+Import and inspect provenance for a build OpenStrata did not perform
+
+**Usage:** `ost external <COMMAND>`
+
+**Subcommands:**
+
+- [`ost external import`](#ost-external-import) — Inspect an external build tree's CMake cache and record its provenance
+- [`ost external show`](#ost-external-show) — Show the provenance recorded for an external build tree
+
+#### `ost external import`
+
+Inspect an external build tree's CMake cache and record its provenance
+
+**Usage:** `ost external import [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--build-dir <BUILD_DIR>` | The external build tree to inspect |
+| `--profile <PROFILE>` | Profile. Defaults to the project's profile |
+| `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
+
+#### `ost external show`
+
+Show the provenance recorded for an external build tree
+
+**Usage:** `ost external show [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--build-dir <BUILD_DIR>` | The external build tree whose record should be shown |
 
 ### `ost init`
 
@@ -1081,6 +1120,31 @@ Validate a pulled runtime and record the outcome in its manifest
 | Option | Description |
 | --- | --- |
 | `--profile <PROFILE>` | Profile, e.g. `usd` |
+
+### `ost test`
+
+Run a built target's tests under the runtime that built it
+
+**Usage:** `ost test [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--busy-timeout <BUSY_TIMEOUT>` | How long `--on-busy wait` waits, in seconds; 0 waits indefinitely |
+| `--ctest <CTEST>` | Path to the ctest executable if it is not on PATH |
+| `--dry-run` | Print the command that would run, without executing or writing anything |
+| `--filter <FILTER>` | Only run tests whose name matches this regular expression (CTest `-R`) |
+| `--jobs <JOBS>` | Parallel test jobs |
+| `--no-vcvars` | Do not auto-load the MSVC developer environment (Windows) |
+| `--notify` | Fire a desktop notification when the run finishes (no-op over SSH/CI) |
+| `--on-busy <ON_BUSY>` | What to do when another invocation is already writing this target: `fail` immediately, `wait` for it (see --busy-timeout), or `read-only` to proceed without taking the target lease |
+| `--profile <PROFILE>` | Profile to test. Defaults to the project's profile |
+| `--progress <PROGRESS>` | Progress rendering: `auto` (human on a TTY, plain otherwise), `plain`, or `json` (one JSON event per line) |
+| `--quiet` | Suppress progress output; child output goes to the log |
+| `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
+| `--test-timeout <TEST_TIMEOUT>` | Per-test timeout in seconds; 0 disables it |
+| `--timeout <TIMEOUT>` | Timeout for the whole run in seconds; 0 disables it. On expiry the test process tree is terminated, not just the CTest process |
 
 ### `ost uv`
 

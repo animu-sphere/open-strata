@@ -408,6 +408,120 @@ fn a_stale_lease_record_is_taken_over_and_reported() {
     );
 }
 
+/// An external tree gets `runtime-compatible` only after an explicit import, and
+/// only while it still matches. `configured` and `built` stay skipped either
+/// way — those claim OpenStrata did the work.
+#[test]
+fn external_provenance_upgrades_only_runtime_compatibility() {
+    let sb = Sandbox::new("external-import");
+    init_and_pull(&sb);
+    assert!(sb.ost(&["configure"]).status.success());
+
+    let id = single_target_dir(&sb.work)
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    // The mock runtime's prefix, which a real external tree would have resolved
+    // `pxr` from.
+    let runtime_root = sb
+        .home
+        .join("runtimes")
+        .join(format!("openstrata-{id}"))
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    // Stand in for a tree configured outside OpenStrata: only its CMake cache
+    // exists, which is exactly what the import is required to work from.
+    let external = sb.work.join("external-build");
+    std::fs::create_dir_all(&external).unwrap();
+    let cache = format!(
+        "CMAKE_HOME_DIRECTORY:INTERNAL={source}\n\
+         CMAKE_CACHEFILE_DIR:INTERNAL={build}\n\
+         CMAKE_GENERATOR:INTERNAL=Ninja\n\
+         CMAKE_BUILD_TYPE:STRING=Release\n\
+         CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++\n\
+         pxr_DIR:PATH={runtime_root}\n",
+        source = sb.work.to_string_lossy().replace('\\', "/"),
+        build = external.to_string_lossy().replace('\\', "/"),
+    );
+    let cache_path = external.join("CMakeCache.txt");
+    std::fs::write(&cache_path, &cache).unwrap();
+
+    // Before any import, the tree makes no claim about any runtime.
+    let before = sb.ost(&["validate", "--build-dir", "external-build"]);
+    let text = out_text(&before);
+    assert!(
+        text.contains("no imported provenance"),
+        "an un-imported tree must not claim compatibility:\n{text}"
+    );
+
+    let import = sb.ost(&["external", "import", "--build-dir", "external-build"]);
+    assert!(
+        import.status.success(),
+        "import failed:\n{}",
+        out_text(&import)
+    );
+
+    let after = sb.ost(&["validate", "--build-dir", "external-build"]);
+    let text = out_text(&after);
+    assert!(
+        text.contains("[ok  ] runtime-compatible"),
+        "a full identity match upgrades runtime compatibility:\n{text}"
+    );
+    // …but never these two, whatever the import said.
+    assert!(
+        text.contains("[skip] configured") && text.contains("[skip] built"),
+        "an import must not claim `ost build` configured or built the tree:\n{text}"
+    );
+
+    // Reconfiguring the tree invalidates the record rather than silently
+    // continuing to vouch for it.
+    std::fs::write(&cache_path, cache.replace("Release", "Debug")).unwrap();
+    let stale = sb.ost(&["validate", "--build-dir", "external-build"]);
+    let text = out_text(&stale);
+    assert!(
+        text.contains("[FAIL] runtime-compatible") && text.contains("reconfigured"),
+        "a reconfigured tree must stop verifying:\n{text}"
+    );
+}
+
+/// A tree that resolved OpenUSD from somewhere else is not evidence about this
+/// runtime, and must be refused at import rather than recorded and trusted.
+#[test]
+fn importing_a_tree_built_against_another_runtime_is_refused() {
+    let sb = Sandbox::new("external-foreign");
+    init_and_pull(&sb);
+    assert!(sb.ost(&["configure"]).status.success());
+
+    let external = sb.work.join("foreign-build");
+    std::fs::create_dir_all(&external).unwrap();
+    std::fs::write(
+        external.join("CMakeCache.txt"),
+        format!(
+            "CMAKE_HOME_DIRECTORY:INTERNAL={source}\n\
+             CMAKE_CACHEFILE_DIR:INTERNAL={build}\n\
+             CMAKE_GENERATOR:INTERNAL=Ninja\n\
+             CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++\n\
+             pxr_DIR:PATH=/somewhere/else/usd\n",
+            source = sb.work.to_string_lossy().replace('\\', "/"),
+            build = external.to_string_lossy().replace('\\', "/"),
+        ),
+    )
+    .unwrap();
+
+    let import = sb.ost(&["external", "import", "--build-dir", "foreign-build"]);
+    assert!(
+        !import.status.success(),
+        "a foreign pxr root must be refused"
+    );
+    let text = out_text(&import);
+    assert!(
+        text.contains("not from the selected runtime"),
+        "the refusal must name the mismatch:\n{text}"
+    );
+}
+
 /// The lease record's `host` is compared against this machine's name, so the
 /// test has to produce it the same way the implementation does.
 fn hostname_of_this_process() -> String {

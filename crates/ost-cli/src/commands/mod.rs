@@ -8,6 +8,7 @@ pub mod devshell;
 pub mod doctor;
 pub mod env;
 pub mod extension;
+pub mod external;
 pub mod init;
 pub mod internal;
 pub mod lock;
@@ -17,6 +18,7 @@ pub mod plugin;
 pub mod presets;
 pub mod renderer;
 pub mod runtime;
+pub mod test;
 pub mod uv;
 pub mod validate;
 

@@ -9,7 +9,9 @@
 use clap::Args;
 
 use camino::Utf8PathBuf;
-use ost_build::{BuildCompletion, TargetLock, BUILD_COMPLETION_FILE};
+use ost_build::{
+    BuildCompletion, TargetLock, TestCompletion, BUILD_COMPLETION_FILE, TEST_COMPLETION_FILE,
+};
 use ost_core::paths::STATE_DIR;
 use ost_core::{digest, Result};
 use ost_manifest::{RendererCheckStatus, RendererManifest, RendererReport, RENDERER_MANIFEST};
@@ -132,6 +134,8 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     let relative_build_dir = Utf8PathBuf::from(format!("build/{id}"));
     let managed_build_dir = root.join(&relative_build_dir);
     let build_dir = external_build.as_ref().unwrap_or(&managed_build_dir);
+    // The validated build record, kept so the `tested` check can bind against it.
+    let mut built_completion: Option<BuildCompletion> = None;
     if external_build.is_some() {
         checks.push(Check::skip(
             "built",
@@ -153,19 +157,27 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                 serde_json::from_str::<BuildCompletion>(&source).map_err(|error| error.to_string())
             });
         match (&lock, completion) {
-            (Some(lock), Ok(completion)) => match completion.validate_against(
-                lock,
-                &project.project.name,
-                &project_version,
-                &relative_build_dir,
-            ) {
-                Ok(()) if build_dir.as_std_path().is_dir() => checks.push(Check::pass("built")),
-                Ok(()) => checks.push(Check::fail(
-                    "built",
-                    format!("completed build directory is missing: {build_dir}"),
-                )),
-                Err(detail) => checks.push(Check::fail("built", detail)),
-            },
+            (Some(lock), Ok(completion)) => {
+                match completion.validate_against(
+                    lock,
+                    &project.project.name,
+                    &project_version,
+                    &relative_build_dir,
+                ) {
+                    Ok(()) if build_dir.as_std_path().is_dir() => {
+                        checks.push(Check::pass("built"));
+                        // `tested` is only meaningful once `built` holds: a test
+                        // record bound to a build that no longer validates
+                        // describes binaries that are gone.
+                        built_completion = Some(completion);
+                    }
+                    Ok(()) => checks.push(Check::fail(
+                        "built",
+                        format!("completed build directory is missing: {build_dir}"),
+                    )),
+                    Err(detail) => checks.push(Check::fail("built", detail)),
+                }
+            }
             (Some(_), Err(detail)) => checks.push(Check::fail(
                 "built",
                 format!(
@@ -177,6 +189,36 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                 "built",
                 "target is not configured — run `ost build`",
             )),
+        }
+    }
+
+    // 2b. tested — a claim of its own. It is not implied by `built`, does not
+    // follow from `packaged`, and is not the same as a host-side plugin or
+    // renderer check: those exercise an installed artifact on a host, this says
+    // the target's own test suite ran against the build recorded above.
+    if external_build.is_some() {
+        checks.push(Check::skip(
+            "tested",
+            "external/manual evidence does not claim an `ost test` run",
+        ));
+    } else {
+        let test_path = build_dir.join(TEST_COMPLETION_FILE);
+        match (
+            &built_completion,
+            std::fs::read_to_string(test_path.as_std_path()),
+        ) {
+            (Some(build), Ok(source)) => match serde_json::from_str::<TestCompletion>(&source) {
+                Ok(tested) => match tested.validate_against(build) {
+                    Ok(()) => checks.push(Check::pass("tested")),
+                    Err(detail) => checks.push(Check::fail("tested", detail)),
+                },
+                Err(error) => checks.push(Check::fail(
+                    "tested",
+                    format!("{test_path} is invalid: {error}"),
+                )),
+            },
+            (Some(_), Err(_)) => checks.push(Check::skip("tested", "not tested — run `ost test`")),
+            (None, _) => checks.push(Check::skip("tested", "target is not built")),
         }
     }
 
@@ -259,11 +301,14 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
 
     // 3. runtime-compatible — the runtime is pulled and its digest matches the
     //    one recorded at configure time (detects drift).
-    if external_build.is_some() {
-        checks.push(Check::skip(
-            "runtime-compatible",
-            "external/manual build runtime provenance is not claimed by target.lock.json",
-        ));
+    if let Some(external) = &external_build {
+        // An imported record can upgrade this check — but only on a *full*
+        // identity match against the tree's own CMake cache and the runtime
+        // resolved right now. Anything less stays a refusal: a partial match is
+        // what makes an external claim dangerous, since a tree reconfigured
+        // against a newer runtime looks identical except in the one place that
+        // decides whether its binaries still load.
+        checks.push(external_runtime_check(external, &target, &r));
     } else if !r.pulled {
         checks.push(Check::fail(
             "runtime-compatible",
@@ -320,6 +365,44 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
     Ok(())
+}
+
+/// Decide `runtime-compatible` for an external tree from its imported record.
+///
+/// With no record the check stays SKIP, exactly as before: an un-imported tree
+/// makes no claim about any runtime, and inventing one from the directory's mere
+/// existence is what this whole path is designed not to do.
+fn external_runtime_check(
+    build_dir: &camino::Utf8Path,
+    target: &ost_build::Target,
+    resolved: &crate::commands::Resolved,
+) -> Check {
+    let Ok(record) = crate::commands::external::read_provenance(build_dir) else {
+        return Check::skip(
+            "runtime-compatible",
+            format!(
+                "external build has no imported provenance — run \
+                 `ost external import --build-dir {build_dir}`"
+            ),
+        );
+    };
+    let cache = match crate::commands::external::load_cache(build_dir) {
+        Ok(cache) => cache,
+        Err(error) => return Check::fail("runtime-compatible", error.to_string()),
+    };
+    let current = ost_build::ExternalRuntime {
+        id: target.runtime_id.clone(),
+        digest: target.runtime_digest.clone(),
+        root: resolved.artifact_prefix.to_string().replace('\\', "/"),
+    };
+    match record.verify_against(&cache, build_dir, &current) {
+        Ok(()) => Check {
+            name: "runtime-compatible".into(),
+            status: Status::Pass,
+            detail: Some(record.describe()),
+        },
+        Err(detail) => Check::fail("runtime-compatible", detail),
+    }
 }
 
 /// Recompute the archive digest and compare it to the manifest.
