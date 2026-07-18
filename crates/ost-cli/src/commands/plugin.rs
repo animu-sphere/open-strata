@@ -1273,7 +1273,8 @@ fn package_bundle(
     // …and so does the registration half those records point at. Recording a
     // resolved `bundles` closure while shipping only its libraries is what made
     // a v0.18.0 package look closed and still fail at `Usd.Stage.Open()`.
-    let bundle_registration = selected_bundle_package_registration(&bundle_dependencies);
+    let bundle_registration = selected_bundle_package_registration(&bundle_dependencies)?;
+    let bundle_libraries = selected_bundle_package_libraries(&bundle_dependencies)?;
     for (_, relative) in &bundle_registration {
         let relative = portable(relative);
         if !packaged_manifest
@@ -1287,6 +1288,12 @@ fn package_bundle(
                 .push(relative);
         }
     }
+    for (_, relative) in &bundle_libraries {
+        let relative = portable(relative);
+        if !packaged_manifest.requires.runtime_libs.contains(&relative) {
+            packaged_manifest.requires.runtime_libs.push(relative);
+        }
+    }
 
     // Reruns must not fail on a stage the previous run left temporarily
     // undeletable (scanner-held handles, dogfooding report #9): stage into a
@@ -1296,6 +1303,9 @@ fn package_bundle(
     let (stage, stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
     stage_plugin_bundle(&bundle, &stage)?;
     for (source, relative) in &library_runtime {
+        copy_tree_required(source, relative, &stage)?;
+    }
+    for (source, relative) in &bundle_libraries {
         copy_tree_required(source, relative, &stage)?;
     }
     for (source, relative) in &bundle_registration {
@@ -3299,25 +3309,74 @@ fn selected_library_package_runtime(
 /// `generatedSchema.usda` were nowhere in the artifact. A `kind: usd-schema`
 /// dependency is exactly the kind whose entire value is that registration half.
 ///
-/// The provider's `LibraryPath` is resolved through the loader path rather than
-/// relative to this staged tree: its shared libraries are staged by
-/// `selected_library_package_runtime` and declared in `requires.runtime_libs`,
-/// so they are already on the session's library search path.
+/// A compiled provider's relative `LibraryPath` continues to resolve because
+/// [`selected_bundle_package_libraries`] stages its `lib/` beside the copied
+/// `plugin/` tree. That directory is also declared in `requires.runtime_libs`
+/// so transitive loader dependencies can resolve it.
 fn selected_bundle_package_registration(
     dependencies: &[Bundle],
-) -> Vec<(Utf8PathBuf, Utf8PathBuf)> {
+) -> Result<Vec<(Utf8PathBuf, Utf8PathBuf)>> {
     let mut mappings = Vec::new();
     for dependency in dependencies {
         let source = dependency.plug_info_root();
         if !source.as_std_path().is_dir() {
-            continue;
+            return Err(Error::coded(
+                "WORKSPACE_BUNDLE_RUNTIME_MISSING",
+                Category::Precondition,
+                format!(
+                    "bundle dependency '{}' has no packageable plugInfo root at '{}'",
+                    dependency.manifest.name(),
+                    source
+                ),
+            )
+            .with_hint(format!(
+                "build '{}' before packaging so its USD registration resources exist",
+                dependency.root
+            )));
         }
         let relative = Utf8Path::new("runtime/bundles")
             .join(dependency.manifest.name())
             .join(plug_info_root_rel(dependency));
         mappings.push((source, relative));
     }
-    mappings
+    Ok(mappings)
+}
+
+/// The link half of each resolved plugin-bundle dependency.
+///
+/// Keeping the provider's `lib/` beside its copied `plugin/` tree preserves the
+/// relative `../../../lib/<name>` paths generated into OpenUSD `plugInfo.json`
+/// files. Codeless schemas legitimately have no library; every other bundle
+/// must have built its packageable library directory before a dependent can
+/// claim to carry it.
+fn selected_bundle_package_libraries(
+    dependencies: &[Bundle],
+) -> Result<Vec<(Utf8PathBuf, Utf8PathBuf)>> {
+    let mut mappings = Vec::new();
+    for dependency in dependencies {
+        let source = dependency.lib_dir();
+        if source.as_std_path().is_dir() {
+            let relative = Utf8Path::new("runtime/bundles")
+                .join(dependency.manifest.name())
+                .join("lib");
+            mappings.push((source, relative));
+        } else if !dependency.manifest.is_codeless_schema() {
+            return Err(Error::coded(
+                "WORKSPACE_BUNDLE_RUNTIME_MISSING",
+                Category::Precondition,
+                format!(
+                    "bundle dependency '{}' has no packageable library directory at '{}'",
+                    dependency.manifest.name(),
+                    source
+                ),
+            )
+            .with_hint(format!(
+                "build '{}' before packaging so its shared library exists",
+                dependency.root
+            )));
+        }
+    }
+    Ok(mappings)
 }
 
 /// Write the resolved dependency closure beside a report or into a package.
@@ -4380,7 +4439,7 @@ _ost_prepend() {{\n\
     local _key=\"$1\" _relative=\"$2\" _full _current\n\
     _full=\"${{_ost_root}}/${{_relative}}\"\n\
     [[ -d \"$_full\" ]] || return 0\n\
-    _current=\"${{!_key-}}\"\n\
+    if declare -p \"$_key\" >/dev/null 2>&1; then _current=\"${{!_key}}\"; else _current=\"\"; fi\n\
     if [[ -n \"$_current\" ]]; then printf -v \"$_key\" '%s{separator}%s' \"$_full\" \"$_current\"; else printf -v \"$_key\" '%s' \"$_full\"; fi\n\
     export \"$_key\"\n\
 }}\n"
@@ -5112,6 +5171,96 @@ mod tests {
             render_bash_activation(&plugins, &libraries, &python, "LD_LIBRARY_PATH", Os::Linux);
         assert!(bash.contains("printf -v \"$_key\" '%s:%s'"));
         assert!(bash.contains("_ost_prepend 'LD_LIBRARY_PATH' 'runtime/libraries/bin'"));
+        assert!(
+            !bash.contains("${!_key-}"),
+            "invalid indirect expansion: {bash}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_activation_sources_with_unset_environment_variables() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = Utf8PathBuf::from_path_buf(std::env::temp_dir().join(format!(
+            "ost-bash-activation-{}-{nonce}",
+            std::process::id()
+        )))
+        .unwrap();
+        for relative in ["plugin/resources/toy", "lib", "python"] {
+            std::fs::create_dir_all(root.join(relative).as_std_path()).unwrap();
+        }
+        let script_path = root.join("activate.sh");
+        let script = render_bash_activation(
+            &["plugin/resources/toy".into()],
+            &["lib".into()],
+            &["python".into()],
+            "LD_LIBRARY_PATH",
+            Os::Linux,
+        );
+        std::fs::write(script_path.as_std_path(), script).unwrap();
+
+        let output = Command::new("bash")
+            .args([
+                "-uc",
+                "source \"$1\"; printf '%s\\n' \"$PXR_PLUGINPATH_NAME\" \"$LD_LIBRARY_PATH\" \"$PYTHONPATH\"",
+                "bash",
+            ])
+            .arg(script_path.as_std_path())
+            .env_remove("PXR_PLUGINPATH_NAME")
+            .env_remove("LD_LIBRARY_PATH")
+            .env_remove("PYTHONPATH")
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "activation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("plugin/resources/toy"), "{stdout}");
+        assert!(stdout.contains("/lib"), "{stdout}");
+        assert!(stdout.contains("/python"), "{stdout}");
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn bundle_registration_refuses_a_missing_provider_root() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = Utf8PathBuf::from_path_buf(std::env::temp_dir().join(format!(
+            "ost-missing-provider-{}-{nonce}",
+            std::process::id()
+        )))
+        .unwrap();
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        let manifest = ost_plugin::PluginManifest::parse(
+            r#"
+plugin: { name: schema, version: 0.1.0, kind: usd-schema }
+runtime: { openusd: ">=24.11,<25.0" }
+usd: { plug_info: plugin/resources/schema/plugInfo.json }
+schema: { codeless: true, contract: 1 }
+"#,
+        )
+        .unwrap();
+        let dependency = Bundle {
+            root: root.clone(),
+            manifest,
+        };
+
+        let error = selected_bundle_package_registration(&[dependency]).unwrap_err();
+
+        assert!(
+            error.to_string().contains("no packageable plugInfo root"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[test]

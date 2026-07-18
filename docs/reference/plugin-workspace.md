@@ -178,9 +178,10 @@ aggregate itself has a producer manifest, SBOM, digest, and registry kind
 `product`, so `ost artifact import` / `verify` / transport treat it as a
 first-class artifact.
 
-A `requires.bundles` provider travels as **both halves**. Its link half — shared
-libraries and CMake package files — arrives through the library staging above.
-Its USD *registration* half is staged under
+A `requires.bundles` provider travels as **both halves**. Its link half is staged
+under `runtime/bundles/<id>/lib`, beside the provider-relative path its
+`plugInfo.json` already names; ordinary `requires.libraries` runtime files stay
+under `runtime/libraries/`. Its USD *registration* half is staged under
 `runtime/bundles/<id>/<provider plugInfo root>` and declared in the packaged
 manifest's `requires.runtime_plugin_paths`, which the session adds to
 `PXR_PLUGINPATH_NAME` behind the bundle's own root. Both are required for the

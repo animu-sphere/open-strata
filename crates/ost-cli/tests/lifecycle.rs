@@ -1598,7 +1598,14 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     let sb = Sandbox::new("wspackage");
     init_and_pull(&sb);
     for args in [
-        vec!["plugin", "new", "usd-schema", "schema"],
+        vec![
+            "plugin",
+            "new",
+            "usd-schema",
+            "schema",
+            "--template",
+            "usd-schema-cpp",
+        ],
         vec![
             "plugin",
             "new",
@@ -1612,7 +1619,7 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
     }
     // Both bundles need a library artifact present to package.
-    for (bundle, stem) in [("schema", "SchemaLib"), ("consumer", "ConsumerFileFormat")] {
+    for (bundle, stem) in [("schema", "Schema"), ("consumer", "ConsumerFileFormat")] {
         let lib = sb.work_file(&format!(
             "{bundle}/lib/lib{stem}{}",
             std::env::consts::DLL_SUFFIX
@@ -1702,6 +1709,14 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         staged.contains(&"runtime/bundles/schema/plugin/resources/schema/plugInfo.json"),
         "the provider's registration half must be staged; got: {staged:?}"
     );
+    let provider_library = format!(
+        "runtime/bundles/schema/lib/libSchema{}",
+        std::env::consts::DLL_SUFFIX
+    );
+    assert!(
+        staged.contains(&provider_library.as_str()),
+        "the provider's link half must stay beside its copied plugInfo tree; got: {staged:?}"
+    );
     for activation in [
         "openstrata.activation.json",
         "activate.ps1",
@@ -1727,6 +1742,11 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         .unwrap()
         .iter()
         .any(|path| path == "third_party/bin"));
+    assert!(activation["library_paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path == "runtime/bundles/schema/lib"));
     assert_eq!(
         activation["environment"]["loader"],
         if cfg!(windows) {
