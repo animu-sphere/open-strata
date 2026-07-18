@@ -44,6 +44,27 @@ are still ahead.
 Linux x86_64 is the first-class target; other OS targets are modeled and
 partially working — these examples were exercised on Windows.
 
+## Reference projects
+
+OpenStrata is developed against real OpenUSD projects rather than isolated
+examples. Its **reference projects** validate the plugin-workspace, renderer,
+artifact, CI, and execution contracts across repository boundaries:
+
+- [**USD VRM Plugins**](https://github.com/animu-sphere/usd-vrm-plugins) — a
+  multi-bundle OpenUSD plugin workspace (typed schemas, a VRM file-format plugin,
+  a package resolver, a shared container library). It demonstrates workspace
+  dependency composition, plugin lifecycle testing, packaging, clean-install
+  validation, and generated CI matrices.
+- [**hdMerlin**](https://github.com/animu-sphere/hydra-merlin) — a host-neutral
+  Vulkan renderer with an optional Hydra 2 adapter. It demonstrates renderer
+  projects that are not plugin workspaces, managed CMake execution, renderer
+  evidence, capability-aware validation, runtime artifact adoption, and the
+  managed `usdview` workflow.
+
+Together they exercise the plugin and renderer sides of the ecosystem and
+establish the basis for cross-repository **Formation** composition planned for
+v0.19.0. See [docs/projects/](docs/projects/README.md).
+
 ## Install
 
 `ost` is a single self-contained binary. Tagged releases (`v*`) publish

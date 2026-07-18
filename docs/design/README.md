@@ -33,5 +33,6 @@ defined in [contributing/documentation.md](../contributing/documentation.md).
 
 | Document | Purpose |
 | --- | --- |
-| [proposed/dcc-hosts.md](proposed/dcc-hosts.md) | Third-party DCC host support (Maya/Houdini/Nuke) — discovery, headless run/package, cross-DCC USD compatibility. |
+| [proposed/formations.md](proposed/formations.md) | Cross-repository Formation composition (`ost formation`) — resolve, compose, lock, and run independently released components (targeting v0.19.0). |
+| [proposed/dcc-hosts.md](proposed/dcc-hosts.md) | Third-party DCC host support (Maya/Houdini/Nuke) — discovery, headless run/package, cross-DCC USD compatibility; consumes Formation. |
 | [proposed/kubernetes.md](proposed/kubernetes.md) | Kubernetes as a pluggable execution backend (`ost submit` / `ost jobs`). |
