@@ -7,6 +7,7 @@ spec wins and the summary is a bug.
 | Category | Answers | Start here |
 | --- | --- | --- |
 | [concepts/](concepts/) | What OpenStrata is and the ideas it is built on. | [overview.md](concepts/overview.md) |
+| [projects/](projects/) | The reference projects (real downstream repositories) and the cross-repository ecosystem. | [README.md](projects/README.md) |
 | [architecture/](architecture/) | How the current system is structured (crates, domain model, on-disk layout). | [overview.md](architecture/overview.md) |
 | [guides/](guides/) | How to accomplish a task (command tour, migrations). | [examples.md](guides/examples.md) |
 | [reference/](reference/) | Factual contracts: `--json` output, schemas, exit codes. | [json-output.md](reference/json-output.md) |

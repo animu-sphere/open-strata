@@ -8,30 +8,58 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.18.0 - evidence integrity fix release) is detailed in
-[current.md](current.md).
+The next milestone (v0.18.0 - evidence integrity and ecosystem documentation) is
+detailed in [current.md](current.md).
 
-- ⬜ **v0.19.0 - DCC host integration (Phase 10).** Deferred from the original
-  v0.18.0 slot by the v0.17.0 dogfooding findings now scheduled as the v0.18.0
-  fix release. Extends OpenStrata beyond runtime-native OpenUSD applications
-  without redistributing DCC SDKs or inventing one false cross-DCC API: an
-  `ost-host` model with a versioned host record (product, version, install
-  root, executable/API locations, Python ABI, platform fingerprint, discovery
-  evidence); `ost host discover|list|inspect` with deterministic Maya and
-  Houdini detectors that never mutate a host install or accept ambient PATH
-  guesses; a host adapter boundary running minimal headless
-  load/open/validate probes with preserved output and explained SKIP for
-  unavailable licenses/display/capability; and support-matrix cells with
-  pinned host records, stable/nightly/release/legacy tiers, and trusted
-  release candidates fed in without weakening the artifact publisher boundary.
-  Host integration must consume the renderer identity and evidence model
-  established in v0.17.0 and corrected in v0.18.0 rather than introduce a
-  parallel DCC renderer contract. Direction:
-  [dcc-hosts.md](../design/proposed/dcc-hosts.md).
+- ⬜ **v0.19.0 - Formation composition.** Turn the reference-project ecosystem
+  documented in v0.18.0 into an executable contract. A **Formation** is a
+  resolved, reproducible set of OpenStrata-managed components — runtime, plugin
+  bundles, plugin-workspace products, renderer, tool, and scene/input asset
+  references — assembled for one command or execution purpose. Direction:
+  [formations.md](../design/proposed/formations.md). Minimum viable scope: parse
+  a versioned `formation.toml`; select one runtime and resolve plugin and
+  renderer components from their dependency metadata; verify target,
+  architecture, OpenUSD, compiler/CRT, and Python-ABI compatibility where known;
+  compose plugin discovery and loader paths and identify conflicting environment
+  contributions; print a deterministic resolved model with `--json`; launch a
+  foreground process; emit a digest-pinned `formation.lock`; and record Formation
+  Run evidence. CLI: `ost formation resolve|inspect|run|lock|env|doctor`, using
+  the shipped `{ok, schema, data, warnings}` envelope and category exit codes.
+  Formation must **reuse** the runtime, artifact, plugin, renderer, target, and
+  evidence contracts rather than fork them, and introduce no DCC-specific logic
+  in the core model. Acceptance requires three first-party dogfoods run from
+  packaged, digest-pinned artifacts (not source-tree paths): a
+  `usd-vrm-plugins`-only Formation, a `hydra-merlin`-only Formation, and a
+  combined VRM-rendered-by-hdMerlin Formation — each on a clean machine or
+  isolated prefix, with evidence naming the exact runtime, bundles, renderer, and
+  executable used. Non-goals: DCC discovery, Kubernetes execution, Linux
+  namespace / overlayfs sandboxing, detached session management, general-purpose
+  package solving, automatic Formation-bundle publication, and implicit download
+  from untrusted sources.
+- ⬜ **v0.20.0 - DCC host integration (Phase 10).** Deferred from the v0.19.0
+  slot by the inserted Formation milestone (and originally from v0.18.0 by the
+  v0.17.0 dogfooding findings). Extends OpenStrata beyond runtime-native OpenUSD
+  applications without redistributing DCC SDKs or inventing one false cross-DCC
+  API: an `ost-host` model with a versioned host record (product, version,
+  install root, executable/API locations, Python ABI, platform fingerprint,
+  discovery evidence); `ost host discover|list|inspect` with deterministic Maya
+  and Houdini detectors that never mutate a host install or accept ambient PATH
+  guesses; a host adapter boundary running minimal headless load/open/validate
+  probes with preserved output and explained SKIP for unavailable
+  licenses/display/capability; and support-matrix cells with pinned host records,
+  stable/nightly/release/legacy tiers, and trusted release candidates fed in
+  without weakening the artifact publisher boundary. Host integration **consumes
+  Formation** as its environment and component-assembly layer — a host record is
+  a Formation component, and a host launch binds a runtime, plugins, renderer,
+  and host executable through the same resolved model — rather than introducing a
+  parallel DCC composition or environment mechanism. It must also consume the
+  renderer identity and evidence model established in v0.17.0 and corrected in
+  v0.18.0. Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md).
 - ⬜ **v1.0.0 (after the DCC host milestone).** Cut once the produce → trust →
-  provenance → trusted-CI arc and the initial DCC host matrix are shipped and
-  dogfooded — i.e. "build it, publish it, verify its provenance, pull it in
-  trusted CI, run it against a DCC host" is a single supported,
+  provenance → trusted-CI arc, cross-repository Formation composition, and the
+  initial DCC host matrix are shipped and dogfooded — i.e. "build it, publish it,
+  verify its provenance, pull it in trusted CI, compose it into a reproducible
+  Formation, and run that against a DCC host" is a single supported,
   digest-addressed arc.
 
 ## Future phases
@@ -60,7 +88,11 @@ The next milestone (v0.18.0 - evidence integrity fix release) is detailed in
   renderer-owned until separately proven.
 - ⬜ **Phase 7 — Sessions / sandbox.** Session metadata; `ost session start | fork
   | diff | discard | promote`. Workspace isolation; optional Linux namespace /
-  overlayfs.
+  overlayfs. A Session is a mutable or isolated working instance *over time* and
+  builds **on top of** a resolved Formation (Formation composes components and
+  launches; a Session then forks, diffs, discards, or promotes the running
+  instance). It is a distinct later layer, not a rename of the
+  [Formation milestone](#milestone-ladder-beyond-next).
 - ⬜ **Phase 8 — AI / GPU profiles.** GPU host detection + driver checks
   (`ost doctor gpu`); AI runtime profiles (`ai-cuda124`, `ai-rocm`, `ai-mps`,
   hybrid `cy2026-lookdev-ai`); Jenkins GPU routing labels + smoke tests.

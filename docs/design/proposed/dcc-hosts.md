@@ -135,6 +135,31 @@ level model ([phase-4-plugin-harness.md](../accepted/phase-4-plugin-harness.md))
 schema load, reference/payload resolve, asset-resolver behaviour, layer-stack
 integrity, metadata + material-binding preservation.
 
+## Composition via Formation
+
+A DCC host launch is a composition problem OpenStrata already models: bind one
+runtime, some plugins, an optional renderer, and an executable into one
+environment, then launch. That is exactly a [Formation](formations.md). DCC host
+support therefore **consumes** Formation as its environment and
+component-assembly layer rather than introducing a second composition mechanism:
+
+- a discovered, validated **host record is a Formation component**, carrying its
+  adopted runtime, Python ABI, and launch contract;
+- a host launch is a **Formation that binds** a runtime, plugin bundles, an
+  optional renderer, and the host executable;
+- `ost host run` / `ost host test` execute through the **same resolved
+  environment model** — the composed, conflict-checked, no-hidden-mutation
+  `EnvSet` a Formation produces — so a host probe and a runtime-native app share
+  one environment contract;
+- the host adapter's `environment` capability contributes to Formation
+  resolution rather than composing paths on its own.
+
+This keeps the non-goal above literal: **no parallel DCC environment mechanism.**
+The DCC adapter still decides *how* the host process runs; Formation decides
+*which* runtime, components, and environment it runs inside. Formation is the
+v0.19.0 milestone and lands before this one — see [formations.md](formations.md)
+and the [roadmap backlog](../../roadmap/backlog.md).
+
 ## Matrix
 
 A naïve `Maya × Houdini × USD × OS × renderer` product explodes into thousands of
@@ -192,10 +217,11 @@ but reconciles them to this repo:
   (`usage` 2, `precondition` 4, `io` 7, …). A persisted host record carries its
   own `schema_version` (as runtime.json / plugin-report do), distinct from the
   envelope `schema`.
-- **Reuse, don't reinvent.** Launch envs come from the runtime `EnvSet` (no
-  hidden mutation); cross-DCC USD checks reuse the plugin harness levels; digests
-  reuse the existing fingerprint discipline; CI is template generation, not a CI
-  product (§13, Phase 5).
+- **Reuse, don't reinvent.** Launch envs and the component set come from a
+  resolved [Formation](formations.md) over the runtime `EnvSet` (no hidden
+  mutation), not a parallel host composition path; cross-DCC USD checks reuse the
+  plugin harness levels; digests reuse the existing fingerprint discipline; CI is
+  template generation, not a CI product (§13, Phase 5).
 - **Declarative config only.** Discovery roots/rules are declarative TOML
   (`[host.discovery]`), bounded depth, never `/`-wide, never executing patterns
   or sourcing shell.

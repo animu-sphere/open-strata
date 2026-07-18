@@ -3,15 +3,16 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## Next milestone: v0.18.0 - evidence integrity fix release
+## Next milestone: v0.18.0 - evidence integrity and ecosystem documentation
 
 **Status:** ⬜ not started · **Depends on:** v0.17.0 renderer lifecycle,
 artifact evidence, and generated-CI contracts (shipped).
 
 v0.18.0 is a corrective release, re-planned from the previously scheduled DCC
-host milestone (now v0.19.0 in the [backlog ladder](backlog.md)). Two v0.17.0
-dogfooding passes surfaced the same defect class at two layers: a PASS or a
-success report that is not bound to a completed, owning producer.
+host milestone (now v0.20.0 in the [backlog ladder](backlog.md), behind the new
+v0.19.0 Formation composition milestone). Two v0.17.0 dogfooding passes surfaced
+the same defect class at two layers: a PASS or a success report that is not bound
+to a completed, owning producer.
 
 - hdMerlin (`animu-sphere/hydra-merlin`,
   `2026-07-15-v0.17.0-dogfooding-v0.18.0-asks.md`): a renderer assertion became
@@ -26,6 +27,15 @@ success report that is not bound to a completed, owning producer.
 v0.18.0 extends v0.17.0's file-level build truth to whole operations: evidence
 import, generated CI gates, renderer producer sessions, and target ownership.
 No new DCC or host surface ships in this release.
+
+Alongside the evidence-integrity fixes, v0.18.0 lands an ecosystem documentation
+slice. The two real downstream repositories that already exercise these
+contracts — `animu-sphere/usd-vrm-plugins` and `animu-sphere/hydra-merlin` — are
+documented as **reference projects**, and the cross-repository **Formation**
+model they motivate is written up as a v0.19.0 design target. This is
+documentation only: it must not weaken or defer the P0 evidence-integrity work
+below and ships no `ost formation` surface (see the
+[documentation priority](#p1---reference-projects-and-formation-design-documentation)).
 
 ### P0 - artifact evidence attaches and gates honestly
 
@@ -139,6 +149,47 @@ From the hdMerlin report OST18-RND-005/006:
   being exercised; the core profile does not recommend `--from-usd` unless an
   OpenUSD-dependent action was requested, and JSON explains why a real runtime
   would change a result.
+
+### P1 - Reference Projects and Formation design documentation
+
+An ecosystem documentation slice, added without touching the evidence-integrity
+code above. It names the real downstream repositories as **reference projects**,
+records which OpenStrata contract each one proves, and specifies the
+cross-repository **Formation** model as a v0.19.0 design target — so the v0.19.0
+implementation has a stable public target and no reader mistakes a planned
+capability for a shipped one.
+
+- Add a `docs/projects/` category: a
+  [Reference Projects overview](../projects/README.md) (ecosystem map, project
+  comparison, cross-repository link policy) plus a project page for
+  [usd-vrm-plugins](../projects/usd-vrm-plugins.md) (multi-bundle OpenUSD plugin
+  workspace) and one for [hydra-merlin](../projects/hydra-merlin.md)
+  (host-neutral renderer). Each page states which OpenStrata capability the
+  project validates and links to the authoritative downstream documentation
+  instead of copying command references or support tables.
+- Write the Formation concept and design as
+  [design/proposed/formations.md](../design/proposed/formations.md):
+  terminology (declared / resolved / lock / run / evidence), the
+  declared-versus-shipped boundary, and how Formation reuses the runtime,
+  artifact, plugin, renderer, and evidence models rather than introducing a
+  parallel composition mechanism. The planned cross-repository workflows (VRM
+  inspection, hdMerlin view, VRM rendered by hdMerlin) are documented in
+  [projects/combined-formations.md](../projects/combined-formations.md) as
+  **planned**, not shipped.
+- Add transferable adoption guides —
+  [adopt a plugin workspace](../guides/adopt-a-plugin-workspace.md),
+  [adopt a renderer project](../guides/adopt-a-renderer-project.md) — and a
+  v0.19.0-oriented [compose a formation](../guides/compose-a-formation.md)
+  guide, plus a concise **Reference projects** section in the root README that
+  links to the overview.
+- Every Formation reference is explicitly labeled available in **v0.19.0, not
+  v0.18.0**; the documentation link and consistency checks
+  (`scripts/check_doc_links.py`, `scripts/check_docs_consistency.py`) stay
+  green.
+
+This priority ships documentation only. It does not implement `ost formation`,
+Formation resolution, lock files, or any cross-repository artifact composition —
+those are the [v0.19.0 Formation composition milestone](backlog.md).
 
 ## v0.17 environment-dependent acceptance
 
