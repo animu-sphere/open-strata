@@ -207,6 +207,23 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                         Ok(report) => {
                             checks.push(Check::pass("renderer-evidence"));
                             for renderer_check in report.checks {
+                                // Name the producer behind the assertion. A
+                                // merged report is several producers' evidence;
+                                // presenting it as one anonymous verdict is how
+                                // an unowned PASS goes unnoticed.
+                                let detail = match (
+                                    renderer_check.detail,
+                                    renderer_check
+                                        .producer
+                                        .or_else(|| report.producer.as_ref().map(|s| s.id.clone())),
+                                ) {
+                                    (Some(detail), Some(producer)) => {
+                                        Some(format!("{detail} (producer {producer})"))
+                                    }
+                                    (Some(detail), None) => Some(detail),
+                                    (None, Some(producer)) => Some(format!("producer {producer}")),
+                                    (None, None) => None,
+                                };
                                 checks.push(Check {
                                     name: renderer_check.id,
                                     status: match renderer_check.status {
@@ -214,7 +231,7 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                                         RendererCheckStatus::Fail => Status::Fail,
                                         RendererCheckStatus::Skip => Status::Skip,
                                     },
-                                    detail: renderer_check.detail,
+                                    detail,
                                 });
                             }
                         }
