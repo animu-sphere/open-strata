@@ -87,6 +87,7 @@ Deterministic PASS/FAIL/SKIP evidence emitted by a renderer project.
 | --- | --- | --- | --- |
 | `checks` | array | yes |  |
 | `device` | object | no |  |
+| `producer` | object | no | The invocation that produced this report. Required for a PASS: OpenStrata refuses an assertion that no completed, successful producer stands behind. |
 | `renderer` | object | yes |  |
 | `schema` | string | yes |  |
 
