@@ -294,7 +294,7 @@ fn runtime_native_families(capabilities: &[String]) -> RuntimeNativeFamilies {
     let has = |c: &str| capabilities.iter().any(|x| x == c);
     let wants_usd = capabilities
         .iter()
-        .any(|c| c.starts_with("usd-") || c == "hydra-preview");
+        .any(|c| crate::commands::needs_openusd(c));
     RuntimeNativeFamilies {
         usd: wants_usd,
         qt: has("qt-ui") || has("hydra-preview"),

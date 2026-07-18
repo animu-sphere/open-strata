@@ -11,7 +11,9 @@
 //! This crate renders those artifacts as strings/values; the CLI owns the I/O.
 
 mod completion;
+mod external;
 pub mod glibc;
+mod lease;
 mod lock;
 pub mod msvc;
 pub mod package;
@@ -21,10 +23,18 @@ mod target;
 mod toolchain;
 
 pub use completion::{
-    BuildCompletion, BuildIntent, BuildProjectIdentity, BUILD_COMPLETION_FILE,
-    BUILD_COMPLETION_SCHEMA,
+    BuildCompletion, BuildIntent, BuildProjectIdentity, TestCompletion, TestTotals,
+    BUILD_COMPLETION_FILE, BUILD_COMPLETION_SCHEMA, TEST_COMPLETION_FILE, TEST_COMPLETION_SCHEMA,
+};
+pub use external::{
+    CMakeCache, ExternalBuildProvenance, ExternalRuntime, ExternalToolchain, ImportError,
+    EXTERNAL_BUILD_FILE, EXTERNAL_BUILD_SCHEMA, IDENTITY_KEYS,
 };
 pub use glibc::{max_glibc_floor, GlibcVersion};
+pub use lease::{
+    LeaseMode, LeaseOwner, StaleReason, StaleTakeover, TargetLease, TARGET_BUSY_CODE,
+    TARGET_LEASE_FILE, TARGET_LEASE_SCHEMA,
+};
 pub use lock::{LockCompiler, LockRuntime, TargetLock};
 pub use package::{
     is_sdk_path, pack_dir, pack_dir_with, sdk_stage_files, source_date_epoch,

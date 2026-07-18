@@ -105,8 +105,12 @@ pub enum PluginCmd {
     },
     /// Pack a built plugin bundle into a target-specific tar.zst artifact.
     Package {
-        /// Path to the bundle directory.
-        bundle: String,
+        /// Path to the bundle directory (omit with --workspace).
+        bundle: Option<String>,
+        /// Package every discovered bundle, in dependency order, using the same
+        /// validated graph `plugin test --workspace` checks.
+        #[arg(long)]
+        workspace: bool,
         /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
         #[arg(long)]
         target: Option<String>,
@@ -282,11 +286,23 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
         } => build(&bundle, target, profile, dry_run, ninja, compiler, fmt),
         PluginCmd::Package {
             bundle,
+            workspace,
             target,
             profile,
             clean_stage,
             with_debug,
-        } => package(&bundle, target, profile, clean_stage, with_debug, fmt),
+        } => match (workspace, bundle) {
+            (true, Some(_)) => Err(Error::usage(
+                "--workspace discovers bundles itself — drop the bundle path",
+            )),
+            (true, None) => package_workspace(target, profile, clean_stage, with_debug, fmt),
+            (false, Some(bundle)) => {
+                package(&bundle, target, profile, clean_stage, with_debug, fmt)
+            }
+            (false, None) => Err(Error::usage(
+                "missing bundle path (or pass --workspace to package every bundle)",
+            )),
+        },
         PluginCmd::Publish {
             bundle,
             target,
@@ -325,12 +341,12 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             up_to,
             from_package,
         } => match (workspace, bundle) {
-            (true, _) if from_package => Err(Error::usage(
-                "--from-package tests one package — drop --workspace",
-            )),
             (true, Some(_)) => Err(Error::usage(
                 "--workspace discovers bundles itself — drop the bundle path",
             )),
+            (true, None) if from_package => {
+                test_workspace_from_package(&with, target, profile, up_to, fmt)
+            }
             (true, None) => test_workspace(&with, target, profile, up_to, fmt),
             (false, Some(bundle)) if from_package => {
                 test_from_package(&bundle, &with, target, profile, up_to, fmt)
@@ -1067,6 +1083,18 @@ fn build_one(
     Ok(())
 }
 
+/// What one packaged bundle produced, so a single-bundle run and a workspace run
+/// can report the same facts without packaging twice.
+struct PackageOutcome {
+    id: String,
+    name: String,
+    version: String,
+    archive_path: Utf8PathBuf,
+    packed: ost_build::PackResult,
+    debug: Option<(String, ost_build::PackResult)>,
+    stage_warnings: Vec<serde_json::Value>,
+}
+
 fn package(
     bundle_path: &str,
     target: Option<String>,
@@ -1076,6 +1104,26 @@ fn package(
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
+    let outcome = package_bundle(&bundle, target, profile, clean_stage, with_debug)?;
+    report_package(
+        &outcome.id,
+        &outcome.archive_path,
+        &outcome.packed,
+        outcome.debug.as_ref(),
+        &outcome.stage_warnings,
+        fmt,
+    );
+    Ok(())
+}
+
+fn package_bundle(
+    bundle: &Bundle,
+    target: Option<String>,
+    profile: Option<String>,
+    clean_stage: bool,
+    with_debug: bool,
+) -> Result<PackageOutcome> {
+    let bundle = bundle.clone();
     let host = Host::detect();
 
     let (platform, profile) = selection(target, profile).ok_or_else(|| {
@@ -1141,6 +1189,15 @@ fn package(
             })
         })
         .collect::<Vec<_>>();
+    // The bundle half of the closure travels with the artifact too. Without it a
+    // consumer installing this package alone has no way to know a provider is
+    // missing until USD fails to apply a schema it cannot find.
+    let packaged_bundle_evidence = selected_workspace_dependencies(&bundle)?
+        .iter()
+        .map(|dependency| {
+            bundle_evidence(dependency, ost_plugin::PLUGIN_MANIFEST, "source-workspace")
+        })
+        .collect::<Vec<_>>();
 
     // Reruns must not fail on a stage the previous run left temporarily
     // undeletable (scanner-held handles, dogfooding report #9): stage into a
@@ -1153,7 +1210,11 @@ fn package(
         copy_tree_required(source, relative, &stage)?;
     }
     write_packaged_manifest(&stage.join(ost_plugin::PLUGIN_MANIFEST), &packaged_manifest)?;
-    write_library_evidence(&stage, &packaged_library_evidence)?;
+    write_dependency_evidence(
+        &stage,
+        &packaged_library_evidence,
+        &packaged_bundle_evidence,
+    )?;
     let packaged_bundle = Bundle {
         root: stage.clone(),
         manifest: packaged_manifest.clone(),
@@ -1279,9 +1340,10 @@ fn package(
         },
         "files": files_json,
     });
-    if !packaged_library_evidence.is_empty() {
+    if !packaged_library_evidence.is_empty() || !packaged_bundle_evidence.is_empty() {
         manifest["dependencies"] = serde_json::json!({
             "libraries": packaged_library_evidence,
+            "bundles": packaged_bundle_evidence,
         });
     }
     if let Some(debug_json) = &debug_json {
@@ -1304,14 +1366,153 @@ fn package(
     }
     write_text(&dist_dir.join("SHA256SUMS"), &sha_lines.join("\n"))?;
 
-    report_package(
-        &id,
-        &archive_path,
-        &packed,
-        debug_pack.as_ref(),
-        &stage_warnings,
-        fmt,
-    );
+    Ok(PackageOutcome {
+        id,
+        name: name.clone(),
+        version: version.clone(),
+        archive_path,
+        packed,
+        debug: debug_pack,
+        stage_warnings,
+    })
+}
+
+/// `ost plugin package --workspace` — package every discovered bundle, in the
+/// order the validated workspace graph puts them in.
+///
+/// The graph is the same one `plugin test --workspace` validates, and it is
+/// validated here before anything is staged: packaging half a workspace and then
+/// discovering a cycle leaves a dist directory whose contents nobody can explain.
+///
+/// Dependency order matters because a provider's package is what a dependent's
+/// recorded closure points at. Packaging a consumer first would record a closure
+/// naming an artifact that does not exist yet.
+///
+/// This ships per-bundle artifacts. There is deliberately no aggregate
+/// "workspace product" archive yet — defining one means deciding how a consumer
+/// installs and pins a set rather than a bundle, and that belongs with the
+/// v0.19.0 Formation work rather than being invented here.
+fn package_workspace(
+    target: Option<String>,
+    profile: Option<String>,
+    clean_stage: bool,
+    with_debug: bool,
+    fmt: Format,
+) -> Result<()> {
+    let roots = discover_workspace_bundles(Utf8Path::new("."))?;
+    if roots.is_empty() {
+        return Err(Error::precondition(
+            "no plugin bundles found in immediate subdirectories or plugins/*",
+        )
+        .with_hint("run from the workspace root, or pass a bundle path instead of --workspace"));
+    }
+    let bundles = roots
+        .iter()
+        .map(|root| Bundle::load(root))
+        .collect::<Result<Vec<_>>>()?;
+    let library_roots = discover_workspace_libraries(Utf8Path::new("."))?;
+    let libraries = library_roots
+        .iter()
+        .map(|root| Library::load(root))
+        .collect::<Result<Vec<_>>>()?;
+
+    let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
+    if !graph.passed {
+        if fmt.is_json() {
+            output::report(
+                false,
+                &serde_json::json!({
+                    "workspace": true,
+                    "graph": graph,
+                    "packaged": 0,
+                }),
+            );
+        } else {
+            println!(
+                "Workspace dependency graph: {} bundle(s), {} issue(s)",
+                graph.nodes.len(),
+                graph.issues.len()
+            );
+            for issue in &graph.issues {
+                println!("  FAIL [{}] {}", issue.code, issue.message);
+            }
+        }
+        std::process::exit(ost_core::Category::Validation.exit_code() as i32);
+    }
+
+    // Package providers before the bundles that depend on them.
+    let order = graph.topological_order().ok_or_else(|| {
+        Error::coded(
+            "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+            Category::Validation,
+            "the validated workspace graph has no dependency order",
+        )
+    })?;
+    let by_id: BTreeMap<String, Bundle> = bundles
+        .iter()
+        .cloned()
+        .map(|bundle| (bundle.manifest.name().to_string(), bundle))
+        .collect();
+
+    let mut outcomes = Vec::new();
+    for id in &order {
+        let Some(bundle) = by_id.get(id) else {
+            return Err(Error::coded(
+                "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+                Category::Validation,
+                format!("validated workspace bundle '{id}' could not be loaded"),
+            ));
+        };
+        let outcome = package_bundle(
+            bundle,
+            target.clone(),
+            profile.clone(),
+            clean_stage,
+            with_debug,
+        )?;
+        if !fmt.is_json() {
+            println!(
+                "== {} {} ==\n  {}",
+                outcome.name, outcome.version, outcome.archive_path
+            );
+        }
+        outcomes.push(outcome);
+    }
+
+    if fmt.is_json() {
+        let packages: Vec<serde_json::Value> = outcomes
+            .iter()
+            .map(|outcome| {
+                serde_json::json!({
+                    "name": outcome.name,
+                    "version": outcome.version,
+                    "target": outcome.id,
+                    "archive": portable(&outcome.archive_path),
+                    "archive_digest": outcome.packed.archive_digest,
+                    "archive_size": outcome.packed.archive_size,
+                    "debug_archive": outcome.debug.as_ref().map(|(name, _)| name.clone()),
+                })
+            })
+            .collect();
+        let warnings: Vec<serde_json::Value> = outcomes
+            .iter()
+            .flat_map(|outcome| outcome.stage_warnings.clone())
+            .collect();
+        output::report(
+            true,
+            &serde_json::json!({
+                "workspace": true,
+                "order": order,
+                "packages": packages,
+                "warnings": warnings,
+            }),
+        );
+    } else {
+        println!(
+            "\nWorkspace: {} package(s), in dependency order",
+            order.len()
+        );
+    }
     Ok(())
 }
 
@@ -1705,7 +1906,8 @@ fn test(
         up_to,
     )?;
     let libraries = selected_workspace_library_evidence(&bundle, resolved.as_ref())?;
-    write_library_evidence(&report_dir, &libraries)?;
+    let dependency_bundles = selected_workspace_bundle_evidence(&bundle)?;
+    write_dependency_evidence(&report_dir, &libraries, &dependency_bundles)?;
 
     if fmt.is_json() {
         let mut body = ost_plugin::report_json(&bundle, &report);
@@ -1731,6 +1933,215 @@ fn test(
         println!("\nReport: {report_dir}");
     }
     finish(&report)
+}
+
+/// One bundle's package, extracted to a clean tree ready to be tested.
+struct ExtractedPackage {
+    bundle: Bundle,
+    extract_dir: Utf8PathBuf,
+    archive_path: Utf8PathBuf,
+}
+
+/// Locate a bundle's dist output for `id` and extract it to a clean directory.
+///
+/// The extraction is into a fresh, empty directory each run, so discovery sees
+/// only the shipped layout — the whole point of testing from a package rather
+/// than from the build tree, where a `plugInfo` baked to a build-only absolute
+/// path still resolves.
+fn extract_packaged_bundle(source: &Bundle, id: &str) -> Result<ExtractedPackage> {
+    let name = &source.manifest.plugin.name;
+    let version = &source.manifest.plugin.version;
+    let dist_dir = plugin_dist_dir(&source.root, name, version, id);
+    let manifest_path = dist_dir.join("manifest.json");
+    if !manifest_path.as_std_path().is_file() {
+        return Err(Error::precondition(format!(
+            "no packaged artifact at {dist_dir} — run `ost plugin package` for target {id} first"
+        )));
+    }
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(manifest_path.as_std_path())
+            .map_err(|e| Error::io(manifest_path.to_string(), e))?,
+    )
+    .map_err(|e| Error::parse(manifest_path.as_str(), anyhow::Error::new(e)))?;
+    let archive_name = manifest["archive"].as_str().ok_or_else(|| {
+        Error::validation(format!("{manifest_path} is missing an 'archive' field"))
+    })?;
+    let archive_digest = manifest["archive_digest"].as_str().ok_or_else(|| {
+        Error::validation(format!(
+            "{manifest_path} is missing an 'archive_digest' field"
+        ))
+    })?;
+    let archive_path = dist_dir.join(archive_name);
+
+    let extract_dir = target_state_dir(&source.root, id).join("from-package");
+    if extract_dir.as_std_path().exists() {
+        std::fs::remove_dir_all(extract_dir.as_std_path())
+            .map_err(|e| Error::io(extract_dir.to_string(), e))?;
+    }
+    ost_artifact::extract_archive(&archive_path, archive_digest, &extract_dir)?;
+
+    Ok(ExtractedPackage {
+        bundle: load_bundle(extract_dir.as_str())?,
+        extract_dir,
+        archive_path,
+    })
+}
+
+/// `ost plugin test --workspace --from-package` — verify a *packaged* workspace
+/// by the same pyramid its source tree gets.
+///
+/// A workspace's source tree and its shipped artifacts are different things, and
+/// only the second is what a consumer installs. Testing bundles from source
+/// proves the sources compose; it says nothing about whether the packages do —
+/// which is exactly where a `plugInfo` baked to a build-tree path, or a bundle
+/// dependency that never made it into the artifact, shows up.
+///
+/// Every bundle is extracted first, then each is tested against the *extracted*
+/// trees of its dependencies rather than their source directories. Composing
+/// source bundles here would defeat the purpose: the provider on the discovery
+/// path has to be the shipped one.
+fn test_workspace_from_package(
+    with_paths: &[String],
+    target: Option<String>,
+    profile: Option<String>,
+    up_to: u8,
+    fmt: Format,
+) -> Result<()> {
+    let roots = discover_workspace_bundles(Utf8Path::new("."))?;
+    if roots.is_empty() {
+        return Err(Error::precondition(
+            "no plugin bundles found in immediate subdirectories or plugins/*",
+        )
+        .with_hint("run from the workspace root, or pass a bundle path instead of --workspace"));
+    }
+    let bundles = roots
+        .iter()
+        .map(|root| Bundle::load(root))
+        .collect::<Result<Vec<_>>>()?;
+    let library_roots = discover_workspace_libraries(Utf8Path::new("."))?;
+    let libraries = library_roots
+        .iter()
+        .map(|root| Library::load(root))
+        .collect::<Result<Vec<_>>>()?;
+
+    let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
+    if !graph.passed {
+        if fmt.is_json() {
+            output::report(
+                false,
+                &serde_json::json!({ "workspace": true, "from_package": true, "graph": graph }),
+            );
+        } else {
+            for issue in &graph.issues {
+                println!("  FAIL [{}] {}", issue.code, issue.message);
+            }
+        }
+        std::process::exit(ost_core::Category::Validation.exit_code() as i32);
+    }
+
+    let (platform, profile) = selection(target, profile).ok_or_else(|| {
+        Error::usage(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
+        )
+    })?;
+    let (tgt, r) = build_target(&platform, &profile)?;
+    let id = tgt.id();
+    let host = Host::detect();
+    let explicit_bundles = load_with_bundles(with_paths)?;
+
+    let source_by_id: BTreeMap<String, Bundle> = bundles
+        .iter()
+        .cloned()
+        .map(|bundle| (bundle.manifest.name().to_string(), bundle))
+        .collect();
+
+    // Extract everything before testing anything: a bundle's dependencies must
+    // already exist as shipped trees when its turn comes.
+    let mut extracted_by_id: BTreeMap<String, ExtractedPackage> = BTreeMap::new();
+    for (source_id, source) in &source_by_id {
+        extracted_by_id.insert(source_id.clone(), extract_packaged_bundle(source, &id)?);
+    }
+
+    let mut results: Vec<(Bundle, DoctorReport, Utf8PathBuf, Utf8PathBuf)> = Vec::new();
+    for source_id in source_by_id.keys() {
+        let dependencies = graph
+            .dependency_order(source_id)
+            .expect("the workspace graph passed and contains every loaded bundle")
+            .into_iter()
+            .map(|dependency| {
+                extracted_by_id
+                    .get(&dependency)
+                    .map(|package| package.bundle.clone())
+                    .ok_or_else(|| {
+                        Error::validation(format!(
+                            "validated workspace provider '{dependency}' has no extracted package"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let package = &extracted_by_id[source_id];
+        let composed =
+            merge_composed_bundles(&package.bundle, dependencies, explicit_bundles.clone())?;
+        let (report, report_dir) =
+            test_bundle(&package.bundle, &composed, &[], Some(&r), &host, up_to)?;
+        if !fmt.is_json() {
+            println!(
+                "== {} (packaged: {}) ==",
+                package.bundle.manifest.plugin.name, package.archive_path
+            );
+            print_report(&package.bundle, &report);
+            println!("Report: {report_dir}\n");
+        }
+        results.push((
+            package.bundle.clone(),
+            report,
+            report_dir,
+            package.archive_path.clone(),
+        ));
+    }
+
+    let failed = results.iter().filter(|(_, r, _, _)| !r.passed()).count();
+    if fmt.is_json() {
+        let items: Vec<serde_json::Value> = results
+            .iter()
+            .map(|(bundle, report, dir, archive)| {
+                let mut body = ost_plugin::report_json(bundle, report);
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert(
+                        "report_dir".into(),
+                        serde_json::Value::String(dir.to_string()),
+                    );
+                    obj.insert("from_package".into(), serde_json::Value::Bool(true));
+                    obj.insert(
+                        "package".into(),
+                        serde_json::Value::String(portable(archive)),
+                    );
+                }
+                body
+            })
+            .collect();
+        output::report(
+            failed == 0,
+            &serde_json::json!({
+                "workspace": true,
+                "from_package": true,
+                "graph": graph,
+                "bundles": items,
+                "total": results.len(),
+                "failed": failed,
+            }),
+        );
+    } else {
+        println!(
+            "Workspace (packaged): {} bundle(s), {failed} failed",
+            results.len()
+        );
+    }
+    if failed == 0 {
+        Ok(())
+    } else {
+        std::process::exit(ost_core::Category::Validation.exit_code() as i32);
+    }
 }
 
 /// `ost plugin test --from-package` — extract the already-built package to a
@@ -1760,41 +2171,12 @@ fn test_from_package(
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
 
-    // Locate the dist output `ost plugin package` wrote for this target.
-    let name = &source.manifest.plugin.name;
-    let version = &source.manifest.plugin.version;
-    let dist_dir = plugin_dist_dir(&source.root, name, version, &id);
-    let manifest_path = dist_dir.join("manifest.json");
-    if !manifest_path.as_std_path().is_file() {
-        return Err(Error::precondition(format!(
-            "no packaged artifact at {dist_dir} — run `ost plugin package` for target {id} first"
-        )));
-    }
-    let manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(manifest_path.as_std_path())
-            .map_err(|e| Error::io(manifest_path.to_string(), e))?,
-    )
-    .map_err(|e| Error::parse(manifest_path.as_str(), anyhow::Error::new(e)))?;
-    let archive_name = manifest["archive"].as_str().ok_or_else(|| {
-        Error::validation(format!("{manifest_path} is missing an 'archive' field"))
-    })?;
-    let archive_digest = manifest["archive_digest"].as_str().ok_or_else(|| {
-        Error::validation(format!(
-            "{manifest_path} is missing an 'archive_digest' field"
-        ))
-    })?;
-    let archive_path = dist_dir.join(archive_name);
-
-    // Extract into a fresh, empty directory each run (extract_archive refuses a
-    // non-empty dest), so discovery sees only the shipped layout.
-    let extract_dir = target_state_dir(&source.root, &id).join("from-package");
-    if extract_dir.as_std_path().exists() {
-        std::fs::remove_dir_all(extract_dir.as_std_path())
-            .map_err(|e| Error::io(extract_dir.to_string(), e))?;
-    }
-    ost_artifact::extract_archive(&archive_path, archive_digest, &extract_dir)?;
-
-    let extracted = load_bundle(extract_dir.as_str())?;
+    let extraction = extract_packaged_bundle(&source, &id)?;
+    let (extracted, extract_dir, archive_path) = (
+        extraction.bundle,
+        extraction.extract_dir,
+        extraction.archive_path,
+    );
     let (report, report_dir) = test_bundle(&extracted, &with_bundles, &[], Some(&r), &host, up_to)?;
 
     if fmt.is_json() {
@@ -2013,7 +2395,18 @@ fn test_workspace(
             up_to,
         )?;
         let library_evidence = selected_workspace_library_evidence(&bundle, resolved.as_ref())?;
-        write_library_evidence(&report_dir, &library_evidence)?;
+        let bundle_closure = composed
+            .iter()
+            .filter(|dependency| dependency.manifest.name() != bundle.manifest.name())
+            .map(|dependency| {
+                bundle_evidence(
+                    dependency,
+                    &portable(&dependency.root.join(ost_plugin::PLUGIN_MANIFEST)),
+                    "source-workspace",
+                )
+            })
+            .collect::<Vec<_>>();
+        write_dependency_evidence(&report_dir, &library_evidence, &bundle_closure)?;
         if !fmt.is_json() {
             println!("== {} ({root}) ==", bundle.manifest.plugin.name);
             print_report(&bundle, &report);
@@ -2388,23 +2781,26 @@ fn selected_workspace_library_evidence(
     Ok(libraries
         .into_iter()
         .map(|library| {
+            // Every path in the record is forward-slashed: this document ships
+            // inside a portable artifact and is read on hosts that never saw the
+            // producer's separators.
             let runtime_directories = prefix
                 .as_ref()
                 .map(|prefix| {
                     library
                         .installed_runtime_dirs(prefix)
                         .into_iter()
-                        .map(|directory| directory.to_string())
+                        .map(|directory| portable(&directory))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
             serde_json::json!({
                 "id": library.id(),
                 "version": library.version(),
-                "descriptor": library.root.join(ost_plugin::LIBRARY_MANIFEST),
+                "descriptor": portable(&library.root.join(ost_plugin::LIBRARY_MANIFEST)),
                 "cmake_package": library.manifest.cmake.package,
                 "cmake_target": library.manifest.cmake.target,
-                "prefix": prefix,
+                "prefix": prefix.as_ref().map(|prefix| portable(prefix)),
                 "runtime_directories": runtime_directories,
                 "provenance": "source-workspace",
             })
@@ -2460,18 +2856,76 @@ fn selected_library_package_runtime(
         .collect())
 }
 
-fn write_library_evidence(report_dir: &Utf8Path, libraries: &[serde_json::Value]) -> Result<()> {
-    if libraries.is_empty() {
+/// Write the resolved dependency closure beside a report or into a package.
+///
+/// Both halves of the closure are recorded. `libraries` was always here;
+/// `bundles` is what a consumer previously had no way to see. A bundle that
+/// depends on another bundle's schema used to ship with nothing saying so, and
+/// the omission only surfaced at runtime as a schema-application failure on the
+/// consumer's machine — a missing provider is now visible in the artifact
+/// itself, before anything is loaded.
+fn write_dependency_evidence(
+    report_dir: &Utf8Path,
+    libraries: &[serde_json::Value],
+    bundles: &[serde_json::Value],
+) -> Result<()> {
+    if libraries.is_empty() && bundles.is_empty() {
         return Ok(());
     }
     let path = report_dir.join("dependencies.json");
     let body = serde_json::to_string_pretty(&serde_json::json!({
         "schema": "openstrata.dependencies/v1alpha1",
         "libraries": libraries,
+        "bundles": bundles,
     }))
     .map_err(|error| Error::parse("dependencies.json", anyhow::Error::new(error)))?;
     std::fs::write(path.as_std_path(), format!("{body}\n"))
         .map_err(|error| Error::io(path.to_string(), error))
+}
+
+/// One bundle's entry in the recorded closure.
+///
+/// The shape mirrors the library entries deliberately: a consumer reading
+/// `dependencies.json` should not need two parsers to answer "what does this
+/// artifact require, and did I get it?".
+fn bundle_evidence(bundle: &Bundle, descriptor: &str, provenance: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": bundle.manifest.name(),
+        "version": bundle.manifest.plugin.version,
+        "kind": bundle.manifest.kind().as_str(),
+        // The schema contract is what a dependent actually binds to, so a
+        // consumer can detect a provider that moved to an incompatible one.
+        "contract": bundle
+            .manifest
+            .schema
+            .as_ref()
+            .and_then(|schema| schema.contract),
+        "descriptor": descriptor,
+        "provenance": provenance,
+    })
+}
+
+/// The bundle half of the closure, resolved from the source workspace graph.
+fn selected_workspace_bundle_evidence(primary: &Bundle) -> Result<Vec<serde_json::Value>> {
+    Ok(selected_workspace_dependencies(primary)?
+        .iter()
+        .map(|bundle| {
+            bundle_evidence(
+                bundle,
+                &portable(&bundle.root.join(ost_plugin::PLUGIN_MANIFEST)),
+                "source-workspace",
+            )
+        })
+        .collect())
+}
+
+/// Render a path the way a portable artifact must carry it.
+///
+/// Staged manifests and `dependencies.json` are consumed on hosts other than the
+/// one that produced them, so a Windows producer must not bake `\` separators
+/// into a document a Linux consumer reads back.
+fn portable(path: &Utf8Path) -> String {
+    path.as_str().replace('\\', "/")
 }
 
 /// Merge graph-resolved dependencies with explicit `--with` bundles. Identity

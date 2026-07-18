@@ -64,9 +64,11 @@ pub enum RendererCmd {
         #[arg(long)]
         profile: Option<String>,
 
-        /// Camera prim passed to usdview.
-        #[arg(long, default_value = "/Camera")]
-        camera: String,
+        /// Camera prim to view through. Omitted by default: the scene is
+        /// inspected and a camera is used only if one is actually there,
+        /// otherwise usdview opens on its free camera.
+        #[arg(long)]
+        camera: Option<String>,
 
         /// Override the renderer display name read from installed plugInfo.json.
         #[arg(long)]
@@ -231,7 +233,7 @@ struct ViewArgs {
     generator: Option<String>,
     target: Option<String>,
     profile: Option<String>,
-    camera: String,
+    camera: Option<String>,
     renderer: Option<String>,
 }
 
@@ -703,10 +705,20 @@ fn view(args: ViewArgs) -> Result<()> {
     let mut command = usdview_command(&runtime, &usdview)?;
     command
         .arg(scene.as_std_path())
-        .args(["--renderer", &renderer, "--camera", &args.camera]);
+        .args(["--renderer", &renderer]);
+
+    // Camera selection is automatic. `--camera /Camera` used to be passed
+    // unconditionally, so any scene without a prim at that exact path — most
+    // scenes — opened on an error about a camera the author never claimed to
+    // have. A camera is now named only when the scene actually contains one.
+    let selection = select_camera(&scene, args.camera.as_deref());
+    if let Some(camera) = &selection.camera {
+        command.args(["--camera", camera]);
+    }
     session.apply(&mut command);
 
     println!("==> usdview: renderer={renderer} scene={scene}");
+    println!("==> camera: {}", selection.describe());
     let status = command
         .status()
         .map_err(|error| Error::io(format!("run {usdview}"), error))?;
@@ -1316,6 +1328,134 @@ fn usdview_command(runtime: &Resolved, usdview: &Utf8Path) -> Result<Command> {
     Ok(command)
 }
 
+/// Which camera the view will use, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CameraSelection {
+    /// `None` selects usdview's free camera.
+    camera: Option<String>,
+    reason: CameraReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CameraReason {
+    /// The caller named a camera and the scene has it.
+    Requested,
+    /// The caller named one the scene does not define.
+    RequestedMissing(String),
+    /// Automatically selected the scene's only camera.
+    Discovered,
+    /// The scene defines no camera.
+    NoneInScene,
+    /// The scene could not be inspected (binary/compressed layer, unreadable).
+    Unknown,
+}
+
+impl CameraSelection {
+    fn describe(&self) -> String {
+        match (&self.camera, &self.reason) {
+            (Some(camera), CameraReason::Requested) => format!("{camera} (requested)"),
+            (Some(camera), CameraReason::Discovered) => format!("{camera} (found in scene)"),
+            (None, CameraReason::RequestedMissing(requested)) => format!(
+                "free camera — the scene defines no '{requested}', so the request was not honored"
+            ),
+            (None, CameraReason::NoneInScene) => "free camera — the scene defines none".into(),
+            (None, CameraReason::Unknown) => {
+                "free camera — the scene could not be inspected for cameras".into()
+            }
+            // A camera with no supporting reason would be exactly the silent
+            // guess this function exists to remove.
+            (camera, reason) => format!("{camera:?} ({reason:?})"),
+        }
+    }
+}
+
+/// Choose the camera to view through, honoring a request only when the scene
+/// backs it up.
+///
+/// Inspection is textual and deliberately conservative. A crosswalk through the
+/// runtime's Python would be authoritative but would also make opening a scene
+/// depend on a working `pxr` import, and a camera *hint* must never be the thing
+/// that stops a view from opening. So: a definite answer where the layer is
+/// readable text, and the free camera — reported as such — everywhere else.
+fn select_camera(scene: &Utf8Path, requested: Option<&str>) -> CameraSelection {
+    let cameras = scene_cameras(scene);
+
+    match (requested, cameras) {
+        // Nothing readable to check against: honor the request rather than
+        // second-guessing a caller who knows the scene better than we do.
+        (Some(requested), None) => CameraSelection {
+            camera: Some(requested.to_string()),
+            reason: CameraReason::Requested,
+        },
+        (Some(requested), Some(cameras)) => {
+            let found = cameras.iter().any(|camera| {
+                camera == requested || camera.rsplit('/').next() == requested.rsplit('/').next()
+            });
+            if found {
+                CameraSelection {
+                    camera: Some(requested.to_string()),
+                    reason: CameraReason::Requested,
+                }
+            } else {
+                CameraSelection {
+                    camera: None,
+                    reason: CameraReason::RequestedMissing(requested.to_string()),
+                }
+            }
+        }
+        (None, Some(cameras)) => match cameras.first() {
+            Some(camera) => CameraSelection {
+                camera: Some(camera.clone()),
+                reason: CameraReason::Discovered,
+            },
+            None => CameraSelection {
+                camera: None,
+                reason: CameraReason::NoneInScene,
+            },
+        },
+        (None, None) => CameraSelection {
+            camera: None,
+            reason: CameraReason::Unknown,
+        },
+    }
+}
+
+/// Camera prim names declared in a readable USD text layer.
+///
+/// `None` means "could not tell" — a binary `.usdc`, a `.usdz` package, or an
+/// unreadable file — which is a different answer from `Some(vec![])`, "there are
+/// definitely none". The two lead to different reported reasons.
+fn scene_cameras(scene: &Utf8Path) -> Option<Vec<String>> {
+    let extension = scene.extension().unwrap_or_default().to_ascii_lowercase();
+    if !matches!(extension.as_str(), "usda" | "usd") {
+        return None;
+    }
+    let text = std::fs::read_to_string(scene.as_std_path()).ok()?;
+    // A `.usd` layer may be binary despite the extension; crossing into it would
+    // produce nonsense matches, so treat it as un-inspectable.
+    if text.contains('\0') {
+        return None;
+    }
+
+    let mut cameras = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("def Camera ") else {
+            continue;
+        };
+        // `def Camera "main" ( ... ) {`
+        let Some(open) = rest.find('"') else { continue };
+        let Some(close) = rest[open + 1..].find('"') else {
+            continue;
+        };
+        let name = &rest[open + 1..open + 1 + close];
+        if !name.is_empty() {
+            cameras.push(format!("/{name}"));
+        }
+    }
+    Some(cameras)
+}
+
 fn portable_path(path: &Utf8Path) -> String {
     path.to_string().replace('\\', "/")
 }
@@ -1472,5 +1612,113 @@ mod tests {
             root.join("out-hydra")
         );
         assert_eq!(config_dir_name("Rel With Deb Info"), "rel-with-deb-info");
+    }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scene(tag: &str, name: &str, body: &str) -> Utf8PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ost-camera-{tag}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.join(name)).unwrap();
+        std::fs::write(path.as_std_path(), body).unwrap();
+        path
+    }
+
+    const WITH_CAMERA: &str = r#"#usda 1.0
+def Xform "root" {
+    def Camera "shotCam" {
+        float focalLength = 35
+    }
+}
+"#;
+
+    const WITHOUT_CAMERA: &str = r#"#usda 1.0
+def Xform "root" {
+    def Mesh "body" {}
+}
+"#;
+
+    /// The regression: `--camera /Camera` was passed unconditionally, so a scene
+    /// that never declared that prim opened on an error instead of a view.
+    #[test]
+    fn a_scene_without_cameras_selects_the_free_camera() {
+        let path = scene("none", "scene.usda", WITHOUT_CAMERA);
+        let selection = select_camera(&path, None);
+        assert_eq!(selection.camera, None);
+        assert_eq!(selection.reason, CameraReason::NoneInScene);
+        assert!(selection.describe().contains("free camera"));
+        std::fs::remove_dir_all(path.parent().unwrap().as_std_path()).ok();
+    }
+
+    #[test]
+    fn a_scenes_only_camera_is_selected_automatically() {
+        let path = scene("one", "scene.usda", WITH_CAMERA);
+        let selection = select_camera(&path, None);
+        assert_eq!(selection.camera.as_deref(), Some("/shotCam"));
+        assert_eq!(selection.reason, CameraReason::Discovered);
+        std::fs::remove_dir_all(path.parent().unwrap().as_std_path()).ok();
+    }
+
+    #[test]
+    fn a_requested_camera_present_in_the_scene_is_honored() {
+        let path = scene("req", "scene.usda", WITH_CAMERA);
+        let selection = select_camera(&path, Some("/shotCam"));
+        assert_eq!(selection.camera.as_deref(), Some("/shotCam"));
+        assert_eq!(selection.reason, CameraReason::Requested);
+        std::fs::remove_dir_all(path.parent().unwrap().as_std_path()).ok();
+    }
+
+    /// A request the scene cannot satisfy falls back to the free camera and says
+    /// so, rather than handing usdview a prim path that does not resolve.
+    #[test]
+    fn a_requested_camera_missing_from_the_scene_falls_back_and_reports_why() {
+        let path = scene("missing", "scene.usda", WITH_CAMERA);
+        let selection = select_camera(&path, Some("/Camera"));
+        assert_eq!(selection.camera, None);
+        assert_eq!(
+            selection.reason,
+            CameraReason::RequestedMissing("/Camera".into())
+        );
+        let described = selection.describe();
+        assert!(
+            described.contains("free camera") && described.contains("/Camera"),
+            "{described}"
+        );
+        std::fs::remove_dir_all(path.parent().unwrap().as_std_path()).ok();
+    }
+
+    /// "Cannot tell" is not "there are none": an un-inspectable layer must not
+    /// silently discard an explicit request the caller knows to be right.
+    #[test]
+    fn an_uninspectable_scene_honors_an_explicit_request() {
+        let path = scene("binary", "scene.usdc", "PXR-USDC\0binary");
+        assert_eq!(scene_cameras(&path), None);
+
+        let requested = select_camera(&path, Some("/shotCam"));
+        assert_eq!(requested.camera.as_deref(), Some("/shotCam"));
+
+        // With no request there is nothing to go on, and that is reported
+        // distinctly from a scene known to have no cameras.
+        let automatic = select_camera(&path, None);
+        assert_eq!(automatic.camera, None);
+        assert_eq!(automatic.reason, CameraReason::Unknown);
+        assert!(automatic.describe().contains("could not be inspected"));
+        std::fs::remove_dir_all(path.parent().unwrap().as_std_path()).ok();
+    }
+
+    /// A `.usd` layer is text or binary depending on how it was written.
+    #[test]
+    fn a_binary_usd_layer_is_not_scanned_as_text() {
+        let path = scene("binusd", "scene.usd", "PXR-USDC\0def Camera \"ghost\"");
+        assert_eq!(scene_cameras(&path), None);
+        std::fs::remove_dir_all(path.parent().unwrap().as_std_path()).ok();
     }
 }

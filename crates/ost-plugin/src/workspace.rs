@@ -112,6 +112,66 @@ impl WorkspaceValidation {
         Some(ordered)
     }
 
+    /// Every bundle in the workspace in build order: none appears before one it
+    /// depends on, and each appears exactly once.
+    ///
+    /// [`dependency_order`](Self::dependency_order) answers "what does *this*
+    /// bundle need". Packaging a whole workspace needs that question asked of
+    /// every bundle at once — a provider's artifact has to exist before the
+    /// dependent whose recorded closure points at it is written.
+    ///
+    /// `None` for a graph that did not pass: an order over a cyclic or
+    /// incomplete graph would be a fiction.
+    pub fn topological_order(&self) -> Option<Vec<String>> {
+        if !self.passed {
+            return None;
+        }
+
+        let mut adjacency: BTreeMap<&str, Vec<&str>> = self
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), Vec::new()))
+            .collect();
+        for edge in &self.edges {
+            adjacency
+                .entry(edge.from.as_str())
+                .or_default()
+                .push(edge.to.as_str());
+        }
+        for dependencies in adjacency.values_mut() {
+            dependencies.sort_unstable();
+            dependencies.dedup();
+        }
+
+        fn visit<'a>(
+            id: &'a str,
+            adjacency: &BTreeMap<&'a str, Vec<&'a str>>,
+            visited: &mut BTreeSet<&'a str>,
+            ordered: &mut Vec<String>,
+        ) {
+            // The guard both dedupes and makes the walk terminate; validation
+            // has already rejected cycles, so this is belt and braces.
+            if !visited.insert(id) {
+                return;
+            }
+            if let Some(dependencies) = adjacency.get(id) {
+                for dependency in dependencies {
+                    visit(dependency, adjacency, visited, ordered);
+                }
+            }
+            ordered.push(id.to_string());
+        }
+
+        let mut visited = BTreeSet::new();
+        let mut ordered = Vec::new();
+        // Nodes are already in deterministic order, so the result is stable
+        // across runs and hosts.
+        for node in &self.nodes {
+            visit(node.id.as_str(), &adjacency, &mut visited, &mut ordered);
+        }
+        Some(ordered)
+    }
+
     /// Return all plain libraries needed by a selected bundle and its bundle
     /// closure, deepest library dependencies first.
     pub fn library_dependency_order(&self, bundle_id: &str) -> Option<Vec<String>> {
@@ -874,6 +934,63 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(report.dependency_order("missing"), None);
+    }
+
+    /// Packaging a workspace needs every bundle exactly once, providers first —
+    /// a dependent's recorded closure points at artifacts that must already
+    /// exist.
+    #[test]
+    fn topological_order_covers_every_bundle_with_providers_first() {
+        let base = bundle(&manifest("base", "1.0.0", "usd-asset-resolver", ""));
+        let schema = bundle(&manifest(
+            "schema",
+            "1.0.0",
+            "usd-schema",
+            "schema:\n  contract: 1\n",
+        ));
+        let middle = bundle(&manifest(
+            "middle",
+            "1.0.0",
+            "usd-fileformat",
+            "requires:\n  bundles:\n    - { id: base, version: '>=1.0,<2.0' }\n    - { id: schema, version: '>=1.0,<2.0', contract: 1 }\n",
+        ));
+        let consumer = bundle(&manifest(
+            "consumer",
+            "1.0.0",
+            "usd-fileformat",
+            "requires:\n  bundles:\n    - { id: middle, version: '>=1.0,<2.0' }\n",
+        ));
+        // A bundle nothing depends on must still be packaged.
+        let island = bundle(&manifest("island", "1.0.0", "usd-fileformat", ""));
+
+        let report = validate_workspace(&[consumer, middle, schema, base, island]);
+        assert!(report.passed, "{:?}", report.issues);
+        let order = report.topological_order().expect("a passing graph orders");
+
+        assert_eq!(
+            order.len(),
+            5,
+            "every bundle appears exactly once: {order:?}"
+        );
+        let position = |id: &str| order.iter().position(|entry| entry == id).unwrap();
+        assert!(position("base") < position("middle"));
+        assert!(position("schema") < position("middle"));
+        assert!(position("middle") < position("consumer"));
+        assert!(order.contains(&"island".to_string()));
+    }
+
+    /// An order over a graph that failed validation would be a fiction.
+    #[test]
+    fn topological_order_is_refused_for_an_invalid_graph() {
+        let a = bundle(&manifest(
+            "a",
+            "1.0.0",
+            "usd-fileformat",
+            "requires:\n  bundles:\n    - { id: absent, version: '>=1.0,<2.0' }\n",
+        ));
+        let report = validate_workspace(&[a]);
+        assert!(!report.passed);
+        assert_eq!(report.topological_order(), None);
     }
 
     #[test]

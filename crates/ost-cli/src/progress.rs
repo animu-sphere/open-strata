@@ -397,6 +397,29 @@ impl Reporter {
         env: &[(String, String)],
         timeout: Option<Duration>,
     ) -> Result<()> {
+        let status = self.run_status(program, args, cwd, env, timeout)?;
+        if !status.success() {
+            self.close_current(Outcome::Failed(status.code()));
+            // Preserve the child's exit code for CI rather than collapsing to 1.
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        Ok(())
+    }
+
+    /// Like [`run`](Reporter::run), but hand the exit status back rather than
+    /// exiting the process on failure.
+    ///
+    /// `ost test` needs this: a run whose tests failed still has to publish its
+    /// completion record — "the tests ran and some failed" is evidence, and
+    /// exiting from inside the child-wait would discard it.
+    pub fn run_status(
+        &mut self,
+        program: &Path,
+        args: &[String],
+        cwd: &Utf8Path,
+        env: &[(String, String)],
+        timeout: Option<Duration>,
+    ) -> Result<std::process::ExitStatus> {
         let mut cmd = Command::new(program);
         cmd.args(args)
             .current_dir(cwd.as_std_path())
@@ -484,12 +507,7 @@ impl Reporter {
         let _ = out.join();
         let _ = err.join();
 
-        if !status.success() {
-            self.close_current(Outcome::Failed(status.code()));
-            // Preserve the child's exit code for CI rather than collapsing to 1.
-            std::process::exit(status.code().unwrap_or(1));
-        }
-        Ok(())
+        Ok(status)
     }
 
     /// Open (append) the log file once per `run`, best-effort.

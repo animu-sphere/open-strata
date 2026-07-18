@@ -26,6 +26,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost doctor`](#ost-doctor) — Diagnose host, tools, and (optionally) a runtime
 - [`ost env`](#ost-env) — Print the environment that activates a runtime (for `eval`)
 - [`ost extension`](#ost-extension) — Inspect and request controlled extensions
+- [`ost external`](#ost-external) — Import and inspect provenance for a build OpenStrata did not perform
 - [`ost init`](#ost-init) — Initialise an OpenStrata project in the current directory
 - [`ost lock`](#ost-lock) — Generate or verify the project lockfile (strata.lock)
 - [`ost package`](#ost-package) — Install and pack a built target into a tar.zst artifact
@@ -34,6 +35,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost presets`](#ost-presets) — Manage OpenStrata's CMake preset includes in CMakePresets.json
 - [`ost renderer`](#ost-renderer) — Inspect renderer projects in host applications
 - [`ost runtime`](#ost-runtime) — Pull, list, and inspect runtimes in the local store
+- [`ost test`](#ost-test) — Run a built target's tests under the runtime that built it
 - [`ost uv`](#ost-uv) — Run `uv` pinned to the project's runtime Python
 - [`ost validate`](#ost-validate) — Validate a built/packaged target
 
@@ -228,6 +230,7 @@ Configure and build a target with CMake + Ninja
 | Option | Description |
 | --- | --- |
 | `--build-timeout <BUILD_TIMEOUT>` | Build timeout in seconds; 0 disables it |
+| `--busy-timeout <BUSY_TIMEOUT>` | How long `--on-busy wait` waits, in seconds; 0 waits indefinitely |
 | `--cc <CC>` | C compiler path (implies `--compiler explicit`) |
 | `--check` | Run preflight checks only, without generating files or building |
 | `--compiler <COMPILER>` | Compiler policy: `host` (default), `runtime`, or `explicit` |
@@ -240,6 +243,7 @@ Configure and build a target with CMake + Ninja
 | `--ninja <NINJA>` | Path to the ninja executable if it is not on PATH |
 | `--no-vcvars` | Do not auto-load the MSVC developer environment (Windows) |
 | `--notify` | Fire a desktop notification when the build finishes (no-op over SSH/CI) |
+| `--on-busy <ON_BUSY>` | What to do when another invocation is already writing this target: `fail` immediately, `wait` for it (see --busy-timeout), or `read-only` to proceed without taking the target lease |
 | `--profile <PROFILE>` | Profile to build. Defaults to the project's profile |
 | `--progress <PROGRESS>` | Progress rendering: `auto` (human on a TTY, plain otherwise), `plain`, or `json` (one JSON event per line) |
 | `--quiet` | Suppress progress output; child output goes to the log. Failures, the exit code and the log path are still reported |
@@ -333,9 +337,11 @@ Generate CMake toolchain and presets for a target
 
 | Option | Description |
 | --- | --- |
+| `--busy-timeout <BUSY_TIMEOUT>` | How long `--on-busy wait` waits, in seconds; 0 waits indefinitely |
 | `--cc <CC>` | C compiler path (implies `--compiler explicit`) |
 | `--compiler <COMPILER>` | Compiler policy: `host` (default), `runtime`, or `explicit` |
 | `--cxx <CXX>` | C++ compiler path (implies `--compiler explicit`) |
+| `--on-busy <ON_BUSY>` | What to do when another invocation is already writing this target: `fail` immediately, `wait` for it (see --busy-timeout), or `read-only` to proceed without taking the target lease |
 | `--profile <PROFILE>` | Profile to build. Defaults to the project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 
@@ -374,6 +380,7 @@ Diagnose host, tools, and (optionally) a runtime
 
 | Option | Description |
 | --- | --- |
+| `--capability <CAPABILITIES>` | The capability you intend to exercise, e.g. `usd-stage-read`. Advice is scoped to it: without an OpenUSD-dependent capability — in the profile or named here — `doctor` does not tell you to go and find a real OpenUSD |
 | `--profile <PROFILE>` | Profile to diagnose (only with a platform) |
 
 ### `ost env`
@@ -442,6 +449,43 @@ Explain why an extension is required by a profile
 | Option | Description |
 | --- | --- |
 | `--profile <PROFILE>` | Profile to trace. Defaults to the project's profile |
+
+### `ost external`
+
+Import and inspect provenance for a build OpenStrata did not perform
+
+**Usage:** `ost external <COMMAND>`
+
+**Subcommands:**
+
+- [`ost external import`](#ost-external-import) — Inspect an external build tree's CMake cache and record its provenance
+- [`ost external show`](#ost-external-show) — Show the provenance recorded for an external build tree
+
+#### `ost external import`
+
+Inspect an external build tree's CMake cache and record its provenance
+
+**Usage:** `ost external import [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--build-dir <BUILD_DIR>` | The external build tree to inspect |
+| `--profile <PROFILE>` | Profile. Defaults to the project's profile |
+| `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
+
+#### `ost external show`
+
+Show the provenance recorded for an external build tree
+
+**Usage:** `ost external show [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--build-dir <BUILD_DIR>` | The external build tree whose record should be shown |
 
 ### `ost init`
 
@@ -641,13 +685,13 @@ Scaffold a new plugin bundle from a template
 
 Pack a built plugin bundle into a target-specific tar.zst artifact
 
-**Usage:** `ost plugin package [OPTIONS] <BUNDLE>`
+**Usage:** `ost plugin package [OPTIONS] [<BUNDLE>]`
 
 **Arguments:**
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `<BUNDLE>` | yes | Path to the bundle directory |
+| `<BUNDLE>` | no | Path to the bundle directory (omit with --workspace) |
 
 **Options:**
 
@@ -657,6 +701,7 @@ Pack a built plugin bundle into a target-specific tar.zst artifact
 | `--profile <PROFILE>` | Profile to package against. Defaults to the enclosing project's |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 | `--with-debug` | Ship debug symbols (`.pdb`, `.dwo`) *inside* the main package instead of the default lean package. By default the main archive is lean and any debug symbols are split into a sibling `*-debug` package |
+| `--workspace` | Package every discovered bundle, in dependency order, using the same validated graph `plugin test --workspace` checks |
 
 #### `ost plugin publish`
 
@@ -909,7 +954,7 @@ Open a scene in usdview with the built Hydra renderer selected
 | Option | Description |
 | --- | --- |
 | `--build-dir <BUILD_DIR>` | External/prebuilt Hydra CMake tree. Omit for an OST-managed build |
-| `--camera <CAMERA>` | Camera prim passed to usdview |
+| `--camera <CAMERA>` | Camera prim to view through. Omitted by default: the scene is inspected and a camera is used only if one is actually there, otherwise usdview opens on its free camera |
 | `--config <CONFIG>` | CMake configuration to install and inspect |
 | `--generator <GENERATOR>` | CMake generator for the managed build. Ninja remains the default |
 | `--profile <PROFILE>` | Runtime profile. Auto-selects a unique pulled usdview runtime |
@@ -987,6 +1032,7 @@ Export a pulled real runtime into the local artifact registry
 
 | Option | Description |
 | --- | --- |
+| `--build-metadata <BUILD_METADATA>` | JSON file describing what produced this artifact, so a producer that is not GitHub Actions can still emit provenance. Requires a non-empty `source.repository`, `source.revision`, `builder.id`, and a populated `builder.identity` object |
 | `--dist <DIST>` | Also keep the producer output (archive + manifest.json + SHA256SUMS) in this directory instead of a temporary staging dir |
 | `--jobs <JOBS>` | zstd worker threads for compression. Defaults to the host's available parallelism, or the byte-stable single-threaded encoder when SOURCE_DATE_EPOCH is set; `--jobs 0` also forces it explicitly |
 | `--level <LEVEL>` | zstd compression level (1–22). Lower is faster; the default (19) favors a small artifact, packed once and pulled many times |
@@ -1077,6 +1123,31 @@ Validate a pulled runtime and record the outcome in its manifest
 | Option | Description |
 | --- | --- |
 | `--profile <PROFILE>` | Profile, e.g. `usd` |
+
+### `ost test`
+
+Run a built target's tests under the runtime that built it
+
+**Usage:** `ost test [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--busy-timeout <BUSY_TIMEOUT>` | How long `--on-busy wait` waits, in seconds; 0 waits indefinitely |
+| `--ctest <CTEST>` | Path to the ctest executable if it is not on PATH |
+| `--dry-run` | Print the command that would run, without executing or writing anything |
+| `--filter <FILTER>` | Only run tests whose name matches this regular expression (CTest `-R`) |
+| `--jobs <JOBS>` | Parallel test jobs |
+| `--no-vcvars` | Do not auto-load the MSVC developer environment (Windows) |
+| `--notify` | Fire a desktop notification when the run finishes (no-op over SSH/CI) |
+| `--on-busy <ON_BUSY>` | What to do when another invocation is already writing this target: `fail` immediately, `wait` for it (see --busy-timeout), or `read-only` to proceed without taking the target lease |
+| `--profile <PROFILE>` | Profile to test. Defaults to the project's profile |
+| `--progress <PROGRESS>` | Progress rendering: `auto` (human on a TTY, plain otherwise), `plain`, or `json` (one JSON event per line) |
+| `--quiet` | Suppress progress output; child output goes to the log |
+| `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
+| `--test-timeout <TEST_TIMEOUT>` | Per-test timeout in seconds; 0 disables it |
+| `--timeout <TIMEOUT>` | Timeout for the whole run in seconds; 0 disables it. On expiry the test process tree is terminated, not just the CTest process |
 
 ### `ost uv`
 

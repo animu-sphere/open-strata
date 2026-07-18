@@ -14,8 +14,8 @@ mod project_template;
 use clap::{Parser, Subcommand};
 
 use commands::{
-    artifact, build, ci, configure, devshell, doctor, env, extension, init, internal, lock,
-    package, platform, plugin, presets, renderer, runtime, uv, validate,
+    artifact, build, ci, configure, devshell, doctor, env, extension, external, init, internal,
+    lock, package, platform, plugin, presets, renderer, runtime, test, uv, validate,
 };
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
@@ -62,11 +62,18 @@ enum Command {
     /// Configure and build a target with CMake + Ninja.
     Build(build::BuildArgs),
 
+    /// Run a built target's tests under the runtime that built it.
+    Test(test::TestArgs),
+
     /// Install and pack a built target into a tar.zst artifact.
     Package(package::PackageArgs),
 
     /// Validate a built/packaged target.
     Validate(validate::ValidateArgs),
+
+    /// Import and inspect provenance for a build OpenStrata did not perform.
+    #[command(subcommand)]
+    External(external::ExternalCmd),
 
     /// Inspect and request controlled extensions.
     #[command(subcommand)]
@@ -114,8 +121,10 @@ fn main() -> std::process::ExitCode {
         Command::Configure(args) => configure::run(args, fmt),
         Command::Presets(cmd) => presets::run(cmd, fmt),
         Command::Build(args) => build::run(args, fmt),
+        Command::Test(args) => test::run(args, fmt),
         Command::Package(args) => package::run(args, fmt),
         Command::Validate(args) => validate::run(args, fmt),
+        Command::External(cmd) => external::run(cmd, fmt),
         Command::Extension(cmd) => extension::run(cmd, fmt),
         Command::Plugin(cmd) => plugin::run(cmd, fmt),
         Command::Renderer(cmd) => renderer::run(cmd, fmt),

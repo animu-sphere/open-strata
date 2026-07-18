@@ -8,6 +8,7 @@ pub mod devshell;
 pub mod doctor;
 pub mod env;
 pub mod extension;
+pub mod external;
 pub mod init;
 pub mod internal;
 pub mod lock;
@@ -17,6 +18,7 @@ pub mod plugin;
 pub mod presets;
 pub mod renderer;
 pub mod runtime;
+pub mod test;
 pub mod uv;
 pub mod validate;
 
@@ -119,6 +121,19 @@ pub fn resolve(platform_id: &str, profile_id: &str) -> Result<Resolved> {
         capabilities,
         pulled,
     })
+}
+
+/// Whether a capability needs a real OpenUSD behind it.
+///
+/// Not every OpenUSD-dependent capability is spelled `usd-*`: `hydra-preview`
+/// enables USD imaging and is just as dependent, so a name-prefix test alone
+/// reports a lookdev profile as needing nothing. This lives here because two
+/// commands ask the same question and must not answer it differently — `uv`
+/// deciding which native families the runtime already provides, and `doctor`
+/// deciding whether a mock runtime is a real limitation or the profile working
+/// as specified.
+pub(crate) fn needs_openusd(capability: &str) -> bool {
+    capability.starts_with("usd-") || capability == "hydra-preview"
 }
 
 /// Relocate an adopted runtime's baked absolute paths in USD's exported CMake

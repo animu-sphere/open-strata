@@ -22,6 +22,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use camino::Utf8PathBuf;
+
+use ost_build::{LeaseMode, TargetLease, TARGET_LEASE_FILE};
+
 /// The `ost` binary built for this test run.
 fn ost_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ost")
@@ -287,6 +291,263 @@ fn build_dry_run_writes_nothing_and_plans_commands() {
             .any(|line| line.trim_end() == "#   CMakePresets.json"),
         "must not claim the user's root CMakePresets.json is generated:\n{text}"
     );
+}
+
+/// The target lease is cross-process exclusion, so the assertion that matters is
+/// made against a *real* second process: this test holds the lease and the `ost`
+/// child must be refused. Same-process locking would prove much less.
+#[test]
+fn a_second_writer_is_refused_while_the_target_is_leased() {
+    let sb = Sandbox::new("lease-busy");
+    init_and_pull(&sb);
+
+    // Configure once so the target directory (and its id) exist.
+    let first = sb.ost(&["configure"]);
+    assert!(
+        first.status.success(),
+        "configure failed:\n{}",
+        out_text(&first)
+    );
+    let target_dir = single_target_dir(&sb.work);
+    let id = target_dir
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    // A clean run leaves no owner behind. The file itself persists by design —
+    // the lock lives on the inode, so unlinking it would let a later writer
+    // acquire a fresh file at the same path and exclude nobody.
+    let lease_path = Utf8PathBuf::from_path_buf(target_dir.join(TARGET_LEASE_FILE)).unwrap();
+    assert!(
+        lease_is_unowned(lease_path.as_std_path()),
+        "a completed configure must release its lease"
+    );
+
+    let held = TargetLease::acquire(&lease_path, &id, "ost build", LeaseMode::Fail)
+        .expect("the freed lease can be taken");
+
+    // `fail` is the default: a second writer stops rather than interleaving.
+    let busy = sb.ost(&["configure", "--json"]);
+    assert!(
+        !busy.status.success(),
+        "a leased target must refuse writers"
+    );
+    let text = out_text(&busy);
+    assert!(
+        text.contains("TARGET_BUSY"),
+        "expected TARGET_BUSY:\n{text}"
+    );
+    // The refusal has to name the holder, or the user cannot act on it.
+    let invocation = held.invocation().expect("an invocation");
+    assert!(
+        text.contains(invocation),
+        "busy error must name the holding invocation:\n{text}"
+    );
+
+    // `read-only` is the documented way through: it never contends.
+    let attached = sb.ost(&["configure", "--on-busy", "read-only"]);
+    assert!(
+        attached.status.success(),
+        "read-only must proceed while the target is leased:\n{}",
+        out_text(&attached)
+    );
+
+    // Releasing frees the target for the next writer.
+    held.release();
+    let after = sb.ost(&["configure"]);
+    assert!(
+        after.status.success(),
+        "a released lease must free the target:\n{}",
+        out_text(&after)
+    );
+}
+
+/// A writer killed mid-build leaves its record behind. The next invocation must
+/// inherit the target and say whose run it inherited — not wedge on a lock no
+/// live process holds.
+#[test]
+fn a_stale_lease_record_is_taken_over_and_reported() {
+    let sb = Sandbox::new("lease-stale");
+    init_and_pull(&sb);
+    assert!(sb.ost(&["configure"]).status.success());
+
+    let target_dir = single_target_dir(&sb.work);
+    let id = target_dir
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let lease_path = target_dir.join(TARGET_LEASE_FILE);
+
+    // A record whose pid cannot be live: positive as a c_int (a negative value
+    // would address a process group), far above any platform's pid_max, and not
+    // a multiple of 4 as Windows pids always are.
+    let stale = serde_json::json!({
+        "schema": "openstrata.target-lease/v1",
+        "invocation": "deadbeefdeadbeef",
+        "command": "ost build",
+        "target": id,
+        "pid": 0x7FFF_FFFEu32,
+        "host": hostname_of_this_process(),
+        "acquired_unix": 1,
+    });
+    std::fs::write(&lease_path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
+
+    let out = sb.ost(&["configure"]);
+    assert!(
+        out.status.success(),
+        "a dead owner must not wedge the target:\n{}",
+        out_text(&out)
+    );
+    let text = out_text(&out);
+    assert!(
+        text.contains("took over the target lease") && text.contains("deadbeefdeadbeef"),
+        "the takeover must name the run it inherited:\n{text}"
+    );
+    assert!(
+        lease_is_unowned(&lease_path),
+        "the completed run must release the lease it took over"
+    );
+}
+
+/// Whether a lease file names no owner — either absent, or present and cleared.
+///
+/// A release clears the record in place rather than unlinking the file, so
+/// "nobody holds this target" is an empty record, not a missing path.
+fn lease_is_unowned(path: &Path) -> bool {
+    match std::fs::read_to_string(path) {
+        Ok(body) => body.trim().is_empty(),
+        Err(_) => true,
+    }
+}
+
+/// An external tree gets `runtime-compatible` only after an explicit import, and
+/// only while it still matches. `configured` and `built` stay skipped either
+/// way — those claim OpenStrata did the work.
+#[test]
+fn external_provenance_upgrades_only_runtime_compatibility() {
+    let sb = Sandbox::new("external-import");
+    init_and_pull(&sb);
+    assert!(sb.ost(&["configure"]).status.success());
+
+    let id = single_target_dir(&sb.work)
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    // The mock runtime's prefix, which a real external tree would have resolved
+    // `pxr` from.
+    let runtime_root = sb
+        .home
+        .join("runtimes")
+        .join(format!("openstrata-{id}"))
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    // Stand in for a tree configured outside OpenStrata: only its CMake cache
+    // exists, which is exactly what the import is required to work from.
+    let external = sb.work.join("external-build");
+    std::fs::create_dir_all(&external).unwrap();
+    let cache = format!(
+        "CMAKE_HOME_DIRECTORY:INTERNAL={source}\n\
+         CMAKE_CACHEFILE_DIR:INTERNAL={build}\n\
+         CMAKE_GENERATOR:INTERNAL=Ninja\n\
+         CMAKE_BUILD_TYPE:STRING=Release\n\
+         CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++\n\
+         pxr_DIR:PATH={runtime_root}\n",
+        source = sb.work.to_string_lossy().replace('\\', "/"),
+        build = external.to_string_lossy().replace('\\', "/"),
+    );
+    let cache_path = external.join("CMakeCache.txt");
+    std::fs::write(&cache_path, &cache).unwrap();
+
+    // Before any import, the tree makes no claim about any runtime.
+    let before = sb.ost(&["validate", "--build-dir", "external-build"]);
+    let text = out_text(&before);
+    assert!(
+        text.contains("no imported provenance"),
+        "an un-imported tree must not claim compatibility:\n{text}"
+    );
+
+    let import = sb.ost(&["external", "import", "--build-dir", "external-build"]);
+    assert!(
+        import.status.success(),
+        "import failed:\n{}",
+        out_text(&import)
+    );
+
+    let after = sb.ost(&["validate", "--build-dir", "external-build"]);
+    let text = out_text(&after);
+    assert!(
+        text.contains("[ok  ] runtime-compatible"),
+        "a full identity match upgrades runtime compatibility:\n{text}"
+    );
+    // …but never these two, whatever the import said.
+    assert!(
+        text.contains("[skip] configured") && text.contains("[skip] built"),
+        "an import must not claim `ost build` configured or built the tree:\n{text}"
+    );
+
+    // Reconfiguring the tree invalidates the record rather than silently
+    // continuing to vouch for it.
+    std::fs::write(&cache_path, cache.replace("Release", "Debug")).unwrap();
+    let stale = sb.ost(&["validate", "--build-dir", "external-build"]);
+    let text = out_text(&stale);
+    assert!(
+        text.contains("[FAIL] runtime-compatible") && text.contains("reconfigured"),
+        "a reconfigured tree must stop verifying:\n{text}"
+    );
+}
+
+/// A tree that resolved OpenUSD from somewhere else is not evidence about this
+/// runtime, and must be refused at import rather than recorded and trusted.
+#[test]
+fn importing_a_tree_built_against_another_runtime_is_refused() {
+    let sb = Sandbox::new("external-foreign");
+    init_and_pull(&sb);
+    assert!(sb.ost(&["configure"]).status.success());
+
+    let external = sb.work.join("foreign-build");
+    std::fs::create_dir_all(&external).unwrap();
+    std::fs::write(
+        external.join("CMakeCache.txt"),
+        format!(
+            "CMAKE_HOME_DIRECTORY:INTERNAL={source}\n\
+             CMAKE_CACHEFILE_DIR:INTERNAL={build}\n\
+             CMAKE_GENERATOR:INTERNAL=Ninja\n\
+             CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++\n\
+             pxr_DIR:PATH=/somewhere/else/usd\n",
+            source = sb.work.to_string_lossy().replace('\\', "/"),
+            build = external.to_string_lossy().replace('\\', "/"),
+        ),
+    )
+    .unwrap();
+
+    let import = sb.ost(&["external", "import", "--build-dir", "foreign-build"]);
+    assert!(
+        !import.status.success(),
+        "a foreign pxr root must be refused"
+    );
+    let text = out_text(&import);
+    assert!(
+        text.contains("not from the selected runtime"),
+        "the refusal must name the mismatch:\n{text}"
+    );
+}
+
+/// The lease record's `host` is compared against this machine's name, so the
+/// test has to produce it the same way the implementation does.
+fn hostname_of_this_process() -> String {
+    // Round-tripping through an acquired lease avoids duplicating the platform
+    // specific lookup, and asserts the two agree by construction.
+    let dir = std::env::temp_dir().join(format!("ost-host-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = Utf8PathBuf::from_path_buf(dir.join("probe.json")).unwrap();
+    let lease = TargetLease::acquire(&path, "probe", "probe", LeaseMode::Fail).unwrap();
+    let host = lease.owner().unwrap().host.clone();
+    lease.release();
+    std::fs::remove_dir_all(&dir).ok();
+    host
 }
 
 #[test]
@@ -1284,6 +1545,166 @@ fn selected_and_workspace_tests_compose_manifest_dependencies_without_with() {
         "a declared closure fails closed on an unloadable workspace:\n{}",
         out_text(&out)
     );
+}
+
+/// A bundle that depends on another used to ship with nothing saying so: the
+/// omission surfaced on the consumer's machine as a schema-application failure.
+/// The resolved bundle closure now travels with the artifact, and `--workspace`
+/// packages providers before the bundles whose closure names them.
+#[test]
+fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
+    let sb = Sandbox::new("wspackage");
+    init_and_pull(&sb);
+    for args in [
+        vec!["plugin", "new", "usd-schema", "schema"],
+        vec![
+            "plugin",
+            "new",
+            "usd-fileformat",
+            "consumer",
+            "--extension",
+            "toy",
+        ],
+    ] {
+        let out = sb.ost(&args);
+        assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+    }
+    // Both bundles need a library artifact present to package.
+    for (bundle, stem) in [("schema", "SchemaLib"), ("consumer", "ConsumerFileFormat")] {
+        let lib = sb.work_file(&format!(
+            "{bundle}/lib/lib{stem}{}",
+            std::env::consts::DLL_SUFFIX
+        ));
+        std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+        std::fs::write(lib, b"test library marker").unwrap();
+    }
+
+    let path = sb.work_file("consumer/openstrata.plugin.yaml");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let source = source.replace(
+        "requires:\n  capabilities: [usd-stage-read]\n",
+        "requires:\n  capabilities: [usd-stage-read]\n  bundles:\n    - { id: schema, version: '>=0.1,<0.2', contract: 1 }\n",
+    );
+    std::fs::write(
+        &path,
+        format!("manifest:\n  schema: openstrata.plugin/v1alpha1\n{source}"),
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "package", "--workspace"]);
+    assert!(
+        out.status.success(),
+        "workspace package failed:\n{}",
+        out_text(&out)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let order: Vec<&str> = value["data"]["order"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect();
+    // The provider is packaged first: the consumer's recorded closure names an
+    // artifact that must already exist.
+    assert_eq!(
+        order,
+        vec!["schema", "consumer"],
+        "providers must be packaged before their dependents"
+    );
+    assert_eq!(value["data"]["packages"].as_array().unwrap().len(), 2);
+
+    // The consumer's artifact carries the bundle it needs, so a consumer can
+    // detect a missing provider from the manifest instead of at load time.
+    let manifest = find_first(&sb.work_file("consumer/dist"), "manifest.json").unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+    let bundles = value["dependencies"]["bundles"].as_array().unwrap();
+    assert_eq!(bundles.len(), 1, "the declared provider is recorded");
+    assert_eq!(bundles[0]["id"], "schema");
+    assert_eq!(bundles[0]["kind"], "usd-schema");
+    // The schema contract is what a dependent actually binds to.
+    assert_eq!(bundles[0]["contract"], 1);
+    assert_eq!(bundles[0]["provenance"], "source-workspace");
+
+    // A provider with no dependencies records an empty closure, not a missing
+    // one — "nothing required" and "unknown" must not look the same.
+    let schema_manifest = find_first(&sb.work_file("schema/dist"), "manifest.json").unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(schema_manifest).unwrap()).unwrap();
+    if let Some(dependencies) = value.get("dependencies") {
+        assert!(
+            dependencies["bundles"]
+                .as_array()
+                .is_none_or(|items| items.is_empty()),
+            "a dependency-free bundle records no providers"
+        );
+    }
+}
+
+/// Documents that no path bakes host separators into a portable artifact.
+#[test]
+fn packaged_dependency_paths_are_forward_slashed() {
+    let sb = Sandbox::new("wspaths");
+    init_and_pull(&sb);
+    let scaffold = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "consumer",
+        "--extension",
+        "toy",
+    ]);
+    assert!(scaffold.status.success(), "{}", out_text(&scaffold));
+
+    let lib = sb.work_file(&format!(
+        "consumer/lib/libConsumerFileFormat{}",
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+    std::fs::write(lib, b"test library marker").unwrap();
+
+    let manifest_path = sb.work_file("consumer/openstrata.plugin.yaml");
+    let source = std::fs::read_to_string(&manifest_path).unwrap();
+    let source = source.replace(
+        "requires:\n  capabilities: [usd-stage-read]\n",
+        "requires:\n  capabilities: [usd-stage-read]\n  libraries:\n    - { id: container, version: '>=1.0,<2.0' }\n",
+    );
+    std::fs::write(
+        &manifest_path,
+        format!("manifest:\n  schema: openstrata.plugin/v1alpha1\n{source}"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(sb.work_file("container")).unwrap();
+    std::fs::write(
+        sb.work_file("container/openstrata.library.yaml"),
+        "schema: openstrata.library/v1alpha1\nlibrary:\n  id: container\n  version: 1.2.0\ncmake:\n  package: Container\n  target: Container::container\nruntime:\n  directories: [bin]\n",
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--up-to", "1"]);
+    assert!(out.status.success(), "{}", out_text(&out));
+
+    // Every recorded path in the evidence document uses `/`, whatever host
+    // produced it: this file is read on machines that never saw `\`.
+    if let Some(evidence) = find_first(&sb.work, "dependencies.json") {
+        let text = std::fs::read_to_string(evidence).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        for library in value["libraries"].as_array().into_iter().flatten() {
+            for key in ["descriptor", "prefix"] {
+                if let Some(path) = library[key].as_str() {
+                    assert!(!path.contains('\\'), "{key} kept host separators: {path}");
+                }
+            }
+            for directory in library["runtime_directories"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let path = directory.as_str().unwrap_or_default();
+                assert!(!path.contains('\\'), "runtime dir kept separators: {path}");
+            }
+        }
+    }
 }
 
 #[test]
