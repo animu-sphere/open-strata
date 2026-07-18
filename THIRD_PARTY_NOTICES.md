@@ -10,7 +10,7 @@ not edit by hand.
 ## Overview
 
 - Apache License 2.0 (94)
-- MIT License (10)
+- MIT License (9)
 - ISC License (3)
 - BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License (1)
 - Community Data License Agreement Permissive 2.0 (1)
@@ -447,8 +447,8 @@ Used by:
 - anstyle-query 1.1.5 — https://github.com/rust-cli/anstyle.git
 - anstyle-wincon 3.0.11 — https://github.com/rust-cli/anstyle.git
 - anstyle 1.0.14 — https://github.com/rust-cli/anstyle.git
-- clap 4.6.1 — https://github.com/clap-rs/clap
-- clap_builder 4.6.0 — https://github.com/clap-rs/clap
+- clap 4.6.2 — https://github.com/clap-rs/clap
+- clap_builder 4.6.2 — https://github.com/clap-rs/clap
 - clap_derive 4.6.1 — https://github.com/clap-rs/clap
 - clap_lex 1.1.0 — https://github.com/clap-rs/clap
 - colorchoice 1.0.5 — https://github.com/rust-cli/anstyle.git
@@ -456,9 +456,9 @@ Used by:
 - is_terminal_polyfill 1.70.2 — https://github.com/polyfill-rs/is_terminal_polyfill
 - once_cell_polyfill 1.70.2 — https://github.com/polyfill-rs/once_cell_polyfill
 - serde_spanned 1.1.1 — https://github.com/toml-rs/toml
-- toml 0.9.5 — https://github.com/toml-rs/toml
-- toml_datetime 0.7.5+spec-1.1.0 — https://github.com/toml-rs/toml
-- toml_edit 0.23.4 — https://github.com/toml-rs/toml
+- toml 1.1.2+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml_datetime 1.1.1+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml_edit 0.25.12+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_parser 1.1.2+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_writer 1.1.1+spec-1.1.0 — https://github.com/toml-rs/toml
 
@@ -2593,7 +2593,6 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- winnow 0.7.15 — https://github.com/winnow-rs/winnow
 - winnow 1.0.3 — https://github.com/winnow-rs/winnow
 
 ```
