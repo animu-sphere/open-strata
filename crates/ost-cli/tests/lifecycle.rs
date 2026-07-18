@@ -1534,6 +1534,166 @@ fn selected_and_workspace_tests_compose_manifest_dependencies_without_with() {
     );
 }
 
+/// A bundle that depends on another used to ship with nothing saying so: the
+/// omission surfaced on the consumer's machine as a schema-application failure.
+/// The resolved bundle closure now travels with the artifact, and `--workspace`
+/// packages providers before the bundles whose closure names them.
+#[test]
+fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
+    let sb = Sandbox::new("wspackage");
+    init_and_pull(&sb);
+    for args in [
+        vec!["plugin", "new", "usd-schema", "schema"],
+        vec![
+            "plugin",
+            "new",
+            "usd-fileformat",
+            "consumer",
+            "--extension",
+            "toy",
+        ],
+    ] {
+        let out = sb.ost(&args);
+        assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+    }
+    // Both bundles need a library artifact present to package.
+    for (bundle, stem) in [("schema", "SchemaLib"), ("consumer", "ConsumerFileFormat")] {
+        let lib = sb.work_file(&format!(
+            "{bundle}/lib/lib{stem}{}",
+            std::env::consts::DLL_SUFFIX
+        ));
+        std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+        std::fs::write(lib, b"test library marker").unwrap();
+    }
+
+    let path = sb.work_file("consumer/openstrata.plugin.yaml");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let source = source.replace(
+        "requires:\n  capabilities: [usd-stage-read]\n",
+        "requires:\n  capabilities: [usd-stage-read]\n  bundles:\n    - { id: schema, version: '>=0.1,<0.2', contract: 1 }\n",
+    );
+    std::fs::write(
+        &path,
+        format!("manifest:\n  schema: openstrata.plugin/v1alpha1\n{source}"),
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "package", "--workspace"]);
+    assert!(
+        out.status.success(),
+        "workspace package failed:\n{}",
+        out_text(&out)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let order: Vec<&str> = value["data"]["order"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect();
+    // The provider is packaged first: the consumer's recorded closure names an
+    // artifact that must already exist.
+    assert_eq!(
+        order,
+        vec!["schema", "consumer"],
+        "providers must be packaged before their dependents"
+    );
+    assert_eq!(value["data"]["packages"].as_array().unwrap().len(), 2);
+
+    // The consumer's artifact carries the bundle it needs, so a consumer can
+    // detect a missing provider from the manifest instead of at load time.
+    let manifest = find_first(&sb.work_file("consumer/dist"), "manifest.json").unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+    let bundles = value["dependencies"]["bundles"].as_array().unwrap();
+    assert_eq!(bundles.len(), 1, "the declared provider is recorded");
+    assert_eq!(bundles[0]["id"], "schema");
+    assert_eq!(bundles[0]["kind"], "usd-schema");
+    // The schema contract is what a dependent actually binds to.
+    assert_eq!(bundles[0]["contract"], 1);
+    assert_eq!(bundles[0]["provenance"], "source-workspace");
+
+    // A provider with no dependencies records an empty closure, not a missing
+    // one — "nothing required" and "unknown" must not look the same.
+    let schema_manifest = find_first(&sb.work_file("schema/dist"), "manifest.json").unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(schema_manifest).unwrap()).unwrap();
+    if let Some(dependencies) = value.get("dependencies") {
+        assert!(
+            dependencies["bundles"]
+                .as_array()
+                .is_none_or(|items| items.is_empty()),
+            "a dependency-free bundle records no providers"
+        );
+    }
+}
+
+/// Documents that no path bakes host separators into a portable artifact.
+#[test]
+fn packaged_dependency_paths_are_forward_slashed() {
+    let sb = Sandbox::new("wspaths");
+    init_and_pull(&sb);
+    let scaffold = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "consumer",
+        "--extension",
+        "toy",
+    ]);
+    assert!(scaffold.status.success(), "{}", out_text(&scaffold));
+
+    let lib = sb.work_file(&format!(
+        "consumer/lib/libConsumerFileFormat{}",
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+    std::fs::write(lib, b"test library marker").unwrap();
+
+    let manifest_path = sb.work_file("consumer/openstrata.plugin.yaml");
+    let source = std::fs::read_to_string(&manifest_path).unwrap();
+    let source = source.replace(
+        "requires:\n  capabilities: [usd-stage-read]\n",
+        "requires:\n  capabilities: [usd-stage-read]\n  libraries:\n    - { id: container, version: '>=1.0,<2.0' }\n",
+    );
+    std::fs::write(
+        &manifest_path,
+        format!("manifest:\n  schema: openstrata.plugin/v1alpha1\n{source}"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(sb.work_file("container")).unwrap();
+    std::fs::write(
+        sb.work_file("container/openstrata.library.yaml"),
+        "schema: openstrata.library/v1alpha1\nlibrary:\n  id: container\n  version: 1.2.0\ncmake:\n  package: Container\n  target: Container::container\nruntime:\n  directories: [bin]\n",
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--up-to", "1"]);
+    assert!(out.status.success(), "{}", out_text(&out));
+
+    // Every recorded path in the evidence document uses `/`, whatever host
+    // produced it: this file is read on machines that never saw `\`.
+    if let Some(evidence) = find_first(&sb.work, "dependencies.json") {
+        let text = std::fs::read_to_string(evidence).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        for library in value["libraries"].as_array().into_iter().flatten() {
+            for key in ["descriptor", "prefix"] {
+                if let Some(path) = library[key].as_str() {
+                    assert!(!path.contains('\\'), "{key} kept host separators: {path}");
+                }
+            }
+            for directory in library["runtime_directories"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let path = directory.as_str().unwrap_or_default();
+                assert!(!path.contains('\\'), "runtime dir kept separators: {path}");
+            }
+        }
+    }
+}
+
 #[test]
 fn plain_library_dependencies_validate_inspect_and_render_build_order() {
     let sb = Sandbox::new("wslibrary");
