@@ -3,9 +3,10 @@
 This guide is for a repository that contains **several OpenUSD plugin bundles
 developed together** — schemas, file formats, resolvers, and shared libraries —
 and wants OpenStrata to discover, validate, test, and package them as one
-dependency-ordered workspace. It is transferable to any such repository; the
-[USD VRM Plugins](../projects/usd-vrm-plugins.md) reference project is used as a
-worked example, not a required layout.
+dependency-ordered workspace. It is transferable to any such repository. The
+[USD 3DGS Plugins](../projects/usd-3dgs-plugins.md) single-bundle-plus-library
+workspace and the [USD VRM Plugins](../projects/usd-vrm-plugins.md) multi-bundle
+workspace are complementary worked examples, not required layouts.
 
 The factual contract behind everything here is
 [reference/plugin-workspace.md](../reference/plugin-workspace.md); this page is
@@ -93,7 +94,20 @@ generate` warns and `ost ci validate` fails fast (v0.18.0).
 
 A workspace stays dual-mode: the same tree builds with `ost` and with plain
 CMake. Do not let OpenStrata-specific files break a direct `cmake` build; the
-reference project builds both ways in CI.
+reference projects build both ways in CI. Keep the output boundary explicit if
+both modes write to the bundle's staged `lib/`: until package-time build
+provenance is implemented, whichever build ran last is what `ost plugin package`
+will stage.
+
+## Reference implementations
+
+- [USD 3DGS Plugins](../projects/usd-3dgs-plugins.md) demonstrates an empty-repo
+  scaffold becoming a real `SdfFileFormat`, a versioned ordinary-library edge,
+  clean extracted-package consumption, and the need to verify that every
+  requested package-origin test level really executes rather than skips.
+- [USD VRM Plugins](../projects/usd-vrm-plugins.md) demonstrates several
+  bundles, bundle-to-bundle runtime and link dependencies, a shared library, and
+  workspace packaging.
 
 ## Where to go next
 

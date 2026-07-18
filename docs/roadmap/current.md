@@ -10,17 +10,29 @@ target-lease, test-lifecycle and workspace-closure contracts (shipped).
 
 v0.19.0 was scheduled as the Formation composition milestone. Three v0.18.0
 dogfooding passes on 2026-07-18 — two of them from a **real published release** —
-re-planned it into two ordered halves. The findings are not scope creep on
-Formation; they are the foundation it was already standing on:
+re-planned it into two ordered halves. Two further v0.18.0 passes from the newly
+adopted `usd-3dgs-plugins` workspace on 2026-07-18 and 2026-07-19 refine the same
+reach boundary. The findings are not scope creep on Formation; they are the
+foundation it was already standing on:
 
-> The [Formation acceptance criteria](backlog.md) require *three first-party
+> The [Formation acceptance criteria](backlog.md) require *four first-party
 > dogfoods run from packaged, digest-pinned artifacts, each on a clean machine
 > or isolated prefix*. As of v0.18.0 **no packaged bundle from a split workspace
-> is independently installable**, so none of those three dogfoods can pass. The
+> is independently installable**, so none of those four dogfoods can pass. The
 > reach work below is what makes the Formation milestone acceptance-testable.
 
 The dogfooding trail:
 
+- usd-3dgs-plugins
+  ([`animu-sphere/usd-3dgs-plugins`](../projects/usd-3dgs-plugins.md),
+  [report 01](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/01-2026-07-18-v0.18.0-bootstrap.md)
+  and
+  [report 02](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/02-2026-07-19-package-provenance-and-reproducibility.md)):
+  an empty repository reached a real PLY importer, ordinary-library composition,
+  source L5, three hosted OS cells, and clean extracted-package consumption.
+  The smaller workspace then exposed two last-mile package gaps: the packaged
+  test loses its golden oracle, and packaging cannot tell which build flavor
+  last overwrote the bundle output.
 - usd-vrm-plugins (`animu-sphere/usd-vrm-plugins`,
   `23-2026-07-18-…-workspace-packaging-v0.19.0-asks.md` and
   `24-2026-07-18-…-first-workspace-release-v0.19.0-asks.md`): v0.2.0 shipped for
@@ -35,11 +47,12 @@ The dogfooding trail:
   `runtime-compatible` and `renderer-evidence` are stuck at an honest SKIP/FAIL
   with no reachable exit.
 
-Both repositories independently surfaced the same shape, which is the theme of
-this milestone: **v0.18.0's models are correct and its reach is short.** The
-artifact is closed under `ost` and open under everything else; the provenance
-model is right and blind to Visual Studio; the producer-session rule is right
-and unreadable by any producer.
+All three repositories surfaced the same shape, which is the theme of this
+milestone: **v0.18.0's models are correct and its reach is short.** The artifact
+is closed under `ost` and open under everything else; a package test can carry
+its input but not its oracle; the provenance model is right but cannot bind the
+staged bytes to the build that produced them; and the producer-session rule is
+right and unreadable by any producer.
 
 ### Half A - reach (ships first, gates Half B)
 
@@ -106,6 +119,50 @@ contract. Today it is a real, load-bearing, `ost`-internal convention.
 `openstrata.activation.json` plus PowerShell, Bash, and Python entrypoints. The
 Python entrypoint retains `os.add_dll_directory()` handles on Windows, closing
 the Python 3.8+ DLL-search gap rather than documenting `PATH` as sufficient.
+
+### P1 - package-origin verification carries its golden oracle
+
+From usd-3dgs-plugins
+[report 01](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/01-2026-07-18-v0.18.0-bootstrap.md).
+The source bundle declares `one-gaussian-ascii.ply` as its roundtrip fixture and
+keeps `one-gaussian-ascii.ply.golden.usda` beside it. Source L5 passes. Packaging
+copies the declared fixture but neither discovers the adjacent golden nor offers
+a manifest field to declare it, so an explicitly requested package-origin L5
+returns SKIP. The package is runnable but cannot reproduce the verification
+claim made by its source.
+
+- Define a versioned roundtrip fixture + oracle contract: either an explicit
+  fixture/golden pair or a deterministic adjacent-golden convention recorded in
+  the packaged manifest.
+- Stage and hash the oracle as verification content, preserving its association
+  with the roundtrip fixture after extraction.
+- Treat a requested verification level whose declared oracle was omitted as a
+  packaging/validation failure, not a successful package with a silent gap.
+- Acceptance: `ost plugin test <bundle> --from-package --up-to 5` reports
+  `golden.roundtrip` PASS for the extracted package, with no source-tree path.
+
+### P1 - package output is bound to managed build provenance
+
+From usd-3dgs-plugins
+[report 02](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/02-2026-07-19-package-provenance-and-reproducibility.md).
+The dual-mode root CMake build and `ost plugin build` intentionally produce the
+same discoverable bundle layout. `ost plugin package` stages whichever binary is
+currently in `lib/`; a plain Visual Studio build therefore replaced the managed
+Ninja build and the July-18 package carried that different flavor without a
+signal. This is the package equivalent of the managed-test lifecycle rule: the
+consumer needs to know which build produced the bytes being asserted.
+
+- `ost plugin build` records the target/runtime/build fingerprint and digests of
+  the package-relevant output set it completed.
+- `ost plugin package` compares every staged managed output with that record and
+  reports `matched`, `untracked`, or `mismatched` provenance in human, JSON, and
+  package metadata.
+- A release/reproducibility lane fails on `mismatched` output unless an explicit
+  override records the external/unmanaged origin honestly; plain CMake remains a
+  supported producer, not an invisible replacement.
+- Acceptance: overwrite the bundle output with `cmake --build build/plain`, then
+  package it; OpenStrata warns or refuses with the changed file, expected digest,
+  observed digest, and last managed build identity.
 
 ### P1 - external provenance can see the trees that exist
 
@@ -193,6 +250,27 @@ on a malformed intent declaration while it fails closed on nothing.
 
 ### P2 - contract and diagnostic consistency
 
+- **Print the exact immutable evidence-gap recovery command** (usd-3dgs-plugins
+  [report 01](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/01-2026-07-18-v0.18.0-bootstrap.md)).
+  When `ost ci validate` knows `runtime_remote`, its expected OCI digest, and
+  `runtime_artifact`, the diagnostic names the exact safe
+  `ost artifact pull ... --expect-artifact ...` command that refreshes missing
+  SBOM/provenance evidence without changing the pinned artifact identity.
+- **Resolve package sessions from required capabilities, or name the failed
+  profile choice** (usd-3dgs-plugins
+  [report 02](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/02-2026-07-19-package-provenance-and-reproducibility.md)).
+  Outside a project, `plugin run <extracted-root> --target cy2026` currently
+  defaults to `core` and then fails `REAL_RUNTIME_REQUIRED` even though the
+  package declares `requires.capabilities: [usd-stage-read]`. Resolve a unique
+  satisfying profile from the capability graph; if none or several qualify,
+  fail with the selected/defaulted profile and an exact `--profile` correction.
+- **Offer an explicit across-build reproducibility check** (usd-3dgs-plugins
+  report 02 observation). The package-twice gate correctly proves archive
+  determinism for one build but cannot observe compiler/linker timestamps across
+  clean builds. Add an opt-in release-lane mode that builds in two isolated
+  roots, packages both, compares artifact digests, and identifies the earliest
+  differing output. Keep it opt-in because it deliberately doubles native build
+  cost.
 - **Normalize staged paths to `/`** (usd-vrm-plugins reports 22 §11.5, 23 §5,
   24 §3(5) — filed three times, and no longer cosmetic). A Windows-produced
   package writes `runtime/libraries\bin` into portable, digest-addressed data.
@@ -254,6 +332,11 @@ on a malformed intent declaration while it fails closed on nothing.
 
 - `ost doctor` reports `env_keys` with `PATH` listed twice (hdMerlin
   OST19-RND-006). Deduplicate, or model the entries as ordered key/value pairs.
+- Observe localized MSVC `/showIncludes` output in the usd-3dgs-plugins hosted
+  Windows lane before filing a stronger suppression/change. Japanese local
+  output is very noisy during `ost plugin build --json`, but the build succeeds
+  and stdout still ends in the correct JSON contract; this is log ergonomics,
+  not a correctness blocker.
 
 ### Answers owed to hdMerlin
 

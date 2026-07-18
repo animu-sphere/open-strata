@@ -49,8 +49,15 @@ partially working — these examples were exercised on Windows.
 
 OpenStrata is developed against real OpenUSD projects rather than isolated
 examples. Its **reference projects** validate the plugin-workspace, renderer,
-artifact, CI, and execution contracts across repository boundaries:
+plain-library, artifact, CI, and execution contracts across repository
+boundaries:
 
+- [**USD 3DGS Plugins**](https://github.com/animu-sphere/usd-3dgs-plugins) — a
+  read-only Gaussian PLY `SdfFileFormat` bundle plus a format-independent
+  ordinary library. It demonstrates bootstrapping a real plugin workspace from
+  the OpenStrata scaffold, a bundle-to-library dependency, OpenUSD 26.05
+  Gaussian schema authoring, three-OS generated CI, package-origin validation,
+  and reproducibility dogfooding.
 - [**USD VRM Plugins**](https://github.com/animu-sphere/usd-vrm-plugins) — a
   multi-bundle OpenUSD plugin workspace (typed schemas, a VRM file-format plugin,
   a package resolver, a shared container library). It demonstrates workspace
@@ -62,9 +69,10 @@ artifact, CI, and execution contracts across repository boundaries:
   evidence, capability-aware validation, runtime artifact adoption, and the
   managed `usdview` workflow.
 
-Together they exercise the plugin and renderer sides of the ecosystem and
-establish the basis for cross-repository **Formation** composition planned for
-v0.19.0. See [docs/projects/](docs/projects/README.md).
+Together they exercise distinct plugin-workspace shapes and the renderer side
+of the ecosystem, establishing the basis for cross-repository **Formation**
+composition planned for v0.19.0. See
+[docs/projects/](docs/projects/README.md).
 
 ## Install
 
