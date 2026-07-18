@@ -151,6 +151,23 @@ pub struct Requires {
     /// Extra bundle-relative directories containing runtime shared libraries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_libs: Vec<String>,
+    /// Extra bundle-relative directories containing a dependency's USD
+    /// `plugInfo.json` root, to be added to `PXR_PLUGINPATH_NAME`.
+    ///
+    /// This is the *registration* half of a `bundles` edge, and it is what makes
+    /// a packaged bundle independently installable. `runtime_libs` carries a
+    /// dependency's link half — its shared libraries — which is enough for the
+    /// loader and not enough for USD: a `kind: usd-schema` provider is only
+    /// usable once USD can find its `plugInfo.json` and `generatedSchema.usda`
+    /// and apply the schemas at runtime. Packaging stages those under
+    /// `runtime/bundles/<id>/…` and declares them here, so a consumer opening a
+    /// stage from the extracted package gets the provider registered rather than
+    /// a file format that resolves and then cannot read anything.
+    ///
+    /// Authored bundles do not normally set this; `ost plugin package` writes it
+    /// into the packaged manifest from the resolved workspace graph.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_plugin_paths: Vec<String>,
     /// Independently discoverable plugin bundles required by this bundle.
     /// Workspace validation resolves these by plugin identity before any build.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

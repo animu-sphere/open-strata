@@ -1527,6 +1527,48 @@ fn selected_and_workspace_tests_compose_manifest_dependencies_without_with() {
     assert_eq!(value["data"]["graph"]["edges"][0]["from"], "consumer");
     assert_eq!(value["data"]["graph"]["edges"][0]["to"], "schema");
 
+    // A clean-install run that points at some other package is almost always a
+    // mistaken experiment. Warn before runtime launch; a matching extracted
+    // identity is the intended --no-inject shape and stays quiet.
+    let out = sb.ost(&[
+        "plugin",
+        "run",
+        "consumer",
+        "--no-inject",
+        "--plugin-path",
+        "schema",
+        "--",
+        "unused-command",
+    ]);
+    assert!(
+        !out.status.success(),
+        "the sandbox runtime is intentionally mock"
+    );
+    assert!(
+        out_text(&out).contains("PLUGIN_RUN_PLUGIN_PATH_MISMATCH"),
+        "a mismatched clean-install root must be called out: {}",
+        out_text(&out)
+    );
+    let out = sb.ost(&[
+        "plugin",
+        "run",
+        "consumer",
+        "--no-inject",
+        "--plugin-path",
+        "consumer",
+        "--",
+        "unused-command",
+    ]);
+    assert!(
+        !out.status.success(),
+        "the sandbox runtime is intentionally mock"
+    );
+    assert!(
+        !out_text(&out).contains("PLUGIN_RUN_PLUGIN_PATH_MISMATCH"),
+        "the matching extracted identity is the intended clean-install shape: {}",
+        out_text(&out)
+    );
+
     // A broken sibling only matters to bundles that declare dependencies: the
     // schema (empty closure) skips workspace discovery entirely, while the
     // consumer legitimately fails closed on the unloadable workspace.
@@ -1556,7 +1598,14 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     let sb = Sandbox::new("wspackage");
     init_and_pull(&sb);
     for args in [
-        vec!["plugin", "new", "usd-schema", "schema"],
+        vec![
+            "plugin",
+            "new",
+            "usd-schema",
+            "schema",
+            "--template",
+            "usd-schema-cpp",
+        ],
         vec![
             "plugin",
             "new",
@@ -1570,7 +1619,7 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
     }
     // Both bundles need a library artifact present to package.
-    for (bundle, stem) in [("schema", "SchemaLib"), ("consumer", "ConsumerFileFormat")] {
+    for (bundle, stem) in [("schema", "Schema"), ("consumer", "ConsumerFileFormat")] {
         let lib = sb.work_file(&format!(
             "{bundle}/lib/lib{stem}{}",
             std::env::consts::DLL_SUFFIX
@@ -1583,15 +1632,21 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     let source = std::fs::read_to_string(&path).unwrap();
     let source = source.replace(
         "requires:\n  capabilities: [usd-stage-read]\n",
-        "requires:\n  capabilities: [usd-stage-read]\n  bundles:\n    - { id: schema, version: '>=0.1,<0.2', contract: 1 }\n",
+        "requires:\n  capabilities: [usd-stage-read]\n  runtime_libs: [third_party/bin]\n  bundles:\n    - { id: schema, version: '>=0.1,<0.2', contract: 1 }\n",
     );
     std::fs::write(
         &path,
         format!("manifest:\n  schema: openstrata.plugin/v1alpha1\n{source}"),
     )
     .unwrap();
+    std::fs::create_dir_all(sb.work_file("consumer/third_party/bin")).unwrap();
+    std::fs::write(
+        sb.work_file("consumer/third_party/bin/runtime-dependency.marker"),
+        b"runtime dependency",
+    )
+    .unwrap();
 
-    let out = sb.ost(&["--json", "plugin", "package", "--workspace"]);
+    let out = sb.ost(&["--json", "plugin", "package", "--workspace", "--product"]);
     assert!(
         out.status.success(),
         "workspace package failed:\n{}",
@@ -1612,6 +1667,19 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         "providers must be packaged before their dependents"
     );
     assert_eq!(value["data"]["packages"].as_array().unwrap().len(), 2);
+    for package in value["data"]["packages"].as_array().unwrap() {
+        assert_eq!(package["debug_archive"], serde_json::Value::Null);
+        assert_eq!(package["debug_package"]["mode"], "not-produced");
+        assert!(package["debug_package"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains(".pdb"));
+    }
+    assert_eq!(value["data"]["product"]["members"], 2);
+    assert!(value["data"]["product"]["archive"]
+        .as_str()
+        .unwrap()
+        .ends_with("-plugin-product.tar.zst"));
 
     // The consumer's artifact carries the bundle it needs, so a consumer can
     // detect a missing provider from the manifest instead of at load time.
@@ -1626,6 +1694,73 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     assert_eq!(bundles[0]["contract"], 1);
     assert_eq!(bundles[0]["provenance"], "source-workspace");
 
+    // …and it carries the provider's USD *registration* half, not just the
+    // record and the link half. v0.18.0 shipped `libSchemaLib` plus a resolved
+    // `bundles` entry while leaving `plugInfo.json` out, so the package asserted
+    // a closure it did not have and still failed at `Usd.Stage.Open()`
+    // (usd-vrm-plugins report 23 §2).
+    let staged: Vec<&str> = value["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["path"].as_str())
+        .collect();
+    assert!(
+        staged.contains(&"runtime/bundles/schema/plugin/resources/schema/plugInfo.json"),
+        "the provider's registration half must be staged; got: {staged:?}"
+    );
+    let provider_library = format!(
+        "runtime/bundles/schema/lib/libSchema{}",
+        std::env::consts::DLL_SUFFIX
+    );
+    assert!(
+        staged.contains(&provider_library.as_str()),
+        "the provider's link half must stay beside its copied plugInfo tree; got: {staged:?}"
+    );
+    for activation in [
+        "openstrata.activation.json",
+        "activate.ps1",
+        "activate.sh",
+        "openstrata_activate.py",
+    ] {
+        assert!(
+            staged.contains(&activation),
+            "consumer-facing activation entrypoint '{activation}' must ship"
+        );
+    }
+    assert_eq!(value["debug_package"]["mode"], "not-produced");
+    let activation_path = find_first(
+        &sb.work_file("consumer/.strata"),
+        "openstrata.activation.json",
+    )
+    .unwrap();
+    let activation: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(activation_path).unwrap()).unwrap();
+    assert_eq!(activation["schema"], "openstrata.activation/v1alpha1");
+    assert!(activation["library_paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path == "third_party/bin"));
+    assert!(activation["library_paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path == "runtime/bundles/schema/lib"));
+    assert_eq!(
+        activation["environment"]["loader"],
+        if cfg!(windows) {
+            "PATH"
+        } else {
+            "LD_LIBRARY_PATH"
+        }
+    );
+    // Every staged path is portable: this list is read on hosts that never saw
+    // the producer's separators.
+    for path in &staged {
+        assert!(!path.contains('\\'), "staged path kept separators: {path}");
+    }
+
     // A provider with no dependencies records an empty closure, not a missing
     // one — "nothing required" and "unknown" must not look the same.
     let schema_manifest = find_first(&sb.work_file("schema/dist"), "manifest.json").unwrap();
@@ -1639,6 +1774,56 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
             "a dependency-free bundle records no providers"
         );
     }
+
+    // The aggregate is one download containing the exact package bytes and all
+    // member provenance sidecars. Its order is the validated graph order, not a
+    // second hand-maintained list.
+    let product_manifest = find_first(&sb.work_file("dist/products"), "manifest.json").unwrap();
+    let product: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&product_manifest).unwrap()).unwrap();
+    assert_eq!(product["kind"], "openstrata.plugin-product");
+    assert_eq!(
+        product["install_order"],
+        serde_json::json!(["schema", "consumer"])
+    );
+    let members = product["members"].as_array().unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0]["id"], "schema");
+    assert_eq!(members[1]["id"], "consumer");
+    for member in members {
+        assert!(member["archive_digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        assert!(member["manifest"].as_str().unwrap().starts_with("members/"));
+        assert!(member["checksums"]
+            .as_str()
+            .unwrap()
+            .starts_with("members/"));
+    }
+    let product_files: Vec<_> = product["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["path"].as_str())
+        .collect();
+    assert!(product_files.contains(&"openstrata.product.json"));
+    assert!(product_files
+        .iter()
+        .any(|path| path.starts_with("members/schema/") && path.ends_with(".tar.zst")));
+    assert!(product_files
+        .iter()
+        .any(|path| path.starts_with("members/consumer/") && path.ends_with("manifest.json")));
+
+    let product_dist = product_manifest.parent().unwrap().to_str().unwrap();
+    let imported = sb.ost(&["--json", "artifact", "import", product_dist]);
+    assert!(
+        imported.status.success(),
+        "aggregate must be a first-class registry artifact: {}",
+        out_text(&imported)
+    );
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    assert_eq!(imported["data"]["artifact"]["kind"], "product");
 }
 
 /// Documents that no path bakes host separators into a portable artifact.

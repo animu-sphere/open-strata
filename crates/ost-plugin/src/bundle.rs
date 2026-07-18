@@ -73,7 +73,7 @@ impl Bundle {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let message = format!(
-                    "versioned plugin manifest contains unknown field(s): {fields} (allowed below requires: capabilities, components, runtime_libs, bundles, libraries)"
+                    "versioned plugin manifest contains unknown field(s): {fields} (allowed below requires: capabilities, components, runtime_libs, runtime_plugin_paths, bundles, libraries)"
                 );
                 return Err(Error::config(message));
             }
@@ -88,6 +88,9 @@ impl Bundle {
         }
         for dir in &manifest.requires.runtime_libs {
             check_safe_relative("requires.runtime_libs", dir)?;
+        }
+        for dir in &manifest.requires.runtime_plugin_paths {
+            check_safe_relative("requires.runtime_plugin_paths", dir)?;
         }
         // Notices are copied verbatim into a package, so they must stay in-bundle.
         for notice in &manifest.notices {
@@ -136,6 +139,17 @@ impl Bundle {
         self.manifest
             .requires
             .runtime_libs
+            .iter()
+            .map(|dir| self.path(dir))
+            .collect()
+    }
+
+    /// Bundle-relative staged dependency `plugInfo` roots declared by the
+    /// manifest — the registration half of a packaged `bundles` closure.
+    pub fn runtime_plugin_path_dirs(&self) -> Vec<Utf8PathBuf> {
+        self.manifest
+            .requires
+            .runtime_plugin_paths
             .iter()
             .map(|dir| self.path(dir))
             .collect()

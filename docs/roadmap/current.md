@@ -3,15 +3,268 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## Next milestone: v0.19.0 - Formation composition
+## Next milestone: v0.19.0 - composition and reach
 
-**Status:** ⬜ not started · **Depends on:** the v0.18.0 evidence-integrity,
+**Status:** 🚧 in progress · **Depends on:** the v0.18.0 evidence-integrity,
 target-lease, test-lifecycle and workspace-closure contracts (shipped).
 
-Turn the reference-project ecosystem documented in v0.18.0 into an executable
-contract. Scope, CLI surface and acceptance criteria are in the
-[backlog ladder](backlog.md); the design target is
-[formations.md](../design/proposed/formations.md).
+v0.19.0 was scheduled as the Formation composition milestone. Three v0.18.0
+dogfooding passes on 2026-07-18 — two of them from a **real published release** —
+re-planned it into two ordered halves. The findings are not scope creep on
+Formation; they are the foundation it was already standing on:
+
+> The [Formation acceptance criteria](backlog.md) require *three first-party
+> dogfoods run from packaged, digest-pinned artifacts, each on a clean machine
+> or isolated prefix*. As of v0.18.0 **no packaged bundle from a split workspace
+> is independently installable**, so none of those three dogfoods can pass. The
+> reach work below is what makes the Formation milestone acceptance-testable.
+
+The dogfooding trail:
+
+- usd-vrm-plugins (`animu-sphere/usd-vrm-plugins`,
+  `23-2026-07-18-…-workspace-packaging-v0.19.0-asks.md` and
+  `24-2026-07-18-…-first-workspace-release-v0.19.0-asks.md`): v0.2.0 shipped for
+  real — three bundles × three OS, 20 assets — off the v0.18.0 workspace verbs.
+  The verbs held. The artifacts did not: a packaged bundle records a dependency
+  closure it does not actually carry, and a consumer outside `ost` cannot reach
+  the bytes that *are* carried.
+- hdMerlin (`animu-sphere/hydra-merlin`,
+  `07-2026-07-18-v0.18.0-recheck-v0.19.0-asks.md`, findings OST19-RND-001..008):
+  v0.18.0's evidence and lifecycle model is right, but its *implementation
+  cannot see* the build trees and producer sessions that actually exist — so
+  `runtime-compatible` and `renderer-evidence` are stuck at an honest SKIP/FAIL
+  with no reachable exit.
+
+Both repositories independently surfaced the same shape, which is the theme of
+this milestone: **v0.18.0's models are correct and its reach is short.** The
+artifact is closed under `ost` and open under everything else; the provenance
+model is right and blind to Visual Studio; the producer-session rule is right
+and unreadable by any producer.
+
+### Half A - reach (ships first, gates Half B)
+
+Priorities P0/P1/P2 below. This half is corrective and must land before the
+Formation slice is started, because it is Formation's own precondition.
+
+### Half B - Formation composition (narrowed)
+
+The Formation MVP as scoped in the [backlog ladder](backlog.md), narrowed to
+`ost formation resolve|inspect|run|lock` — `env` and `doctor` move to v0.20.0.
+Design target: [formations.md](../design/proposed/formations.md). The aggregate
+product artifact (Half A, P1) is the input Formation resolves against, which is
+why it moves out of the backlog and into this milestone.
+
+If Half A consumes the milestone, Formation ships in v0.20.0 and the DCC host
+milestone moves to v0.21.0 — but Half A does **not** get deferred to protect the
+Formation date. A composition layer over artifacts that cannot be installed is
+not worth having.
+
+### P0 - a packaged bundle carries the closure it claims
+
+From usd-vrm-plugins report 23 §2/§6(1) — the one correctness regression in the
+set, and the reason v0.2.0 needs a repo-side workaround to verify what it ships.
+
+v0.18.0 records `bundles` in `dependencies.json` and stages the dependency's
+*link* half (`libvrmSchema.dll` + its CMake package). It does not stage the
+*registration* half (`plugInfo.json`, `generatedSchema.usda`) — for a bundle
+declared `kind: usd-schema`, which is precisely the kind whose entire value is
+runtime registration. The result is an artifact that asserts a closure it does
+not have: `Usd.Stage.Open()` still fails, and the package now looks *more*
+complete than it is. v0.17.0 omitted the bundle honestly, with no `bundles` key
+at all; v0.18.0 is confidently wrong where it used to be honestly silent.
+
+- For a `requires.bundles` edge, stage the dependency's USD resource tree into
+  the package (`runtime/bundles/<id>/…`), not only its link artifacts.
+- Declare the staged tree in the packaged manifest so the session plugin path
+  includes it — `L0 session.plugin_path` must see it the same way
+  `requires.runtime_libs` directories are already declared and activated.
+- `ost plugin test --from-package` on a single packaged bundle then passes
+  without any workspace flag, because the package is genuinely closed. That is
+  the acceptance test, and it is the test that fails today.
+
+### P1 - staged bytes are reachable outside `ost`
+
+From usd-vrm-plugins report 24 §2/§3(4). Same shape as the P0, one layer out:
+the package contains the right bytes and a consumer has no supported way to
+reach them.
+
+`ost` stages dependency libraries into `runtime/libraries/{lib,bin}` and knows
+to activate them at `plugin run`. Nothing in the artifact tells a consumer
+installing from a GitHub release how to do the same, and the failure blames the
+wrong component — a missing transitive DLL surfaces as
+`Cannot determine file format for @….vrm@`. `requires.runtime_libs` is a
+*description*, not an activation mechanism: using it means parsing the staged
+manifest, resolving a non-portable path, and knowing that Python 3.8+ removed
+`PATH` from the DLL search used for dynamically loaded modules.
+
+Any of: co-locate dependency libraries beside the plugin so the platform's
+default search finds them; emit a per-platform activation snippet into the
+package; or publish the staged layout as a stable, portable, documented
+contract. Today it is a real, load-bearing, `ost`-internal convention.
+
+**Implemented on the v0.19.0 branch:** each package now emits a versioned
+`openstrata.activation.json` plus PowerShell, Bash, and Python entrypoints. The
+Python entrypoint retains `os.add_dll_directory()` handles on Windows, closing
+the Python 3.8+ DLL-search gap rather than documenting `PATH` as sufficient.
+
+### P1 - external provenance can see the trees that exist
+
+From the hdMerlin report OST19-RND-001/OST19-RND-002. `ost external import`
+rejects both build-tree flavors that project produces, and `ost validate` names
+`external import` as the next action for `runtime-compatible` — a closed
+guidance loop with no reachable exit.
+
+- **Generator-aware identity.** Visual Studio generators never write a top-level
+  `CMAKE_CXX_COMPILER` cache entry; every VS tree is rejected for a variable
+  that generator does not emit. The identity is fully recorded in the same tree
+  at `CMakeFiles/<version>/CMakeCXXCompiler.cmake`, alongside
+  `CMAKE_GENERATOR{,_INSTANCE,_PLATFORM,_TOOLSET}`. Resolve identity from the
+  generator's actual sources; model multi-config generators first-class rather
+  than assuming a single `CMAKE_BUILD_TYPE`; name the detected generator flavor
+  and the unresolved identity source in the diagnostic. Cover Ninja, Ninja
+  Multi-Config, Visual Studio and Xcode trees in tests.
+- **Capability-scoped requirements.** `external import` demands `pxr_DIR` even
+  for a `core` profile that v0.18.0's own `doctor` says "exercises no
+  OpenUSD-dependent capability". Derive import requirements from the resolved
+  profile and requested capabilities, accept `--capability` the way `doctor`
+  now does, and record which requirements were applied versus skipped as
+  not-applicable so a later `validate` can tell "not required" from "not
+  checked".
+- **Applicable remediation.** A hint is emitted only when following it can
+  change the outcome. A `pxr_ROOT` hint does not belong on a compiler-identity
+  failure, and when `validate` recommends a command it either verifies the
+  command applies to that tree or explains the precondition instead.
+
+### P1 - the producer-session contract is readable by producers
+
+From the hdMerlin report OST19-RND-007. A build **`ost` itself performed**,
+through the new first-class `ost renderer viewport`, produced a report that
+`ost validate` then rejected. The rejection is correct — the report records no
+producer session — but the enforcement message is the only description of the
+requirement that exists anywhere. It names no field, no schema version, and no
+required shape, and no CLI surface emits or attaches one. A producer cannot
+conform to a contract it cannot read.
+
+- Publish and version the renderer-report schema, including the producer-session
+  shape, rather than implying it from an error.
+- **When `ost` owns the producing session (`ost build`, `ost test`,
+  `ost renderer viewport`), `ost` records the session outcome itself.** If the
+  producing project must self-assert success, an unreliable producer simply
+  asserts it — which is the exact class of problem the v0.18.0 P0 removed.
+- For genuinely external producers, a supported command attaches a producer
+  session to an existing report, recording the external/unverified origin
+  honestly.
+- The rejection diagnostic names the missing field and the schema version it was
+  evaluated against, and a schema mismatch is distinguishable from a well-formed
+  report recording a failed session.
+
+### P1 - aggregate product artifact
+
+From usd-vrm-plugins reports 23 §6(3) and 24 §3(3), and promoted out of the
+[backlog](backlog.md) where v0.18.0 deliberately parked it. v0.2.0 publishes
+three assets per target plus a documented install order; an aggregate collapses
+that to one. Defining it means deciding how a consumer installs and pins a *set*
+rather than a bundle — which is the Formation model, and why this now sits at
+the Half A / Half B seam. Preserve member bundle digests, member manifests and
+provenance; define the extraction layout and aggregate evidence; do not fall
+back to workspace source paths or a hand-maintained per-bundle loop.
+
+**Implemented on the v0.19.0 branch:** `plugin package --workspace --product`
+wraps the exact member archives, manifests, checksums, SBOM/provenance and debug
+sidecars under `members/<id>/`, records the graph-derived install order, and
+emits its own digest, manifest and aggregate evidence as artifact kind
+`product`.
+
+### P1 carry - named build intents
+
+From the hdMerlin report OST19-RND-003 (carried unchanged from OST18-RND-007).
+`ost build` still exposes no `--intent` and the manifest accepts no intent
+declaration, so typed CMake cache inputs cannot be expressed and the MaterialX
+configuration stays manual CMake.
+
+v0.18.0 made this reproducible on the *default* path with no optional dependency
+involved: `ost renderer viewport` builds with `BuildIntent::default()`, so with
+`MERLIN_ENABLE_HYDRA2` defaulting to `OFF` the binary it produces cannot open a
+stage. The refusal correctly names the cache variable to set — and neither
+`ost build` nor `ost renderer viewport` can set it. A user following in-product
+advice accurately arrives at a configuration `ost` cannot express. Note that
+manifest strictness (P2 below) is a prerequisite: the manifest cannot fail closed
+on a malformed intent declaration while it fails closed on nothing.
+
+### P2 - contract and diagnostic consistency
+
+- **Normalize staged paths to `/`** (usd-vrm-plugins reports 22 §11.5, 23 §5,
+  24 §3(5) — filed three times, and no longer cosmetic). A Windows-produced
+  package writes `runtime/libraries\bin` into portable, digest-addressed data.
+  It is the exact string a consumer must turn into a loader path to implement
+  the P1 activation contract above, and splitting it on `/` yields
+  `libraries\bin`. A Windows-produced and a Linux-produced package must not
+  differ in a field describing the same layout.
+- **Fail closed on unknown manifest keys** (hdMerlin OST19-RND-004). Unknown
+  `openstrata.toml` tables — a plausible-but-unsupported `[build.intents.*]` and
+  an outright `[nonsense_table]` alike — are accepted with `ok: true` and an
+  empty `warnings` array. Low-impact today; a correctness problem the moment
+  intents ship, when a typo'd cache key silently produces a build with the
+  feature disabled and evidence that looks legitimate. Reject unknown top-level
+  tables and unknown keys in known tables, naming the offending path and the
+  closest valid key; distinguish "unknown to this `ost` version" from "invalid
+  anywhere"; fail closed on duplicate tables. An off-by-default
+  `--allow-unknown-manifest-keys` escape hatch may exist. **Open decision:**
+  whether this ships as a breaking change in v0.19.0 or needs a warning-only
+  deprecation window first.
+- **Honour `--json` on the viewport success path** (hdMerlin OST19-RND-008, and
+  where the still-open half of OST18-RND-005 now lives).
+  `ost renderer viewport --json` emits a well-formed envelope on failure and
+  *raw child output* on success — so the success case, the one carrying the
+  launch outcome, resolved executable, backend and device, is the unparseable
+  one. Those values are exactly the durable launch record OST18-RND-005 asked
+  for, and today they are printed and discarded. One envelope on both paths with
+  child output captured to a field or log path; a launch/readiness record that
+  persists after exit; the same contract for `renderer view`.
+- **Warn on conflicting `plugin run` flags** (usd-vrm-plugins report 24 §2.4).
+  `--no-inject` sounds like it makes the bundle argument inert; it does not — the
+  bundle argument still selects whose `requires` get staged. This cost the
+  downstream three invalid experiments before the harness was corrected. Warn
+  when `--plugin-path` roots exclude the bundle argument's own tree.
+  **Implemented on the v0.19.0 branch:** the warning carries stable code
+  `PLUGIN_RUN_PLUGIN_PATH_MISMATCH` and stays quiet when an extracted root has
+  the selected bundle's identity/version/kind.
+- **Say something when no debug package is produced** (usd-vrm-plugins report 24
+  §1.1). `debug_archive: null` on every package, every cell, all three OS, while
+  `plugin package --help` documents lean/split as the default — which reads as
+  though a sibling `*-debug` package is the normal outcome. If splitting requires
+  something of the build profile, say so at `package` time.
+  **Implemented on the v0.19.0 branch:** human and JSON output plus the producer
+  manifest distinguish `split`, `included`, and `not-produced`, with the latter
+  naming the absence of separate `.pdb`/`.dwo` files and the embedded-debug
+  limitation.
+- **Redacted diagnostic export** (hdMerlin OST19-RND-005, carried unchanged from
+  OST18-RND-008). No `--redact-paths`, no `ost report` subcommand; machine JSON
+  still carries the absolute project root, absolute rendered command paths, and
+  a `runtime_env` array of user-profile runtime-store paths.
+- **Correct the `--from-package` help text.** `ost plugin test --from-package`
+  still documents itself as "incompatible with `--workspace`". The composition
+  shipped in v0.18.0 and works; only the help text is stale. usd-vrm-plugins
+  report 23 §3 read the help, believed it, reused the already-existing
+  `scripts/clean_install_smoke.py`, and re-filed a capability that had shipped.
+  Report 25 corrects the narrower cost: one wrong downstream conclusion and a
+  duplicate ask, not the creation of that smoke harness.
+
+### P3 - cosmetic
+
+- `ost doctor` reports `env_keys` with `PATH` listed twice (hdMerlin
+  OST19-RND-006). Deduplicate, or model the entries as ordered key/value pairs.
+
+### Answers owed to hdMerlin
+
+Report 07 §"Requested maintainer decisions" asks six questions directly. The
+positions taken above: (1) resolve compiler identity from the generator's own
+sources *and* model multi-config explicitly; (2) derive requirements from
+profile capabilities *and* accept an explicit `--capability`; (3) yes — a
+recommended command is verified applicable or replaced by an explanation;
+(4) open, and called out in the P2 item; (5) yes — `ost` stamps the session when
+it owns the build, and the schema version ships published; (6) both carried asks
+stay on v0.19.0 (OST19-RND-003 as P1 carry, OST19-RND-005 as P2).
 
 ## Shipped: v0.18.0 - evidence integrity and ecosystem documentation
 

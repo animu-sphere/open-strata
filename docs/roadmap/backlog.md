@@ -8,12 +8,20 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.19.0 - Formation composition) is detailed in
+The next milestone (v0.19.0 - composition and reach) is detailed in
 [current.md](current.md); v0.18.0 shipped as the
 [evidence-integrity release](../releases/v0.18.0.md).
 
-- ⬜ **v0.19.0 - Formation composition.** Turn the reference-project ecosystem
-  documented in v0.18.0 into an executable contract. A **Formation** is a
+The Formation scope below is **Half B** of v0.19.0, narrowed to
+`resolve|inspect|run|lock`. It is gated on Half A (artifact closure, staged-byte
+reach, external-provenance reach, producer-session publication) because
+Formation's own acceptance criteria — three dogfoods run from packaged,
+digest-pinned artifacts on a clean machine — cannot pass while a packaged bundle
+from a split workspace is not independently installable. If Half A consumes the
+milestone, Formation ships in v0.20.0 and DCC host integration moves to v0.21.0.
+
+- ⬜ **v0.19.0 Half B - Formation composition.** Turn the reference-project
+  ecosystem documented in v0.18.0 into an executable contract. A **Formation** is a
   resolved, reproducible set of OpenStrata-managed components — runtime, plugin
   bundles, plugin-workspace products, renderer, tool, and scene/input asset
   references — assembled for one command or execution purpose. Direction:
@@ -24,8 +32,9 @@ The next milestone (v0.19.0 - Formation composition) is detailed in
   compose plugin discovery and loader paths and identify conflicting environment
   contributions; print a deterministic resolved model with `--json`; launch a
   foreground process; emit a digest-pinned `formation.lock`; and record Formation
-  Run evidence. CLI: `ost formation resolve|inspect|run|lock|env|doctor`, using
-  the shipped `{ok, schema, data, warnings}` envelope and category exit codes.
+  Run evidence. CLI: `ost formation resolve|inspect|run|lock` for this
+  milestone, using the shipped `{ok, schema, data, warnings}` envelope and
+  category exit codes; `formation env|doctor` defer to v0.20.0.
   Formation must **reuse** the runtime, artifact, plugin, renderer, target, and
   evidence contracts rather than fork them, and introduce no DCC-specific logic
   in the core model. Acceptance requires three first-party dogfoods run from
@@ -39,7 +48,8 @@ The next milestone (v0.19.0 - Formation composition) is detailed in
   from untrusted sources.
 - ⬜ **v0.20.0 - DCC host integration (Phase 10).** Deferred from the v0.19.0
   slot by the inserted Formation milestone (and originally from v0.18.0 by the
-  v0.17.0 dogfooding findings). Extends OpenStrata beyond runtime-native OpenUSD
+  v0.17.0 dogfooding findings). Moves again to v0.21.0 if v0.19.0 Half A pushes
+  Formation into the v0.20.0 slot. Extends OpenStrata beyond runtime-native OpenUSD
   applications without redistributing DCC SDKs or inventing one false cross-DCC
   API: an `ost-host` model with a versioned host record (product, version,
   install root, executable/API locations, Python ABI, platform fingerprint,
@@ -139,15 +149,13 @@ Shipped context for each area is in the
   `dlopen`; (c) reconcile `ost artifact push` vs `oras push` OCI manifests —
   document the canonical producer path (prefer `ost artifact push`) or reproduce
   the `oras` manifest byte-for-byte so CI pins don't drift.
-- ⬜ **Packaged workspace/product composition — aggregate product artifact.**
-  The workspace packaging closure (per-bundle `--workspace` packaging, resolved
-  `bundles` in `dependencies.json`, `--from-package` composition) shipped in
-  [v0.18.0](../releases/v0.18.0.md), which deliberately deferred the aggregate
-  single-artifact product: defining one means deciding how a consumer installs
-  and pins a *set* rather than a bundle, which belongs with the v0.19.0
-  Formation model. Remaining here: member bundle digests, extraction layout and
-  aggregate evidence. Preserve member manifests/provenance and do not fall back
-  to workspace source paths or a hand-maintained per-bundle loop.
+- ✅ **Packaged workspace/product composition — aggregate product artifact.**
+  **Scheduled into [v0.19.0 Half A](current.md) as P1** by the 2026-07-18
+  usd-vrm-plugins reports, which re-filed it off a real release that now
+  publishes three assets per target plus a documented install order. The
+  per-bundle half (`--workspace` packaging, resolved `bundles` in
+  `dependencies.json`, `--from-package` composition) shipped in
+  [v0.18.0](../releases/v0.18.0.md). No longer tracked here.
 
 ## Documentation & tooling
 

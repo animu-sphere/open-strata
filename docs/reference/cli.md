@@ -112,7 +112,7 @@ List artifacts in the local registry
 
 | Option | Description |
 | --- | --- |
-| `--kind <KIND>` | Only show artifacts of this kind: runtime \| plugin \| package |
+| `--kind <KIND>` | Only show artifacts of this kind: runtime \| plugin \| product \| package |
 
 #### `ost artifact pull`
 
@@ -132,7 +132,7 @@ Pull a digest-pinned artifact from a remote source, verify it, and import it int
 | --- | --- |
 | `--expect-artifact <sha256:<hex>>` | Require the pulled OpenStrata artifact digest to equal this pin (the support line / lockfile contract) |
 | `--plain-http` | Use plain http:// instead of https:// (fixture registries and air-gapped mirrors only) |
-| `--require-kind <KIND>` | Require the artifact kind: runtime \| plugin \| package |
+| `--require-kind <KIND>` | Require the artifact kind: runtime \| plugin \| product \| package |
 | `--require-target <TARGET>` | Require the artifact's target id to match exactly |
 
 #### `ost artifact push`
@@ -698,6 +698,7 @@ Pack a built plugin bundle into a target-specific tar.zst artifact
 | Option | Description |
 | --- | --- |
 | `--clean-stage` | Reclaim the stable package stage harder and sweep stale fallback stages a previous locked run left behind, instead of quietly staging into another sibling. Use once the holding process has exited |
+| `--product` | Also emit one aggregate product artifact containing the exact member archives, manifests, checksums and evidence in dependency order. Requires --workspace |
 | `--profile <PROFILE>` | Profile to package against. Defaults to the enclosing project's |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 | `--with-debug` | Ship debug symbols (`.pdb`, `.dwo`) *inside* the main package instead of the default lean package. By default the main archive is lean and any debug symbols are split into a sibling `*-debug` package |
@@ -791,7 +792,7 @@ Orchestrate the verification pyramid (L0..L6) and write a report
 
 | Option | Description |
 | --- | --- |
-| `--from-package` | Test the *packaged* artifact, not the build tree: extract the already-built `ost plugin package` output to a clean directory and run discovery / open / validate against it. Catches a build-tree path baked into `plugInfo`/`LibraryPath` that source-tree discovery cannot see. Requires a prior `ost plugin package`; incompatible with `--workspace` |
+| `--from-package` | Test the *packaged* artifact, not the build tree: extract the already-built `ost plugin package` output to a clean directory and run discovery / open / validate against it. Catches a build-tree path baked into `plugInfo`/`LibraryPath` that source-tree discovery cannot see. Requires a prior `ost plugin package`. Composes with `--workspace`, which extracts every bundle and tests each against its dependencies' *extracted* trees rather than their source directories |
 | `--profile <PROFILE>` | Profile to test against. Defaults to the enclosing project's |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 | `--up-to <UP_TO>` | Highest verification level to run (0..=6). Default 5; 6 adds usdview |

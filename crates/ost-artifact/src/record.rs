@@ -31,6 +31,9 @@ pub const RECORD_SCHEMA: u32 = 1;
 /// Producer-manifest `kind` tag for plugin bundles (`ost plugin package`).
 pub const PLUGIN_BUNDLE_KIND: &str = "openstrata.plugin-bundle";
 
+/// Producer-manifest `kind` tag for an aggregate plugin product.
+pub const PLUGIN_PRODUCT_KIND: &str = "openstrata.plugin-product";
+
 /// Producer-manifest `kind` tag for runtime artifacts (future `runtime export`).
 pub const RUNTIME_KIND: &str = "openstrata.runtime";
 
@@ -42,6 +45,8 @@ pub enum ArtifactKind {
     Runtime,
     /// A packaged plugin bundle (`ost plugin package` output).
     Plugin,
+    /// An aggregate of exact packaged plugin members.
+    Product,
     /// A packaged project target (`ost package` output).
     Package,
 }
@@ -51,6 +56,7 @@ impl ArtifactKind {
         match self {
             ArtifactKind::Runtime => "runtime",
             ArtifactKind::Plugin => "plugin",
+            ArtifactKind::Product => "product",
             ArtifactKind::Package => "package",
         }
     }
@@ -59,6 +65,7 @@ impl ArtifactKind {
         match tag {
             "runtime" => Some(ArtifactKind::Runtime),
             "plugin" => Some(ArtifactKind::Plugin),
+            "product" => Some(ArtifactKind::Product),
             "package" => Some(ArtifactKind::Package),
             _ => None,
         }
@@ -195,9 +202,8 @@ impl ArtifactRecord {
 
     /// Derive a record from a producer `manifest.json`.
     ///
-    /// Accepts the two manifests OpenStrata produces today — the plugin-bundle
-    /// manifest (`kind: openstrata.plugin-bundle`) and the project package
-    /// manifest (no `kind` tag) — plus the future `openstrata.runtime` tag.
+    /// Accepts plugin-bundle and aggregate-product manifests, project package
+    /// manifests (no `kind` tag), and the runtime tag.
     /// `imported_by` names the tool building this registry entry; the artifact's
     /// own producer is read from the manifest's `producer` field and left `None`
     /// when the manifest does not carry one.
@@ -223,7 +229,7 @@ impl ArtifactRecord {
                     licenses,
                 )
             }
-            ArtifactKind::Runtime | ArtifactKind::Package => {
+            ArtifactKind::Runtime | ArtifactKind::Product | ArtifactKind::Package => {
                 let licenses = manifest
                     .get("licenses")
                     .and_then(|v| v.as_array())
@@ -418,10 +424,11 @@ pub fn manifest_debug_archive(manifest: &serde_json::Value) -> Result<Option<Deb
 fn detect_kind(manifest: &serde_json::Value) -> Result<ArtifactKind> {
     match manifest.get("kind").and_then(|v| v.as_str()) {
         Some(PLUGIN_BUNDLE_KIND) => Ok(ArtifactKind::Plugin),
+        Some(PLUGIN_PRODUCT_KIND) => Ok(ArtifactKind::Product),
         Some(RUNTIME_KIND) => Ok(ArtifactKind::Runtime),
         Some(other) => Err(Error::InvalidManifest(format!(
             "unrecognized producer manifest kind '{other}' \
-             (expected {PLUGIN_BUNDLE_KIND}, {RUNTIME_KIND}, or a project package manifest)"
+             (expected {PLUGIN_BUNDLE_KIND}, {PLUGIN_PRODUCT_KIND}, {RUNTIME_KIND}, or a project package manifest)"
         ))),
         None => Ok(ArtifactKind::Package),
     }
@@ -566,6 +573,32 @@ mod tests {
         assert_eq!(r.name, "demo");
         assert_eq!(r.validation, "pending");
         assert!(r.licenses.is_empty());
+    }
+
+    #[test]
+    fn aggregate_plugin_product_derives_a_product_record() {
+        let mut manifest = package_manifest();
+        manifest["kind"] = serde_json::json!(PLUGIN_PRODUCT_KIND);
+        manifest["name"] = serde_json::json!("vrm-plugins");
+        manifest["licenses"] = serde_json::json!(["Apache-2.0"]);
+        manifest["provenance"]["validation"] = serde_json::json!({ "passed": true, "members": 3 });
+
+        let record = ArtifactRecord::from_producer_manifest(
+            &manifest,
+            ArtifactSource::Imported,
+            1_760_000_000,
+            "ost 0.19.0",
+        )
+        .unwrap();
+
+        assert_eq!(record.kind, ArtifactKind::Product);
+        assert_eq!(record.name, "vrm-plugins");
+        assert_eq!(record.validation, "passed");
+        assert_eq!(record.licenses, vec!["Apache-2.0"]);
+        assert_eq!(
+            ArtifactKind::from_tag("product"),
+            Some(ArtifactKind::Product)
+        );
     }
 
     #[test]
