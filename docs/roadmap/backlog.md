@@ -8,8 +8,9 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.18.0 - evidence integrity and ecosystem documentation) is
-detailed in [current.md](current.md).
+The next milestone (v0.19.0 - Formation composition) is detailed in
+[current.md](current.md); v0.18.0 shipped as the
+[evidence-integrity release](../releases/v0.18.0.md).
 
 - ⬜ **v0.19.0 - Formation composition.** Turn the reference-project ecosystem
   documented in v0.18.0 into an executable contract. A **Formation** is a
@@ -139,13 +140,14 @@ Shipped context for each area is in the
   document the canonical producer path (prefer `ost artifact push`) or reproduce
   the `oras` manifest byte-for-byte so CI pins don't drift.
 - ⬜ **Packaged workspace/product composition — aggregate product artifact.**
-  The workspace packaging closure (per-bundle `--workspace` packaging,
-  resolved `bundles` in `dependencies.json`, `--from-package` composition) is
-  scheduled for v0.18.0 in [current.md](current.md). Remaining here: the
-  aggregate single-artifact product (member bundle digests, extraction layout,
-  aggregate evidence) if v0.18.0 defers it. Preserve member
-  manifests/provenance and do not fall back to workspace source paths or a
-  hand-maintained per-bundle loop.
+  The workspace packaging closure (per-bundle `--workspace` packaging, resolved
+  `bundles` in `dependencies.json`, `--from-package` composition) shipped in
+  [v0.18.0](../releases/v0.18.0.md), which deliberately deferred the aggregate
+  single-artifact product: defining one means deciding how a consumer installs
+  and pins a *set* rather than a bundle, which belongs with the v0.19.0
+  Formation model. Remaining here: member bundle digests, extraction layout and
+  aggregate evidence. Preserve member manifests/provenance and do not fall back
+  to workspace source paths or a hand-maintained per-bundle loop.
 
 ## Documentation & tooling
 

@@ -3,10 +3,21 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## Next milestone: v0.18.0 - evidence integrity and ecosystem documentation
+## Next milestone: v0.19.0 - Formation composition
 
-**Status:** ⬜ not started · **Depends on:** v0.17.0 renderer lifecycle,
-artifact evidence, and generated-CI contracts (shipped).
+**Status:** ⬜ not started · **Depends on:** the v0.18.0 evidence-integrity,
+target-lease, test-lifecycle and workspace-closure contracts (shipped).
+
+Turn the reference-project ecosystem documented in v0.18.0 into an executable
+contract. Scope, CLI surface and acceptance criteria are in the
+[backlog ladder](backlog.md); the design target is
+[formations.md](../design/proposed/formations.md).
+
+## Shipped: v0.18.0 - evidence integrity and ecosystem documentation
+
+**Status:** ✅ released 2026-07-18 — see the
+[v0.18.0 release record](../releases/v0.18.0.md). Retained below for the
+dogfooding trail that drove it.
 
 v0.18.0 is a corrective release, re-planned from the previously scheduled DCC
 host milestone (now v0.20.0 in the [backlog ladder](backlog.md), behind the new

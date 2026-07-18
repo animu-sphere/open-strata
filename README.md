@@ -31,10 +31,11 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.17.0** — renderer build completion evidence,
-recoverable managed CMake execution, one-command Hydra inspection through
-`ost renderer view`, renderer adoption/evidence transport, and generated support
-references for environment variables and platform support.
+The current release is **v0.18.0** — evidence that attaches and gates honestly,
+one completed producer behind every renderer PASS, OS-backed exclusive target
+leases, a managed `ost test` lifecycle bound to the build it exercised, imported
+provenance for external build trees, and workspace packaging that ships its own
+dependency closure.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
