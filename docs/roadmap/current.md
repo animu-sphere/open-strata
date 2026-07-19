@@ -208,6 +208,17 @@ guidance loop with no reachable exit.
   failure, and when `validate` recommends a command it either verifies the
   command applies to that tree or explains the precondition instead.
 
+**Implemented on the v0.19.0 branch:** external-build record v2 resolves
+compiler identity from the top-level cache or
+`CMakeFiles/<version>/CMakeCXXCompiler.cmake`, records generator flavor and
+single- versus multi-config identity, and covers Ninja, Ninja Multi-Config,
+Visual Studio, and Xcode. Import now combines profile and repeated
+`--capability` selections: OpenUSD binding is either applied and verified or
+explicitly `not-applicable`. Diagnostics name the inspected source and offer
+cause-specific remediation; `validate` recommends import only after confirming
+the path is a configured CMake tree, otherwise leaving the check skipped with
+the missing precondition. Legacy v1 records remain verifiable.
+
 ### P1 - the producer-session contract is readable by producers
 
 From the hdMerlin report OST19-RND-007. A build **`ost` itself performed**,

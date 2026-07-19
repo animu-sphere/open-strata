@@ -472,6 +472,7 @@ Inspect an external build tree's CMake cache and record its provenance
 | Option | Description |
 | --- | --- |
 | `--build-dir <BUILD_DIR>` | The external build tree to inspect |
+| `--capability <CAPABILITIES>` | Additional capability this external tree is intended to exercise. May be repeated; requirements are combined with the resolved profile |
 | `--profile <PROFILE>` | Profile. Defaults to the project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 

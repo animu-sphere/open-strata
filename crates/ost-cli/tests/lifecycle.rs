@@ -508,6 +508,156 @@ fn external_provenance_upgrades_only_runtime_compatibility() {
     );
 }
 
+/// Visual Studio records compiler identity below CMakeFiles instead of in the
+/// top-level cache. A core-only import must consume that real generator shape
+/// without inventing an OpenUSD requirement; an explicit USD capability turns
+/// that requirement back on.
+#[test]
+fn external_import_is_generator_and_capability_aware() {
+    let sb = Sandbox::new("external-vs-core");
+    init_and_pull(&sb);
+    let pull = sb.ost(&["runtime", "pull", "cy2026", "--profile", "core"]);
+    assert!(
+        pull.status.success(),
+        "core pull failed:\n{}",
+        out_text(&pull)
+    );
+
+    let external = sb.work.join("vs-core-build");
+    let compiler_dir = external.join("CMakeFiles").join("3.31.0");
+    std::fs::create_dir_all(&compiler_dir).unwrap();
+    let portable_build = external.to_string_lossy().replace('\\', "/");
+    std::fs::write(
+        external.join("CMakeCache.txt"),
+        format!(
+            "CMAKE_HOME_DIRECTORY:INTERNAL={source}\n\
+             CMAKE_CACHEFILE_DIR:INTERNAL={portable_build}\n\
+             CMAKE_GENERATOR:INTERNAL=Visual Studio 17 2022\n\
+             CMAKE_GENERATOR_PLATFORM:INTERNAL=x64\n\
+             CMAKE_GENERATOR_TOOLSET:INTERNAL=v143\n\
+             CMAKE_CONFIGURATION_TYPES:STRING=Debug;Release\n",
+            source = sb.work.to_string_lossy().replace('\\', "/"),
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        compiler_dir.join("CMakeCXXCompiler.cmake"),
+        "set(CMAKE_CXX_COMPILER \"C:/MSVC/bin/cl.exe\")\n\
+         set(CMAKE_CXX_COMPILER_ID \"MSVC\")\n\
+         set(CMAKE_CXX_COMPILER_VERSION \"19.43\")\n",
+    )
+    .unwrap();
+
+    let imported = sb.ost(&[
+        "--json",
+        "external",
+        "import",
+        "--build-dir",
+        "vs-core-build",
+        "--profile",
+        "core",
+        "--capability",
+        "build-cxx",
+    ]);
+    assert!(imported.status.success(), "{}", out_text(&imported));
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let provenance = &imported["data"]["provenance"];
+    assert_eq!(provenance["schema"], "openstrata.external-build/v2");
+    assert_eq!(provenance["toolchain"]["generator_flavor"], "visual-studio");
+    assert_eq!(provenance["toolchain"]["multi_config"], true);
+    assert_eq!(
+        provenance["toolchain"]["cxx_compiler_source"],
+        "CMakeFiles/3.31.0/CMakeCXXCompiler.cmake:CMAKE_CXX_COMPILER"
+    );
+    let requirements = provenance["requirements"].as_array().unwrap();
+    assert!(requirements.iter().any(|requirement| {
+        requirement["name"] == "openusd.runtime" && requirement["status"] == "not-applicable"
+    }));
+
+    let validated = sb.ost(&[
+        "validate",
+        "--build-dir",
+        "vs-core-build",
+        "--profile",
+        "core",
+    ]);
+    let text = out_text(&validated);
+    assert!(validated.status.success(), "{text}");
+    assert!(text.contains("OpenUSD binding not applicable"), "{text}");
+
+    let usd_requested = sb.ost(&[
+        "external",
+        "import",
+        "--build-dir",
+        "vs-core-build",
+        "--profile",
+        "core",
+        "--capability",
+        "usd-stage-read",
+    ]);
+    let text = out_text(&usd_requested);
+    assert!(!usd_requested.status.success(), "{text}");
+    assert!(text.contains("OpenUSD runtime binding"), "{text}");
+    assert!(text.contains("pxr_ROOT"), "{text}");
+}
+
+#[test]
+fn external_import_compiler_failure_has_applicable_remediation() {
+    let sb = Sandbox::new("external-compiler-remediation");
+    init_and_pull(&sb);
+    let pull = sb.ost(&["runtime", "pull", "cy2026", "--profile", "core"]);
+    assert!(pull.status.success(), "{}", out_text(&pull));
+    let external = sb.work.join("incomplete-vs-build");
+    std::fs::create_dir_all(&external).unwrap();
+    std::fs::write(
+        external.join("CMakeCache.txt"),
+        format!(
+            "CMAKE_HOME_DIRECTORY:INTERNAL={source}\n\
+             CMAKE_CACHEFILE_DIR:INTERNAL={build}\n\
+             CMAKE_GENERATOR:INTERNAL=Visual Studio 17 2022\n",
+            source = sb.work.to_string_lossy().replace('\\', "/"),
+            build = external.to_string_lossy().replace('\\', "/"),
+        ),
+    )
+    .unwrap();
+
+    let imported = sb.ost(&[
+        "external",
+        "import",
+        "--build-dir",
+        "incomplete-vs-build",
+        "--profile",
+        "core",
+    ]);
+    let text = out_text(&imported);
+    assert!(!imported.status.success(), "{text}");
+    assert!(text.contains("visual-studio"), "{text}");
+    assert!(
+        text.contains("CMakeFiles/<version>/CMakeCXXCompiler.cmake"),
+        "{text}"
+    );
+    assert!(text.contains("finish configuring the tree"), "{text}");
+    assert!(!text.contains("pxr_ROOT"), "{text}");
+}
+
+#[test]
+fn validate_only_recommends_external_import_for_a_cmake_tree() {
+    let sb = Sandbox::new("external-validate-remediation");
+    init_and_pull(&sb);
+    std::fs::create_dir_all(sb.work.join("not-configured")).unwrap();
+
+    let validated = sb.ost(&["validate", "--build-dir", "not-configured"]);
+    let text = out_text(&validated);
+    assert!(validated.status.success(), "{text}");
+    assert!(text.contains("[skip] runtime-compatible"), "{text}");
+    assert!(text.contains("CMakeCache.txt not found"), "{text}");
+    assert!(
+        text.contains("point --build-dir at a configured CMake build tree"),
+        "{text}"
+    );
+    assert!(!text.contains("ost external import"), "{text}");
+}
+
 /// A tree that resolved OpenUSD from somewhere else is not evidence about this
 /// runtime, and must be refused at import rather than recorded and trusted.
 #[test]

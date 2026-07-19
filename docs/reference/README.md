@@ -15,6 +15,7 @@ drift in CI — do not edit them by hand.
 | [json-output.md](json-output.md) | hand-written | The `--json` output contract: envelope, error codes, and compatibility policy. |
 | [artifact-policy.md](artifact-policy.md) | hand-written | Artifact trust levels, policy TOML schema, matching rules, and stable errors. |
 | [artifact-evidence.md](artifact-evidence.md) | hand-written | SPDX SBOM and SLSA/in-toto provenance generation, transport, and verification. |
+| [external-build-provenance.md](external-build-provenance.md) | hand-written | Imported CMake identity, generator sources, scoped requirements, and validation semantics. |
 | [template-catalog.md](template-catalog.md) | hand-written | Embedded scaffold ids, maturity, inputs, provenance, and copied CMake helper contract. |
 | [plugin-workspace.md](plugin-workspace.md) | hand-written | Bundle dependency declarations, schema contracts, graph validation, and stable issue codes. |
 

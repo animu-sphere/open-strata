@@ -27,8 +27,9 @@ pub use completion::{
     BUILD_COMPLETION_FILE, BUILD_COMPLETION_SCHEMA, TEST_COMPLETION_FILE, TEST_COMPLETION_SCHEMA,
 };
 pub use external::{
-    CMakeCache, ExternalBuildProvenance, ExternalRuntime, ExternalToolchain, ImportError,
-    EXTERNAL_BUILD_FILE, EXTERNAL_BUILD_SCHEMA, IDENTITY_KEYS,
+    CMakeCache, ExternalBuildProvenance, ExternalImportScope, ExternalRequirement,
+    ExternalRequirementStatus, ExternalRuntime, ExternalToolchain, ImportError,
+    EXTERNAL_BUILD_FILE, EXTERNAL_BUILD_SCHEMA, EXTERNAL_BUILD_SCHEMA_V1, IDENTITY_KEYS,
 };
 pub use glibc::{max_glibc_floor, GlibcVersion};
 pub use lease::{
