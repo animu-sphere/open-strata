@@ -27,7 +27,8 @@ use clap::Subcommand;
 
 use ost_build::{
     pack_dir_with, stage_files, BuildCompletion, BuildIntent, BuildOutput, BuildProjectIdentity,
-    PackOptions, TargetLock, BUILD_COMPLETION_FILE,
+    LeaseMode, PackOptions, TargetLease, TargetLock, BUILD_COMPLETION_FILE, TARGET_BUSY_CODE,
+    TARGET_LEASE_FILE,
 };
 use ost_core::fs::write_atomic;
 use ost_core::host::Os;
@@ -896,6 +897,25 @@ fn build_one(
     // platform/profile/runtime never reuses (and corrupts) another target's
     // CMake cache — mirroring the project-level `build/<id>` layout.
     let target_dir = target_state_dir(&bundle.root, &id);
+    // A plugin build publishes the same authoritative completion evidence as a
+    // project build, so it must obey the same single-writer rule. Hold the
+    // target lease from the first generated target file through completion
+    // publication; otherwise two plugin builds can hash outputs from different
+    // invocations into one apparently managed record.
+    let lease = TargetLease::acquire(
+        &target_dir.join(TARGET_LEASE_FILE),
+        &id,
+        "ost plugin build",
+        LeaseMode::Fail,
+    )
+    .map_err(|error| {
+        if error.code() == TARGET_BUSY_CODE {
+            error
+                .with_hint("wait for the in-flight plugin build to finish, then retry this command")
+        } else {
+            error
+        }
+    })?;
     std::fs::create_dir_all(target_dir.as_std_path())
         .map_err(|e| Error::io(target_dir.to_string(), e))?;
     let toolchain = target_dir.join("toolchain.cmake");
@@ -990,6 +1010,7 @@ fn build_one(
         if let Some(args) = &install_args {
             println!("cmake {}", args.join(" "));
         }
+        lease.release();
         return Ok(());
     }
 
@@ -1084,14 +1105,21 @@ fn build_one(
     // per target by configure, so its concrete path is correct by construction.
     verify_target_library_suffix(&bundle, tgt.os())?;
 
-    // Record the compiler so the next build can detect a change. The plugin
-    // build writes no full target lock, so this lives beside the toolchain.
+    // Keep the compiler fingerprint beside the toolchain so the next invocation
+    // can invalidate CMake's compiler-cached build tree before configuring.
     let record = target_dir.join("compiler.lock.json");
     if let Ok(json) = serde_json::to_string_pretty(&lock_compiler) {
         let _ = std::fs::write(record.as_std_path(), json);
     }
-    let completion =
-        write_plugin_build_completion(&bundle, &tgt, &lock_compiler, &toolchain, &build_dir)?;
+    let completion = write_plugin_build_completion(
+        &bundle,
+        &tgt,
+        &lock_compiler,
+        &toolchain,
+        &build_dir,
+        lease.invocation(),
+    )?;
+    lease.release();
 
     if !emit_result {
         return Ok(());
@@ -1137,6 +1165,7 @@ fn write_plugin_build_completion(
     compiler: &ost_build::LockCompiler,
     toolchain: &Utf8Path,
     build_dir: &Utf8Path,
+    invocation: Option<&str>,
 ) -> Result<BuildCompletion> {
     let completed_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1164,7 +1193,7 @@ fn write_plugin_build_completion(
     intent
         .cache
         .insert("CMAKE_BUILD_TYPE".into(), "Release".into());
-    let completion = BuildCompletion::from_lock(
+    let mut completion = BuildCompletion::from_lock(
         &lock,
         BuildProjectIdentity {
             name: bundle.manifest.plugin.name.clone(),
@@ -1175,6 +1204,9 @@ fn write_plugin_build_completion(
         completed_unix,
     )
     .with_outputs(collect_plugin_managed_outputs(bundle)?);
+    if let Some(invocation) = invocation {
+        completion = completion.with_invocation(invocation);
+    }
 
     let lock_body = lock
         .to_json()
@@ -1393,11 +1425,24 @@ impl PluginBuildProvenance {
     }
 }
 
+#[cfg(test)]
 fn assess_plugin_build_provenance(
     bundle: &Bundle,
     target: &ost_build::Target,
 ) -> Result<PluginBuildProvenance> {
     let observed = collect_plugin_managed_outputs(bundle)?;
+    assess_plugin_build_provenance_for_outputs(bundle, target, observed)
+}
+
+/// Compare managed-build evidence with a caller-supplied snapshot. Packaging
+/// supplies outputs collected from its completed stage, so the provenance in
+/// the producer manifest describes the bytes that will actually be archived,
+/// not an earlier read of mutable source outputs.
+fn assess_plugin_build_provenance_for_outputs(
+    bundle: &Bundle,
+    target: &ost_build::Target,
+    observed: Vec<BuildOutput>,
+) -> Result<PluginBuildProvenance> {
     let id = target.id();
     let completion_path = target_build_dir(&bundle.root, &id).join(BUILD_COMPLETION_FILE);
     let lock_path = target_state_dir(&bundle.root, &id).join("target.lock.json");
@@ -1726,26 +1771,6 @@ fn package_bundle(
         .with_hint("run `ost plugin doctor` and fix the failing diagnostics before packaging"));
     }
 
-    let mut build_provenance = assess_plugin_build_provenance(&bundle, &tgt)?;
-    if build_provenance.status == PluginBuildProvenanceStatus::Mismatched {
-        if allow_unmanaged_output {
-            build_provenance.accept_unmanaged_override();
-        } else {
-            return Err(Error::coded(
-                "PLUGIN_PACKAGE_OUTPUT_MISMATCH",
-                Category::Validation,
-                format!(
-                    "plugin '{}' package output does not match its last managed build: {}",
-                    bundle.manifest.name(),
-                    build_provenance.mismatch_message()
-                ),
-            )
-            .with_hint(
-                "rerun `ost plugin build` before packaging, or pass --allow-unmanaged-output to record an explicit external/unmanaged override",
-            ));
-        }
-    }
-
     let mut packaged_manifest = bundle.manifest.clone();
     // The artifact targets exactly one variant, so freeze the one resolved ABI as
     // a scalar (collapsing any per-OS/`inherit` source declaration).
@@ -1823,9 +1848,6 @@ fn package_bundle(
     // (`--clean-stage` reclaims the stable name).
     let preferred_stage = target_state_dir(&bundle.root, &id).join("package-stage");
     let (stage, mut stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
-    if let Some(warning) = build_provenance.warning() {
-        stage_warnings.push(warning);
-    }
     stage_plugin_bundle(&bundle, &stage)?;
     for (source, relative) in &library_runtime {
         copy_tree_required(source, relative, &stage)?;
@@ -1846,6 +1868,30 @@ fn package_bundle(
         root: stage.clone(),
         manifest: packaged_manifest.clone(),
     };
+    let staged_outputs = collect_plugin_managed_outputs(&packaged_bundle)?;
+    let mut build_provenance =
+        assess_plugin_build_provenance_for_outputs(&bundle, &tgt, staged_outputs)?;
+    if build_provenance.status == PluginBuildProvenanceStatus::Mismatched {
+        if allow_unmanaged_output {
+            build_provenance.accept_unmanaged_override();
+        } else {
+            return Err(Error::coded(
+                "PLUGIN_PACKAGE_OUTPUT_MISMATCH",
+                Category::Validation,
+                format!(
+                    "plugin '{}' staged package output does not match its last managed build: {}",
+                    bundle.manifest.name(),
+                    build_provenance.mismatch_message()
+                ),
+            )
+            .with_hint(
+                "rerun `ost plugin build` before packaging, or pass --allow-unmanaged-output to record an explicit external/unmanaged override",
+            ));
+        }
+    }
+    if let Some(warning) = build_provenance.warning() {
+        stage_warnings.push(warning);
+    }
     let verification = write_verification_contract(&packaged_bundle)?;
     write_activation_files(&packaged_bundle, tgt.variant.os)?;
     let session = session_env_with(&r.env, &packaged_bundle, &[], host.os);
@@ -5956,14 +6002,16 @@ schema: { codeless: true, contract: 1 }
         std::fs::create_dir_all(build_dir.as_std_path()).unwrap();
         let toolchain = target_dir.join("toolchain.cmake");
         write_test_file(&toolchain, "# managed");
-        write_plugin_build_completion(
+        let completion = write_plugin_build_completion(
             &bundle,
             &target,
             &ost_build::LockCompiler::default(),
             &toolchain,
             &build_dir,
+            Some("test-plugin-build"),
         )
         .unwrap();
+        assert_eq!(completion.invocation.as_deref(), Some("test-plugin-build"));
 
         let matched = assess_plugin_build_provenance(&bundle, &target).unwrap();
         assert_eq!(matched.status, PluginBuildProvenanceStatus::Matched);
@@ -5984,6 +6032,62 @@ schema: { codeless: true, contract: 1 }
         assert!(mismatched.mismatch_message().contains("last managed build"));
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn staged_plugin_outputs_are_the_package_provenance_snapshot() {
+        let (root, bundle, target) = managed_output_test_bundle("managed-output-stage");
+        let id = target.id();
+        let target_dir = target_state_dir(&bundle.root, &id);
+        let build_dir = target_build_dir(&bundle.root, &id);
+        std::fs::create_dir_all(target_dir.as_std_path()).unwrap();
+        std::fs::create_dir_all(build_dir.as_std_path()).unwrap();
+        let toolchain = target_dir.join("toolchain.cmake");
+        write_test_file(&toolchain, "# managed");
+        write_plugin_build_completion(
+            &bundle,
+            &target,
+            &ost_build::LockCompiler::default(),
+            &toolchain,
+            &build_dir,
+            Some("test-plugin-build"),
+        )
+        .unwrap();
+
+        let stage_root = unique_tmp("managed-output-stage-copy");
+        write_test_file(
+            &stage_root.join("openstrata.plugin.yaml"),
+            "plugin: { name: toy, version: 0.1.0, kind: usd-fileformat }\n\
+             runtime: { openusd: '>=25.05,<26.0' }\n\
+             provides: [usd-fileformat:toy]\n\
+             usd: { plug_info: plugin/resources/toy/plugInfo.json }\n",
+        );
+        write_test_file(
+            &stage_root.join("plugin/resources/toy/plugInfo.json"),
+            r#"{ "Plugins": [{ "Type": "library", "Name": "toy" }] }"#,
+        );
+        write_test_file(&stage_root.join("lib/libToy.so"), "managed bytes");
+        let staged_bundle = Bundle::load(&stage_root).unwrap();
+        let staged_outputs = collect_plugin_managed_outputs(&staged_bundle).unwrap();
+
+        // A writer changing the source after staging must not change what the
+        // package reports about the already-copied archive inputs.
+        write_test_file(&bundle.path("lib/libToy.so"), "changed after staging");
+        assert_eq!(
+            assess_plugin_build_provenance(&bundle, &target)
+                .unwrap()
+                .status,
+            PluginBuildProvenanceStatus::Mismatched
+        );
+        assert_eq!(
+            assess_plugin_build_provenance_for_outputs(&bundle, &target, staged_outputs)
+                .unwrap()
+                .status,
+            PluginBuildProvenanceStatus::Matched
+        );
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+        std::fs::remove_dir_all(stage_root.as_std_path()).ok();
     }
 
     #[test]

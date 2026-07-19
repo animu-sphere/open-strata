@@ -269,18 +269,32 @@ fn smoke_fixture(bundle: &Bundle) -> Option<Utf8PathBuf> {
     Some(bundle.path(rel))
 }
 
-/// The fixture L5 should flatten. Prefer the explicitly declared round-trip
-/// fixture; fall back to the smoke fixture for pre-contract manifests.
-fn roundtrip_fixture(bundle: &Bundle) -> Option<(&str, Utf8PathBuf)> {
-    let rel = bundle
-        .manifest
-        .tests
-        .roundtrip
-        .first()
-        .map(String::as_str)
-        .or_else(|| bundle.manifest.tests.smoke.first().map(String::as_str))
-        .or_else(|| bundle.manifest.all_fixtures().first().copied())?;
-    Some((rel, bundle.path(rel)))
+/// The fixtures L5 should flatten. Every explicitly declared round-trip fixture
+/// is a verification claim; the single smoke fallback exists only for legacy
+/// manifests that predate `tests.roundtrip`.
+fn roundtrip_fixtures(bundle: &Bundle) -> Vec<(&str, Utf8PathBuf)> {
+    if bundle.manifest.tests.roundtrip.is_empty() {
+        return bundle
+            .manifest
+            .tests
+            .smoke
+            .first()
+            .map(String::as_str)
+            .or_else(|| bundle.manifest.all_fixtures().first().copied())
+            .map(|rel| vec![(rel, bundle.path(rel))])
+            .unwrap_or_default();
+    }
+
+    let mut seen = Vec::new();
+    let mut fixtures = Vec::new();
+    for rel in &bundle.manifest.tests.roundtrip {
+        if seen.contains(&rel.as_str()) {
+            continue;
+        }
+        seen.push(rel.as_str());
+        fixtures.push((rel.as_str(), bundle.path(rel)));
+    }
+    fixtures
 }
 
 /// The schema type names this bundle registers. Primary source is `provides`
@@ -866,9 +880,10 @@ fn level4_stage_open(bundle: &Bundle, session: &Session) -> Diagnostic {
 
 fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
     const ID: &str = "golden.roundtrip";
-    let Some((fixture_rel, fixture)) = roundtrip_fixture(bundle) else {
+    let fixtures = roundtrip_fixtures(bundle);
+    if fixtures.is_empty() {
         return Diagnostic::skip(ID, 5, "no roundtrip fixture declared");
-    };
+    }
 
     // A packaged verification contract turns an adjacent golden from optional
     // source content into a digest-bound claim. Missing or modified declared
@@ -887,9 +902,90 @@ fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
             );
         }
     };
-    let declared = contract
-        .as_ref()
-        .and_then(|contract| contract.oracle_for(fixture_rel));
+
+    let mut results = fixtures
+        .into_iter()
+        .map(|(fixture_rel, fixture)| {
+            let diagnostic =
+                level5_golden_fixture(bundle, session, contract.as_ref(), fixture_rel, &fixture);
+            (fixture_rel, diagnostic)
+        })
+        .collect::<Vec<_>>();
+    if results.len() == 1 {
+        return results.pop().expect("one L5 result").1;
+    }
+
+    let total = results.len();
+    let failures = results
+        .iter()
+        .filter(|(_, diagnostic)| diagnostic.status == crate::doctor::Status::Fail)
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
+        let mut actions = Vec::new();
+        for (_, diagnostic) in &failures {
+            for action in &diagnostic.suggested_actions {
+                if !actions.contains(action) {
+                    actions.push(action.clone());
+                }
+            }
+        }
+        let observed = failures
+            .iter()
+            .map(|(fixture, diagnostic)| format!("'{fixture}': {}", diagnostic.observed))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Diagnostic::fail(
+            ID,
+            5,
+            format!(
+                "{} of {total} roundtrip fixtures failed: {observed}",
+                failures.len()
+            ),
+            actions,
+        );
+    }
+
+    let passed = results
+        .iter()
+        .filter(|(_, diagnostic)| diagnostic.status == crate::doctor::Status::Pass)
+        .count();
+    let skipped = total - passed;
+    if passed > 0 {
+        let detail = if skipped == 0 {
+            format!("all {passed} roundtrip fixtures match their goldens")
+        } else {
+            format!(
+                "{passed} roundtrip fixture(s) match their goldens; {skipped} fixture(s) have no golden"
+            )
+        };
+        return Diagnostic::pass(ID, 5, detail);
+    }
+
+    let mut actions = Vec::new();
+    for (_, diagnostic) in &results {
+        for action in &diagnostic.suggested_actions {
+            if !actions.contains(action) {
+                actions.push(action.clone());
+            }
+        }
+    }
+    Diagnostic::skip_with_actions(
+        ID,
+        5,
+        format!("none of the {total} roundtrip fixtures has a golden file"),
+        actions,
+    )
+}
+
+fn level5_golden_fixture(
+    bundle: &Bundle,
+    session: &Session,
+    contract: Option<&PluginVerification>,
+    fixture_rel: &str,
+    fixture: &Utf8Path,
+) -> Diagnostic {
+    const ID: &str = "golden.roundtrip";
+    let declared = contract.and_then(|contract| contract.oracle_for(fixture_rel));
     if let Some(entry) = declared {
         if let Err(error) = entry.verify(&bundle.root) {
             return Diagnostic::fail(
@@ -1852,6 +1948,49 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         assert!(diagnostic.observed.contains("oracle"));
         assert!(diagnostic.observed.contains("missing"));
         assert!(probe.calls.borrow().is_empty(), "usdcat must not run");
+    }
+
+    #[test]
+    fn packaged_golden_verifies_every_declared_roundtrip_fixture() {
+        let (_dir, mut bundle) = bundle_with_fixture();
+        let first = "tests/fixtures/basic.toy";
+        let second = "tests/fixtures/secondary.toy";
+        bundle.manifest.tests.roundtrip = vec![first.into(), second.into()];
+        std::fs::write(bundle.path(second).as_std_path(), "toy 2.0\n").unwrap();
+        for fixture in [first, second] {
+            std::fs::write(
+                bundle.path(&adjacent_golden(fixture)).as_std_path(),
+                "#usda 1.0\n",
+            )
+            .unwrap();
+        }
+        let contract = PluginVerification::from_bundle(&bundle).unwrap();
+        assert_eq!(contract.roundtrip.len(), 2);
+        std::fs::write(
+            bundle.root.join(PLUGIN_VERIFICATION).as_std_path(),
+            serde_json::to_vec_pretty(&contract).unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(bundle.path(&adjacent_golden(second)).as_std_path()).unwrap();
+        let probe = FakeProbe::new().on("usdcat", Some(0), "#usda 1.0\n", "");
+        let session = Session {
+            probe: &probe,
+            usdcat: Some("usdcat".into()),
+            python: None,
+            usdview: None,
+            has_display: false,
+        };
+
+        let diagnostic = level5_golden(&bundle, &session);
+
+        assert_eq!(diagnostic.status, Status::Fail, "{diagnostic:?}");
+        assert!(diagnostic.observed.contains(second), "{diagnostic:?}");
+        assert!(diagnostic.observed.contains("missing"), "{diagnostic:?}");
+        assert_eq!(
+            probe.calls.borrow().len(),
+            1,
+            "the first fixture should run before the later contract failure"
+        );
     }
 
     #[test]
