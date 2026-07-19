@@ -32,9 +32,10 @@ use ost_core::template::SCAFFOLD_PROVENANCE;
 use ost_core::variant::{Abi, Variant};
 use ost_core::{tools, Category, Error, Host, Result};
 use ost_plugin::{
-    default_template_id, diagnose, run_levels, scaffold_with_template_inputs, session_env_with,
-    usdview_check, Bundle, CxxAbi, DoctorReport, ExecTemplateInputs, Library, PluginKind, Probe,
-    RuntimeContext, Session, Status, ToolOutput,
+    adjacent_golden, default_template_id, diagnose, run_levels, scaffold_with_template_inputs,
+    session_env_with, usdview_check, Bundle, CxxAbi, DoctorReport, ExecTemplateInputs, Library,
+    PluginKind, PluginVerification, Probe, RuntimeContext, Session, Status, ToolOutput,
+    PLUGIN_VERIFICATION, PLUGIN_VERIFICATION_SCHEMA,
 };
 use ost_runtime::{EnvSet, RuntimeManifest, MANIFEST_FILE};
 
@@ -1321,6 +1322,7 @@ fn package_bundle(
         root: stage.clone(),
         manifest: packaged_manifest.clone(),
     };
+    let verification = write_verification_contract(&packaged_bundle)?;
     write_activation_files(&packaged_bundle, tgt.variant.os)?;
     let session = session_env_with(&r.env, &packaged_bundle, &[], host.os);
     write_validation_files(&packaged_bundle, &report, &session, &stage)?;
@@ -1466,6 +1468,12 @@ fn package_bundle(
         "powershell": "activate.ps1",
         "bash": "activate.sh",
         "python": "openstrata_activate.py",
+    });
+    manifest["verification"] = serde_json::json!({
+        "schema": PLUGIN_VERIFICATION_SCHEMA,
+        "contract": PLUGIN_VERIFICATION,
+        "oracle_convention": verification.oracle_convention,
+        "roundtrip_oracles": verification.roundtrip.len(),
     });
     manifest["debug_package"] = debug_status.json();
     let evidence = ost_artifact::generate_evidence(&dist_dir, &mut manifest)?;
@@ -4173,6 +4181,19 @@ fn stage_plugin_bundle(bundle: &Bundle, stage: &Utf8Path) -> Result<()> {
     for fixture in bundle.manifest.all_fixtures() {
         copy_file_required(&bundle.path(fixture), Utf8Path::new(fixture), stage)?;
     }
+    // L5's deterministic oracle convention is `<roundtrip fixture>.golden.usda`.
+    // It is optional until the source bundle actually carries that file; once
+    // present, copy_file_required makes it fail closed on symlinks or copy
+    // errors instead of silently producing a package that drops the claim.
+    for fixture in &bundle.manifest.tests.roundtrip {
+        let oracle = adjacent_golden(fixture);
+        let source = bundle.path(&oracle);
+        match std::fs::symlink_metadata(source.as_std_path()) {
+            Ok(_) => copy_file_required(&source, Utf8Path::new(&oracle), stage)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(Error::io(source.to_string(), error)),
+        }
+    }
     // New scaffolds carry deterministic template/generator/input provenance.
     // Keep packaging backward-compatible with adopted/legacy bundles that do
     // not have it, but preserve it whenever present.
@@ -4276,6 +4297,22 @@ fn write_packaged_manifest(path: &Utf8Path, manifest: &ost_plugin::PluginManifes
     let body = serde_yaml::to_string(manifest)
         .map_err(|e| Error::parse("openstrata.plugin.yaml", anyhow::Error::new(e)))?;
     write_text(path, body.trim_end())
+}
+
+/// Write the versioned fixture/oracle association into the archive. Both
+/// content digests are repeated here even though `manifest.json files[]` hashes
+/// every archived file: this document preserves which golden verifies which
+/// fixture after extraction, while the producer manifest points consumers to
+/// the contract itself.
+fn write_verification_contract(bundle: &Bundle) -> Result<PluginVerification> {
+    let verification = PluginVerification::from_bundle(bundle)?;
+    let value = serde_json::to_value(&verification)
+        .map_err(|error| Error::parse(PLUGIN_VERIFICATION, anyhow::Error::new(error)))?;
+    write_text(
+        &bundle.root.join(PLUGIN_VERIFICATION),
+        &pretty_json(&value)?,
+    )?;
+    Ok(verification)
 }
 
 /// Emit the consumer-facing activation contract carried by every packaged

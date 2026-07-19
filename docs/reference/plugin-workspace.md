@@ -156,6 +156,17 @@ retains the handles for the life of the process. This is the supported bridge
 from `requires.runtime_libs` to non-`ost` consumers; parsing the plugin YAML and
 guessing loader behavior is not.
 
+Package-origin verification carries its oracle too. For every declared
+`tests.roundtrip` fixture that has an adjacent `<fixture>.golden.usda`,
+`ost plugin package` stages both files and emits
+[`openstrata.verification.json`](../../schemas/plugin-verification.schema.json).
+That versioned contract records the fixture/oracle pair and both SHA-256
+digests; the artifact `manifest.json` points to it and includes both files in
+its hashed `files[]` inventory. `ost plugin test --from-package --up-to 5`
+verifies the contract before flattening. An oracle absent from source remains an
+optional L5 SKIP, but an oracle declared by the packaged contract that is
+missing or has changed is a validation failure.
+
 `ost plugin package --workspace --product` additionally emits one aggregate
 `openstrata.plugin-product` artifact. Its archive has this fixed layout:
 

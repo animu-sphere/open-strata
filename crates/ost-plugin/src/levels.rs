@@ -49,6 +49,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use crate::bundle::Bundle;
 use crate::doctor::Diagnostic;
 use crate::model::PluginKind;
+use crate::verification::{adjacent_golden, PluginVerification, PLUGIN_VERIFICATION};
 
 /// The captured result of running one tool.
 #[derive(Debug, Clone)]
@@ -266,6 +267,20 @@ fn smoke_fixture(bundle: &Bundle) -> Option<Utf8PathBuf> {
         .map(String::as_str)
         .or_else(|| bundle.manifest.all_fixtures().first().copied())?;
     Some(bundle.path(rel))
+}
+
+/// The fixture L5 should flatten. Prefer the explicitly declared round-trip
+/// fixture; fall back to the smoke fixture for pre-contract manifests.
+fn roundtrip_fixture(bundle: &Bundle) -> Option<(&str, Utf8PathBuf)> {
+    let rel = bundle
+        .manifest
+        .tests
+        .roundtrip
+        .first()
+        .map(String::as_str)
+        .or_else(|| bundle.manifest.tests.smoke.first().map(String::as_str))
+        .or_else(|| bundle.manifest.all_fixtures().first().copied())?;
+    Some((rel, bundle.path(rel)))
 }
 
 /// The schema type names this bundle registers. Primary source is `provides`
@@ -851,13 +866,47 @@ fn level4_stage_open(bundle: &Bundle, session: &Session) -> Diagnostic {
 
 fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
     const ID: &str = "golden.roundtrip";
-    let Some(fixture) = smoke_fixture(bundle) else {
-        return Diagnostic::skip(ID, 5, "no smoke fixture declared");
+    let Some((fixture_rel, fixture)) = roundtrip_fixture(bundle) else {
+        return Diagnostic::skip(ID, 5, "no roundtrip fixture declared");
     };
+
+    // A packaged verification contract turns an adjacent golden from optional
+    // source content into a digest-bound claim. Missing or modified declared
+    // content must fail, rather than looking like a source bundle that never
+    // opted into L5.
+    let contract = match PluginVerification::load(&bundle.root) {
+        Ok(contract) => contract,
+        Err(error) => {
+            return Diagnostic::fail(
+                ID,
+                5,
+                format!("invalid packaged verification contract: {error}"),
+                vec![format!(
+                    "re-run `ost plugin package`; inspect {PLUGIN_VERIFICATION} if the failure persists"
+                )],
+            );
+        }
+    };
+    let declared = contract
+        .as_ref()
+        .and_then(|contract| contract.oracle_for(fixture_rel));
+    if let Some(entry) = declared {
+        if let Err(error) = entry.verify(&bundle.root) {
+            return Diagnostic::fail(
+                ID,
+                5,
+                error.to_string(),
+                vec!["re-run `ost plugin package` from the source bundle so its verification content is complete".into()],
+            );
+        }
+    }
+
     // Golden convention: `<fixture>.golden.usda` sits next to the fixture — the
     // fixture *filename* is retained, so a `minimal.vrm` fixture pairs with
     // `minimal.vrm.golden.usda`, not `minimal.golden.usda`.
-    let golden = Utf8PathBuf::from(format!("{fixture}.golden.usda"));
+    let golden = declared
+        .map(|entry| bundle.path(&entry.oracle))
+        .unwrap_or_else(|| bundle.path(&adjacent_golden(fixture_rel)));
     if !golden.as_std_path().is_file() {
         // A bare "no golden file" leaves the author guessing the exact name, that
         // it must be the *flattened* stage, and how to produce it. Name all three.
@@ -1713,6 +1762,96 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         let calls = probe.calls.borrow().join("\n");
         assert!(calls.contains("--flatten"), "{calls}");
         assert!(calls.contains("--out"), "L5 must bypass stdout: {calls}");
+    }
+
+    #[test]
+    fn packaged_golden_passes_from_an_extracted_tree_without_source_paths() {
+        let (_source_dir, mut source) = bundle_with_fixture();
+        source
+            .manifest
+            .tests
+            .roundtrip
+            .push("tests/fixtures/basic.toy".into());
+        let flattened = "#usda 1.0\ndef Xform \"Root\" {}\n";
+        std::fs::write(
+            source
+                .path("tests/fixtures/basic.toy.golden.usda")
+                .as_std_path(),
+            flattened,
+        )
+        .unwrap();
+        let contract = PluginVerification::from_bundle(&source).unwrap();
+
+        let extracted_dir = tempdir_like::Dir::new("levels-packaged-golden");
+        std::fs::create_dir_all(extracted_dir.path.join("tests/fixtures").as_std_path()).unwrap();
+        for relative in [
+            "tests/fixtures/basic.toy",
+            "tests/fixtures/basic.toy.golden.usda",
+        ] {
+            std::fs::copy(
+                source.path(relative).as_std_path(),
+                extracted_dir.path.join(relative).as_std_path(),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            extracted_dir.path.join(PLUGIN_VERIFICATION).as_std_path(),
+            serde_json::to_vec_pretty(&contract).unwrap(),
+        )
+        .unwrap();
+        let extracted = Bundle {
+            root: extracted_dir.path.clone(),
+            manifest: source.manifest.clone(),
+        };
+        let probe = FakeProbe::new().on("usdcat", Some(0), flattened, "");
+        let session = Session {
+            probe: &probe,
+            usdcat: Some("usdcat".into()),
+            python: None,
+            usdview: None,
+            has_display: false,
+        };
+
+        let diagnostic = level5_golden(&extracted, &session);
+
+        assert_eq!(diagnostic.status, Status::Pass, "{diagnostic:?}");
+        let calls = probe.calls.borrow().join("\n");
+        assert!(calls.contains(extracted.root.as_str()), "{calls}");
+        assert!(!calls.contains(source.root.as_str()), "{calls}");
+    }
+
+    #[test]
+    fn packaged_golden_claim_fails_when_the_oracle_was_omitted() {
+        let (_dir, mut bundle) = bundle_with_fixture();
+        bundle
+            .manifest
+            .tests
+            .roundtrip
+            .push("tests/fixtures/basic.toy".into());
+        let oracle = bundle.path("tests/fixtures/basic.toy.golden.usda");
+        std::fs::write(oracle.as_std_path(), "#usda 1.0\n").unwrap();
+        let contract = PluginVerification::from_bundle(&bundle).unwrap();
+        std::fs::write(
+            bundle.root.join(PLUGIN_VERIFICATION).as_std_path(),
+            serde_json::to_vec_pretty(&contract).unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(oracle.as_std_path()).unwrap();
+        let probe = FakeProbe::new().on("usdcat", Some(0), "#usda 1.0\n", "");
+        let session = Session {
+            probe: &probe,
+            usdcat: Some("usdcat".into()),
+            python: None,
+            usdview: None,
+            has_display: false,
+        };
+
+        let diagnostic = level5_golden(&bundle, &session);
+
+        assert_eq!(diagnostic.status, Status::Fail);
+        assert!(diagnostic.observed.contains("oracle"));
+        assert!(diagnostic.observed.contains("missing"));
+        assert!(probe.calls.borrow().is_empty(), "usdcat must not run");
     }
 
     #[test]

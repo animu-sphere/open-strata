@@ -104,7 +104,8 @@ The downstream repository keeps an append-only
 series. The first two reports found four upstream product seams now tracked in
 the [v0.19.0 reach plan](../roadmap/current.md):
 
-- package-origin L5 receives its roundtrip fixture but not the adjacent golden;
+- package-origin L5 did not receive the adjacent golden (implemented on the
+  v0.19.0 branch via the versioned packaged verification-content contract);
 - packaging is not bound to the output of the last managed plugin build, so a
   plain-CMake build can silently replace the staged binary;
 - CI evidence-gap diagnostics do not print the exact safe repull command even
@@ -119,7 +120,6 @@ the existing package-twice gate only compares one build.
 
 ## Current limitations
 
-- Package-origin L5 currently skips its golden comparison; source L5 passes.
 - `ost plugin package` currently trusts the bundle's staged `lib/` contents
   without comparing them to the last managed build output.
 - The importer is read-only and fully materialized; SPZ, glTF/GLB Gaussian

@@ -141,6 +141,12 @@ claim made by its source.
 - Acceptance: `ost plugin test <bundle> --from-package --up-to 5` reports
   `golden.roundtrip` PASS for the extracted package, with no source-tree path.
 
+**Implemented on the v0.19.0 branch:** packaging now discovers the deterministic
+`<roundtrip fixture>.golden.usda` neighbor, stages and hashes both inputs, and
+records their association in versioned `openstrata.verification.json` plus the
+artifact manifest. Package-origin L5 verifies those digests before running
+`usdcat`; a declared oracle that is missing or changed is FAIL, not SKIP.
+
 ### P1 - package output is bound to managed build provenance
 
 From usd-3dgs-plugins

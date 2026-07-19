@@ -1165,6 +1165,13 @@ fn generated_plugin_scaffolds_and_inspects() {
         b"fake shared library for static package validation",
     )
     .unwrap();
+    // A source L5 oracle is verification content, not merely a neighboring
+    // developer file: packaging must preserve and bind it to the fixture.
+    std::fs::write(
+        bundle.join("tests/fixtures/basic.toy.golden.usda"),
+        b"#usda 1.0\n",
+    )
+    .unwrap();
     let package = sb.ost(&["plugin", "package", "toy"]);
     assert!(
         package.status.success(),
@@ -1178,6 +1185,7 @@ fn generated_plugin_scaffolds_and_inspects() {
     );
     let manifest = find_first(&dist, "manifest.json").expect("plugin manifest exists");
     let manifest_text = std::fs::read_to_string(manifest).unwrap();
+    let manifest_value: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
     assert!(manifest_text.contains("\"kind\": \"openstrata.plugin-bundle\""));
     assert!(manifest_text.contains("\"cxx_abi\""));
     assert!(
@@ -1187,6 +1195,47 @@ fn generated_plugin_scaffolds_and_inspects() {
     assert!(
         manifest_text.contains("\"license\": \"Apache-2.0\""),
         "package manifest should record the plugin license:\n{manifest_text}"
+    );
+    assert_eq!(
+        manifest_value["verification"]["schema"],
+        "openstrata.plugin-verification/v1alpha1"
+    );
+    assert_eq!(
+        manifest_value["verification"]["contract"],
+        "openstrata.verification.json"
+    );
+    assert_eq!(manifest_value["verification"]["roundtrip_oracles"], 1);
+    let golden_file = manifest_value["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "tests/fixtures/basic.toy.golden.usda")
+        .expect("the adjacent golden must be archived and hashed");
+    let contract_file = manifest_value["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "openstrata.verification.json")
+        .expect("the versioned verification contract must be archived");
+    assert!(contract_file["sha256"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    let contract_path = find_first(&bundle.join(".strata"), "openstrata.verification.json")
+        .expect("package stage carries the verification contract");
+    let contract: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(contract_path).unwrap()).unwrap();
+    assert_eq!(
+        contract["roundtrip"][0]["fixture"],
+        "tests/fixtures/basic.toy"
+    );
+    assert_eq!(
+        contract["roundtrip"][0]["oracle"],
+        "tests/fixtures/basic.toy.golden.usda"
+    );
+    assert_eq!(
+        contract["roundtrip"][0]["oracle_sha256"],
+        golden_file["sha256"]
     );
     assert!(find_first(&dist, "SHA256SUMS").is_some());
 }
