@@ -25,7 +25,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
 
-use ost_build::{pack_dir_with, stage_files, PackOptions};
+use ost_build::{
+    pack_dir_with, stage_files, BuildCompletion, BuildIntent, BuildOutput, BuildProjectIdentity,
+    PackOptions, TargetLock, BUILD_COMPLETION_FILE,
+};
+use ost_core::fs::write_atomic;
 use ost_core::host::Os;
 use ost_core::paths::{find_project_root, STATE_DIR};
 use ost_core::template::SCAFFOLD_PROVENANCE;
@@ -133,6 +137,11 @@ pub enum PluginCmd {
         /// any debug symbols are split into a sibling `*-debug` package.
         #[arg(long)]
         with_debug: bool,
+        /// Package outputs that no longer match the last `ost plugin build`,
+        /// recording the package origin as an explicit unmanaged override.
+        /// Without this flag, a managed-output mismatch fails closed.
+        #[arg(long)]
+        allow_unmanaged_output: bool,
     },
     /// Publish a packaged plugin artifact into the local registry (by digest).
     Publish {
@@ -299,19 +308,32 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             profile,
             clean_stage,
             with_debug,
+            allow_unmanaged_output,
         } => match (workspace, product, bundle) {
             (true, _, Some(_)) => Err(Error::usage(
                 "--workspace discovers bundles itself — drop the bundle path",
             )),
-            (true, product, None) => {
-                package_workspace(target, profile, clean_stage, with_debug, product, fmt)
-            }
+            (true, product, None) => package_workspace(
+                target,
+                profile,
+                clean_stage,
+                with_debug,
+                allow_unmanaged_output,
+                product,
+                fmt,
+            ),
             (false, true, _) => Err(Error::usage(
                 "--product aggregates a workspace — pass it together with --workspace",
             )),
-            (false, false, Some(bundle)) => {
-                package(&bundle, target, profile, clean_stage, with_debug, fmt)
-            }
+            (false, false, Some(bundle)) => package(
+                &bundle,
+                target,
+                profile,
+                clean_stage,
+                with_debug,
+                allow_unmanaged_output,
+                fmt,
+            ),
             (false, false, None) => Err(Error::usage(
                 "missing bundle path (or pass --workspace to package every bundle)",
             )),
@@ -1068,6 +1090,8 @@ fn build_one(
     if let Ok(json) = serde_json::to_string_pretty(&lock_compiler) {
         let _ = std::fs::write(record.as_std_path(), json);
     }
+    let completion =
+        write_plugin_build_completion(&bundle, &tgt, &lock_compiler, &toolchain, &build_dir)?;
 
     if !emit_result {
         return Ok(());
@@ -1084,6 +1108,9 @@ fn build_one(
             "lib_dir": bundle.lib_dir().to_string(),
             "plug_info": plug_info.to_string(),
             "workspace_prefix": workspace_prefix.map(ToString::to_string),
+            "build_completion": build_dir.join(BUILD_COMPLETION_FILE).to_string(),
+            "build_fingerprint": completion.fingerprint(),
+            "managed_outputs": completion.outputs.len(),
         }));
         return Ok(());
     }
@@ -1093,7 +1120,479 @@ fn build_one(
     );
     println!("  lib:       {}", bundle.lib_dir());
     println!("  plugInfo:  {plug_info}");
+    println!(
+        "  provenance: {} managed output(s)",
+        completion.outputs.len()
+    );
     Ok(())
+}
+
+/// Publish one managed completion only after configure, compile/link, optional
+/// install, schema merge, and output validation have all succeeded. The
+/// configuration fingerprint and package-relevant byte digests travel together
+/// so `plugin package` can detect a later plain-CMake overwrite.
+fn write_plugin_build_completion(
+    bundle: &Bundle,
+    target: &ost_build::Target,
+    compiler: &ost_build::LockCompiler,
+    toolchain: &Utf8Path,
+    build_dir: &Utf8Path,
+) -> Result<BuildCompletion> {
+    let completed_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let toolchain_rel = toolchain.strip_prefix(&bundle.root).map_err(|error| {
+        Error::Operation(format!(
+            "plugin toolchain '{toolchain}' is outside bundle '{}': {error}",
+            bundle.root
+        ))
+    })?;
+    let build_rel = build_dir.strip_prefix(&bundle.root).map_err(|error| {
+        Error::Operation(format!(
+            "plugin build directory '{build_dir}' is outside bundle '{}': {error}",
+            bundle.root
+        ))
+    })?;
+    let lock = TargetLock::from_target(
+        target,
+        compiler.clone(),
+        &portable(toolchain_rel),
+        completed_unix,
+    );
+    let mut intent = BuildIntent::default();
+    intent
+        .cache
+        .insert("CMAKE_BUILD_TYPE".into(), "Release".into());
+    let completion = BuildCompletion::from_lock(
+        &lock,
+        BuildProjectIdentity {
+            name: bundle.manifest.plugin.name.clone(),
+            version: bundle.manifest.plugin.version.clone(),
+        },
+        portable(build_rel),
+        intent,
+        completed_unix,
+    )
+    .with_outputs(collect_plugin_managed_outputs(bundle)?);
+
+    let lock_body = lock
+        .to_json()
+        .map_err(|error| Error::parse("target.lock.json", anyhow::Error::new(error)))?;
+    write_atomic(
+        target_state_dir(&bundle.root, &target.id())
+            .join("target.lock.json")
+            .as_std_path(),
+        format!("{lock_body}\n").as_bytes(),
+    )?;
+    let completion_body = completion
+        .to_json()
+        .map_err(|error| Error::parse(BUILD_COMPLETION_FILE, anyhow::Error::new(error)))?;
+    write_atomic(
+        build_dir.join(BUILD_COMPLETION_FILE).as_std_path(),
+        format!("{completion_body}\n").as_bytes(),
+    )?;
+    Ok(completion)
+}
+
+/// Hash the primary bundle outputs that packaging treats as managed: the USD
+/// registration tree, built libraries, and Python modules. Fixtures, notices,
+/// activation files, dependency closure, and validation reports are package
+/// inputs generated or copied later and therefore are not attributed to the
+/// native build.
+fn collect_plugin_managed_outputs(bundle: &Bundle) -> Result<Vec<BuildOutput>> {
+    let mut outputs = BTreeMap::<String, BuildOutput>::new();
+    for root in [
+        bundle.plug_info_root(),
+        bundle.lib_dir(),
+        bundle.python_dir(),
+    ] {
+        match std::fs::symlink_metadata(root.as_std_path()) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::validation(format!(
+                    "managed plugin output root is a symlink: {root}"
+                )));
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                collect_plugin_managed_outputs_from(bundle, &root, &mut outputs)?;
+            }
+            Ok(_) => {
+                return Err(Error::validation(format!(
+                    "managed plugin output root is not a directory: {root}"
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(Error::io(root.to_string(), error)),
+        }
+    }
+    Ok(outputs.into_values().collect())
+}
+
+fn collect_plugin_managed_outputs_from(
+    bundle: &Bundle,
+    directory: &Utf8Path,
+    outputs: &mut BTreeMap<String, BuildOutput>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(directory.as_std_path())
+        .map_err(|error| Error::io(directory.to_string(), error))?
+    {
+        let entry = entry.map_err(|error| Error::io(directory.to_string(), error))?;
+        let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
+            Error::config(format!(
+                "non-UTF-8 path in managed plugin outputs: {}",
+                path.display()
+            ))
+        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| Error::io(path.to_string(), error))?;
+        if file_type.is_symlink() {
+            return Err(Error::validation(format!(
+                "symlink is not allowed in managed plugin outputs: {path}"
+            )));
+        }
+        if file_type.is_dir() {
+            collect_plugin_managed_outputs_from(bundle, &path, outputs)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            return Err(Error::validation(format!(
+                "special file is not allowed in managed plugin outputs: {path}"
+            )));
+        }
+        let relative = path.strip_prefix(&bundle.root).map_err(|error| {
+            Error::Operation(format!(
+                "managed plugin output '{path}' is outside bundle '{}': {error}",
+                bundle.root
+            ))
+        })?;
+        let bytes = std::fs::read(path.as_std_path())
+            .map_err(|error| Error::io(path.to_string(), error))?;
+        let relative = portable(relative);
+        outputs.insert(
+            relative.clone(),
+            BuildOutput {
+                path: relative,
+                sha256: ost_core::digest::sha256_hex(&bytes),
+                size: bytes.len() as u64,
+            },
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PluginBuildProvenanceStatus {
+    Matched,
+    Untracked,
+    Mismatched,
+}
+
+impl PluginBuildProvenanceStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Matched => "matched",
+            Self::Untracked => "untracked",
+            Self::Mismatched => "mismatched",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ManagedOutputDifference {
+    path: String,
+    kind: &'static str,
+    expected: Option<String>,
+    observed: Option<String>,
+}
+
+impl ManagedOutputDifference {
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "path": self.path,
+            "kind": self.kind,
+            "expected": self.expected,
+            "observed": self.observed,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PluginBuildProvenance {
+    status: PluginBuildProvenanceStatus,
+    origin: &'static str,
+    build_fingerprint: Option<String>,
+    invocation: Option<String>,
+    completed_unix: Option<u64>,
+    expected_outputs: usize,
+    observed_outputs: usize,
+    differences: Vec<ManagedOutputDifference>,
+    detail: String,
+    override_accepted: bool,
+}
+
+impl PluginBuildProvenance {
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "status": self.status.as_str(),
+            "origin": self.origin,
+            "build": self.build_fingerprint.as_ref().map(|fingerprint| serde_json::json!({
+                "fingerprint": fingerprint,
+                "invocation": self.invocation,
+                "completed_unix": self.completed_unix,
+            })),
+            "outputs": {
+                "expected": self.expected_outputs,
+                "observed": self.observed_outputs,
+                "differences": self.differences.iter().map(ManagedOutputDifference::json).collect::<Vec<_>>(),
+            },
+            "detail": self.detail,
+            "override_accepted": self.override_accepted,
+        })
+    }
+
+    fn warning(&self) -> Option<serde_json::Value> {
+        match self.status {
+            PluginBuildProvenanceStatus::Matched => None,
+            PluginBuildProvenanceStatus::Untracked => Some(serde_json::json!({
+                "code": "PLUGIN_PACKAGE_OUTPUT_UNTRACKED",
+                "message": self.detail,
+            })),
+            PluginBuildProvenanceStatus::Mismatched if self.override_accepted => {
+                Some(serde_json::json!({
+                    "code": "PLUGIN_PACKAGE_OUTPUT_MISMATCH_OVERRIDDEN",
+                    "message": format!("{}; recording explicit unmanaged output origin", self.detail),
+                }))
+            }
+            PluginBuildProvenanceStatus::Mismatched => None,
+        }
+    }
+
+    fn accept_unmanaged_override(&mut self) {
+        self.origin = "external-or-unmanaged-override";
+        self.override_accepted = true;
+    }
+
+    fn mismatch_message(&self) -> String {
+        let first = self.differences.first().map(|difference| {
+            format!(
+                "{} '{}' (expected {}, observed {})",
+                difference.kind,
+                difference.path,
+                difference.expected.as_deref().unwrap_or("absent"),
+                difference.observed.as_deref().unwrap_or("absent")
+            )
+        });
+        match (first, self.build_fingerprint.as_deref()) {
+            (Some(first), Some(fingerprint)) => {
+                format!("{first}; last managed build {fingerprint}")
+            }
+            (Some(first), None) => first,
+            (None, _) => self.detail.clone(),
+        }
+    }
+}
+
+fn assess_plugin_build_provenance(
+    bundle: &Bundle,
+    target: &ost_build::Target,
+) -> Result<PluginBuildProvenance> {
+    let observed = collect_plugin_managed_outputs(bundle)?;
+    let id = target.id();
+    let completion_path = target_build_dir(&bundle.root, &id).join(BUILD_COMPLETION_FILE);
+    let lock_path = target_state_dir(&bundle.root, &id).join("target.lock.json");
+    let completion_exists = completion_path.as_std_path().is_file();
+    let lock_exists = lock_path.as_std_path().is_file();
+    if !completion_exists && !lock_exists {
+        return Ok(PluginBuildProvenance {
+            status: PluginBuildProvenanceStatus::Untracked,
+            origin: "external-or-unmanaged",
+            build_fingerprint: None,
+            invocation: None,
+            completed_unix: None,
+            expected_outputs: 0,
+            observed_outputs: observed.len(),
+            differences: Vec::new(),
+            detail: format!(
+                "{} package-relevant output(s) have no `ost plugin build` completion; treating their origin as external or unmanaged",
+                observed.len()
+            ),
+            override_accepted: false,
+        });
+    }
+
+    let evidence_error = |detail: String| PluginBuildProvenance {
+        status: PluginBuildProvenanceStatus::Mismatched,
+        origin: "ost-managed-diverged",
+        build_fingerprint: None,
+        invocation: None,
+        completed_unix: None,
+        expected_outputs: 0,
+        observed_outputs: observed.len(),
+        differences: Vec::new(),
+        detail,
+        override_accepted: false,
+    };
+    if !completion_exists || !lock_exists {
+        return Ok(evidence_error(format!(
+            "managed build evidence is incomplete: completion present={completion_exists}, target lock present={lock_exists}"
+        )));
+    }
+    let lock: TargetLock = match read_plugin_build_json(&lock_path) {
+        Ok(lock) => lock,
+        Err(detail) => return Ok(evidence_error(detail)),
+    };
+    let completion: BuildCompletion = match read_plugin_build_json(&completion_path) {
+        Ok(completion) => completion,
+        Err(detail) => return Ok(evidence_error(detail)),
+    };
+    let build_fingerprint = completion.fingerprint();
+    let build_identity = || {
+        (
+            Some(build_fingerprint.clone()),
+            completion.invocation.clone(),
+            Some(completion.completed_unix),
+        )
+    };
+    let identity_error = if lock.target != id
+        || lock.platform != target.platform
+        || lock.profile != target.profile
+        || lock.variant != target.variant
+        || lock.runtime.id != target.runtime_id
+        || lock.runtime.digest != target.runtime_digest
+        || lock.generator != target.generator
+    {
+        Some(format!(
+            "last managed build target/runtime identity does not match selected target '{id}' runtime '{}@{}'",
+            target.runtime_id, target.runtime_digest
+        ))
+    } else {
+        let build_rel = Utf8PathBuf::from(format!("build/{id}"));
+        completion
+            .validate_against(
+                &lock,
+                &bundle.manifest.plugin.name,
+                &bundle.manifest.plugin.version,
+                &build_rel,
+            )
+            .err()
+            .map(|detail| format!("last managed build completion is incompatible: {detail}"))
+    };
+    if let Some(detail) = identity_error {
+        let (build_fingerprint, invocation, completed_unix) = build_identity();
+        return Ok(PluginBuildProvenance {
+            status: PluginBuildProvenanceStatus::Mismatched,
+            origin: "ost-managed-diverged",
+            build_fingerprint,
+            invocation,
+            completed_unix,
+            expected_outputs: completion.outputs.len(),
+            observed_outputs: observed.len(),
+            differences: Vec::new(),
+            detail,
+            override_accepted: false,
+        });
+    }
+    if completion.outputs.is_empty() {
+        let (build_fingerprint, invocation, completed_unix) = build_identity();
+        return Ok(PluginBuildProvenance {
+            status: PluginBuildProvenanceStatus::Untracked,
+            origin: "external-or-unmanaged",
+            build_fingerprint,
+            invocation,
+            completed_unix,
+            expected_outputs: 0,
+            observed_outputs: observed.len(),
+            differences: Vec::new(),
+            detail:
+                "the build completion predates managed output digests; package output is untracked"
+                    .into(),
+            override_accepted: false,
+        });
+    }
+
+    let expected_by_path = completion
+        .outputs
+        .iter()
+        .map(|output| (output.path.as_str(), output))
+        .collect::<BTreeMap<_, _>>();
+    let observed_by_path = observed
+        .iter()
+        .map(|output| (output.path.as_str(), output))
+        .collect::<BTreeMap<_, _>>();
+    let mut differences = Vec::new();
+    for (path, expected) in &expected_by_path {
+        match observed_by_path.get(path) {
+            None => differences.push(ManagedOutputDifference {
+                path: (*path).to_string(),
+                kind: "missing",
+                expected: Some(expected.sha256.clone()),
+                observed: None,
+            }),
+            Some(observed)
+                if observed.sha256 != expected.sha256 || observed.size != expected.size =>
+            {
+                differences.push(ManagedOutputDifference {
+                    path: (*path).to_string(),
+                    kind: "digest-mismatch",
+                    expected: Some(expected.sha256.clone()),
+                    observed: Some(observed.sha256.clone()),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    for (path, output) in &observed_by_path {
+        if !expected_by_path.contains_key(path) {
+            differences.push(ManagedOutputDifference {
+                path: (*path).to_string(),
+                kind: "untracked",
+                expected: None,
+                observed: Some(output.sha256.clone()),
+            });
+        }
+    }
+    let (build_fingerprint, invocation, completed_unix) = build_identity();
+    let status = if differences.is_empty() {
+        PluginBuildProvenanceStatus::Matched
+    } else {
+        PluginBuildProvenanceStatus::Mismatched
+    };
+    Ok(PluginBuildProvenance {
+        status,
+        origin: if status == PluginBuildProvenanceStatus::Matched {
+            "ost-managed"
+        } else {
+            "ost-managed-diverged"
+        },
+        build_fingerprint,
+        invocation,
+        completed_unix,
+        expected_outputs: completion.outputs.len(),
+        observed_outputs: observed.len(),
+        detail: if status == PluginBuildProvenanceStatus::Matched {
+            format!(
+                "all {} package-relevant output(s) match the last managed build",
+                observed.len()
+            )
+        } else {
+            format!(
+                "{} package-relevant output difference(s) from the last managed build",
+                differences.len()
+            )
+        },
+        differences,
+        override_accepted: false,
+    })
+}
+
+fn read_plugin_build_json<T: serde::de::DeserializeOwned>(
+    path: &Utf8Path,
+) -> std::result::Result<T, String> {
+    let source = std::fs::read_to_string(path.as_std_path())
+        .map_err(|error| format!("cannot read managed build evidence '{path}': {error}"))?;
+    serde_json::from_str(&source)
+        .map_err(|error| format!("invalid managed build evidence '{path}': {error}"))
 }
 
 /// What one packaged bundle produced, so a single-bundle run and a workspace run
@@ -1106,6 +1605,7 @@ struct PackageOutcome {
     packed: ost_build::PackResult,
     debug: Option<(String, ost_build::PackResult)>,
     debug_status: DebugPackageStatus,
+    build_provenance: PluginBuildProvenance,
     manifest: serde_json::Value,
     stage_warnings: Vec<serde_json::Value>,
 }
@@ -1168,19 +1668,19 @@ fn package(
     profile: Option<String>,
     clean_stage: bool,
     with_debug: bool,
+    allow_unmanaged_output: bool,
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
-    let outcome = package_bundle(&bundle, target, profile, clean_stage, with_debug)?;
-    report_package(
-        &outcome.id,
-        &outcome.archive_path,
-        &outcome.packed,
-        outcome.debug.as_ref(),
-        outcome.debug_status,
-        &outcome.stage_warnings,
-        fmt,
-    );
+    let outcome = package_bundle(
+        &bundle,
+        target,
+        profile,
+        clean_stage,
+        with_debug,
+        allow_unmanaged_output,
+    )?;
+    report_package(&outcome, fmt);
     Ok(())
 }
 
@@ -1190,6 +1690,7 @@ fn package_bundle(
     profile: Option<String>,
     clean_stage: bool,
     with_debug: bool,
+    allow_unmanaged_output: bool,
 ) -> Result<PackageOutcome> {
     let bundle = bundle.clone();
     let host = Host::detect();
@@ -1223,6 +1724,26 @@ fn package_bundle(
             bundle.manifest.plugin.name
         ))
         .with_hint("run `ost plugin doctor` and fix the failing diagnostics before packaging"));
+    }
+
+    let mut build_provenance = assess_plugin_build_provenance(&bundle, &tgt)?;
+    if build_provenance.status == PluginBuildProvenanceStatus::Mismatched {
+        if allow_unmanaged_output {
+            build_provenance.accept_unmanaged_override();
+        } else {
+            return Err(Error::coded(
+                "PLUGIN_PACKAGE_OUTPUT_MISMATCH",
+                Category::Validation,
+                format!(
+                    "plugin '{}' package output does not match its last managed build: {}",
+                    bundle.manifest.name(),
+                    build_provenance.mismatch_message()
+                ),
+            )
+            .with_hint(
+                "rerun `ost plugin build` before packaging, or pass --allow-unmanaged-output to record an explicit external/unmanaged override",
+            ));
+        }
     }
 
     let mut packaged_manifest = bundle.manifest.clone();
@@ -1301,7 +1822,10 @@ fn package_bundle(
     // fresh sibling instead, and surface that as an actionable warning
     // (`--clean-stage` reclaims the stable name).
     let preferred_stage = target_state_dir(&bundle.root, &id).join("package-stage");
-    let (stage, stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
+    let (stage, mut stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
+    if let Some(warning) = build_provenance.warning() {
+        stage_warnings.push(warning);
+    }
     stage_plugin_bundle(&bundle, &stage)?;
     for (source, relative) in &library_runtime {
         copy_tree_required(source, relative, &stage)?;
@@ -1450,6 +1974,7 @@ fn package_bundle(
                 "report": "validation/report.json",
                 "environment": "validation/environment.json",
             },
+            "build_outputs": build_provenance.json(),
         },
         "files": files_json,
     });
@@ -1501,6 +2026,7 @@ fn package_bundle(
         packed,
         debug: debug_pack,
         debug_status,
+        build_provenance,
         manifest,
         stage_warnings,
     })
@@ -1525,6 +2051,7 @@ fn package_workspace(
     profile: Option<String>,
     clean_stage: bool,
     with_debug: bool,
+    allow_unmanaged_output: bool,
     product: bool,
     fmt: Format,
 ) -> Result<()> {
@@ -1598,6 +2125,7 @@ fn package_workspace(
             profile.clone(),
             clean_stage,
             with_debug,
+            allow_unmanaged_output,
         )?;
         if !fmt.is_json() {
             println!(
@@ -1609,6 +2137,11 @@ fn package_workspace(
             } else {
                 println!("  debug: {}", outcome.debug_status.human_reason());
             }
+            println!(
+                "  build: {} ({})",
+                outcome.build_provenance.status.as_str(),
+                outcome.build_provenance.origin
+            );
         }
         outcomes.push(outcome);
     }
@@ -1632,6 +2165,7 @@ fn package_workspace(
                     "archive_size": outcome.packed.archive_size,
                     "debug_archive": outcome.debug.as_ref().map(|(name, _)| name.clone()),
                     "debug_package": outcome.debug_status.json(),
+                    "build_provenance": outcome.build_provenance.json(),
                 })
             })
             .collect();
@@ -4644,24 +5178,27 @@ fn pretty_json(value: &serde_json::Value) -> Result<String> {
     serde_json::to_string_pretty(value).map_err(|e| Error::parse("json", anyhow::Error::new(e)))
 }
 
-fn report_package(
-    id: &str,
-    archive: &Utf8Path,
-    packed: &ost_build::PackResult,
-    debug: Option<&(String, ost_build::PackResult)>,
-    debug_status: DebugPackageStatus,
-    warnings: &[serde_json::Value],
-    fmt: Format,
-) {
+fn report_package(outcome: &PackageOutcome, fmt: Format) {
+    let PackageOutcome {
+        id,
+        archive_path,
+        packed,
+        debug,
+        debug_status,
+        build_provenance,
+        stage_warnings,
+        ..
+    } = outcome;
     if fmt.is_json() {
         let mut obj = serde_json::json!({
             "packaged": true,
             "target": id,
-            "archive": archive.to_string(),
+            "archive": archive_path.to_string(),
             "archive_digest": packed.archive_digest,
             "archive_size": packed.archive_size,
             "files": packed.files.len(),
-            "debug_package": debug_status.json(),
+            "debug_package": (*debug_status).json(),
+            "build_provenance": build_provenance.json(),
         });
         if let Some((debug_name, dp)) = debug {
             obj["debug"] = serde_json::json!({
@@ -4671,16 +5208,16 @@ fn report_package(
                 "files": dp.files.len(),
             });
         }
-        output::report_with_warnings(true, &obj, warnings);
+        output::report_with_warnings(true, &obj, stage_warnings);
         return;
     }
-    for w in warnings {
+    for w in stage_warnings {
         if let Some(msg) = w["message"].as_str() {
             eprintln!("warning: {msg}");
         }
     }
     println!("Packaged plugin target {id}");
-    println!("  archive:  {archive}");
+    println!("  archive:  {archive_path}");
     println!("  digest:   {}", packed.archive_digest);
     println!(
         "  size:     {} bytes ({} file(s), {} uncompressed)",
@@ -4695,8 +5232,14 @@ fn report_package(
             dp.files.len()
         );
     } else {
-        println!("  debug:    {}", debug_status.human_reason());
+        println!("  debug:    {}", (*debug_status).human_reason());
     }
+    println!(
+        "  build:    {} ({}) — {}",
+        build_provenance.status.as_str(),
+        build_provenance.origin,
+        build_provenance.detail
+    );
     println!("  manifest.json + SHA256SUMS written alongside the archive");
 }
 
@@ -5367,6 +5910,96 @@ schema: { codeless: true, contract: 1 }
 
         // Different targets never share a build tree (no CMake-cache mixing).
         assert_ne!(bd, target_build_dir(&root, "cy2027-linux-x86_64-py313-usd"));
+    }
+
+    fn managed_output_test_bundle(tag: &str) -> (Utf8PathBuf, Bundle, ost_build::Target) {
+        let root = unique_tmp(tag);
+        write_test_file(
+            &root.join("openstrata.plugin.yaml"),
+            "plugin: { name: toy, version: 0.1.0, kind: usd-fileformat }\n\
+             runtime: { openusd: '>=25.05,<26.0' }\n\
+             provides: [usd-fileformat:toy]\n\
+             usd: { plug_info: plugin/resources/toy/plugInfo.json }\n",
+        );
+        write_test_file(
+            &root.join("plugin/resources/toy/plugInfo.json"),
+            r#"{ "Plugins": [{ "Type": "library", "Name": "toy" }] }"#,
+        );
+        write_test_file(&root.join("lib/libToy.so"), "managed bytes");
+        let bundle = Bundle::load(&root).unwrap();
+        let target = ost_build::Target {
+            platform: "cy2026".into(),
+            profile: "usd".into(),
+            variant: variant(
+                Os::Linux,
+                Abi::Glibc {
+                    version: "2.28".into(),
+                },
+            ),
+            runtime_id: "openstrata-cy2026-usd".into(),
+            runtime_digest: format!("sha256:{}", "ab".repeat(32)),
+            python_version: "3.13.x".into(),
+            cxx_standard: "20".into(),
+            capabilities: vec!["usd-stage-read".into()],
+            generator: "Ninja".into(),
+        };
+        (root, bundle, target)
+    }
+
+    #[test]
+    fn managed_plugin_outputs_match_then_detect_an_overwrite() {
+        let (root, bundle, target) = managed_output_test_bundle("managed-output-match");
+        let id = target.id();
+        let target_dir = target_state_dir(&bundle.root, &id);
+        let build_dir = target_build_dir(&bundle.root, &id);
+        std::fs::create_dir_all(target_dir.as_std_path()).unwrap();
+        std::fs::create_dir_all(build_dir.as_std_path()).unwrap();
+        let toolchain = target_dir.join("toolchain.cmake");
+        write_test_file(&toolchain, "# managed");
+        write_plugin_build_completion(
+            &bundle,
+            &target,
+            &ost_build::LockCompiler::default(),
+            &toolchain,
+            &build_dir,
+        )
+        .unwrap();
+
+        let matched = assess_plugin_build_provenance(&bundle, &target).unwrap();
+        assert_eq!(matched.status, PluginBuildProvenanceStatus::Matched);
+        assert_eq!(matched.expected_outputs, 2);
+        assert!(matched.differences.is_empty());
+
+        write_test_file(&bundle.path("lib/libToy.so"), "plain CMake replacement");
+        let mismatched = assess_plugin_build_provenance(&bundle, &target).unwrap();
+        assert_eq!(mismatched.status, PluginBuildProvenanceStatus::Mismatched);
+        let changed = mismatched
+            .differences
+            .iter()
+            .find(|difference| difference.path == "lib/libToy.so")
+            .unwrap();
+        assert_eq!(changed.kind, "digest-mismatch");
+        assert!(changed.expected.as_deref().unwrap().starts_with("sha256:"));
+        assert!(changed.observed.as_deref().unwrap().starts_with("sha256:"));
+        assert!(mismatched.mismatch_message().contains("last managed build"));
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn outputs_without_a_managed_completion_are_reported_untracked() {
+        let (root, bundle, target) = managed_output_test_bundle("managed-output-untracked");
+
+        let provenance = assess_plugin_build_provenance(&bundle, &target).unwrap();
+
+        assert_eq!(provenance.status, PluginBuildProvenanceStatus::Untracked);
+        assert_eq!(provenance.origin, "external-or-unmanaged");
+        assert_eq!(provenance.observed_outputs, 2);
+        assert_eq!(
+            provenance.warning().unwrap()["code"],
+            "PLUGIN_PACKAGE_OUTPUT_UNTRACKED"
+        );
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[test]

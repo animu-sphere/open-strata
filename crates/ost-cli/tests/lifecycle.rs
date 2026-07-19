@@ -133,6 +133,15 @@ fn walk(root: &Path, dir: &Path, map: &mut BTreeMap<String, Vec<u8>>) {
     }
 }
 
+fn managed_build_output(root: &Path, relative: &str) -> ost_build::BuildOutput {
+    let bytes = std::fs::read(root.join(relative)).unwrap();
+    ost_build::BuildOutput {
+        path: relative.replace('\\', "/"),
+        sha256: ost_core::digest::sha256_hex(&bytes),
+        size: bytes.len() as u64,
+    }
+}
+
 /// The single generated target directory under `.strata/targets/`.
 fn single_target_dir(work: &Path) -> PathBuf {
     let targets = work.join(".strata").join("targets");
@@ -1205,6 +1214,14 @@ fn generated_plugin_scaffolds_and_inspects() {
         "openstrata.verification.json"
     );
     assert_eq!(manifest_value["verification"]["roundtrip_oracles"], 1);
+    assert_eq!(
+        manifest_value["provenance"]["build_outputs"]["status"],
+        "untracked"
+    );
+    assert_eq!(
+        manifest_value["provenance"]["build_outputs"]["origin"],
+        "external-or-unmanaged"
+    );
     let golden_file = manifest_value["files"]
         .as_array()
         .unwrap()
@@ -1238,6 +1255,124 @@ fn generated_plugin_scaffolds_and_inspects() {
         golden_file["sha256"]
     );
     assert!(find_first(&dist, "SHA256SUMS").is_some());
+}
+
+#[test]
+fn plugin_package_refuses_overwritten_managed_outputs_without_an_explicit_override() {
+    let sb = Sandbox::new("plugin-output-provenance");
+    init_and_pull(&sb);
+    let scaffold = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "toy",
+        "--extension",
+        "toy",
+    ]);
+    assert!(scaffold.status.success(), "{}", out_text(&scaffold));
+    let configured = sb.ost(&["configure"]);
+    assert!(configured.status.success(), "{}", out_text(&configured));
+
+    let bundle = sb.work_file("toy");
+    let library_relative = format!("lib/libToyFileFormat{}", std::env::consts::DLL_SUFFIX);
+    let library = bundle.join(&library_relative);
+    std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+    std::fs::write(&library, b"managed build bytes").unwrap();
+
+    // The project target lock carries the same selected target/runtime identity
+    // a successful `ost plugin build` writes into the bundle target state.
+    let project_target = single_target_dir(&sb.work);
+    let target_id = project_target.file_name().unwrap().to_string_lossy();
+    let lock: ost_build::TargetLock = serde_json::from_str(
+        &std::fs::read_to_string(project_target.join("target.lock.json")).unwrap(),
+    )
+    .unwrap();
+    let bundle_target = bundle.join(".strata/targets").join(target_id.as_ref());
+    let bundle_build = bundle.join("build").join(target_id.as_ref());
+    std::fs::create_dir_all(&bundle_target).unwrap();
+    std::fs::create_dir_all(&bundle_build).unwrap();
+    std::fs::write(
+        bundle_target.join("target.lock.json"),
+        lock.to_json().unwrap(),
+    )
+    .unwrap();
+    let mut intent = ost_build::BuildIntent::default();
+    intent
+        .cache
+        .insert("CMAKE_BUILD_TYPE".into(), "Release".into());
+    let completion = ost_build::BuildCompletion::from_lock(
+        &lock,
+        ost_build::BuildProjectIdentity {
+            name: "toy".into(),
+            version: "0.1.0".into(),
+        },
+        format!("build/{target_id}"),
+        intent,
+        1,
+    )
+    .with_outputs(vec![
+        managed_build_output(&bundle, &library_relative),
+        managed_build_output(&bundle, "plugin/resources/toy/plugInfo.json"),
+        managed_build_output(&bundle, "plugin/resources/toy/plugInfo.json.in"),
+    ]);
+    std::fs::write(
+        bundle_build.join(ost_build::BUILD_COMPLETION_FILE),
+        completion.to_json().unwrap(),
+    )
+    .unwrap();
+
+    let matched = sb.ost(&["--json", "plugin", "package", "toy"]);
+    assert!(matched.status.success(), "{}", out_text(&matched));
+    let matched: serde_json::Value = serde_json::from_slice(&matched.stdout).unwrap();
+    assert_eq!(matched["data"]["build_provenance"]["status"], "matched");
+    assert_eq!(matched["data"]["build_provenance"]["origin"], "ost-managed");
+
+    std::fs::write(&library, b"plain CMake replacement").unwrap();
+    let refused = sb.ost(&["--json", "plugin", "package", "toy"]);
+    assert_eq!(refused.status.code(), Some(5), "{}", out_text(&refused));
+    let refusal = out_text(&refused);
+    assert!(
+        refusal.contains("PLUGIN_PACKAGE_OUTPUT_MISMATCH"),
+        "{refusal}"
+    );
+    assert!(
+        refusal.contains(&library_relative.replace('\\', "/")),
+        "{refusal}"
+    );
+    assert!(refusal.contains("expected sha256:"), "{refusal}");
+    assert!(refusal.contains("observed sha256:"), "{refusal}");
+    assert!(refusal.contains("last managed build sha256:"), "{refusal}");
+
+    let overridden = sb.ost(&[
+        "--json",
+        "plugin",
+        "package",
+        "toy",
+        "--allow-unmanaged-output",
+    ]);
+    assert!(overridden.status.success(), "{}", out_text(&overridden));
+    let overridden: serde_json::Value = serde_json::from_slice(&overridden.stdout).unwrap();
+    let provenance = &overridden["data"]["build_provenance"];
+    assert_eq!(provenance["status"], "mismatched");
+    assert_eq!(provenance["origin"], "external-or-unmanaged-override");
+    assert_eq!(provenance["override_accepted"], true);
+    assert_eq!(
+        overridden["warnings"][0]["code"],
+        "PLUGIN_PACKAGE_OUTPUT_MISMATCH_OVERRIDDEN"
+    );
+
+    let manifest_path =
+        find_first(&bundle.join("dist"), "manifest.json").expect("package manifest");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
+    assert_eq!(
+        manifest["provenance"]["build_outputs"]["status"],
+        "mismatched"
+    );
+    assert_eq!(
+        manifest["provenance"]["build_outputs"]["origin"],
+        "external-or-unmanaged-override"
+    );
 }
 
 #[test]

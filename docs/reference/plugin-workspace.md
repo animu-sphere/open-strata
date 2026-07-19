@@ -167,6 +167,27 @@ verifies the contract before flattening. An oracle absent from source remains an
 optional L5 SKIP, but an oracle declared by the packaged contract that is
 missing or has changed is a validation failure.
 
+Managed plugin builds also bind packages to the bytes they produced. After a
+successful `ost plugin build`, the target's `.ost-build-complete.json` records
+the target/runtime/compiler/generator build fingerprint and the path, size, and
+SHA-256 of the primary bundle's package-relevant registration, library, and
+Python outputs. `ost plugin package` recomputes that set and reports one of:
+
+| Status | Meaning |
+| --- | --- |
+| `matched` | Every current package-relevant output matches the last managed build. |
+| `untracked` | No output-bearing managed completion exists; the bytes may come from plain CMake or another external producer. |
+| `mismatched` | A managed output is missing, changed, or newly present relative to the completion. |
+
+`mismatched` fails packaging by default with the changed path, expected and
+observed digests, and last build fingerprint. If an external/plain-CMake output
+is intentional, `--allow-unmanaged-output` permits packaging while recording
+the origin as `external-or-unmanaged-override`; it does not rewrite the status
+to `matched`. The same object is emitted in human/JSON package output and under
+`provenance.build_outputs` in the artifact manifest. An artifact with no
+managed completion remains packageable as `untracked`, preserving plain CMake
+as a supported producer without presenting it as an `ost` build.
+
 `ost plugin package --workspace --product` additionally emits one aggregate
 `openstrata.plugin-product` artifact. Its archive has this fixed layout:
 

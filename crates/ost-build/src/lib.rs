@@ -23,7 +23,7 @@ mod target;
 mod toolchain;
 
 pub use completion::{
-    BuildCompletion, BuildIntent, BuildProjectIdentity, TestCompletion, TestTotals,
+    BuildCompletion, BuildIntent, BuildOutput, BuildProjectIdentity, TestCompletion, TestTotals,
     BUILD_COMPLETION_FILE, BUILD_COMPLETION_SCHEMA, TEST_COMPLETION_FILE, TEST_COMPLETION_SCHEMA,
 };
 pub use external::{

@@ -170,6 +170,16 @@ consumer needs to know which build produced the bytes being asserted.
   package it; OpenStrata warns or refuses with the changed file, expected digest,
   observed digest, and last managed build identity.
 
+**Implemented on the v0.19.0 branch:** `ost plugin build` now publishes a normal
+build completion containing the selected target/runtime/compiler/generator
+fingerprint and the path, size, and SHA-256 of every package-relevant primary
+bundle output. `plugin package` reports `matched`, `untracked`, or `mismatched`
+in human/JSON output and `manifest.json`; a mismatch fails with the changed
+path, expected/observed digests, and last build fingerprint. Plain/external
+outputs remain supported as `untracked`. `--allow-unmanaged-output` is the
+explicit escape hatch for a mismatch and records
+`external-or-unmanaged-override` rather than laundering it as managed.
+
 ### P1 - external provenance can see the trees that exist
 
 From the hdMerlin report OST19-RND-001/OST19-RND-002. `ost external import`
