@@ -6,7 +6,7 @@
 //! [`TestCompletion`] says a target's tests were run. `built` and `tested` are
 //! different claims, and neither implies the other.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,19 @@ pub struct BuildIntent {
     pub name: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cache: BTreeMap<String, String>,
+}
+
+/// One package-relevant output published by a completed managed build.
+///
+/// Paths are project-relative and forward-slashed. The completion fingerprint
+/// identifies how the build was configured; these entries bind that identity
+/// to the actual bytes a later package operation is about to stage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildOutput {
+    pub path: String,
+    pub sha256: String,
+    pub size: u64,
 }
 
 impl Default for BuildIntent {
@@ -63,6 +76,10 @@ pub struct BuildCompletion {
     /// invocation, which is exactly what their absence should say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation: Option<String>,
+    /// Package-relevant files produced or finalized by this build. Optional so
+    /// v0.18.0 project completions and non-package-producing builds remain valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<BuildOutput>,
     pub completed_unix: u64,
 }
 
@@ -84,6 +101,7 @@ impl BuildCompletion {
             build_dir: build_dir.into().replace('\\', "/"),
             intent,
             invocation: None,
+            outputs: Vec::new(),
             completed_unix,
         }
     }
@@ -91,6 +109,13 @@ impl BuildCompletion {
     /// Name the lease-holding invocation this build ran under.
     pub fn with_invocation(mut self, invocation: impl Into<String>) -> Self {
         self.invocation = Some(invocation.into());
+        self
+    }
+
+    /// Bind the completed build identity to the package-relevant bytes it
+    /// finalized. Callers provide a deterministic, path-sorted collection.
+    pub fn with_outputs(mut self, outputs: Vec<BuildOutput>) -> Self {
+        self.outputs = outputs;
         self
     }
 
@@ -167,8 +192,48 @@ impl BuildCompletion {
         if self.intent.name.trim().is_empty() {
             return Err("completion build intent is empty".into());
         }
+        let mut output_paths = BTreeSet::new();
+        for output in &self.outputs {
+            let path_bytes = output.path.as_bytes();
+            let has_windows_drive_prefix = path_bytes.len() >= 2
+                && path_bytes[0].is_ascii_alphabetic()
+                && path_bytes[1] == b':';
+            if output.path.is_empty()
+                || output.path.starts_with('/')
+                || output.path.starts_with('\\')
+                || has_windows_drive_prefix
+                || output.path.contains('\\')
+                || output.path.split('/').any(|segment| segment == "..")
+            {
+                return Err(format!(
+                    "completion output '{}' is not a portable project-relative path",
+                    output.path
+                ));
+            }
+            if !output_paths.insert(output.path.as_str()) {
+                return Err(format!(
+                    "completion records duplicate output '{}'",
+                    output.path
+                ));
+            }
+            if !is_sha256(&output.sha256) {
+                return Err(format!(
+                    "completion output '{}' has an invalid SHA-256 digest",
+                    output.path
+                ));
+            }
+        }
         Ok(())
     }
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 /// Atomic evidence that an OpenStrata-managed test run completed.
@@ -433,6 +498,39 @@ mod tests {
             .validate_against(
                 &lock,
                 "other",
+                "1.2.3",
+                Utf8Path::new("build/cy2026-linux-x86_64-py313-usd")
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn package_outputs_roundtrip_without_changing_the_configuration_fingerprint() {
+        let base = build_completion();
+        let with_outputs = base.clone().with_outputs(vec![BuildOutput {
+            path: "lib/libToy.so".into(),
+            sha256: format!("sha256:{}", "ab".repeat(32)),
+            size: 3,
+        }]);
+        assert_eq!(base.fingerprint(), with_outputs.fingerprint());
+        let json = with_outputs.to_json().unwrap();
+        let decoded: BuildCompletion = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.outputs, with_outputs.outputs);
+        assert!(decoded
+            .validate_against(
+                &lock(),
+                "demo",
+                "1.2.3",
+                Utf8Path::new("build/cy2026-linux-x86_64-py313-usd")
+            )
+            .is_ok());
+
+        let mut absolute = decoded;
+        absolute.outputs[0].path = "C:/plugin/lib/Toy.dll".into();
+        assert!(absolute
+            .validate_against(
+                &lock(),
+                "demo",
                 "1.2.3",
                 Utf8Path::new("build/cy2026-linux-x86_64-py313-usd")
             )

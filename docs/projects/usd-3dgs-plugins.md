@@ -104,9 +104,11 @@ The downstream repository keeps an append-only
 series. The first two reports found four upstream product seams now tracked in
 the [v0.19.0 reach plan](../roadmap/current.md):
 
-- package-origin L5 receives its roundtrip fixture but not the adjacent golden;
-- packaging is not bound to the output of the last managed plugin build, so a
-  plain-CMake build can silently replace the staged binary;
+- package-origin L5 did not receive the adjacent golden (implemented on the
+  v0.19.0 branch via the versioned packaged verification-content contract);
+- packaging was not bound to the output of the last managed plugin build
+  (implemented on the v0.19.0 branch with output digests and fail-closed
+  mismatch reporting);
 - CI evidence-gap diagnostics do not print the exact safe repull command even
   when every immutable input is already known;
 - a package run outside a project defaults to `core` instead of deriving or
@@ -119,9 +121,6 @@ the existing package-twice gate only compares one build.
 
 ## Current limitations
 
-- Package-origin L5 currently skips its golden comparison; source L5 passes.
-- `ost plugin package` currently trusts the bundle's staged `lib/` contents
-  without comparing them to the last managed build output.
 - The importer is read-only and fully materialized; SPZ, glTF/GLB Gaussian
   extensions, SOG, writing, streaming, and rendering are downstream future work,
   not OpenStrata capabilities.

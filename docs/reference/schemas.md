@@ -95,6 +95,16 @@ report.json written under .strata/reports/<plugin>/<UTC-timestamp>/ by `ost plug
 | `summary` | object | yes |  |
 | `version` | string | no |  |
 
+## `plugin-verification.schema.json`
+
+OpenStrata packaged plugin verification-content contract
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `oracle_convention` | — | yes |  |
+| `roundtrip` | array | yes |  |
+| `schema` | — | yes |  |
+
 ## `project.schema.json`
 
 OpenStrata Project Manifest

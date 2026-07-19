@@ -377,19 +377,38 @@ fn external_runtime_check(
     target: &ost_build::Target,
     resolved: &crate::commands::Resolved,
 ) -> Check {
+    // Verify the suggested import can actually inspect this tree before
+    // recommending it. A path with no CMake cache needs configuration, not a
+    // circular `external import` instruction.
+    let cache = match crate::commands::external::load_cache(build_dir) {
+        Ok(cache) => cache,
+        Err(error) => {
+            let detail = match error.hint() {
+                Some(hint) => format!("{error} — {hint}"),
+                None => error.to_string(),
+            };
+            return Check::skip("runtime-compatible", detail);
+        }
+    };
     let Ok(record) = crate::commands::external::read_provenance(build_dir) else {
         return Check::skip(
             "runtime-compatible",
             format!(
                 "external build has no imported provenance — run \
-                 `ost external import --build-dir {build_dir}`"
+                 `ost external import --build-dir {build_dir} --target {} --profile {}`",
+                target.platform, target.profile
             ),
         );
     };
-    let cache = match crate::commands::external::load_cache(build_dir) {
-        Ok(cache) => cache,
-        Err(error) => return Check::fail("runtime-compatible", error.to_string()),
-    };
+    if !record.scope.profile.is_empty() && record.scope.profile != target.profile {
+        return Check::fail(
+            "runtime-compatible",
+            format!(
+                "provenance was imported for profile '{}', not selected profile '{}'",
+                record.scope.profile, target.profile
+            ),
+        );
+    }
     let current = ost_build::ExternalRuntime {
         id: target.runtime_id.clone(),
         digest: target.runtime_digest.clone(),

@@ -141,6 +141,12 @@ claim made by its source.
 - Acceptance: `ost plugin test <bundle> --from-package --up-to 5` reports
   `golden.roundtrip` PASS for the extracted package, with no source-tree path.
 
+**Implemented on the v0.19.0 branch:** packaging now discovers the deterministic
+`<roundtrip fixture>.golden.usda` neighbor, stages and hashes both inputs, and
+records their association in versioned `openstrata.verification.json` plus the
+artifact manifest. Package-origin L5 verifies those digests before running
+`usdcat`; a declared oracle that is missing or changed is FAIL, not SKIP.
+
 ### P1 - package output is bound to managed build provenance
 
 From usd-3dgs-plugins
@@ -163,6 +169,16 @@ consumer needs to know which build produced the bytes being asserted.
 - Acceptance: overwrite the bundle output with `cmake --build build/plain`, then
   package it; OpenStrata warns or refuses with the changed file, expected digest,
   observed digest, and last managed build identity.
+
+**Implemented on the v0.19.0 branch:** `ost plugin build` now publishes a normal
+build completion containing the selected target/runtime/compiler/generator
+fingerprint and the path, size, and SHA-256 of every package-relevant primary
+bundle output. `plugin package` reports `matched`, `untracked`, or `mismatched`
+in human/JSON output and `manifest.json`; a mismatch fails with the changed
+path, expected/observed digests, and last build fingerprint. Plain/external
+outputs remain supported as `untracked`. `--allow-unmanaged-output` is the
+explicit escape hatch for a mismatch and records
+`external-or-unmanaged-override` rather than laundering it as managed.
 
 ### P1 - external provenance can see the trees that exist
 
@@ -191,6 +207,17 @@ guidance loop with no reachable exit.
   change the outcome. A `pxr_ROOT` hint does not belong on a compiler-identity
   failure, and when `validate` recommends a command it either verifies the
   command applies to that tree or explains the precondition instead.
+
+**Implemented on the v0.19.0 branch:** external-build record v2 resolves
+compiler identity from the top-level cache or
+`CMakeFiles/<version>/CMakeCXXCompiler.cmake`, records generator flavor and
+single- versus multi-config identity, and covers Ninja, Ninja Multi-Config,
+Visual Studio, and Xcode. Import now combines profile and repeated
+`--capability` selections: OpenUSD binding is either applied and verified or
+explicitly `not-applicable`. Diagnostics name the inspected source and offer
+cause-specific remediation; `validate` recommends import only after confirming
+the path is a configured CMake tree, otherwise leaving the check skipped with
+the missing precondition. Legacy v1 records remain verifiable.
 
 ### P1 - the producer-session contract is readable by producers
 

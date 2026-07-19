@@ -472,6 +472,7 @@ Inspect an external build tree's CMake cache and record its provenance
 | Option | Description |
 | --- | --- |
 | `--build-dir <BUILD_DIR>` | The external build tree to inspect |
+| `--capability <CAPABILITIES>` | Additional capability this external tree is intended to exercise. May be repeated; requirements are combined with the resolved profile |
 | `--profile <PROFILE>` | Profile. Defaults to the project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 
@@ -697,6 +698,7 @@ Pack a built plugin bundle into a target-specific tar.zst artifact
 
 | Option | Description |
 | --- | --- |
+| `--allow-unmanaged-output` | Package outputs that no longer match the last `ost plugin build`, recording the package origin as an explicit unmanaged override. Without this flag, a managed-output mismatch fails closed |
 | `--clean-stage` | Reclaim the stable package stage harder and sweep stale fallback stages a previous locked run left behind, instead of quietly staging into another sibling. Use once the holding process has exited |
 | `--product` | Also emit one aggregate product artifact containing the exact member archives, manifests, checksums and evidence in dependency order. Requires --workspace |
 | `--profile <PROFILE>` | Profile to package against. Defaults to the enclosing project's |

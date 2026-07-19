@@ -20,7 +20,10 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Subcommand};
 
-use ost_build::{CMakeCache, ExternalBuildProvenance, ExternalRuntime, EXTERNAL_BUILD_FILE};
+use ost_build::{
+    CMakeCache, ExternalBuildProvenance, ExternalImportScope, ExternalRequirementStatus,
+    ExternalRuntime, EXTERNAL_BUILD_FILE,
+};
 use ost_core::fs::write_atomic;
 use ost_core::{Error, Result};
 
@@ -49,6 +52,11 @@ pub struct ImportArgs {
     /// Profile. Defaults to the project's profile.
     #[arg(long)]
     profile: Option<String>,
+
+    /// Additional capability this external tree is intended to exercise. May
+    /// be repeated; requirements are combined with the resolved profile.
+    #[arg(long = "capability")]
+    capabilities: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -91,13 +99,21 @@ fn import(args: ImportArgs, fmt: Format) -> Result<()> {
     };
     let openusd_version = detect_openusd_version(&resolved.artifact_prefix);
 
-    let record = ExternalBuildProvenance::from_cache(&cache, runtime, openusd_version, now_unix())
-        .map_err(|error| {
-            Error::validation(error.to_string()).with_hint(
-                "configure the external tree against this runtime (`ost env` prints the \
-                 environment; pass its prefix as pxr_ROOT) and re-run the import",
-            )
-        })?;
+    let mut capabilities = target.capabilities.clone();
+    capabilities.extend(args.capabilities);
+    capabilities.sort();
+    capabilities.dedup();
+    let scope = ExternalImportScope {
+        profile: target.profile.clone(),
+        requires_openusd: capabilities
+            .iter()
+            .any(|capability| crate::commands::needs_openusd(capability)),
+        capabilities,
+    };
+
+    let record =
+        ExternalBuildProvenance::from_cache(&cache, runtime, openusd_version, scope, now_unix())
+            .map_err(|error| Error::validation(error.to_string()).with_hint(error.remediation()))?;
 
     let body = record
         .to_json()
@@ -122,15 +138,39 @@ fn import(args: ImportArgs, fmt: Format) -> Result<()> {
             println!("  OpenUSD:     {version}");
         }
         println!(
-            "  toolchain:   {} / {} / {}",
+            "  toolchain:   {} ({}) / {} / {}",
             record.toolchain.generator,
-            if record.toolchain.configuration.is_empty() {
+            record.toolchain.generator_flavor,
+            if record.toolchain.multi_config {
+                if record.toolchain.configurations.is_empty() {
+                    "<multi-config>"
+                } else {
+                    "<selectable configurations>"
+                }
+            } else if record.toolchain.configuration.is_empty() {
                 "<default>"
             } else {
                 &record.toolchain.configuration
             },
             record.toolchain.cxx_compiler
         );
+        if !record.toolchain.configurations.is_empty() {
+            println!(
+                "  configs:     {}",
+                record.toolchain.configurations.join(", ")
+            );
+        }
+        for requirement in &record.requirements {
+            println!(
+                "  requirement: {} = {} — {}",
+                requirement.name,
+                match requirement.status {
+                    ExternalRequirementStatus::Applied => "applied",
+                    ExternalRequirementStatus::NotApplicable => "not-applicable",
+                },
+                requirement.detail
+            );
+        }
         if let Some(python) = &record.toolchain.python_version {
             println!("  Python:      {python}");
         }

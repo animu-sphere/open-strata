@@ -133,6 +133,15 @@ fn walk(root: &Path, dir: &Path, map: &mut BTreeMap<String, Vec<u8>>) {
     }
 }
 
+fn managed_build_output(root: &Path, relative: &str) -> ost_build::BuildOutput {
+    let bytes = std::fs::read(root.join(relative)).unwrap();
+    ost_build::BuildOutput {
+        path: relative.replace('\\', "/"),
+        sha256: ost_core::digest::sha256_hex(&bytes),
+        size: bytes.len() as u64,
+    }
+}
+
 /// The single generated target directory under `.strata/targets/`.
 fn single_target_dir(work: &Path) -> PathBuf {
     let targets = work.join(".strata").join("targets");
@@ -497,6 +506,156 @@ fn external_provenance_upgrades_only_runtime_compatibility() {
         text.contains("[FAIL] runtime-compatible") && text.contains("reconfigured"),
         "a reconfigured tree must stop verifying:\n{text}"
     );
+}
+
+/// Visual Studio records compiler identity below CMakeFiles instead of in the
+/// top-level cache. A core-only import must consume that real generator shape
+/// without inventing an OpenUSD requirement; an explicit USD capability turns
+/// that requirement back on.
+#[test]
+fn external_import_is_generator_and_capability_aware() {
+    let sb = Sandbox::new("external-vs-core");
+    init_and_pull(&sb);
+    let pull = sb.ost(&["runtime", "pull", "cy2026", "--profile", "core"]);
+    assert!(
+        pull.status.success(),
+        "core pull failed:\n{}",
+        out_text(&pull)
+    );
+
+    let external = sb.work.join("vs-core-build");
+    let compiler_dir = external.join("CMakeFiles").join("3.31.0");
+    std::fs::create_dir_all(&compiler_dir).unwrap();
+    let portable_build = external.to_string_lossy().replace('\\', "/");
+    std::fs::write(
+        external.join("CMakeCache.txt"),
+        format!(
+            "CMAKE_HOME_DIRECTORY:INTERNAL={source}\n\
+             CMAKE_CACHEFILE_DIR:INTERNAL={portable_build}\n\
+             CMAKE_GENERATOR:INTERNAL=Visual Studio 17 2022\n\
+             CMAKE_GENERATOR_PLATFORM:INTERNAL=x64\n\
+             CMAKE_GENERATOR_TOOLSET:INTERNAL=v143\n\
+             CMAKE_CONFIGURATION_TYPES:STRING=Debug;Release\n",
+            source = sb.work.to_string_lossy().replace('\\', "/"),
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        compiler_dir.join("CMakeCXXCompiler.cmake"),
+        "set(CMAKE_CXX_COMPILER \"C:/MSVC/bin/cl.exe\")\n\
+         set(CMAKE_CXX_COMPILER_ID \"MSVC\")\n\
+         set(CMAKE_CXX_COMPILER_VERSION \"19.43\")\n",
+    )
+    .unwrap();
+
+    let imported = sb.ost(&[
+        "--json",
+        "external",
+        "import",
+        "--build-dir",
+        "vs-core-build",
+        "--profile",
+        "core",
+        "--capability",
+        "build-cxx",
+    ]);
+    assert!(imported.status.success(), "{}", out_text(&imported));
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let provenance = &imported["data"]["provenance"];
+    assert_eq!(provenance["schema"], "openstrata.external-build/v2");
+    assert_eq!(provenance["toolchain"]["generator_flavor"], "visual-studio");
+    assert_eq!(provenance["toolchain"]["multi_config"], true);
+    assert_eq!(
+        provenance["toolchain"]["cxx_compiler_source"],
+        "CMakeFiles/3.31.0/CMakeCXXCompiler.cmake:CMAKE_CXX_COMPILER"
+    );
+    let requirements = provenance["requirements"].as_array().unwrap();
+    assert!(requirements.iter().any(|requirement| {
+        requirement["name"] == "openusd.runtime" && requirement["status"] == "not-applicable"
+    }));
+
+    let validated = sb.ost(&[
+        "validate",
+        "--build-dir",
+        "vs-core-build",
+        "--profile",
+        "core",
+    ]);
+    let text = out_text(&validated);
+    assert!(validated.status.success(), "{text}");
+    assert!(text.contains("OpenUSD binding not applicable"), "{text}");
+
+    let usd_requested = sb.ost(&[
+        "external",
+        "import",
+        "--build-dir",
+        "vs-core-build",
+        "--profile",
+        "core",
+        "--capability",
+        "usd-stage-read",
+    ]);
+    let text = out_text(&usd_requested);
+    assert!(!usd_requested.status.success(), "{text}");
+    assert!(text.contains("OpenUSD runtime binding"), "{text}");
+    assert!(text.contains("pxr_ROOT"), "{text}");
+}
+
+#[test]
+fn external_import_compiler_failure_has_applicable_remediation() {
+    let sb = Sandbox::new("external-compiler-remediation");
+    init_and_pull(&sb);
+    let pull = sb.ost(&["runtime", "pull", "cy2026", "--profile", "core"]);
+    assert!(pull.status.success(), "{}", out_text(&pull));
+    let external = sb.work.join("incomplete-vs-build");
+    std::fs::create_dir_all(&external).unwrap();
+    std::fs::write(
+        external.join("CMakeCache.txt"),
+        format!(
+            "CMAKE_HOME_DIRECTORY:INTERNAL={source}\n\
+             CMAKE_CACHEFILE_DIR:INTERNAL={build}\n\
+             CMAKE_GENERATOR:INTERNAL=Visual Studio 17 2022\n",
+            source = sb.work.to_string_lossy().replace('\\', "/"),
+            build = external.to_string_lossy().replace('\\', "/"),
+        ),
+    )
+    .unwrap();
+
+    let imported = sb.ost(&[
+        "external",
+        "import",
+        "--build-dir",
+        "incomplete-vs-build",
+        "--profile",
+        "core",
+    ]);
+    let text = out_text(&imported);
+    assert!(!imported.status.success(), "{text}");
+    assert!(text.contains("visual-studio"), "{text}");
+    assert!(
+        text.contains("CMakeFiles/<version>/CMakeCXXCompiler.cmake"),
+        "{text}"
+    );
+    assert!(text.contains("finish configuring the tree"), "{text}");
+    assert!(!text.contains("pxr_ROOT"), "{text}");
+}
+
+#[test]
+fn validate_only_recommends_external_import_for_a_cmake_tree() {
+    let sb = Sandbox::new("external-validate-remediation");
+    init_and_pull(&sb);
+    std::fs::create_dir_all(sb.work.join("not-configured")).unwrap();
+
+    let validated = sb.ost(&["validate", "--build-dir", "not-configured"]);
+    let text = out_text(&validated);
+    assert!(validated.status.success(), "{text}");
+    assert!(text.contains("[skip] runtime-compatible"), "{text}");
+    assert!(text.contains("CMakeCache.txt not found"), "{text}");
+    assert!(
+        text.contains("point --build-dir at a configured CMake build tree"),
+        "{text}"
+    );
+    assert!(!text.contains("ost external import"), "{text}");
 }
 
 /// A tree that resolved OpenUSD from somewhere else is not evidence about this
@@ -1165,6 +1324,13 @@ fn generated_plugin_scaffolds_and_inspects() {
         b"fake shared library for static package validation",
     )
     .unwrap();
+    // A source L5 oracle is verification content, not merely a neighboring
+    // developer file: packaging must preserve and bind it to the fixture.
+    std::fs::write(
+        bundle.join("tests/fixtures/basic.toy.golden.usda"),
+        b"#usda 1.0\n",
+    )
+    .unwrap();
     let package = sb.ost(&["plugin", "package", "toy"]);
     assert!(
         package.status.success(),
@@ -1178,6 +1344,7 @@ fn generated_plugin_scaffolds_and_inspects() {
     );
     let manifest = find_first(&dist, "manifest.json").expect("plugin manifest exists");
     let manifest_text = std::fs::read_to_string(manifest).unwrap();
+    let manifest_value: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
     assert!(manifest_text.contains("\"kind\": \"openstrata.plugin-bundle\""));
     assert!(manifest_text.contains("\"cxx_abi\""));
     assert!(
@@ -1188,7 +1355,174 @@ fn generated_plugin_scaffolds_and_inspects() {
         manifest_text.contains("\"license\": \"Apache-2.0\""),
         "package manifest should record the plugin license:\n{manifest_text}"
     );
+    assert_eq!(
+        manifest_value["verification"]["schema"],
+        "openstrata.plugin-verification/v1alpha1"
+    );
+    assert_eq!(
+        manifest_value["verification"]["contract"],
+        "openstrata.verification.json"
+    );
+    assert_eq!(manifest_value["verification"]["roundtrip_oracles"], 1);
+    assert_eq!(
+        manifest_value["provenance"]["build_outputs"]["status"],
+        "untracked"
+    );
+    assert_eq!(
+        manifest_value["provenance"]["build_outputs"]["origin"],
+        "external-or-unmanaged"
+    );
+    let golden_file = manifest_value["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "tests/fixtures/basic.toy.golden.usda")
+        .expect("the adjacent golden must be archived and hashed");
+    let contract_file = manifest_value["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "openstrata.verification.json")
+        .expect("the versioned verification contract must be archived");
+    assert!(contract_file["sha256"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    let contract_path = find_first(&bundle.join(".strata"), "openstrata.verification.json")
+        .expect("package stage carries the verification contract");
+    let contract: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(contract_path).unwrap()).unwrap();
+    assert_eq!(
+        contract["roundtrip"][0]["fixture"],
+        "tests/fixtures/basic.toy"
+    );
+    assert_eq!(
+        contract["roundtrip"][0]["oracle"],
+        "tests/fixtures/basic.toy.golden.usda"
+    );
+    assert_eq!(
+        contract["roundtrip"][0]["oracle_sha256"],
+        golden_file["sha256"]
+    );
     assert!(find_first(&dist, "SHA256SUMS").is_some());
+}
+
+#[test]
+fn plugin_package_refuses_overwritten_managed_outputs_without_an_explicit_override() {
+    let sb = Sandbox::new("plugin-output-provenance");
+    init_and_pull(&sb);
+    let scaffold = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "toy",
+        "--extension",
+        "toy",
+    ]);
+    assert!(scaffold.status.success(), "{}", out_text(&scaffold));
+    let configured = sb.ost(&["configure"]);
+    assert!(configured.status.success(), "{}", out_text(&configured));
+
+    let bundle = sb.work_file("toy");
+    let library_relative = format!("lib/libToyFileFormat{}", std::env::consts::DLL_SUFFIX);
+    let library = bundle.join(&library_relative);
+    std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+    std::fs::write(&library, b"managed build bytes").unwrap();
+
+    // The project target lock carries the same selected target/runtime identity
+    // a successful `ost plugin build` writes into the bundle target state.
+    let project_target = single_target_dir(&sb.work);
+    let target_id = project_target.file_name().unwrap().to_string_lossy();
+    let lock: ost_build::TargetLock = serde_json::from_str(
+        &std::fs::read_to_string(project_target.join("target.lock.json")).unwrap(),
+    )
+    .unwrap();
+    let bundle_target = bundle.join(".strata/targets").join(target_id.as_ref());
+    let bundle_build = bundle.join("build").join(target_id.as_ref());
+    std::fs::create_dir_all(&bundle_target).unwrap();
+    std::fs::create_dir_all(&bundle_build).unwrap();
+    std::fs::write(
+        bundle_target.join("target.lock.json"),
+        lock.to_json().unwrap(),
+    )
+    .unwrap();
+    let mut intent = ost_build::BuildIntent::default();
+    intent
+        .cache
+        .insert("CMAKE_BUILD_TYPE".into(), "Release".into());
+    let completion = ost_build::BuildCompletion::from_lock(
+        &lock,
+        ost_build::BuildProjectIdentity {
+            name: "toy".into(),
+            version: "0.1.0".into(),
+        },
+        format!("build/{target_id}"),
+        intent,
+        1,
+    )
+    .with_outputs(vec![
+        managed_build_output(&bundle, &library_relative),
+        managed_build_output(&bundle, "plugin/resources/toy/plugInfo.json"),
+        managed_build_output(&bundle, "plugin/resources/toy/plugInfo.json.in"),
+    ]);
+    std::fs::write(
+        bundle_build.join(ost_build::BUILD_COMPLETION_FILE),
+        completion.to_json().unwrap(),
+    )
+    .unwrap();
+
+    let matched = sb.ost(&["--json", "plugin", "package", "toy"]);
+    assert!(matched.status.success(), "{}", out_text(&matched));
+    let matched: serde_json::Value = serde_json::from_slice(&matched.stdout).unwrap();
+    assert_eq!(matched["data"]["build_provenance"]["status"], "matched");
+    assert_eq!(matched["data"]["build_provenance"]["origin"], "ost-managed");
+
+    std::fs::write(&library, b"plain CMake replacement").unwrap();
+    let refused = sb.ost(&["--json", "plugin", "package", "toy"]);
+    assert_eq!(refused.status.code(), Some(5), "{}", out_text(&refused));
+    let refusal = out_text(&refused);
+    assert!(
+        refusal.contains("PLUGIN_PACKAGE_OUTPUT_MISMATCH"),
+        "{refusal}"
+    );
+    assert!(
+        refusal.contains(&library_relative.replace('\\', "/")),
+        "{refusal}"
+    );
+    assert!(refusal.contains("expected sha256:"), "{refusal}");
+    assert!(refusal.contains("observed sha256:"), "{refusal}");
+    assert!(refusal.contains("last managed build sha256:"), "{refusal}");
+
+    let overridden = sb.ost(&[
+        "--json",
+        "plugin",
+        "package",
+        "toy",
+        "--allow-unmanaged-output",
+    ]);
+    assert!(overridden.status.success(), "{}", out_text(&overridden));
+    let overridden: serde_json::Value = serde_json::from_slice(&overridden.stdout).unwrap();
+    let provenance = &overridden["data"]["build_provenance"];
+    assert_eq!(provenance["status"], "mismatched");
+    assert_eq!(provenance["origin"], "external-or-unmanaged-override");
+    assert_eq!(provenance["override_accepted"], true);
+    assert_eq!(
+        overridden["warnings"][0]["code"],
+        "PLUGIN_PACKAGE_OUTPUT_MISMATCH_OVERRIDDEN"
+    );
+
+    let manifest_path =
+        find_first(&bundle.join("dist"), "manifest.json").expect("package manifest");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
+    assert_eq!(
+        manifest["provenance"]["build_outputs"]["status"],
+        "mismatched"
+    );
+    assert_eq!(
+        manifest["provenance"]["build_outputs"]["origin"],
+        "external-or-unmanaged-override"
+    );
 }
 
 #[test]
