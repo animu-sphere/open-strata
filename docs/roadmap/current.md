@@ -95,6 +95,13 @@ at all; v0.18.0 is confidently wrong where it used to be honestly silent.
   without any workspace flag, because the package is genuinely closed. That is
   the acceptance test, and it is the test that fails today.
 
+**Implemented on the v0.19.0 branch:** packaging stages each resolved provider's
+`plugin/` registration tree and adjacent `lib/` half under
+`runtime/bundles/<id>/`, declares the portable registration and loader paths in
+the packaged manifest, and activates them through `session.plugin_path`.
+Package-origin workspace tests verify the staged `plugInfo.json`,
+`generatedSchema.usda`, libraries, dependency evidence, and activation contract.
+
 ### P1 - staged bytes are reachable outside `ost`
 
 From usd-vrm-plugins report 24 §2/§3(4). Same shape as the P0, one layer out:
@@ -241,6 +248,16 @@ conform to a contract it cannot read.
 - The rejection diagnostic names the missing field and the schema version it was
   evaluated against, and a schema mismatch is distinguishable from a well-formed
   report recording a failed session.
+
+**Implemented on the v0.19.0 branch:** the published renderer-report schema
+documents the producer shape; managed build and test runs snapshot their report
+set and stamp only evidence created or rewritten by that operation, while
+viewport owns its combined managed-build/host session. Every stamp records the
+invocation, target, timing, and outcome. `renderer attach-session` handles
+genuinely external reports with fixed `external-unverified` provenance. PASS
+refusal now names the missing `producer` field and
+`openstrata.renderer-report/v1alpha1`, while an unsupported report schema
+remains a separate error.
 
 ### P1 - aggregate product artifact
 

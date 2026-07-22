@@ -932,6 +932,202 @@ fn renderer_template_scaffolds_one_project_and_a_strict_manifest() {
 }
 
 #[test]
+fn renderer_attach_session_records_external_unverified_origin() {
+    let sb = Sandbox::new("renderer-attach-session");
+    let init = sb.ost(&[
+        "init",
+        "--platform",
+        "cy2026",
+        "--template",
+        "renderer",
+        "--name",
+        "sample-renderer",
+    ]);
+    assert!(init.status.success(), "init failed:\n{}", out_text(&init));
+
+    let root = camino::Utf8Path::from_path(sb.work.as_path()).unwrap();
+    let manifest = ost_manifest::RendererManifest::load(root).unwrap();
+    let report_path = sb.work_file("build/external/renderer-report.json");
+    std::fs::create_dir_all(report_path.parent().unwrap()).unwrap();
+    let checks = manifest
+        .validation
+        .assertions
+        .iter()
+        .take(1)
+        .map(|id| serde_json::json!({ "id": id, "status": "pass" }))
+        .collect::<Vec<_>>();
+    std::fs::write(
+        &report_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "openstrata.renderer-report/v1alpha1",
+            "renderer": { "name": "sample-renderer" },
+            "checks": checks,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let attach = sb.ost(&[
+        "--json",
+        "renderer",
+        "attach-session",
+        "build/external/renderer-report.json",
+        "--target",
+        "external-release",
+        "--started-unix",
+        "100",
+        "--completed-unix",
+        "120",
+        "--outcome",
+        "success",
+        "--session-id",
+        "external-run-1",
+    ]);
+    assert!(
+        attach.status.success(),
+        "attach failed:\n{}",
+        out_text(&attach)
+    );
+    let output: serde_json::Value = serde_json::from_slice(&attach.stdout).unwrap();
+    assert_eq!(output["data"]["verification"], "external-unverified");
+
+    let report = ost_manifest::RendererReport::load(
+        camino::Utf8Path::from_path(report_path.as_path()).unwrap(),
+    )
+    .unwrap();
+    report.validate_overlay_against(&manifest).unwrap();
+    let producer = report.producer.as_ref().unwrap();
+    assert_eq!(producer.id, "external-run-1");
+    assert_eq!(producer.kind, "external-unverified");
+    assert!(report
+        .checks
+        .iter()
+        .all(|check| check.producer.as_deref() == Some("external-run-1")));
+
+    let reattach = sb.ost(&[
+        "renderer",
+        "attach-session",
+        "build/external/renderer-report.json",
+        "--target",
+        "external-release",
+        "--started-unix",
+        "200",
+        "--completed-unix",
+        "220",
+        "--outcome",
+        "success",
+    ]);
+    assert!(!reattach.status.success());
+    assert!(out_text(&reattach).contains("already carries producer provenance"));
+
+    // A failed/incomplete producer may have stranded a PASS before it died.
+    // Attaching that outcome must persist the truth, then normal evidence
+    // validation refuses the PASS because its owner never completed.
+    let incomplete_path = sb.work_file("build/external/renderer-incomplete-report.json");
+    std::fs::write(
+        &incomplete_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "openstrata.renderer-report/v1alpha1",
+            "renderer": { "name": "sample-renderer" },
+            "checks": [{
+                "id": manifest.validation.assertions[0].clone(),
+                "status": "pass",
+            }],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let incomplete = sb.ost(&[
+        "renderer",
+        "attach-session",
+        "build/external/renderer-incomplete-report.json",
+        "--target",
+        "external-release",
+        "--started-unix",
+        "300",
+        "--outcome",
+        "incomplete",
+    ]);
+    assert!(
+        incomplete.status.success(),
+        "incomplete attach failed:\n{}",
+        out_text(&incomplete)
+    );
+    let report = ost_manifest::RendererReport::load(
+        camino::Utf8Path::from_path(incomplete_path.as_path()).unwrap(),
+    )
+    .unwrap();
+    report
+        .validate_overlay_structure_against(&manifest)
+        .unwrap();
+    assert!(report
+        .validate_overlay_against(&manifest)
+        .unwrap_err()
+        .to_string()
+        .contains("never completed"));
+}
+
+#[test]
+fn renderer_managed_build_and_test_stamp_the_owning_sessions() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping renderer managed session lifecycle: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("renderer-managed-session");
+    let init = sb.ost(&[
+        "init",
+        "--platform",
+        "cy2026",
+        "--template",
+        "renderer",
+        "--name",
+        "sample-renderer",
+    ]);
+    assert!(init.status.success(), "init failed:\n{}", out_text(&init));
+    let pull = sb.ost(&["runtime", "pull", "cy2026", "--profile", "core"]);
+    assert!(pull.status.success(), "pull failed:\n{}", out_text(&pull));
+
+    let build = sb.ost(&["build", "--progress", "plain"]);
+    assert!(
+        build.status.success(),
+        "renderer build failed:\n{}",
+        out_text(&build)
+    );
+    let target = single_target_dir(&sb.work);
+    let id = target.file_name().unwrap().to_string_lossy().into_owned();
+    let report_path = sb.work.join("build").join(&id).join("renderer-report.json");
+    let report = ost_manifest::RendererReport::load(
+        camino::Utf8Path::from_path(report_path.as_path()).unwrap(),
+    )
+    .unwrap();
+    let build_producer = report.producer.as_ref().expect("managed build producer");
+    assert_eq!(build_producer.kind, "ost-build");
+    assert_eq!(build_producer.target, id);
+    assert!(build_producer.can_assert_pass());
+
+    let test = sb.ost(&["test", "--progress", "plain"]);
+    assert!(
+        test.status.success(),
+        "renderer test failed:\n{}",
+        out_text(&test)
+    );
+    let test_report_path = sb
+        .work
+        .join("build")
+        .join(&id)
+        .join("renderer-ctest-report.json");
+    let report = ost_manifest::RendererReport::load(
+        camino::Utf8Path::from_path(test_report_path.as_path()).unwrap(),
+    )
+    .unwrap();
+    let test_producer = report.producer.as_ref().expect("managed test producer");
+    assert_eq!(test_producer.kind, "ost-test");
+    assert_eq!(test_producer.target, id);
+    assert!(test_producer.can_assert_pass());
+    assert_ne!(build_producer.id, test_producer.id);
+}
+
+#[test]
 fn renderer_adopt_is_dry_run_first_and_idempotent() {
     let sb = Sandbox::new("renderer-adopt");
     std::fs::write(

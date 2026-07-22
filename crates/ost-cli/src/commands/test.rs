@@ -38,7 +38,7 @@
 //! the same as a host-side plugin or renderer check.
 
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Args;
@@ -207,6 +207,7 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         .join("targets")
         .join(&id)
         .join(TARGET_LEASE_FILE);
+    let managed_started_unix = crate::commands::renderer::unix_now();
     let lease = TargetLease::acquire(&lease_path, &id, "ost test", mode)?;
 
     let mut rep = Reporter::new(args.progress, 1, args.quiet).with_notify(args.notify, "ost test");
@@ -242,8 +243,12 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         rep.note(&format!("target lease {invocation}"));
     }
 
-    // A stale report from a previous run must not be counted as this one's.
+    // A stale JUnit file from a previous run must not be counted as this one's.
+    // Renderer reports are snapshotted instead: only files CTest creates or
+    // rewrites below receive this invocation's producer session.
     let _ = std::fs::remove_file(junit_path.as_std_path());
+    let renderer_reports_before =
+        crate::commands::renderer::snapshot_managed_renderer_reports(&root, &build_dir)?;
 
     // 5. Run CTest. Its exit status comes back rather than ending the process,
     //    because a failing run still has evidence to publish.
@@ -262,7 +267,30 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     //    executing anything (an empty suite, a bad filter, a usage error) leaves
     //    nothing true to say about the target, so no record is published: an
     //    absent `tested` claim is the honest outcome, not a zeroed one.
+    let producer_started_unix = lease
+        .owner()
+        .filter(|_| !lease.is_read_only())
+        .map_or(managed_started_unix, |owner| owner.acquired_unix);
+    let producer_invocation = (!lease.is_read_only())
+        .then(|| lease.invocation())
+        .flatten();
+    let completed_unix = crate::commands::renderer::unix_now();
     let Some(totals) = read_totals(&junit_path).filter(|totals| totals.total > 0) else {
+        let producer = crate::commands::renderer::managed_producer_session(
+            "ost-test",
+            &id,
+            producer_invocation,
+            producer_started_unix,
+            Some(completed_unix),
+            ost_manifest::SessionOutcome::Failure,
+        );
+        crate::commands::renderer::stamp_changed_managed_renderer_reports(
+            &root,
+            &build_dir,
+            &renderer_reports_before,
+            producer,
+            false,
+        )?;
         lease.release();
         rep.done();
         return Err(
@@ -271,10 +299,26 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
             )),
         );
     };
-    let completed_unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let producer_outcome = if status.success() || totals.failed > 0 {
+        ost_manifest::SessionOutcome::Success
+    } else {
+        ost_manifest::SessionOutcome::Incomplete
+    };
+    let producer = crate::commands::renderer::managed_producer_session(
+        "ost-test",
+        &id,
+        producer_invocation,
+        producer_started_unix,
+        (producer_outcome != ost_manifest::SessionOutcome::Incomplete).then_some(completed_unix),
+        producer_outcome,
+    );
+    crate::commands::renderer::stamp_changed_managed_renderer_reports(
+        &root,
+        &build_dir,
+        &renderer_reports_before,
+        producer,
+        producer_outcome == ost_manifest::SessionOutcome::Success,
+    )?;
     let mut completion = TestCompletion::new(&build, &configuration, totals, completed_unix);
     if let Some(invocation) = lease.invocation() {
         completion = completion.with_invocation(invocation);
@@ -466,6 +510,7 @@ fn quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn args() -> TestArgs {
         TestArgs {

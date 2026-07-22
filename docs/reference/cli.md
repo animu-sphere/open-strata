@@ -896,6 +896,7 @@ Inspect renderer projects in host applications
 **Subcommands:**
 
 - [`ost renderer adopt`](#ost-renderer-adopt) — Safely adopt an existing CMake renderer without overwriting source
+- [`ost renderer attach-session`](#ost-renderer-attach-session) — Attach an honest external/unverified producer session to a report
 - [`ost renderer merge`](#ost-renderer-merge) — Merge independently produced renderer reports with conflict checks
 - [`ost renderer view`](#ost-renderer-view) — Open a scene in usdview with the built Hydra renderer selected
 - [`ost renderer viewport`](#ost-renderer-viewport) — Build and launch the standalone native viewport adapter
@@ -924,6 +925,32 @@ Safely adopt an existing CMake renderer without overwriting source
 | `--version-file <VERSION_FILE>` | Existing repo-relative authoritative version file to adopt |
 | `--viewport <VIEWPORT>` | Existing optional standalone native viewport target |
 | `--write` | Apply the plan. Without this flag the command is a read-only dry run |
+
+#### `ost renderer attach-session`
+
+Attach an honest external/unverified producer session to a report. The producer
+kind is always recorded as `external-unverified`; the command cannot represent
+an external producer as OpenStrata-managed. Partial overlays are accepted, but
+an existing producer is never replaced; use `renderer merge` to preserve both.
+
+**Usage:** `ost renderer attach-session [OPTIONS] --target <TARGET> --started-unix <STARTED_UNIX> --outcome <OUTCOME> <REPORT>`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<REPORT>` | yes | Renderer report produced by the external invocation |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--completed-unix <COMPLETED_UNIX>` | Producer completion time as Unix seconds; required for `success`/`failure`, omitted for `incomplete` |
+| `--out <OUT>` | Write to another path instead of atomically updating `<REPORT>` |
+| `--outcome <OUTCOME>` | Producer outcome: `success`, `failure`, or `incomplete` |
+| `--session-id <SESSION_ID>` | Stable external invocation id; generated when omitted |
+| `--started-unix <STARTED_UNIX>` | Producer start time as Unix seconds |
+| `--target <TARGET>` | External producer's target/build identity |
 
 #### `ost renderer merge`
 

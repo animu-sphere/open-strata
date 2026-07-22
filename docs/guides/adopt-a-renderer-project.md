@@ -53,6 +53,19 @@ mergeable after its command or declared check completes (v0.18.0). When several
 producers contribute reports, `ost renderer merge` preserves provenance and
 refuses assertions from failed, incomplete, or superseded sessions.
 
+Managed `ost build`, `ost test`, and `ost renderer viewport` own this step: they
+snapshot renderer evidence before writing the target and stamp only reports
+created or rewritten by their operation after it concludes. An untouched report
+keeps its earlier owner instead of being laundered through a no-op incremental
+build. For a genuinely external producer, attach its timing and outcome
+explicitly; the origin is fixed to `external-unverified`:
+
+```sh
+ost renderer attach-session build/external/renderer-report.json \
+  --target external-release --started-unix 1750000000 \
+  --completed-unix 1750000030 --outcome success
+```
+
 ## 4. Open the renderer
 
 Open a scene in the matching `usdview` session with your Hydra renderer selected,

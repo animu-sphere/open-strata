@@ -219,7 +219,7 @@ impl ProducerSession {
         }
     }
 
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         validate_portable_id("renderer producer session id", &self.id)?;
         validate_portable_id("renderer producer session kind", &self.kind)?;
         if self.target.trim().is_empty() {
@@ -304,7 +304,47 @@ impl RendererReport {
         Self::parse(&source)
     }
 
+    /// Bind every assertion in this report to the invocation that produced it.
+    ///
+    /// This is intentionally an explicit mutation rather than something a
+    /// renderer harness is trusted to do for itself. Managed OpenStrata
+    /// commands call it only after the producing operation ends; the external
+    /// attach command uses the fixed `external-unverified` kind so provenance
+    /// remains honest. Re-attaching replaces the prior top-level owner and the
+    /// per-check stamps as one atomic provenance update.
+    pub fn attach_producer(&mut self, producer: ProducerSession) -> Result<()> {
+        producer.validate()?;
+        for check in &mut self.checks {
+            check.producer = Some(producer.id.clone());
+        }
+        self.producer = Some(producer);
+        Ok(())
+    }
+
     pub fn validate_against(&self, manifest: &RendererManifest) -> Result<()> {
+        self.validate_report(manifest, true, true)
+    }
+
+    /// Validate an independently produced overlay without requiring it to
+    /// repeat every assertion owned by the final merged report.
+    pub fn validate_overlay_against(&self, manifest: &RendererManifest) -> Result<()> {
+        self.validate_report(manifest, false, true)
+    }
+
+    /// Validate an overlay's identity and fields without accepting its PASSes
+    /// as evidence. This lets an attach operation persist a failed/incomplete
+    /// producer honestly; normal validation will then reject the stranded PASS
+    /// with the producer outcome in its diagnostic.
+    pub fn validate_overlay_structure_against(&self, manifest: &RendererManifest) -> Result<()> {
+        self.validate_report(manifest, false, false)
+    }
+
+    fn validate_report(
+        &self,
+        manifest: &RendererManifest,
+        require_all: bool,
+        accept_evidence: bool,
+    ) -> Result<()> {
         if self.renderer.name != manifest.renderer.name {
             return Err(invalid(format!(
                 "renderer report names '{}', but the manifest names '{}'",
@@ -325,9 +365,11 @@ impl RendererReport {
         if let Some(session) = &self.producer {
             session.validate()?;
         }
-        // A report standing on an unfinished, failed, or entirely absent
-        // producer must not present PASSes as established.
-        self.refuse_unowned_pass("assert")?;
+        if accept_evidence {
+            // A report standing on an unfinished, failed, or entirely absent
+            // producer must not present PASSes as established.
+            self.refuse_unowned_pass("assert")?;
+        }
         let mut observed = BTreeSet::new();
         for check in &self.checks {
             validate_evidence_id(&check.id)?;
@@ -350,11 +392,13 @@ impl RendererReport {
                 )));
             }
         }
-        for required in &manifest.validation.assertions {
-            if !observed.contains(required.as_str()) {
-                return Err(invalid(format!(
-                    "renderer report is missing required assertion '{required}'"
-                )));
+        if require_all {
+            for required in &manifest.validation.assertions {
+                if !observed.contains(required.as_str()) {
+                    return Err(invalid(format!(
+                        "renderer report is missing required assertion '{required}'"
+                    )));
+                }
             }
         }
         Ok(())
@@ -398,7 +442,10 @@ impl RendererReport {
                 session.id,
                 session.pass_refusal()
             ),
-            None => "it records no producer session".to_string(),
+            None => format!(
+                "it records no producer session in field 'producer' required for PASS by schema \
+                 '{RENDERER_REPORT_SCHEMA}'"
+            ),
         };
         Err(invalid(format!(
             "renderer report cannot {action} PASS for '{}' because {reason}; \
@@ -702,6 +749,7 @@ validation:
         ))
         .unwrap();
         assert!(missing.validate_against(&manifest).is_err());
+        missing.validate_overlay_against(&manifest).unwrap();
 
         let unexplained = RendererReport::parse(&source.replace(
             "\"detail\":\"Vulkan loader unavailable\"",
@@ -709,6 +757,37 @@ validation:
         ))
         .unwrap();
         assert!(unexplained.validate_against(&manifest).is_err());
+    }
+
+    #[test]
+    fn attaching_a_producer_stamps_every_assertion() {
+        let mut report = RendererReport::parse(
+            r#"{
+              "schema":"openstrata.renderer-report/v1alpha1",
+              "renderer":{"name":"sample-renderer"},
+              "checks":[
+                {"id":"renderer.core.boundary","status":"pass"},
+                {"id":"renderer.gpu.frame","status":"skip","detail":"no GPU"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        let producer = ProducerSession {
+            id: "ost-test-abcd".into(),
+            kind: "ost-test".into(),
+            target: "cy2026-linux-x86_64-core".into(),
+            started_unix: 100,
+            completed_unix: Some(150),
+            outcome: SessionOutcome::Success,
+        };
+
+        report.attach_producer(producer.clone()).unwrap();
+
+        assert_eq!(report.producer, Some(producer));
+        assert!(report
+            .checks
+            .iter()
+            .all(|check| check.producer.as_deref() == Some("ost-test-abcd")));
     }
 
     #[test]

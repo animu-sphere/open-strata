@@ -287,6 +287,7 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
     //    released between them would let a second writer reconfigure the tree
     //    this run is about to compile, or publish a completion for a build it
     //    did not perform.
+    let managed_started_unix = crate::commands::renderer::unix_now();
     let lease = acquire_target_lease(&root, &id, &args)?;
     if let Some(takeover) = lease.takeover() {
         // An inherited target is worth saying out loud: the tree on disk was
@@ -300,6 +301,8 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
     // 6. Generate the target's `.strata/` files now that checks have passed.
     rep.phase("Generating toolchain and presets");
     let build_dir = root.join("build").join(&id);
+    let renderer_reports_before =
+        crate::commands::renderer::snapshot_managed_renderer_reports(&root, &build_dir)?;
     invalidate_completion(&build_dir)?;
     let g = generate_with_generator(&root, &platform, &profile, &compiler, &args.generator)?;
     debug_assert_eq!(g.id, id);
@@ -365,6 +368,28 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
     //     tree means the preset built nothing useful.
     rep.phase("Verifying outputs");
     verify_build(&root, &id)?;
+    let completed_unix = crate::commands::renderer::unix_now();
+    let invocation = (!lease.is_read_only())
+        .then(|| lease.invocation())
+        .flatten();
+    let producer = crate::commands::renderer::managed_producer_session(
+        "ost-build",
+        &id,
+        invocation,
+        lease
+            .owner()
+            .filter(|_| !lease.is_read_only())
+            .map_or(managed_started_unix, |owner| owner.acquired_unix),
+        Some(completed_unix),
+        ost_manifest::SessionOutcome::Success,
+    );
+    crate::commands::renderer::stamp_changed_managed_renderer_reports(
+        &root,
+        &build_dir,
+        &renderer_reports_before,
+        producer,
+        true,
+    )?;
     write_completion(&root, &id, &intent, lease.invocation())?;
 
     // The completion is published; the target is free for the next writer. On

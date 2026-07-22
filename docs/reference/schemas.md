@@ -130,6 +130,15 @@ Deterministic PASS/FAIL/SKIP evidence emitted by a renderer project.
 | `renderer` | object | yes |  |
 | `schema` | string | yes |  |
 
+`producer` is the versioned ownership contract for renderer evidence. It records
+`id`, `kind`, `target`, `started_unix`, optional `completed_unix`, and `outcome`
+(`success`, `failure`, or `incomplete`). A PASS is valid only when this session
+completed successfully. Managed `ost build`, `ost test`, and
+`ost renderer viewport` stamp the report after their operation finishes;
+`ost renderer attach-session` uses the fixed kind `external-unverified` for
+genuinely external reports. See the published
+[`renderer-report.schema.json`](../../schemas/renderer-report.schema.json).
+
 ## `renderer.schema.json`
 
 OpenStrata Renderer Manifest

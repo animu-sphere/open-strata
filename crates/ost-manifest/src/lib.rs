@@ -15,8 +15,8 @@ mod renderer;
 pub use lock::{Lock, LockExtension, LockPython, LockRuntime, Validation};
 pub use project::{add_extension, set_version_file, BuildConfig, Project, ProjectMeta, Requires};
 pub use renderer::{
-    FrameContract, RenderProducts, RendererCheck, RendererCheckStatus, RendererComposition,
-    RendererDevice, RendererIdentity, RendererManifest, RendererReport, RendererReportIdentity,
-    RendererValidation, RENDERER_MANIFEST, RENDERER_REPORT_FILE, RENDERER_REPORT_SCHEMA,
-    RENDERER_SCHEMA,
+    FrameContract, ProducerSession, RenderProducts, RendererCheck, RendererCheckStatus,
+    RendererComposition, RendererDevice, RendererIdentity, RendererManifest, RendererReport,
+    RendererReportIdentity, RendererValidation, SessionOutcome, RENDERER_MANIFEST,
+    RENDERER_REPORT_FILE, RENDERER_REPORT_SCHEMA, RENDERER_SCHEMA,
 };
