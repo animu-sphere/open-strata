@@ -8,9 +8,10 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-The next milestone (v0.19.0 - composition and reach) is detailed in
-[current.md](current.md); v0.18.0 shipped as the
-[evidence-integrity release](../releases/v0.18.0.md).
+The v0.19.0 composition and reach milestone is shipped in
+[v0.19.0](../releases/v0.19.0.md). Its remaining clean-machine acceptance
+dogfoods stay visible in [current.md](current.md); the next scheduled milestone
+is v0.20.0.
 
 The Formation scope below is **Half B** of v0.19.0, narrowed to
 `resolve|inspect|run|lock`. It is gated on Half A (artifact closure, staged-byte
@@ -20,7 +21,7 @@ digest-pinned artifacts on a clean machine — cannot pass while a packaged bund
 from a split workspace is not independently installable. If Half A consumes the
 milestone, Formation ships in v0.20.0 and DCC host integration moves to v0.21.0.
 
-- ⬜ **v0.19.0 Half B - Formation composition.** Turn the reference-project
+- ✅ **v0.19.0 Half B - Formation composition.** Turn the reference-project
   ecosystem documented in v0.18.0 into an executable contract. A **Formation** is a
   resolved, reproducible set of OpenStrata-managed components — runtime, plugin
   bundles, plugin-workspace products, renderer, tool, and scene/input asset

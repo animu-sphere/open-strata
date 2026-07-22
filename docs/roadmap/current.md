@@ -3,9 +3,9 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## Next milestone: v0.19.0 - composition and reach
+## Shipped: v0.19.0 - composition and reach
 
-**Status:** 🚧 in progress · **Depends on:** the v0.18.0 evidence-integrity,
+**Status:** ✅ shipped 2026-07-23 · **Depends on:** the v0.18.0 evidence-integrity,
 target-lease, test-lifecycle and workspace-closure contracts (shipped).
 
 v0.19.0 was scheduled as the Formation composition milestone. Three v0.18.0

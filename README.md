@@ -31,11 +31,9 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.18.0** — evidence that attaches and gates honestly,
-one completed producer behind every renderer PASS, OS-backed exclusive target
-leases, a managed `ost test` lifecycle bound to the build it exercised, imported
-provenance for external build trees, and workspace packaging that ships its own
-dependency closure.
+The current release is **v0.19.0** — independently reachable packaged
+workspaces, aggregate product artifacts, named build intents, and digest-pinned
+Formation composition through `ost formation resolve|inspect|lock|run`.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
@@ -70,8 +68,8 @@ boundaries:
   managed `usdview` workflow.
 
 Together they exercise distinct plugin-workspace shapes and the renderer side
-of the ecosystem, establishing the basis for cross-repository **Formation**
-composition planned for v0.19.0. See
+of the ecosystem, including the cross-repository **Formation** composition
+surface shipped in v0.19.0. See
 [docs/projects/](docs/projects/README.md).
 
 ## Install
