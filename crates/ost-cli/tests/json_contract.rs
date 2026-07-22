@@ -187,6 +187,17 @@ fn json_mode_keeps_stdout_free_of_log_noise() {
     let _: Value = serde_json::from_str(&stdout).expect("single JSON document");
 }
 
+#[test]
+fn redacted_json_is_explicitly_versioned() {
+    let sb = Sandbox::new("redacted");
+    let out = sb.ost(&["--json", "--redact-paths", "platform", "list"]);
+    assert!(out.status.success());
+    let value = parse_stdout(&out);
+    assert_envelope_common(&value);
+    assert_eq!(value["redacted"], true);
+    assert_eq!(value["redaction_schema"], "openstrata.redaction/v1");
+}
+
 /// A `--json` stdout is routinely redirected to a file. When it is, the failure
 /// envelope goes with it, and a command that failed would otherwise leave the
 /// terminal completely silent. The identifying line is mirrored to stderr so the

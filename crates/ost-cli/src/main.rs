@@ -14,8 +14,8 @@ mod project_template;
 use clap::{Parser, Subcommand};
 
 use commands::{
-    artifact, build, ci, configure, devshell, doctor, env, extension, external, init, internal,
-    lock, package, platform, plugin, presets, renderer, runtime, test, uv, validate,
+    artifact, build, ci, configure, devshell, doctor, env, extension, external, formation, init,
+    internal, lock, package, platform, plugin, presets, renderer, runtime, test, uv, validate,
 };
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
@@ -25,6 +25,11 @@ struct Cli {
     /// Emit machine-readable JSON instead of human-formatted output.
     #[arg(long, global = true)]
     json: bool,
+
+    /// Replace local filesystem and managed-environment values in JSON with
+    /// stable placeholders suitable for attaching to a public report.
+    #[arg(long, global = true, requires = "json")]
+    redact_paths: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -92,6 +97,10 @@ enum Command {
     #[command(subcommand)]
     Artifact(artifact::ArtifactCmd),
 
+    /// Resolve, inspect, lock, and run digest-pinned component Formations.
+    #[command(subcommand)]
+    Formation(formation::FormationCmd),
+
     /// Manage the CI support matrix and generate CI configuration.
     #[command(subcommand)]
     Ci(ci::CiCmd),
@@ -110,6 +119,7 @@ enum Command {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let fmt = output::Format::from_flag(cli.json);
+    output::set_redact_paths(cli.redact_paths);
 
     let result = match cli.command {
         Command::Platform(cmd) => platform::run(cmd, fmt),
@@ -129,6 +139,7 @@ fn main() -> std::process::ExitCode {
         Command::Plugin(cmd) => plugin::run(cmd, fmt),
         Command::Renderer(cmd) => renderer::run(cmd, fmt),
         Command::Artifact(cmd) => artifact::run(cmd, fmt),
+        Command::Formation(cmd) => formation::run(cmd, fmt),
         Command::Ci(cmd) => ci::run(cmd, fmt),
         Command::Lock(args) => lock::run(args, fmt),
         Command::Uv(args) => uv::run(args, fmt),

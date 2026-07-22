@@ -167,6 +167,10 @@ pub struct ReleaseLane {
     /// Package the same staged tree twice and require identical checksums.
     #[serde(default = "default_true")]
     pub reproducible: bool,
+    /// Rebuild in a second source/build root before comparing package evidence.
+    /// Opt-in because it deliberately doubles native build cost.
+    #[serde(default)]
+    pub reproducible_across_builds: bool,
     /// Exercise the clean extracted package before candidate staging.
     #[serde(default = "default_true")]
     pub from_package: bool,
@@ -1407,6 +1411,7 @@ pub fn starter_matrix() -> String {
 #     publisher_runner: linux-hosted # a named runners: profile
 #     environment: release
 #     reproducible: true
+#     reproducible_across_builds: false  # opt in; doubles native build cost
 #     from_package: true
 #     checks: []                     # constrained, secret-free release checks
 #

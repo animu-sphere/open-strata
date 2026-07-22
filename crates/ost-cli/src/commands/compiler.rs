@@ -144,6 +144,7 @@ mod tests {
             compiler: "runtime".into(),
             cc: None,
             cxx: None,
+            ..BuildConfig::default()
         };
         // Manifest says runtime; CLI says host → host wins.
         let c = resolve(&opts(Some("host"), None, None), Some(&manifest)).unwrap();
@@ -162,6 +163,7 @@ mod tests {
             compiler: "explicit".into(),
             cc: None,
             cxx: None,
+            ..BuildConfig::default()
         };
         assert!(resolve(&opts(None, None, None), Some(&manifest)).is_err());
     }

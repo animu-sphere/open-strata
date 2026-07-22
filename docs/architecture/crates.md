@@ -21,6 +21,7 @@ authoritative crate list is the `members` array in the root
 | `ost-plugin` | OpenUSD plugin bundles: model, scaffold, verification levels, reports. |
 | `ost-artifact` | Artifact registry: identity records, content-addressed store, verification, OCI transport. |
 | `ost-ci` | CI support matrix (`openstrata.ci.yaml`) + workflow generation (GitHub Actions). |
+| `ost-formation` | Digest-pinned Formation manifest, compatibility resolution, portable environment, and lock model. |
 
 ## Crate boundaries
 
@@ -50,6 +51,10 @@ authoritative crate list is the `members` array in the root
 - **`ost-ci`** owns the CI support matrix (`openstrata.ci.yaml`) — runner
   profiles, lanes, and digest-pinned runtime×plugin support lines — and renders it
   into GitHub Actions workflows (`ost ci plan | validate | generate github`).
+- **`ost-formation`** owns strict Formation declarations, the deterministic
+  resolved/lock model, artifact/runtime/plugin compatibility checks, and portable
+  environment contributions. Materialization and foreground process launch stay
+  at the CLI boundary.
 - **`ost-cli`** only parses arguments, calls the libraries, and renders results
   (human or `--json`). It never embeds domain rules.
 

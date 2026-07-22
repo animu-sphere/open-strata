@@ -302,6 +302,85 @@ fn build_dry_run_writes_nothing_and_plans_commands() {
     );
 }
 
+#[test]
+fn named_build_intent_dry_run_is_typed_isolated_and_side_effect_free() {
+    let sb = Sandbox::new("named-intent-dryrun");
+    init_and_pull(&sb);
+    let manifest = sb.work_file("openstrata.toml");
+    let mut source = std::fs::read_to_string(&manifest).unwrap();
+    source.push_str(
+        r#"
+[build.intents.materialx.cache.MERLIN_ENABLE_MATERIALX]
+type = "BOOL"
+value = true
+
+[build.intents.materialx.cache.MERLIN_MATERIALX_SOURCE_DIR]
+type = "PATH"
+value = "../MaterialX"
+portability = "local-override"
+"#,
+    );
+    std::fs::write(&manifest, source).unwrap();
+
+    let before = snapshot(&sb.work);
+    let out = sb.ost(&["build", "--dry-run", "--intent", "materialx", "--json"]);
+    let after = snapshot(&sb.work);
+    assert_eq!(before, after, "named intent dry-run must not write");
+    assert!(out.status.success(), "dry-run failed:\n{}", out_text(&out));
+
+    let document: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let data = &document["data"];
+    assert_eq!(data["build_intent"]["name"], "materialx");
+    assert_eq!(
+        data["build_intent"]["cache"]["MERLIN_ENABLE_MATERIALX"]["type"],
+        "BOOL"
+    );
+    assert_eq!(
+        data["build_intent"]["cache"]["MERLIN_ENABLE_MATERIALX"]["value"],
+        "ON"
+    );
+    assert_eq!(
+        data["build_intent"]["cache"]["MERLIN_MATERIALX_SOURCE_DIR"]["portability"],
+        "local-override"
+    );
+    let commands = data["commands"].to_string();
+    assert!(commands.contains("--materialx"), "{commands}");
+    assert!(
+        commands.contains("MERLIN_ENABLE_MATERIALX:BOOL=ON"),
+        "{commands}"
+    );
+}
+
+#[test]
+fn public_build_dry_run_redacts_paths_and_managed_environment() {
+    let sb = Sandbox::new("redacted-build-dryrun");
+    init_and_pull(&sb);
+    let out = sb.ost(&["build", "--dry-run", "--json", "--redact-paths"]);
+    assert!(out.status.success(), "dry-run failed:\n{}", out_text(&out));
+    let document: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(document["redacted"], true);
+    assert_eq!(document["data"]["root"], "<project-root>");
+    for pair in document["data"]["runtime_env"].as_array().unwrap() {
+        assert_eq!(pair[1], "<managed-runtime-env>");
+    }
+    assert!(document["data"]["target"]
+        .as_str()
+        .unwrap()
+        .contains("cy2026"));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(&sb.work.display().to_string()));
+}
+
+#[test]
+fn unknown_build_intent_fails_before_writing() {
+    let sb = Sandbox::new("unknown-intent");
+    init_and_pull(&sb);
+    let before = snapshot(&sb.work);
+    let out = sb.ost(&["build", "--dry-run", "--intent", "missing", "--json"]);
+    assert!(!out.status.success(), "unknown intent must fail");
+    assert_eq!(before, snapshot(&sb.work), "failure must not write");
+    assert!(out_text(&out).contains("unknown build intent 'missing'"));
+}
+
 /// The target lease is cross-process exclusion, so the assertion that matters is
 /// made against a *real* second process: this test holds the lease and the `ost`
 /// child must be refused. Same-process locking would prove much less.
@@ -1796,9 +1875,10 @@ fn plugin_package_refuses_overwritten_managed_outputs_without_an_explicit_overri
     )
     .unwrap();
     let mut intent = ost_build::BuildIntent::default();
-    intent
-        .cache
-        .insert("CMAKE_BUILD_TYPE".into(), "Release".into());
+    intent.cache.insert(
+        "CMAKE_BUILD_TYPE".into(),
+        ost_build::CMakeCacheEntry::string("Release"),
+    );
     let completion = ost_build::BuildCompletion::from_lock(
         &lock,
         ost_build::BuildProjectIdentity {
@@ -2270,6 +2350,40 @@ fn selected_and_workspace_tests_compose_manifest_dependencies_without_with() {
         "a declared closure fails closed on an unloadable workspace:\n{}",
         out_text(&out)
     );
+}
+
+#[test]
+fn plugin_run_selects_the_minimal_profile_from_packaged_capabilities() {
+    let sb = Sandbox::new("package-capability-profile");
+    let init = sb.ost(&["init", "--platform", "cy2026"]);
+    assert!(init.status.success(), "{}", out_text(&init));
+    let scaffold = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "consumer",
+        "--extension",
+        "toy",
+    ]);
+    assert!(scaffold.status.success(), "{}", out_text(&scaffold));
+    std::fs::remove_file(sb.work_file("openstrata.toml")).unwrap();
+
+    let out = sb.ost(&[
+        "plugin",
+        "run",
+        "consumer",
+        "--target",
+        "cy2026",
+        "--",
+        "unused-command",
+    ]);
+    assert!(!out.status.success(), "the runtime is intentionally absent");
+    let text = out_text(&out);
+    assert!(
+        text.contains("--profile usd"),
+        "usd-stage-read must select usd instead of defaulting to core: {text}"
+    );
+    assert!(!text.contains("--profile core"), "{text}");
 }
 
 /// A bundle that depends on another used to ship with nothing saying so: the

@@ -1,8 +1,8 @@
-# Combined Formations (planned)
+# Combined Formations (acceptance plan)
 
-> **`ost formation` is planned for v0.19.0 and is not available in v0.18.0.**
-> Every workflow on this page is a *planned* cross-repository composition. The
-> manifests are illustrative and the schema may change; nothing here ships today.
+> The `ost formation resolve|inspect|lock|run` MVP is implemented on the v0.19.0
+> development branch and is not available in v0.18.0. The four real downstream
+> runs on this page remain the milestone's cross-repository acceptance work.
 > The model is defined in
 > [design/proposed/formations.md](../design/proposed/formations.md); the
 > milestone is in the [roadmap backlog](../roadmap/backlog.md).
@@ -16,8 +16,9 @@ reproducible, digest-pinned execution environment and launches a command inside
 it. This page shows the four conceptual cases that motivate the v0.19.0
 Formation milestone.
 
-For each case, "today" describes what is possible now with existing commands, and
-"planned" describes the declarative Formation equivalent.
+For each case, "v0.18" describes the shipped source-tree procedure and
+"Formation" describes the digest-pinned v0.19 branch procedure awaiting its
+recorded downstream run.
 
 ## Case 1 — Gaussian PLY stage inspection
 
@@ -32,21 +33,22 @@ ost plugin run plugins/gaussian-ply -- \
   usdcat --flatten --usdFormat usdc --out scene.usd scene.ply
 ```
 
-**Planned** (v0.19.0) — resolve a packaged `gaussian-ply` component and its
+**Formation** (v0.19.0 branch) — resolve a packaged `gaussian-ply` component and its
 ordinary-library closure, then launch the same tool:
 
 ```toml
+schema = "openstrata.formation/v1alpha1"
+
 [formation]
 name = "gaussian-ply-inspection"
 
 [runtime]
-target = "cy2026"
-profile = "usd"
+artifact = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 [[components]]
-kind = "plugin"
-source = "animu-sphere/usd-3dgs-plugins"
 id = "gaussian-ply"
+kind = "plugin"
+artifact = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 [command]
 program = "usdcat"
@@ -70,31 +72,22 @@ ost plugin view plugins/usdVrmFileFormat avatar.vrm \
     --with plugins/usdVrmPackageResolver
 ```
 
-**Planned** (v0.19.0) — declare the components and let Formation resolve, pin,
+**Formation** (v0.19.0 branch) — declare the aggregate product and let Formation resolve, pin,
 and launch:
 
 ```toml
+schema = "openstrata.formation/v1alpha1"
+
 [formation]
 name = "vrm-inspection"
 
 [runtime]
-target = "cy2026"
-profile = "usd"
+artifact = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 [[components]]
+id = "usd-vrm-product"
 kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "vrmSchema"
-
-[[components]]
-kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "usdVrmFileFormat"
-
-[[components]]
-kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "usdVrmPackageResolver"
+artifact = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [command]
 program = "usdview"
@@ -102,7 +95,8 @@ args = ["avatar.vrm"]
 ```
 
 ```sh
-ost formation run vrm-inspection.toml   # planned, v0.19.0
+ost formation lock vrm-inspection.toml
+ost formation run vrm-inspection.toml
 ```
 
 ## Case 3 — hdMerlin inspection
@@ -116,20 +110,21 @@ the renderer.
 ost renderer view scene.usda --profile usd
 ```
 
-**Planned** (v0.19.0) — declare the runtime and renderer as a Formation:
+**Formation** (v0.19.0 branch) — declare the runtime and renderer as a Formation:
 
 ```toml
+schema = "openstrata.formation/v1alpha1"
+
 [formation]
 name = "merlin-usdview"
 
 [runtime]
-target = "cy2026"
-profile = "usd"
+artifact = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 [[components]]
-kind = "renderer"
-source = "animu-sphere/hydra-merlin"
 id = "hdMerlin"
+kind = "renderer"
+artifact = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 [command]
 program = "usdview"
@@ -151,36 +146,27 @@ Hydra scene
 Vulkan viewport
 ```
 
-**Planned** (v0.19.0) — one Formation composes plugins from `usd-vrm-plugins` and
+**Formation acceptance** — one Formation composes plugins from `usd-vrm-plugins` and
 a renderer from `hydra-merlin` against one runtime:
 
 ```toml
+schema = "openstrata.formation/v1alpha1"
+
 [formation]
 name = "vrm-merlin"
 
 [runtime]
-target = "cy2026"
-profile = "usd"
+artifact = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 [[components]]
+id = "usd-vrm-product"
 kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "vrmSchema"
+artifact = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [[components]]
-kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "usdVrmFileFormat"
-
-[[components]]
-kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "usdVrmPackageResolver"
-
-[[components]]
-kind = "renderer"
-source = "animu-sphere/hydra-merlin"
 id = "hdMerlin"
+kind = "renderer"
+artifact = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 [command]
 program = "usdview"
@@ -200,9 +186,9 @@ case is the required first-party dogfood for the v0.19.0 milestone.
 | Compose bundles into a `usdview` session by hand (`plugin view --with`) | shipped (v0.17+) |
 | Open or flatten a Gaussian PLY through `gaussian-ply` (`plugin run`) | shipped (v0.18) |
 | Open a built renderer in `usdview` (`renderer view`) | shipped (v0.17+) |
-| Declarative `formation.toml` and `ost formation run` | **planned, v0.19.0** |
-| Cross-repository resolution + compatibility checks + `formation.lock` | **planned, v0.19.0** |
-| VRM-rendered-by-hdMerlin in one command | **planned, v0.19.0** |
+| Declarative `formation.toml` and `ost formation run` | implemented on v0.19.0 branch |
+| Cross-repository resolution + compatibility checks + `formation.lock` | implemented on v0.19.0 branch |
+| VRM-rendered-by-hdMerlin in one command | acceptance run pending |
 
 ## Related documentation
 

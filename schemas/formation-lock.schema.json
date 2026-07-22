@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openstrata.dev/schemas/formation-lock.schema.json",
+  "title": "OpenStrata Formation Lock",
+  "description": "The portable, digest-pinned result of Formation resolution.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "resolution"],
+  "properties": {
+    "schema": { "const": "openstrata.formation-lock/v1alpha1" },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "name",
+        "manifest_digest",
+        "target",
+        "runtime",
+        "components",
+        "environment",
+        "command",
+        "conflicts"
+      ],
+      "properties": {
+        "schema": { "const": "openstrata.formation-resolved/v1alpha1" },
+        "name": { "$ref": "#/$defs/id" },
+        "manifest_digest": { "$ref": "#/$defs/digest" },
+        "target": { "type": "string", "minLength": 1 },
+        "runtime": { "$ref": "#/$defs/artifact" },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "declared_kind", "kind", "name", "version", "digest", "target", "bundles"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "declared_kind": { "enum": ["plugin", "renderer"] },
+              "kind": { "enum": ["plugin", "product", "package"] },
+              "name": { "type": "string", "minLength": 1 },
+              "version": { "type": "string", "minLength": 1 },
+              "digest": { "$ref": "#/$defs/digest" },
+              "target": { "type": "string", "minLength": 1 },
+              "profile": { "type": "string" },
+              "runtime_id": { "type": "string" },
+              "runtime_digest": { "$ref": "#/$defs/digest" },
+              "bundles": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "version", "kind"],
+                  "properties": {
+                    "name": { "type": "string", "minLength": 1 },
+                    "version": { "type": "string", "minLength": 1 },
+                    "kind": { "type": "string", "minLength": 1 }
+                  }
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "environment": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "operation", "source", "paths"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1 },
+              "operation": { "const": "prepend" },
+              "source": { "type": "string", "minLength": 1 },
+              "paths": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        },
+        "command": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["program", "args"],
+          "properties": {
+            "program": { "type": "string", "minLength": 1 },
+            "args": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "conflicts": { "type": "array", "maxItems": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "version", "digest", "target"],
+      "properties": {
+        "kind": { "const": "runtime" },
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "#/$defs/digest" },
+        "target": { "type": "string", "minLength": 1 },
+        "profile": { "type": "string" },
+        "runtime_id": { "type": "string" },
+        "runtime_digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

@@ -21,6 +21,7 @@ ost-extension.workspace = true
 ost-plugin.workspace = true
 ost-artifact.workspace = true
 ost-ci.workspace = true
+ost-formation.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

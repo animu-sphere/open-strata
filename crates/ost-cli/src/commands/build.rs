@@ -23,8 +23,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::Args;
 
 use ost_build::{
-    BuildCompletion, BuildIntent, BuildProjectIdentity, LeaseMode, Target, TargetLease, TargetLock,
-    BUILD_COMPLETION_FILE, TARGET_LEASE_FILE,
+    BuildCompletion, BuildIntent, BuildProjectIdentity, CMakeCacheEntry, CMakeCacheType,
+    CachePathPortability, LeaseMode, Target, TargetLease, TargetLock, BUILD_COMPLETION_FILE,
+    TARGET_LEASE_FILE,
 };
 use ost_core::fs::write_atomic;
 use ost_core::host::Os;
@@ -42,6 +43,10 @@ use crate::progress::{ProgressMode, Reporter};
 
 #[derive(Debug, Args)]
 pub struct BuildArgs {
+    /// True when another command owns the user-facing result envelope.
+    #[arg(skip)]
+    nested: bool,
+
     /// Platform target, e.g. `cy2026`. Defaults to the project's platform.
     #[arg(long)]
     target: Option<String>,
@@ -57,6 +62,10 @@ pub struct BuildArgs {
     /// Build configuration (CMAKE_BUILD_TYPE and multi-config --config).
     #[arg(long, default_value = "Release")]
     config: String,
+
+    /// Project-declared build intent from [build.intents.<name>].
+    #[arg(long)]
+    intent: Option<String>,
 
     /// Run preflight checks only, without generating files or building.
     #[arg(long)]
@@ -126,10 +135,12 @@ impl BuildArgs {
         config: String,
     ) -> Self {
         Self {
+            nested: true,
             target: Some(target),
             profile: Some(profile),
             generator: generator.unwrap_or_else(|| "Ninja".into()),
             config,
+            intent: None,
             check: false,
             dry_run: false,
             jobs: None,
@@ -147,17 +158,37 @@ impl BuildArgs {
             compiler: CompilerOpts::default(),
         }
     }
+
+    pub(crate) fn machine_quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
+    }
 }
 
 pub fn run(args: BuildArgs, fmt: Format) -> Result<()> {
-    run_with_intent(args, fmt, BuildIntent::default())
+    run_resolved(args, fmt, None)
 }
 
 pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent) -> Result<()> {
+    run_resolved(args, fmt, Some(intent))
+}
+
+fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>) -> Result<()> {
     // 1. Resolve the project and the effective target. `build_target` resolves
     //    the runtime without writing anything, so checks and dry-run stay free
     //    of side effects.
     let (root, platform, profile) = resolve_selection(args.target.clone(), args.profile.clone())?;
+    let mut intent = match domain_intent {
+        Some(intent) => {
+            if args.intent.is_some() {
+                return Err(Error::usage(
+                    "a domain-managed build cannot combine its intent with --intent",
+                ));
+            }
+            intent
+        }
+        None => resolve_declared_intent(&root, args.intent.as_deref())?,
+    };
     if args.generator.trim().is_empty() {
         return Err(Error::usage("--generator must not be empty"));
     }
@@ -199,21 +230,27 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
         })
         .flatten();
 
-    let mut configure_args = vec!["--preset".to_string(), id.clone()];
+    intent.cache.insert(
+        "CMAKE_BUILD_TYPE".into(),
+        CMakeCacheEntry::string(args.config.clone()),
+    );
+    let relative_build = build_dir_for_intent(&id, &intent);
+    let mut configure_args = vec![
+        "--preset".to_string(),
+        id.clone(),
+        "-B".to_string(),
+        relative_build.to_string(),
+    ];
     if let Some(np) = &ninja_arg {
         configure_args.push(format!("-DCMAKE_MAKE_PROGRAM={np}"));
     }
-    let mut intent = intent;
-    intent
-        .cache
-        .insert("CMAKE_BUILD_TYPE".into(), args.config.clone());
-    for (key, value) in &intent.cache {
-        configure_args.push(format!("-D{key}={value}"));
+    for (key, entry) in &intent.cache {
+        configure_args.push(entry.cmake_arg(key));
     }
 
     let mut build_args = vec![
         "--build".to_string(),
-        format!("build/{id}"),
+        relative_build.to_string(),
         "--config".to_string(),
         args.config.clone(),
     ];
@@ -230,7 +267,7 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
         let configure_cmd = render_cmd(&cmake_prog, &configure_args);
         let build_cmd = render_cmd(&cmake_prog, &build_args);
         let mut files = target_output_paths(&id);
-        files.push(format!("build/{id}/{BUILD_COMPLETION_FILE}"));
+        files.push(format!("{relative_build}/{BUILD_COMPLETION_FILE}"));
 
         // Surface the runtime env additions (the OpenStrata-managed prepends,
         // not the inherited environment) so they can be inspected without a run.
@@ -300,7 +337,7 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
 
     // 6. Generate the target's `.strata/` files now that checks have passed.
     rep.phase("Generating toolchain and presets");
-    let build_dir = root.join("build").join(&id);
+    let build_dir = root.join(&relative_build);
     let renderer_reports_before =
         crate::commands::renderer::snapshot_managed_renderer_reports(&root, &build_dir)?;
     let producer_started_unix = lease
@@ -390,6 +427,13 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
             ost_manifest::SessionOutcome::Failure,
             false,
         )?;
+        if args.nested {
+            return Err(Error::external_tool(format!(
+                "managed CMake configure failed{}",
+                exit_detail(&configure_status)
+            ))
+            .with_phase("configure"));
+        }
         rep.exit_unsuccessful(configure_status);
     }
     rep.phase("Building targets");
@@ -428,13 +472,20 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
             ost_manifest::SessionOutcome::Failure,
             false,
         )?;
+        if args.nested {
+            return Err(Error::external_tool(format!(
+                "managed CMake build failed{}",
+                exit_detail(&build_status)
+            ))
+            .with_phase("build"));
+        }
         rep.exit_unsuccessful(build_status);
     }
 
     // 10. Verify the build produced outputs — a successful build with an empty
     //     tree means the preset built nothing useful.
     rep.phase("Verifying outputs");
-    if let Err(error) = verify_build(&root, &id) {
+    if let Err(error) = verify_build(&build_dir) {
         stamp_build_renderer_reports(
             &root,
             &build_dir,
@@ -460,7 +511,7 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
         ost_manifest::SessionOutcome::Success,
         true,
     )?;
-    write_completion(&root, &id, &intent, lease.invocation())?;
+    write_completion(&root, &id, &relative_build, &intent, lease.invocation())?;
 
     // The completion is published; the target is free for the next writer. On
     // any earlier `?` the lease drops instead, which releases the lock without
@@ -522,6 +573,13 @@ fn timeout(seconds: u64) -> Option<Duration> {
     (seconds > 0).then(|| Duration::from_secs(seconds))
 }
 
+fn exit_detail(status: &std::process::ExitStatus) -> String {
+    status
+        .code()
+        .map(|code| format!(" (exit {code})"))
+        .unwrap_or_else(|| " (terminated by signal)".into())
+}
+
 fn generator_uses_ninja(generator: &str) -> bool {
     generator.eq_ignore_ascii_case("Ninja") || generator.eq_ignore_ascii_case("Ninja Multi-Config")
 }
@@ -538,6 +596,7 @@ fn invalidate_completion(build_dir: &Utf8Path) -> Result<()> {
 fn write_completion(
     root: &Utf8Path,
     id: &str,
+    relative_build: &Utf8Path,
     intent: &BuildIntent,
     invocation: Option<&str>,
 ) -> Result<()> {
@@ -552,7 +611,6 @@ fn write_completion(
         .map_err(|error| Error::parse(lock_path.to_string(), anyhow::Error::new(error)))?;
     let project = load_project(root)?;
     let project_version = project.effective_version(root)?;
-    let relative_build = Utf8PathBuf::from(format!("build/{id}"));
     let completed_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -575,23 +633,110 @@ fn write_completion(
     let body = completion
         .to_json()
         .map_err(|error| Error::parse(BUILD_COMPLETION_FILE, anyhow::Error::new(error)))?;
-    let path = root.join(&relative_build).join(BUILD_COMPLETION_FILE);
+    let path = root.join(relative_build).join(BUILD_COMPLETION_FILE);
     write_atomic(path.as_std_path(), format!("{body}\n").as_bytes())
 }
 
 /// Confirm `build/<id>` exists and is non-empty after a successful build, so a
 /// no-op preset does not pass silently.
-fn verify_build(root: &Utf8Path, id: &str) -> Result<()> {
-    let build_dir = root.join("build").join(id);
+fn verify_build(build_dir: &Utf8Path) -> Result<()> {
     let non_empty = std::fs::read_dir(build_dir.as_std_path())
         .map(|mut d| d.next().is_some())
         .unwrap_or(false);
     if !non_empty {
         return Err(Error::validation(format!(
-            "build completed but produced no outputs under build/{id}"
+            "build completed but produced no outputs under {build_dir}"
         )));
     }
     Ok(())
+}
+
+/// Stable build-tree identity for a normalized intent. The default preserves
+/// the historical path; named intents cannot overwrite one another's CMake
+/// cache or completion record.
+pub(crate) fn build_dir_for_intent(id: &str, intent: &BuildIntent) -> Utf8PathBuf {
+    if intent.name == "default" {
+        Utf8PathBuf::from(format!("build/{id}"))
+    } else {
+        Utf8PathBuf::from(format!("build/{id}--{}", intent.name))
+    }
+}
+
+pub(crate) fn validate_completed_intent(
+    completed: &BuildIntent,
+    declared: &BuildIntent,
+) -> std::result::Result<(), String> {
+    let mut completed_cache = completed.cache.clone();
+    completed_cache.remove("CMAKE_BUILD_TYPE");
+    if completed.name != declared.name || completed_cache != declared.cache {
+        let command = if declared.name == "default" {
+            "ost build".to_string()
+        } else {
+            format!("ost build --intent {}", declared.name)
+        };
+        return Err(format!(
+            "completion build intent '{}' no longer matches the declared '{}' intent; rerun `{command}`",
+            completed.name, declared.name,
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve_declared_intent(
+    root: &Utf8Path,
+    selected: Option<&str>,
+) -> Result<BuildIntent> {
+    let Some(name) = selected else {
+        return Ok(BuildIntent::default());
+    };
+    let project = load_project(root)?;
+    let declarations = project
+        .build
+        .as_ref()
+        .map(|build| &build.intents)
+        .ok_or_else(|| Error::config(format!("unknown build intent '{name}'")))?;
+    let declaration = declarations.get(name).ok_or_else(|| {
+        let available = declarations.keys().cloned().collect::<Vec<_>>().join(", ");
+        Error::config(format!("unknown build intent '{name}'")).with_hint(if available.is_empty() {
+            "declare it under [build.intents.<name>] in openstrata.toml".into()
+        } else {
+            format!("available intents: {available}")
+        })
+    })?;
+
+    let mut cache = std::collections::BTreeMap::new();
+    for (variable, entry) in &declaration.cache {
+        let kind = match entry.kind {
+            ost_manifest::BuildCacheType::Bool => CMakeCacheType::Bool,
+            ost_manifest::BuildCacheType::String => CMakeCacheType::String,
+            ost_manifest::BuildCacheType::Path => CMakeCacheType::Path,
+            ost_manifest::BuildCacheType::Filepath => CMakeCacheType::Filepath,
+        };
+        let value = match &entry.value {
+            ost_manifest::BuildCacheValue::Bool(value) => {
+                if *value { "ON" } else { "OFF" }.to_string()
+            }
+            ost_manifest::BuildCacheValue::String(value) => value.clone(),
+        };
+        let portability = entry.portability.map(|portability| match portability {
+            ost_manifest::BuildPathPortability::Portable => CachePathPortability::Portable,
+            ost_manifest::BuildPathPortability::LocalOverride => {
+                CachePathPortability::LocalOverride
+            }
+        });
+        cache.insert(
+            variable.clone(),
+            CMakeCacheEntry {
+                kind,
+                value,
+                portability,
+            },
+        );
+    }
+    Ok(BuildIntent {
+        name: name.to_string(),
+        cache,
+    })
 }
 
 /// A single preflight check and its outcome.

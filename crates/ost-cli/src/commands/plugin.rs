@@ -27,8 +27,8 @@ use clap::Subcommand;
 
 use ost_build::{
     pack_dir_with, stage_files, BuildCompletion, BuildIntent, BuildOutput, BuildProjectIdentity,
-    LeaseMode, PackOptions, TargetLease, TargetLock, BUILD_COMPLETION_FILE, TARGET_BUSY_CODE,
-    TARGET_LEASE_FILE,
+    CMakeCacheEntry, LeaseMode, PackOptions, TargetLease, TargetLock, BUILD_COMPLETION_FILE,
+    TARGET_BUSY_CODE, TARGET_LEASE_FILE,
 };
 use ost_core::fs::write_atomic;
 use ost_core::host::Os;
@@ -42,7 +42,7 @@ use ost_plugin::{
     PluginKind, PluginVerification, Probe, RuntimeContext, Session, Status, ToolOutput,
     PLUGIN_VERIFICATION, PLUGIN_VERIFICATION_SCHEMA,
 };
-use ost_runtime::{EnvSet, RuntimeManifest, MANIFEST_FILE};
+use ost_runtime::{EnvSet, ProfileCatalog, RuntimeManifest, MANIFEST_FILE};
 
 use crate::commands::compiler::{self, CompilerOpts};
 use crate::commands::configure::{build_target, load_project};
@@ -1190,9 +1190,10 @@ fn write_plugin_build_completion(
         completed_unix,
     );
     let mut intent = BuildIntent::default();
-    intent
-        .cache
-        .insert("CMAKE_BUILD_TYPE".into(), "Release".into());
+    intent.cache.insert(
+        "CMAKE_BUILD_TYPE".into(),
+        CMakeCacheEntry::string("Release"),
+    );
     let mut completion = BuildCompletion::from_lock(
         &lock,
         BuildProjectIdentity {
@@ -1790,7 +1791,7 @@ fn package_bundle(
     let library_evidence = selected_workspace_library_evidence(&bundle, Some(&r))?;
     let packaged_library_dirs = library_runtime
         .iter()
-        .map(|(_, relative)| relative.to_string())
+        .map(|(_, relative)| portable(relative))
         .collect::<Vec<_>>();
     let packaged_library_evidence = library_evidence
         .iter()
@@ -2760,7 +2761,9 @@ fn run_session(
         );
     }
     let host = Host::detect();
-    let r = require_real_runtime(target, profile)?;
+    let (platform, profile) =
+        selection_for_capabilities(target, profile, &bundle.manifest.requires.capabilities)?;
+    let r = require_real_runtime(Some(platform), Some(profile))?;
     let library_dirs = if no_inject {
         Vec::new()
     } else {
@@ -3193,11 +3196,8 @@ fn test_from_package(
     let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
 
-    let (platform, profile) = selection(target, profile).ok_or_else(|| {
-        Error::usage(
-            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
-        )
-    })?;
+    let (platform, profile) =
+        selection_for_capabilities(target, profile, &source.manifest.requires.capabilities)?;
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
 
@@ -5303,6 +5303,63 @@ fn selection(target: Option<String>, profile: Option<String>) -> Option<(String,
         project.requires.platform,
         profile.unwrap_or(project.requires.profile),
     ))
+}
+
+/// Select the narrowest profile that satisfies a packaged component when the
+/// caller names a target but no project/profile. This keeps the historical
+/// explicit/project selection rules, while avoiding a misleading default to
+/// `core` for a package that declares `usd-stage-read`.
+fn selection_for_capabilities(
+    target: Option<String>,
+    profile: Option<String>,
+    required: &[String],
+) -> Result<(String, String)> {
+    if profile.is_some() || target.is_none() {
+        return selection(target, profile).ok_or_else(|| {
+            Error::usage(
+                "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
+            )
+        });
+    }
+
+    let platform = target.expect("checked above");
+    if required.is_empty() {
+        return Ok((platform, "core".into()));
+    }
+    let catalog = ProfileCatalog::load()?;
+    let mut candidates = catalog
+        .iter()
+        .filter(|candidate| {
+            required
+                .iter()
+                .all(|capability| candidate.capabilities().contains(capability))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|candidate| (candidate.capabilities().len(), candidate.id.as_str()));
+    let Some(first) = candidates.first() else {
+        return Err(Error::config(format!(
+            "default profile 'core' cannot satisfy required capabilities [{}] for target {platform}",
+            required.join(", ")
+        ))
+        .with_hint(
+            "declare a profile providing those capabilities, then pass `--profile <name>`",
+        ));
+    };
+    let minimum = first.capabilities().len();
+    let minimal = candidates
+        .iter()
+        .take_while(|candidate| candidate.capabilities().len() == minimum)
+        .map(|candidate| candidate.id.clone())
+        .collect::<Vec<_>>();
+    if minimal.len() != 1 {
+        return Err(Error::config(format!(
+            "default profile 'core' cannot satisfy required capabilities [{}], and multiple minimal profiles qualify: {}",
+            required.join(", "),
+            minimal.join(", ")
+        ))
+        .with_hint(format!("pass `--profile {}`", minimal.join("` or `--profile "))));
+    }
+    Ok((platform, minimal[0].clone()))
 }
 
 /// Resolve the runtime for L1/session preview, if a selection is available.

@@ -1,10 +1,9 @@
 # OpenStrata Formations — cross-repository composition (direction)
 
-> Status: directional plan, targeting **v0.19.0**. `ost formation` is **not**
-> available in v0.18.0. Every command, file, and workflow on this page describes
-> planned behavior; nothing here ships in the v0.18.0 documentation slice that
-> introduces it. The v0.18.0 slice documents the concept so the v0.19.0
-> implementation has a stable public target — see the
+> Status: **implemented on the v0.19.0 development branch** for the narrowed
+> `resolve|inspect|lock|run` MVP; not available in v0.18.0. `env` and `doctor`
+> remain deferred. First-party cross-repository dogfood remains an acceptance
+> task — see the
 > [roadmap backlog](../../roadmap/backlog.md) for the milestone entry.
 
 OpenStrata already builds, validates, and distributes individual components:
@@ -63,10 +62,10 @@ A component is a typed reference to something OpenStrata already understands:
 | `tool` | an executable entry point within a resolved component | component manifest |
 | `scene` / input | an asset reference passed to the launched command | — (opaque to resolution) |
 
-Components are declared by `source` (a repository or artifact origin) and `id`
-(the component's stable identifier within that source), and are resolved to a
-concrete digest-addressed identity. A Formation selects exactly one runtime;
-plugin and renderer components are resolved against it.
+Runtime and components are declared by full `sha256:<64-hex>` artifact identity,
+plus a stable component id and kind. Tags, digest prefixes, repositories, and
+source-tree paths are rejected. A Formation selects exactly one runtime; plugin
+and renderer components are resolved against it.
 
 ## Resolution
 
@@ -192,14 +191,13 @@ ost formation resolve [path]            # Declared -> Resolved, no launch
 ost formation inspect [path]            # show the resolved model
 ost formation run     [path] -- [cmd…]  # launch the command, foreground
 ost formation lock    [path]            # write formation.lock (digest-pinned)
-ost formation env     [path] --json     # print the composed environment
-ost formation doctor  [path] --json     # explain missing/incompatible components
+# `env` and `doctor` are deferred beyond the narrowed v0.19.0 MVP
 ```
 
 Every subcommand accepts `--json` and emits the shipped
 `{ok, schema, data, warnings}` envelope with category exit codes
 ([reference/json-output.md](../../reference/json-output.md)) — not a bespoke
-numeric scheme. A persisted `formation.lock` carries its own `schema_version`,
+numeric scheme. A persisted `formation.lock` carries its own schema identifier,
 distinct from the envelope `schema`.
 
 A shorthand such as `ost formation formation.toml` aliasing
@@ -208,33 +206,24 @@ subcommand behavior is stable, so the shorthand never becomes the contract.
 
 ## Manifest examples
 
-These illustrate intent and the desired user experience. The final schema may
-differ; they are **not** a frozen manifest format.
+The shipped v0.19.0 development schema is strict and digest-pinned. Repeated
+digits below are placeholders for complete artifact digests.
 
 VRM inspection (VRM bundles + `usdview`):
 
 ```toml
+schema = "openstrata.formation/v1alpha1"
+
 [formation]
 name = "vrm-inspection"
 
 [runtime]
-target = "cy2026"
-profile = "usd"
+artifact = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 [[components]]
+id = "usd-vrm-product"
 kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "vrmSchema"
-
-[[components]]
-kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "usdVrmFileFormat"
-
-[[components]]
-kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "usdVrmPackageResolver"
+artifact = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 
 [command]
 program = "usdview"
@@ -244,32 +233,23 @@ args = ["avatar.vrm"]
 VRM rendered by hdMerlin (VRM bundles + renderer):
 
 ```toml
+schema = "openstrata.formation/v1alpha1"
+
 [formation]
 name = "vrm-merlin"
 
 [runtime]
-target = "cy2026"
-profile = "usd"
+artifact = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 [[components]]
+id = "usd-vrm-product"
 kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "vrmSchema"
+artifact = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 
 [[components]]
-kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "usdVrmFileFormat"
-
-[[components]]
-kind = "plugin"
-source = "animu-sphere/usd-vrm-plugins"
-id = "usdVrmPackageResolver"
-
-[[components]]
-kind = "renderer"
-source = "animu-sphere/hydra-merlin"
 id = "hdMerlin"
+kind = "renderer"
+artifact = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 
 [command]
 program = "usdview"

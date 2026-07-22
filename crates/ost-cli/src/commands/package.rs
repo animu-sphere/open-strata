@@ -228,7 +228,7 @@ fn completed_configuration(intent: &BuildIntent) -> Result<&str> {
     intent
         .cache
         .get("CMAKE_BUILD_TYPE")
-        .map(String::as_str)
+        .map(|entry| entry.value.as_str())
         .filter(|configuration| !configuration.trim().is_empty())
         .ok_or_else(|| {
             Error::precondition("build completion does not record a CMake configuration")
@@ -309,9 +309,10 @@ mod tests {
         let mut intent = BuildIntent::default();
         assert!(completed_configuration(&intent).is_err());
 
-        intent
-            .cache
-            .insert("CMAKE_BUILD_TYPE".into(), "Debug".into());
+        intent.cache.insert(
+            "CMAKE_BUILD_TYPE".into(),
+            ost_build::CMakeCacheEntry::string("Debug"),
+        );
         assert_eq!(completed_configuration(&intent).unwrap(), "Debug");
     }
 }

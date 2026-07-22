@@ -31,7 +31,76 @@ pub struct BuildProjectIdentity {
 pub struct BuildIntent {
     pub name: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub cache: BTreeMap<String, String>,
+    pub cache: BTreeMap<String, CMakeCacheEntry>,
+}
+
+/// CMake cache entry types accepted by a project-declared build intent.
+///
+/// Keeping the type in completion evidence prevents values such as `OFF` from
+/// being reinterpreted as an ordinary string by a later invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CMakeCacheType {
+    Bool,
+    String,
+    Path,
+    Filepath,
+}
+
+impl CMakeCacheType {
+    pub fn cmake_name(self) -> &'static str {
+        match self {
+            Self::Bool => "BOOL",
+            Self::String => "STRING",
+            Self::Path => "PATH",
+            Self::Filepath => "FILEPATH",
+        }
+    }
+
+    pub fn is_path(self) -> bool {
+        matches!(self, Self::Path | Self::Filepath)
+    }
+}
+
+/// Whether a path-valued build input can be reproduced away from this source
+/// checkout. This is evidence, not an attempt to make local paths portable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CachePathPortability {
+    Portable,
+    LocalOverride,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CMakeCacheEntry {
+    #[serde(rename = "type")]
+    pub kind: CMakeCacheType,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portability: Option<CachePathPortability>,
+}
+
+impl CMakeCacheEntry {
+    pub fn string(value: impl Into<String>) -> Self {
+        Self {
+            kind: CMakeCacheType::String,
+            value: value.into(),
+            portability: None,
+        }
+    }
+
+    pub fn bool(value: bool) -> Self {
+        Self {
+            kind: CMakeCacheType::Bool,
+            value: if value { "ON" } else { "OFF" }.into(),
+            portability: None,
+        }
+    }
+
+    pub fn cmake_arg(&self, name: &str) -> String {
+        format!("-D{name}:{}={}", self.kind.cmake_name(), self.value)
+    }
 }
 
 /// One package-relevant output published by a completed managed build.

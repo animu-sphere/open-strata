@@ -728,6 +728,11 @@ fn release_candidate_steps(matrix: &SupportMatrix) -> String {
     } else {
         ""
     };
+    let across_build_reproducibility = if release.reproducible_across_builds {
+        "      - name: Rebuild in an isolated root and prove reproducibility\n        shell: bash\n        run: |\n          set -euo pipefail\n          first_sums=\"$(find \"${{ matrix.bundle }}/.strata/dist\" -type f -name SHA256SUMS -print -quit)\"\n          first_manifest=\"$(dirname \"$first_sums\")/manifest.json\"\n          cp \"$first_sums\" .ost-release/across-build-first-SHA256SUMS\n          cp \"$first_manifest\" .ost-release/across-build-first-manifest.json\n          mkdir -p .ost-release/rebuild-source\n          git archive --format=tar HEAD | tar -xf - -C .ost-release/rebuild-source\n          second_bundle=\".ost-release/rebuild-source/${{ matrix.bundle }}\"\n          ost plugin build \"$second_bundle\" --target ${{ matrix.platform }} --profile ${{ matrix.profile }}\n          ost plugin package \"$second_bundle\" --target ${{ matrix.platform }} --profile ${{ matrix.profile }}\n          second_sums=\"$(find \"$second_bundle/.strata/dist\" -type f -name SHA256SUMS -print -quit)\"\n          second_manifest=\"$(dirname \"$second_sums\")/manifest.json\"\n          if ! cmp .ost-release/across-build-first-SHA256SUMS \"$second_sums\"; then\n            echo \"::error title=reproducibility::isolated builds produced different artifacts; first differing sorted manifest entry follows\"\n            diff -u .ost-release/across-build-first-manifest.json \"$second_manifest\" | head -80 || true\n            exit 1\n          fi\n"
+    } else {
+        ""
+    };
     let from_package = if release.from_package {
         "      - name: Test the clean extracted package\n        shell: bash\n        run: ost plugin test ${{ matrix.bundle }} --target ${{ matrix.platform }} --profile ${{ matrix.profile }} --up-to ${{ matrix.up_to }} --from-package --json\n"
     } else {
@@ -779,6 +784,7 @@ fn release_candidate_steps(matrix: &SupportMatrix) -> String {
           mkdir -p .ost-release
           ost plugin package ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
 {reproducibility}\
+{across_build_reproducibility}\
 {from_package}\
 \x20     - name: Verify and stage the immutable candidate
         shell: bash
@@ -1145,6 +1151,7 @@ mod tests {
             publisher_runner: Some("windows-hosted".into()),
             environment: Some("release".into()),
             reproducible: true,
+            reproducible_across_builds: true,
             from_package: true,
             checks: vec![SourceCheck {
                 name: "Release corpus smoke".into(),

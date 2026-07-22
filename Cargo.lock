@@ -478,6 +478,7 @@ dependencies = [
  "ost-ci",
  "ost-core",
  "ost-extension",
+ "ost-formation",
  "ost-manifest",
  "ost-platform",
  "ost-plugin",
@@ -512,6 +513,21 @@ dependencies = [
  "serde",
  "serde_yaml",
  "thiserror",
+]
+
+[[package]]
+name = "ost-formation"
+version = "0.18.0"
+dependencies = [
+ "anyhow",
+ "camino",
+ "ost-artifact",
+ "ost-core",
+ "ost-plugin",
+ "ost-runtime",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

@@ -23,8 +23,9 @@ mod target;
 mod toolchain;
 
 pub use completion::{
-    BuildCompletion, BuildIntent, BuildOutput, BuildProjectIdentity, TestCompletion, TestTotals,
-    BUILD_COMPLETION_FILE, BUILD_COMPLETION_SCHEMA, TEST_COMPLETION_FILE, TEST_COMPLETION_SCHEMA,
+    BuildCompletion, BuildIntent, BuildOutput, BuildProjectIdentity, CMakeCacheEntry,
+    CMakeCacheType, CachePathPortability, TestCompletion, TestTotals, BUILD_COMPLETION_FILE,
+    BUILD_COMPLETION_SCHEMA, TEST_COMPLETION_FILE, TEST_COMPLETION_SCHEMA,
 };
 pub use external::{
     CMakeCache, ExternalBuildProvenance, ExternalImportScope, ExternalRequirement,

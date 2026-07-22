@@ -13,6 +13,7 @@ members = [
     "crates/ost-plugin",
     "crates/ost-artifact",
     "crates/ost-ci",
+    "crates/ost-formation",
 ]
 
 [workspace.package]
@@ -32,6 +33,7 @@ ost-extension = { path = "crates/ost-extension" }
 ost-plugin = { path = "crates/ost-plugin" }
 ost-artifact = { path = "crates/ost-artifact" }
 ost-ci = { path = "crates/ost-ci" }
+ost-formation = { path = "crates/ost-formation" }
 
 # Top-level dependency versions are pinned for reproducible builds. The tree no
 # longer needs to stay on edition <= 2021 (the toolchain is pinned to a current

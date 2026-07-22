@@ -18,7 +18,7 @@ extensions/       controlled extension manifests (openusd / materialx)
 templates/        project + plugin scaffolds (usd-fileformat-cpp, usd-schema-codeless,
                   usd-schema-cpp, usd-asset-resolver-cpp, usd-package-resolver-cpp,
                   usd-exec-cpp, …)
-schemas/          JSON schemas for platform / project / lock / plugin-report documents
+schemas/          JSON schemas for platform / project / lock / Formation / plugin documents
 docs/             this documentation
 ```
 
