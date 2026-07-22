@@ -1101,11 +1101,7 @@ fn viewport(args: ViewportArgs) -> Result<()> {
         .args(&args.args)
         .status()
         .map_err(|error| Error::io(format!("run {executable}"), error))?;
-    let outcome = if status.code() == Some(0) {
-        SessionOutcome::Success
-    } else {
-        SessionOutcome::Failure
-    };
+    let outcome = viewport_session_outcome(status.code());
     let producer = managed_producer_session(
         "ost-renderer-viewport",
         &target.id(),
@@ -1137,6 +1133,17 @@ fn viewport(args: ViewportArgs) -> Result<()> {
             exit_detail(&status)
         ))
         .with_phase("renderer-viewport-host")),
+    }
+}
+
+fn viewport_session_outcome(exit_code: Option<i32>) -> SessionOutcome {
+    // 77 is the viewport's capability-skip contract: the invocation concluded
+    // normally and established that presentation is unavailable. It must not
+    // invalidate PASS evidence produced by the managed build it wraps.
+    if matches!(exit_code, Some(0 | 77)) {
+        SessionOutcome::Success
+    } else {
+        SessionOutcome::Failure
     }
 }
 
@@ -1857,6 +1864,12 @@ validation:
         let report = RendererReport::load(&report_path).unwrap();
         assert_eq!(report.producer.as_ref().unwrap().id, "ost-build-0123abcd");
         std::fs::remove_dir_all(root.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn presentation_unavailable_is_a_completed_viewport_session() {
+        assert_eq!(viewport_session_outcome(Some(77)), SessionOutcome::Success);
+        assert_eq!(viewport_session_outcome(Some(1)), SessionOutcome::Failure);
     }
 
     #[test]

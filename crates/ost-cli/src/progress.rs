@@ -386,32 +386,22 @@ impl Reporter {
         }
     }
 
-    /// Run a child process under the current phase: stream its output through
-    /// (teeing to the log), emit a heartbeat while it is quiet, and on failure
-    /// report the phase + exit code + log path before propagating.
-    pub fn run(
-        &mut self,
-        program: &Path,
-        args: &[String],
-        cwd: &Utf8Path,
-        env: &[(String, String)],
-        timeout: Option<Duration>,
-    ) -> Result<()> {
-        let status = self.run_status(program, args, cwd, env, timeout)?;
-        if !status.success() {
-            self.close_current(Outcome::Failed(status.code()));
-            // Preserve the child's exit code for CI rather than collapsing to 1.
-            std::process::exit(status.code().unwrap_or(1));
-        }
-        Ok(())
+    /// Close the current phase and preserve an unsuccessful child's exit code.
+    ///
+    /// Callers that must publish failure evidence before terminating use
+    /// [`Reporter::run_status`] and invoke this only after that evidence is
+    /// durable. Keeping the exit here preserves phase reporting and the child
+    /// status expected by CI.
+    pub(crate) fn exit_unsuccessful(&mut self, status: std::process::ExitStatus) -> ! {
+        debug_assert!(!status.success());
+        self.close_current(Outcome::Failed(status.code()));
+        std::process::exit(status.code().unwrap_or(1));
     }
 
-    /// Like [`run`](Reporter::run), but hand the exit status back rather than
-    /// exiting the process on failure.
+    /// Run a child process under the current phase and hand its exit status back.
     ///
-    /// `ost test` needs this: a run whose tests failed still has to publish its
-    /// completion record — "the tests ran and some failed" is evidence, and
-    /// exiting from inside the child-wait would discard it.
+    /// Managed build and test commands need this because failure provenance or
+    /// test completion evidence must be published before they return or exit.
     pub fn run_status(
         &mut self,
         program: &Path,
@@ -527,11 +517,10 @@ impl Reporter {
 
 impl Drop for Reporter {
     /// A phase still open at drop time means we are unwinding on an error that
-    /// did not pass through [`run`](Reporter::run) (which reports the failure and
-    /// exits the process itself) — e.g. a failed `generate`/`verify` phase. Emit
-    /// its terminal `failed` line so every `started` has a matching end, even in
-    /// plain/CI output. A clean run leaves no open phase (`done`/`phase` close
-    /// it), so this is a no-op there.
+    /// did not close it explicitly — e.g. a failed `generate`/`verify` phase.
+    /// Emit its terminal `failed` line so every `started` has a matching end,
+    /// even in plain/CI output. A clean run leaves no open phase (`done`/`phase`
+    /// close it), so this is a no-op there.
     fn drop(&mut self) {
         self.close_current(Outcome::Failed(None));
     }
@@ -842,7 +831,7 @@ mod tests {
         reporter.phase("Timeout fixture");
         let started = Instant::now();
         let error = reporter
-            .run(&program, &args, &cwd, &[], Some(Duration::from_millis(100)))
+            .run_status(&program, &args, &cwd, &[], Some(Duration::from_millis(100)))
             .unwrap_err();
         assert_eq!(error.category(), ost_core::Category::ExternalTool);
         assert_eq!(error.phase(), Some("timeout-fixture"));

@@ -249,17 +249,44 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     let _ = std::fs::remove_file(junit_path.as_std_path());
     let renderer_reports_before =
         crate::commands::renderer::snapshot_managed_renderer_reports(&root, &build_dir)?;
+    let producer_started_unix = lease
+        .owner()
+        .filter(|_| !lease.is_read_only())
+        .map_or(managed_started_unix, |owner| owner.acquired_unix);
+    let producer_invocation = (!lease.is_read_only())
+        .then(|| lease.invocation().map(str::to_owned))
+        .flatten();
 
     // 5. Run CTest. Its exit status comes back rather than ending the process,
     //    because a failing run still has evidence to publish.
     rep.phase("Running tests");
-    let status = rep.run_status(
+    let status = match rep.run_status(
         &ctest_prog,
         &ctest_args,
         &root,
         &extra_env,
         (args.timeout > 0).then(|| Duration::from_secs(args.timeout)),
-    )?;
+    ) {
+        Ok(status) => status,
+        Err(error) => {
+            let producer = crate::commands::renderer::managed_producer_session(
+                "ost-test",
+                &id,
+                producer_invocation.as_deref(),
+                producer_started_unix,
+                None,
+                ost_manifest::SessionOutcome::Incomplete,
+            );
+            crate::commands::renderer::stamp_changed_managed_renderer_reports(
+                &root,
+                &build_dir,
+                &renderer_reports_before,
+                producer,
+                false,
+            )?;
+            return Err(error);
+        }
+    };
 
     // 6. Record what happened — pass or fail — then report it.
     //
@@ -267,19 +294,12 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     //    executing anything (an empty suite, a bad filter, a usage error) leaves
     //    nothing true to say about the target, so no record is published: an
     //    absent `tested` claim is the honest outcome, not a zeroed one.
-    let producer_started_unix = lease
-        .owner()
-        .filter(|_| !lease.is_read_only())
-        .map_or(managed_started_unix, |owner| owner.acquired_unix);
-    let producer_invocation = (!lease.is_read_only())
-        .then(|| lease.invocation())
-        .flatten();
     let completed_unix = crate::commands::renderer::unix_now();
     let Some(totals) = read_totals(&junit_path).filter(|totals| totals.total > 0) else {
         let producer = crate::commands::renderer::managed_producer_session(
             "ost-test",
             &id,
-            producer_invocation,
+            producer_invocation.as_deref(),
             producer_started_unix,
             Some(completed_unix),
             ost_manifest::SessionOutcome::Failure,
@@ -302,14 +322,14 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     let producer_outcome = if status.success() || totals.failed > 0 {
         ost_manifest::SessionOutcome::Success
     } else {
-        ost_manifest::SessionOutcome::Incomplete
+        ost_manifest::SessionOutcome::Failure
     };
     let producer = crate::commands::renderer::managed_producer_session(
         "ost-test",
         &id,
-        producer_invocation,
+        producer_invocation.as_deref(),
         producer_started_unix,
-        (producer_outcome != ost_manifest::SessionOutcome::Incomplete).then_some(completed_unix),
+        Some(completed_unix),
         producer_outcome,
     );
     crate::commands::renderer::stamp_changed_managed_renderer_reports(
