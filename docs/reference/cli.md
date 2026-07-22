@@ -928,12 +928,9 @@ Safely adopt an existing CMake renderer without overwriting source
 
 #### `ost renderer attach-session`
 
-Attach an honest external/unverified producer session to a report. The producer
-kind is always recorded as `external-unverified`; the command cannot represent
-an external producer as OpenStrata-managed. Partial overlays are accepted, but
-an existing producer is never replaced; use `renderer merge` to preserve both.
+Attach an honest external/unverified producer session to a report
 
-**Usage:** `ost renderer attach-session [OPTIONS] --target <TARGET> --started-unix <STARTED_UNIX> --outcome <OUTCOME> <REPORT>`
+**Usage:** `ost renderer attach-session [OPTIONS] <REPORT>`
 
 **Arguments:**
 
@@ -945,10 +942,10 @@ an existing producer is never replaced; use `renderer merge` to preserve both.
 
 | Option | Description |
 | --- | --- |
-| `--completed-unix <COMPLETED_UNIX>` | Producer completion time as Unix seconds; required for `success`/`failure`, omitted for `incomplete` |
-| `--out <OUT>` | Write to another path instead of atomically updating `<REPORT>` |
-| `--outcome <OUTCOME>` | Producer outcome: `success`, `failure`, or `incomplete` |
-| `--session-id <SESSION_ID>` | Stable external invocation id; generated when omitted |
+| `--completed-unix <COMPLETED_UNIX>` | Producer completion time as Unix seconds. Required for success/failure; omitted for an incomplete producer |
+| `--out <OUT>` | Write to another path instead of atomically updating REPORT |
+| `--outcome <OUTCOME>` | Producer outcome: success, failure, or incomplete |
+| `--session-id <SESSION_ID>` | Stable external invocation id. Generated when omitted |
 | `--started-unix <STARTED_UNIX>` | Producer start time as Unix seconds |
 | `--target <TARGET>` | External producer's target/build identity |
 
