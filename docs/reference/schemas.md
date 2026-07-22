@@ -4,6 +4,31 @@
 
 The JSON Schemas that `ost` validates its documents against. Sourced from [`schemas/`](../../schemas/).
 
+## `formation-lock.schema.json`
+
+OpenStrata Formation Lock
+
+The portable, digest-pinned result of Formation resolution.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `resolution` | object | yes |  |
+| `schema` | — | yes |  |
+
+## `formation.schema.json`
+
+OpenStrata Formation Manifest
+
+A digest-pinned runtime and packaged component set composed for one foreground command.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `command` | object | yes |  |
+| `components` | array | no |  |
+| `formation` | object | yes |  |
+| `runtime` | object | yes |  |
+| `schema` | — | yes |  |
+
 ## `library.schema.json`
 
 OpenStrata Plain Library Manifest
@@ -113,6 +138,7 @@ The openstrata.toml authored at a project root.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `build` | object | no |  |
 | `project` | object | yes |  |
 | `requires` | object | yes |  |
 

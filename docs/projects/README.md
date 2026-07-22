@@ -76,7 +76,8 @@ viewport; Gaussian PLY stage inspection supplies another independent packaged
 plugin dogfood without claiming renderer compatibility.
 
 That composition is the planned [Formation](../design/proposed/formations.md)
-model. `ost formation` is **planned for v0.19.0 and is not available today**; the
+model. `ost formation resolve|inspect|lock|run` is implemented on the v0.19.0
+development branch (not in v0.18.0); the
 planned cross-repository workflows are documented — clearly labeled as planned —
 in [combined-formations.md](combined-formations.md).
 

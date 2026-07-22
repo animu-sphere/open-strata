@@ -21,6 +21,23 @@ Every envelope carries the same top-level shape:
 | `error` | object | Present when a command fails outright (see [Errors](#errors)). |
 | `warnings` | array | Non-fatal notes. Empty when there are none. |
 
+### Public/redacted output
+
+`--json --redact-paths` keeps the ordinary machine contract but replaces local
+project, user-home, runtime-store, build, tool, and scene paths with stable typed
+placeholders. Managed runtime environment values become
+`<managed-runtime-env>` while their keys and order are retained; inherited
+environment values are never added to the public form. The envelope adds:
+
+| Field | Value |
+| --- | --- |
+| `redacted` | `true` |
+| `redaction_schema` | `openstrata.redaction/v1` |
+
+Raw `--json` remains unchanged for local automation. Redaction is deliberately
+opt-in, preserves public identities such as target/profile and artifact digests,
+and does not guess at or rewrite strings merely because they resemble secrets.
+
 ### Success
 
 ```json

@@ -5,6 +5,8 @@
 //! A project pins a platform year and a profile, and may request additional
 //! capabilities and named extensions on top of that profile.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use camino::Utf8Path;
@@ -13,6 +15,7 @@ use ost_core::{Error, Result};
 
 /// `[project]` table — identity and metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectMeta {
     pub name: String,
     /// Inline project version. Exactly one of this and `version_file` is used.
@@ -35,6 +38,7 @@ fn default_version() -> String {
 
 /// `[requires]` table — the runtime contract this project builds against.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Requires {
     /// Platform calendar-year id, e.g. `cy2026`.
     pub platform: String,
@@ -59,6 +63,7 @@ fn default_profile() -> String {
 /// an adopted OpenUSD install can build with the host compiler. Defaults to the
 /// `host` policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BuildConfig {
     /// Compiler policy: `host` (default), `runtime`, or `explicit`.
     #[serde(default = "default_compiler")]
@@ -69,6 +74,56 @@ pub struct BuildConfig {
     /// C++ compiler absolute path (required when `compiler = "explicit"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cxx: Option<String>,
+    /// Project-owned, named build configurations selected with `ost build
+    /// --intent <name>`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub intents: BTreeMap<String, BuildIntentConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildIntentConfig {
+    #[serde(default)]
+    pub cache: BTreeMap<String, BuildCacheEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BuildCacheType {
+    Bool,
+    String,
+    Path,
+    Filepath,
+}
+
+impl BuildCacheType {
+    pub fn is_path(self) -> bool {
+        matches!(self, Self::Path | Self::Filepath)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BuildPathPortability {
+    Portable,
+    LocalOverride,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BuildCacheValue {
+    Bool(bool),
+    String(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildCacheEntry {
+    #[serde(rename = "type")]
+    pub kind: BuildCacheType,
+    pub value: BuildCacheValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portability: Option<BuildPathPortability>,
 }
 
 fn default_compiler() -> String {
@@ -81,12 +136,14 @@ impl Default for BuildConfig {
             compiler: default_compiler(),
             cc: None,
             cxx: None,
+            intents: BTreeMap::new(),
         }
     }
 }
 
 /// The whole `openstrata.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Project {
     pub project: ProjectMeta,
     pub requires: Requires,
@@ -115,12 +172,20 @@ impl Project {
     }
 
     pub fn from_toml(src: &str) -> Result<Project> {
-        let mut project: Project = toml::from_str(src)
-            .map_err(|e| Error::parse(PROJECT_MANIFEST, anyhow::Error::new(e)))?;
+        let mut project: Project = toml::from_str(src).map_err(|error| {
+            if error.to_string().contains("unknown field") {
+                Error::InvalidManifest(format!(
+                    "{PROJECT_MANIFEST} uses a key unknown to this ost version: {error}"
+                ))
+            } else {
+                Error::parse(PROJECT_MANIFEST, anyhow::Error::new(error))
+            }
+        })?;
         if project.project.version.is_none() && project.project.version_file.is_none() {
             project.project.version = Some(default_version());
         }
         project.validate_version_source()?;
+        project.validate_build_intents()?;
         Ok(project)
     }
 
@@ -165,6 +230,79 @@ impl Project {
             )),
         }
     }
+
+    fn validate_build_intents(&self) -> Result<()> {
+        let Some(build) = &self.build else {
+            return Ok(());
+        };
+        for (name, intent) in &build.intents {
+            if name == "default" {
+                return Err(Error::InvalidManifest(
+                    "build intent name 'default' is reserved by ost".into(),
+                ));
+            }
+            if !safe_intent_name(name) {
+                return Err(Error::InvalidManifest(format!(
+                    "build intent name '{name}' must match [A-Za-z0-9][A-Za-z0-9._-]*"
+                )));
+            }
+            for (variable, entry) in &intent.cache {
+                if !safe_cache_variable(variable) {
+                    return Err(Error::InvalidManifest(format!(
+                        "build.intents.{name}.cache key '{variable}' is not a safe CMake cache variable"
+                    )));
+                }
+                if matches!(variable.as_str(), "CMAKE_BUILD_TYPE" | "CMAKE_MAKE_PROGRAM") {
+                    return Err(Error::InvalidManifest(format!(
+                        "build.intents.{name}.cache.{variable} is owned by ost; use --config or --ninja"
+                    )));
+                }
+                match (entry.kind, &entry.value) {
+                    (BuildCacheType::Bool, BuildCacheValue::Bool(_)) => {}
+                    (BuildCacheType::Bool, _) => {
+                        return Err(Error::InvalidManifest(format!(
+                            "build.intents.{name}.cache.{variable}.value must be a TOML boolean for type BOOL"
+                        )));
+                    }
+                    (_, BuildCacheValue::String(value))
+                        if !entry.kind.is_path() || !value.is_empty() => {}
+                    (_, _) => {
+                        return Err(Error::InvalidManifest(format!(
+                            "build.intents.{name}.cache.{variable}.value must be a non-empty TOML string for type {:?}",
+                            entry.kind
+                        )));
+                    }
+                }
+                if entry.kind.is_path() && entry.portability.is_none() {
+                    return Err(Error::InvalidManifest(format!(
+                        "build.intents.{name}.cache.{variable}.portability is required for PATH/FILEPATH inputs (portable or local-override)"
+                    )));
+                }
+                if !entry.kind.is_path() && entry.portability.is_some() {
+                    return Err(Error::InvalidManifest(format!(
+                        "build.intents.{name}.cache.{variable}.portability is only valid for PATH/FILEPATH inputs"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn safe_intent_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.as_bytes()[0].is_ascii_alphanumeric()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn safe_cache_variable(name: &str) -> bool {
+    !name.is_empty()
+        && name.as_bytes()[0].is_ascii_alphabetic()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn safe_relative_file(path: &str) -> bool {
@@ -295,6 +433,59 @@ profile = \"lookdev\"
         let src = format!("{SAMPLE}\n[build]\n");
         let p = Project::from_toml(&src).unwrap();
         assert_eq!(p.build.unwrap().compiler, "host");
+    }
+
+    #[test]
+    fn named_build_intent_parses_typed_cache_entries() {
+        let src = format!(
+            r#"{SAMPLE}
+[build.intents.materialx.cache.MERLIN_ENABLE_MATERIALX]
+type = "BOOL"
+value = true
+
+[build.intents.materialx.cache.MERLIN_MATERIALX_SOURCE_DIR]
+type = "PATH"
+value = "../MaterialX"
+portability = "local-override"
+"#
+        );
+        let project = Project::from_toml(&src).unwrap();
+        let intent = &project.build.unwrap().intents["materialx"];
+        assert_eq!(
+            intent.cache["MERLIN_ENABLE_MATERIALX"].value,
+            BuildCacheValue::Bool(true)
+        );
+        assert_eq!(
+            intent.cache["MERLIN_MATERIALX_SOURCE_DIR"].portability,
+            Some(BuildPathPortability::LocalOverride)
+        );
+    }
+
+    #[test]
+    fn project_manifest_fails_closed_on_unknown_or_mistyped_keys() {
+        let top_level = format!("{SAMPLE}\n[nonsense_table]\nvalue = true\n");
+        let error = Project::from_toml(&top_level).unwrap_err().to_string();
+        assert!(error.contains("unknown to this ost version"), "{error}");
+        assert!(error.contains("nonsense_table"), "{error}");
+
+        let nested = format!("{SAMPLE}\n[build]\ncompilor = \"host\"\n");
+        let error = Project::from_toml(&nested).unwrap_err().to_string();
+        assert!(error.contains("compilor"), "{error}");
+        assert!(error.contains("compiler"), "{error}");
+
+        let wrong_type = format!(
+            "{SAMPLE}\n[build.intents.demo.cache.FEATURE]\ntype = \"BOOL\"\nvalue = \"ON\"\n"
+        );
+        assert!(Project::from_toml(&wrong_type).is_err());
+    }
+
+    #[test]
+    fn path_cache_entries_require_explicit_portability() {
+        let src = format!(
+            "{SAMPLE}\n[build.intents.demo.cache.SDK_ROOT]\ntype = \"PATH\"\nvalue = \"../sdk\"\n"
+        );
+        let error = Project::from_toml(&src).unwrap_err().to_string();
+        assert!(error.contains("portability is required"), "{error}");
     }
 
     #[test]

@@ -15,6 +15,7 @@ OpenStrata command-line interface (the `ost` binary).
 | Option | Description |
 | --- | --- |
 | `--json` | Emit machine-readable JSON instead of human-formatted output |
+| `--redact-paths` | Replace local filesystem and managed-environment values in JSON with stable placeholders suitable for attaching to a public report |
 
 **Subcommands:**
 
@@ -27,6 +28,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost env`](#ost-env) — Print the environment that activates a runtime (for `eval`)
 - [`ost extension`](#ost-extension) — Inspect and request controlled extensions
 - [`ost external`](#ost-external) — Import and inspect provenance for a build OpenStrata did not perform
+- [`ost formation`](#ost-formation) — Resolve, inspect, lock, and run digest-pinned component Formations
 - [`ost init`](#ost-init) — Initialise an OpenStrata project in the current directory
 - [`ost lock`](#ost-lock) — Generate or verify the project lockfile (strata.lock)
 - [`ost package`](#ost-package) — Install and pack a built target into a tar.zst artifact
@@ -239,6 +241,7 @@ Configure and build a target with CMake + Ninja
 | `--cxx <CXX>` | C++ compiler path (implies `--compiler explicit`) |
 | `--dry-run` | Print the commands and files that would be produced, without executing or writing anything |
 | `--generator <GENERATOR>` | CMake generator. Ninja remains the default |
+| `--intent <INTENT>` | Project-declared build intent from [build.intents.<name>] |
 | `--jobs <JOBS>` | Parallel jobs: a number, or `auto` to let Ninja decide |
 | `--ninja <NINJA>` | Path to the ninja executable if it is not on PATH |
 | `--no-vcvars` | Do not auto-load the MSVC developer environment (Windows) |
@@ -487,6 +490,74 @@ Show the provenance recorded for an external build tree
 | Option | Description |
 | --- | --- |
 | `--build-dir <BUILD_DIR>` | The external build tree whose record should be shown |
+
+### `ost formation`
+
+Resolve, inspect, lock, and run digest-pinned component Formations
+
+**Usage:** `ost formation <COMMAND>`
+
+**Subcommands:**
+
+- [`ost formation inspect`](#ost-formation-inspect) — Inspect the current resolution and any adjacent lock state
+- [`ost formation lock`](#ost-formation-lock) — Write a deterministic, digest-pinned formation.lock
+- [`ost formation resolve`](#ost-formation-resolve) — Resolve immutable artifacts, compatibility, and environment without launching
+- [`ost formation run`](#ost-formation-run) — Launch the Formation's command in the foreground and record evidence
+
+#### `ost formation inspect`
+
+Inspect the current resolution and any adjacent lock state
+
+**Usage:** `ost formation inspect [<PATH>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<PATH>` | no | Formation manifest to resolve |
+
+#### `ost formation lock`
+
+Write a deterministic, digest-pinned formation.lock
+
+**Usage:** `ost formation lock [OPTIONS] [<PATH>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<PATH>` | no | Formation manifest to lock |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--output <OUTPUT>` | Lock path (defaults to formation.lock beside the manifest) |
+
+#### `ost formation resolve`
+
+Resolve immutable artifacts, compatibility, and environment without launching
+
+**Usage:** `ost formation resolve [<PATH>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<PATH>` | no | Formation manifest to resolve |
+
+#### `ost formation run`
+
+Launch the Formation's command in the foreground and record evidence
+
+**Usage:** `ost formation run [<PATH>] [<COMMAND>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<PATH>` | no | Formation manifest to run |
+| `<COMMAND>` | no | Override `[command]` with a program and arguments after `--` |
 
 ### `ost init`
 
@@ -984,6 +1055,7 @@ Open a scene in usdview with the built Hydra renderer selected
 | `--camera <CAMERA>` | Camera prim to view through. Omitted by default: the scene is inspected and a camera is used only if one is actually there, otherwise usdview opens on its free camera |
 | `--config <CONFIG>` | CMake configuration to install and inspect |
 | `--generator <GENERATOR>` | CMake generator for the managed build. Ninja remains the default |
+| `--intent <INTENT>` | Project-declared build intent to combine with the Hydra workflow |
 | `--profile <PROFILE>` | Runtime profile. Auto-selects a unique pulled usdview runtime |
 | `--renderer <RENDERER>` | Override the renderer display name read from installed plugInfo.json |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
@@ -1006,6 +1078,7 @@ Build and launch the standalone native viewport adapter
 | --- | --- |
 | `--config <CONFIG>` | CMake configuration to build |
 | `--generator <GENERATOR>` | CMake generator for the managed build. Ninja remains the default |
+| `--intent <INTENT>` | Project-declared build intent to combine with the viewport workflow |
 | `--profile <PROFILE>` | Profile for the managed build. Defaults to the project's profile; the standalone viewport needs no OpenUSD runtime |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 
@@ -1165,6 +1238,7 @@ Run a built target's tests under the runtime that built it
 | `--ctest <CTEST>` | Path to the ctest executable if it is not on PATH |
 | `--dry-run` | Print the command that would run, without executing or writing anything |
 | `--filter <FILTER>` | Only run tests whose name matches this regular expression (CTest `-R`) |
+| `--intent <INTENT>` | Test the build produced for this project-declared intent |
 | `--jobs <JOBS>` | Parallel test jobs |
 | `--no-vcvars` | Do not auto-load the MSVC developer environment (Windows) |
 | `--notify` | Fire a desktop notification when the run finishes (no-op over SSH/CI) |
@@ -1199,5 +1273,6 @@ Validate a built/packaged target
 | Option | Description |
 | --- | --- |
 | `--build-dir <BUILD_DIR>` | External/manual build tree whose evidence should be validated without claiming it was produced by `ost build` |
+| `--intent <INTENT>` | Validate the build produced for this project-declared intent |
 | `--profile <PROFILE>` | Profile to validate. Defaults to the project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |

@@ -29,6 +29,10 @@ pub struct ValidateArgs {
     #[arg(long)]
     profile: Option<String>,
 
+    /// Validate the build produced for this project-declared intent.
+    #[arg(long, conflicts_with = "build_dir")]
+    intent: Option<String>,
+
     /// External/manual build tree whose evidence should be validated without
     /// claiming it was produced by `ost build`.
     #[arg(long)]
@@ -95,6 +99,7 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     let project_version = project.effective_version(&root)?;
     let (target, r) = build_target(&platform, &profile)?;
     let id = target.id();
+    let intent = crate::commands::build::resolve_declared_intent(&root, args.intent.as_deref())?;
 
     let mut checks = Vec::new();
 
@@ -131,7 +136,7 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     // 2. built — a build directory, cache, object, or copied renderer report is
     // not completion evidence. Only the atomic record written after configure,
     // build and output verification can satisfy this check.
-    let relative_build_dir = Utf8PathBuf::from(format!("build/{id}"));
+    let relative_build_dir = crate::commands::build::build_dir_for_intent(&id, &intent);
     let managed_build_dir = root.join(&relative_build_dir);
     let build_dir = external_build.as_ref().unwrap_or(&managed_build_dir);
     // The validated build record, kept so the `tested` check can bind against it.
@@ -165,11 +170,19 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                     &relative_build_dir,
                 ) {
                     Ok(()) if build_dir.as_std_path().is_dir() => {
-                        checks.push(Check::pass("built"));
-                        // `tested` is only meaningful once `built` holds: a test
-                        // record bound to a build that no longer validates
-                        // describes binaries that are gone.
-                        built_completion = Some(completion);
+                        match crate::commands::build::validate_completed_intent(
+                            &completion.intent,
+                            &intent,
+                        ) {
+                            Ok(()) => {
+                                checks.push(Check::pass("built"));
+                                // `tested` is only meaningful once `built` holds: a test
+                                // record bound to a build that no longer validates
+                                // describes binaries that are gone.
+                                built_completion = Some(completion);
+                            }
+                            Err(detail) => checks.push(Check::fail("built", detail)),
+                        }
                     }
                     Ok(()) => checks.push(Check::fail(
                         "built",

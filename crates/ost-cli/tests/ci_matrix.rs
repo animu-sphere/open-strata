@@ -518,7 +518,7 @@ fn typed_release_contract_plans_and_generates_isolated_publisher() {
     let matrix = lanes_yaml()
         .replace(
             "schema: 1\n",
-            "schema: 1\ntrust:\n  policy: openstrata-artifact-policy.toml\n  main_min_trust: verified\n  release_min_trust: trusted\nrelease:\n  version: 1.2.3\n  mode: publish\n  destination: oci://ghcr.io/owner/plugin\n  publisher_runner: windows-hosted\n  environment: release\n  reproducible: true\n  from_package: true\n  checks:\n    - name: Release corpus smoke\n      run: ctest --test-dir build/corpus --output-on-failure\n",
+            "schema: 1\ntrust:\n  policy: openstrata-artifact-policy.toml\n  main_min_trust: verified\n  release_min_trust: trusted\nrelease:\n  version: 1.2.3\n  mode: publish\n  destination: oci://ghcr.io/owner/plugin\n  publisher_runner: windows-hosted\n  environment: release\n  reproducible: true\n  reproducible_across_builds: true\n  from_package: true\n  checks:\n    - name: Release corpus smoke\n      run: ctest --test-dir build/corpus --output-on-failure\n",
         )
         .replace(
             "    version: \"0.9.0\"\n",
@@ -556,6 +556,9 @@ fn typed_release_contract_plans_and_generates_isolated_publisher() {
     assert_eq!(doc["jobs"]["publish"]["permissions"]["packages"], "write");
     let candidates = serde_yaml::to_string(&doc["jobs"]["candidates"]).unwrap();
     assert!(candidates.contains("Repackage and prove reproducibility"));
+    assert!(candidates.contains("Rebuild in an isolated root and prove reproducibility"));
+    assert!(candidates.contains("git archive --format=tar HEAD"));
+    assert!(candidates.contains("first differing sorted manifest entry"));
     assert!(candidates.contains("--from-package"));
     assert!(candidates.contains("Release corpus smoke"));
     assert!(!candidates.contains("artifact push"));
@@ -760,10 +763,11 @@ fn evidence_gate_gap_warns_on_generate_and_fails_validate() {
         .to_string();
 
     let write_matrix = |require: &str| {
+        let oci_digest = format!("sha256:{}", "ab".repeat(32));
         std::fs::write(
             sb.base.join("openstrata.ci.yaml"),
             format!(
-                "schema: 1\n{require}cells:\n  - name: linux-usd-toy\n    runtime_artifact: {plugin_digest}\n    plugin_artifact: {plugin_digest}\n    platform: cy2026\n    profile: usd\n    host:\n      os: linux\n      labels: [self-hosted, linux]\n"
+                "schema: 1\n{require}cells:\n  - name: linux-usd-toy\n    runtime_artifact: {plugin_digest}\n    runtime_remote:\n      uri: oci://ghcr.io/example/runtime@{oci_digest}\n      expected_oci_digest: {oci_digest}\n    plugin_artifact: {plugin_digest}\n    platform: cy2026\n    profile: usd\n    host:\n      os: linux\n      labels: [self-hosted, linux]\n"
             ),
         )
         .unwrap();
@@ -784,6 +788,16 @@ fn evidence_gate_gap_warns_on_generate_and_fails_validate() {
     assert!(gaps
         .iter()
         .all(|g| g.as_str().unwrap().contains("require_evidence is 'all'")));
+    let runtime_gap = gaps
+        .iter()
+        .find(|gap| gap.as_str().unwrap().contains("runtime_artifact"))
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(runtime_gap.contains(&format!(
+        "ost artifact pull oci://ghcr.io/example/runtime@sha256:{} --expect-artifact {plugin_digest} --require-kind runtime",
+        "ab".repeat(32)
+    )));
 
     // Generate warns rather than failing: the generating machine's registry is
     // not necessarily the one the lane will run against.

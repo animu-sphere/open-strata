@@ -9,7 +9,7 @@ not edit by hand.
 
 ## Overview
 
-- Apache License 2.0 (94)
+- Apache License 2.0 (95)
 - MIT License (9)
 - ISC License (3)
 - BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License (1)
@@ -2177,6 +2177,7 @@ Used by:
 - ost-cli 0.18.0 — https://github.com/animu-sphere/open-strata
 - ost-core 0.18.0
 - ost-extension 0.18.0
+- ost-formation 0.18.0 — https://github.com/animu-sphere/open-strata
 - ost-manifest 0.18.0
 - ost-platform 0.18.0
 - ost-plugin 0.18.0
@@ -3125,4 +3126,3 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 
 ```
-

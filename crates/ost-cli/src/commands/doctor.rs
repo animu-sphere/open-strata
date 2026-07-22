@@ -334,6 +334,13 @@ fn build_runtime_report(r: &crate::commands::Resolved) -> RuntimeReport {
         }
     }
 
+    let mut env_keys = Vec::new();
+    for (key, _) in r.env.pairs() {
+        if !env_keys.contains(&key) {
+            env_keys.push(key);
+        }
+    }
+
     RuntimeReport {
         id: r.runtime.id(),
         variant: r.runtime.variant.slug(),
@@ -344,7 +351,7 @@ fn build_runtime_report(r: &crate::commands::Resolved) -> RuntimeReport {
         digest,
         validation,
         capabilities: r.capabilities.clone(),
-        env_keys: r.env.pairs().into_iter().map(|(k, _)| k).collect(),
+        env_keys,
         layout,
         prefix: r.prefix.to_string(),
     }

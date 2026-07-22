@@ -187,6 +187,33 @@ ost package --clean-stage              # reclaim a stuck stage + sweep stale fal
 ost validate                           # configured / built / runtime / artifact checks
 ```
 
+Project-owned feature configurations are declared as typed named intents. Each
+named intent gets a separate build tree and is recorded in build completion
+evidence; path inputs must state whether they are portable policy or a local
+override:
+
+```toml
+[build.intents.materialx.cache.MERLIN_ENABLE_MATERIALX]
+type = "BOOL"
+value = true
+
+[build.intents.materialx.cache.MERLIN_MATERIALX_SOURCE_DIR]
+type = "PATH"
+value = "../MaterialX"
+portability = "local-override"
+```
+
+```bash
+ost build --intent materialx --dry-run --json
+ost build --intent materialx
+ost test --intent materialx
+ost validate --intent materialx
+ost renderer viewport --intent viewport-usd -- --usd scene.usda
+```
+
+Unknown manifest keys and malformed intent entries fail closed. `default` is a
+reserved intent name; omit `--intent` for the historical default build tree.
+
 ### renderer — inspect a Hydra adapter in usdview
 
 The renderer template's default build is host-neutral. Pull or adopt one real
@@ -567,6 +594,7 @@ release:
   publisher_runner: linux-hosted # key under runners:
   environment: release
   reproducible: true
+  reproducible_across_builds: true # opt in: rebuilds in a second isolated root
   from_package: true
   checks:
     - name: Run release corpus smoke
@@ -585,9 +613,12 @@ cells:
 `ost ci generate github` adds `.github/workflows/ost-release.yml`. Its read-only
 ref gate requires the exact `v<release.version>` tag. Each candidate job checks
 the bundle version, materializes and verifies the pinned runtime, builds/tests,
-runs the declared checks, packages twice when `reproducible: true`, exercises the
-clean archive when `from_package: true`, and uploads an immutable artifact
-handoff containing checksums, SBOM, and provenance.
+runs the declared checks, packages twice when `reproducible: true`, optionally
+performs a second clean source/build-root build when
+`reproducible_across_builds: true` (reporting the first differing sorted
+manifest entry), exercises the clean archive when `from_package: true`, and
+uploads an immutable artifact handoff containing checksums, SBOM, and
+provenance.
 
 Only the final publisher job has `id-token: write`, `packages: write`, and the
 registry credential. It downloads each candidate into a fresh local store,

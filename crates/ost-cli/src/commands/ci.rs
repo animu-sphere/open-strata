@@ -188,12 +188,26 @@ fn evidence_gate_gaps(matrix: &SupportMatrix) -> Vec<String> {
                 missing.push("provenance");
             }
             if !missing.is_empty() {
+                let recovery = if what == "runtime_artifact" {
+                    cell.runtime_remote
+                        .as_ref()
+                        .map_or_else(String::new, |remote| {
+                            format!(
+                                "; recover without changing the pinned artifact identity: \
+                             `ost artifact pull {} --expect-artifact {} --require-kind runtime`",
+                                remote.uri, cell.runtime_artifact
+                            )
+                        })
+                } else {
+                    String::new()
+                };
                 gaps.push(format!(
-                    "{}: {what} {} has no {} but require_evidence is '{}'",
+                    "{}: {what} {} has no {} but require_evidence is '{}'{}",
                     cell.name,
                     record.short_digest(),
                     missing.join(" or "),
-                    demand.as_str()
+                    demand.as_str(),
+                    recovery,
                 ));
             }
         }

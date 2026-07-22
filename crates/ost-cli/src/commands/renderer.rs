@@ -14,6 +14,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
 use serde_json::Value;
 
+use ost_build::{BuildIntent, CMakeCacheEntry, CMakeCacheType, CachePathPortability};
 use ost_core::fs::write_atomic;
 use ost_core::host::Os;
 use ost_core::paths::{find_project_root, PROJECT_MANIFEST, STATE_DIR};
@@ -60,6 +61,10 @@ pub enum RendererCmd {
         #[arg(long)]
         generator: Option<String>,
 
+        /// Project-declared build intent to combine with the Hydra workflow.
+        #[arg(long)]
+        intent: Option<String>,
+
         /// Platform target, e.g. `cy2026`. Defaults to the project's platform.
         #[arg(long)]
         target: Option<String>,
@@ -88,6 +93,10 @@ pub enum RendererCmd {
         /// CMake generator for the managed build. Ninja remains the default.
         #[arg(long)]
         generator: Option<String>,
+
+        /// Project-declared build intent to combine with the viewport workflow.
+        #[arg(long)]
+        intent: Option<String>,
 
         /// Platform target, e.g. `cy2026`. Defaults to the project's platform.
         #[arg(long)]
@@ -224,33 +233,43 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
             build_dir,
             config,
             generator,
+            intent,
             target,
             profile,
             camera,
             renderer,
-        } => view(ViewArgs {
-            scene,
-            build_dir,
-            config,
-            generator,
-            target,
-            profile,
-            camera,
-            renderer,
-        }),
+        } => view(
+            ViewArgs {
+                scene,
+                build_dir,
+                config,
+                generator,
+                intent,
+                target,
+                profile,
+                camera,
+                renderer,
+            },
+            fmt,
+        ),
         RendererCmd::Viewport {
             config,
             generator,
+            intent,
             target,
             profile,
             args,
-        } => viewport(ViewportArgs {
-            config,
-            generator,
-            target,
-            profile,
-            args,
-        }),
+        } => viewport(
+            ViewportArgs {
+                config,
+                generator,
+                intent,
+                target,
+                profile,
+                args,
+            },
+            fmt,
+        ),
     }
 }
 
@@ -331,6 +350,7 @@ fn attach_session(args: RendererAttachSessionArgs, fmt: Format) -> Result<()> {
 struct ViewportArgs {
     config: String,
     generator: Option<String>,
+    intent: Option<String>,
     target: Option<String>,
     profile: Option<String>,
     args: Vec<String>,
@@ -341,6 +361,7 @@ struct ViewArgs {
     build_dir: Option<Utf8PathBuf>,
     config: String,
     generator: Option<String>,
+    intent: Option<String>,
     target: Option<String>,
     profile: Option<String>,
     camera: Option<String>,
@@ -859,7 +880,7 @@ fn cmake_sources_contain(root: &Utf8Path, target: &str) -> bool {
     false
 }
 
-fn view(args: ViewArgs) -> Result<()> {
+fn view(args: ViewArgs, fmt: Format) -> Result<()> {
     // Renderer projects intentionally default to host-neutral `core`. For a
     // view, prefer the single already-pulled real Hydra-capable profile; this
     // makes an adopted `usd` runtime work without repeating `--profile` while
@@ -884,7 +905,9 @@ fn view(args: ViewArgs) -> Result<()> {
     let build_dir = match args.build_dir {
         Some(build_dir) => {
             let build_dir = rooted(&root, &build_dir);
-            println!("==> using external Hydra build tree: {build_dir}");
+            if !fmt.is_json() {
+                println!("==> using external Hydra build tree: {build_dir}");
+            }
             validate_hydra_build(
                 &build_dir,
                 &runtime.artifact_prefix,
@@ -899,8 +922,10 @@ fn view(args: ViewArgs) -> Result<()> {
             &profile,
             &args.config,
             args.generator,
+            args.intent,
             &runtime,
             &runtime_manifest.digest,
+            fmt,
         )?,
     };
 
@@ -925,10 +950,12 @@ fn view(args: ViewArgs) -> Result<()> {
         eprintln!("warning: previous renderer view tree is still open; staging into '{stage}'");
     }
 
-    println!(
-        "==> installing Hydra view tree: {} ({})",
-        build_dir, args.config
-    );
+    if !fmt.is_json() {
+        println!(
+            "==> installing Hydra view tree: {} ({})",
+            build_dir, args.config
+        );
+    }
     let mut install = Command::new(&cmake);
     install
         .arg("--install")
@@ -936,9 +963,8 @@ fn view(args: ViewArgs) -> Result<()> {
         .args(["--config", &args.config, "--prefix"])
         .arg(stage.as_std_path());
     runtime.env.apply(&mut install);
-    let status = install
-        .status()
-        .map_err(|error| Error::io(format!("run {}", cmake.display()), error))?;
+    let (status, install_stdout, install_stderr) =
+        run_renderer_child(&mut install, fmt.is_json(), &cmake.display().to_string())?;
     if !status.success() {
         return Err(Error::external_tool(format!(
             "CMake install for renderer view failed{}",
@@ -998,11 +1024,40 @@ fn view(args: ViewArgs) -> Result<()> {
     }
     session.apply(&mut command);
 
-    println!("==> usdview: renderer={renderer} scene={scene}");
-    println!("==> camera: {}", selection.describe());
-    let status = command
-        .status()
-        .map_err(|error| Error::io(format!("run {usdview}"), error))?;
+    if !fmt.is_json() {
+        println!("==> usdview: renderer={renderer} scene={scene}");
+        println!("==> camera: {}", selection.describe());
+    }
+    let started_unix = unix_now();
+    let (status, child_stdout, child_stderr) =
+        run_renderer_child(&mut command, fmt.is_json(), usdview.as_str())?;
+    let completed_unix = unix_now();
+    let record = serde_json::json!({
+        "schema": "openstrata.renderer-launch/v1",
+        "kind": "renderer-view",
+        "executable": usdview,
+        "target": platform,
+        "profile": profile,
+        "config": args.config,
+        "build_dir": build_dir,
+        "renderer": renderer,
+        "scene": scene,
+        "camera": selection.camera,
+        "camera_selection": selection.describe(),
+        "started_unix": started_unix,
+        "completed_unix": completed_unix,
+        "exit_code": status.code(),
+        "stdout": child_stdout,
+        "stderr": child_stderr,
+        "install_stdout": install_stdout,
+        "install_stderr": install_stderr,
+    });
+    let record_path = root
+        .join(STATE_DIR)
+        .join("renderer-view")
+        .join(&manifest.renderer.name)
+        .join("launch.json");
+    write_launch_record(&record_path, &record)?;
     if !status.success() {
         return Err(Error::external_tool(format!(
             "usdview exited unsuccessfully{}",
@@ -1010,10 +1065,16 @@ fn view(args: ViewArgs) -> Result<()> {
         ))
         .with_phase("renderer-view-host"));
     }
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "launch": record,
+            "record": record_path,
+        }));
+    }
     Ok(())
 }
 
-fn viewport(args: ViewportArgs) -> Result<()> {
+fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
     let viewport_started_unix = unix_now();
     let (root, platform, profile) = resolve_selection(args.target, args.profile)?;
     let manifest = RendererManifest::load(&root)?;
@@ -1036,24 +1097,32 @@ fn viewport(args: ViewportArgs) -> Result<()> {
     // viewport renders the project bootstrap scene, so the project's
     // host-neutral profile suffices and no runtime fingerprint is recorded.
     let (target, _) = build_target(&platform, &profile)?;
-    let build_dir = root.join("build").join(target.id());
-    let renderer_reports_before = snapshot_managed_renderer_reports(&root, &build_dir)?;
-    let mut cache = BTreeMap::new();
-    cache.insert("OST_RENDERER_ADAPTERS".into(), "viewport".into());
-    cache.insert("CMAKE_BUILD_TYPE".into(), args.config.clone());
-    let mut intent = ost_build::BuildIntent {
-        name: "renderer-viewport".into(),
-        cache,
+    let mut intent = match args.intent.as_deref() {
+        Some(_) => build::resolve_declared_intent(&root, args.intent.as_deref())?,
+        None => BuildIntent {
+            name: "renderer-viewport".into(),
+            cache: BTreeMap::new(),
+        },
     };
-    println!("==> preparing managed viewport build: {build_dir}");
+    insert_domain_cache(
+        &mut intent,
+        "OST_RENDERER_ADAPTERS",
+        CMakeCacheEntry::string("viewport"),
+    )?;
+    let build_dir = root.join(build::build_dir_for_intent(&target.id(), &intent));
+    let renderer_reports_before = snapshot_managed_renderer_reports(&root, &build_dir)?;
+    if !fmt.is_json() {
+        println!("==> preparing managed viewport build: {build_dir}");
+    }
     build::run_with_intent(
         BuildArgs::managed(
             platform.clone(),
             profile.clone(),
             args.generator.clone(),
             args.config.clone(),
-        ),
-        Format::Human,
+        )
+        .machine_quiet(fmt.is_json()),
+        fmt,
         intent.clone(),
     )?;
 
@@ -1069,12 +1138,20 @@ fn viewport(args: ViewportArgs) -> Result<()> {
     let options = viewport_option_entries(&source);
     if !options.iter().any(|(_, enabled)| *enabled) {
         if let [(option, false)] = options.as_slice() {
-            println!("==> adopted renderer mapping: enabling {option}");
-            intent.cache.insert(option.clone(), "ON".into());
+            if !fmt.is_json() {
+                println!("==> adopted renderer mapping: enabling {option}");
+            }
+            insert_domain_cache(&mut intent, option, CMakeCacheEntry::bool(true))?;
             build::run_with_intent(
-                BuildArgs::managed(platform, profile, args.generator, args.config.clone()),
-                Format::Human,
-                intent,
+                BuildArgs::managed(
+                    platform.clone(),
+                    profile.clone(),
+                    args.generator,
+                    args.config.clone(),
+                )
+                .machine_quiet(fmt.is_json()),
+                fmt,
+                intent.clone(),
             )?;
         }
     }
@@ -1096,11 +1173,13 @@ fn viewport(args: ViewportArgs) -> Result<()> {
             .with_phase("renderer-viewport-discovery")
         })?;
 
-    println!("==> viewport: {executable}");
-    let status = Command::new(executable.as_std_path())
-        .args(&args.args)
-        .status()
-        .map_err(|error| Error::io(format!("run {executable}"), error))?;
+    if !fmt.is_json() {
+        println!("==> viewport: {executable}");
+    }
+    let mut command = Command::new(executable.as_std_path());
+    command.args(&args.args);
+    let (status, child_stdout, child_stderr) =
+        run_renderer_child(&mut command, fmt.is_json(), executable.as_str())?;
     let outcome = viewport_session_outcome(status.code());
     let producer = managed_producer_session(
         "ost-renderer-viewport",
@@ -1117,8 +1196,43 @@ fn viewport(args: ViewportArgs) -> Result<()> {
         producer,
         outcome == SessionOutcome::Success,
     )?;
+    let completed_unix = unix_now();
+    let record = serde_json::json!({
+        "schema": "openstrata.renderer-launch/v1",
+        "kind": "renderer-viewport",
+        "executable": executable,
+        "target": platform,
+        "profile": profile,
+        "config": args.config,
+        "build_dir": build_dir,
+        "intent": intent,
+        "args": args.args,
+        "started_unix": viewport_started_unix,
+        "completed_unix": completed_unix,
+        "exit_code": status.code(),
+        "outcome": outcome.as_str(),
+        "backend": labeled_child_value(&child_stdout, "Selected backend:"),
+        "device": labeled_child_value(&child_stdout, "Device:"),
+        "presentation": labeled_child_value(&child_stdout, "Presentation:"),
+        "stdout": child_stdout,
+        "stderr": child_stderr,
+    });
+    let record_path = root
+        .join(STATE_DIR)
+        .join("renderer-viewport")
+        .join(target.id())
+        .join("launch.json");
+    write_launch_record(&record_path, &record)?;
     match status.code() {
-        Some(0) => Ok(()),
+        Some(0) => {
+            if fmt.is_json() {
+                output::success(&serde_json::json!({
+                    "launch": record,
+                    "record": record_path,
+                }));
+            }
+            Ok(())
+        }
         // The viewport smoke contract: 77 means this environment cannot
         // present (no display, no Vulkan-capable device), not a failure.
         Some(77) => Err(Error::coded(
@@ -1145,6 +1259,45 @@ fn viewport_session_outcome(exit_code: Option<i32>) -> SessionOutcome {
     } else {
         SessionOutcome::Failure
     }
+}
+
+fn run_renderer_child(
+    command: &mut Command,
+    capture: bool,
+    label: &str,
+) -> Result<(std::process::ExitStatus, String, String)> {
+    if capture {
+        let output = command
+            .output()
+            .map_err(|error| Error::io(format!("run {label}"), error))?;
+        return Ok((
+            output.status,
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    let status = command
+        .status()
+        .map_err(|error| Error::io(format!("run {label}"), error))?;
+    Ok((status, String::new(), String::new()))
+}
+
+fn labeled_child_value(output: &str, label: &str) -> Option<String> {
+    output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(label).map(str::trim))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn write_launch_record(path: &Utf8Path, record: &serde_json::Value) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent.as_std_path())
+            .map_err(|error| Error::io(parent.to_string(), error))?;
+    }
+    let body = serde_json::to_vec_pretty(record)
+        .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
+    write_atomic(path.as_std_path(), &body)
 }
 
 // A multi-config generator nests executables under a per-config directory;
@@ -1204,40 +1357,64 @@ fn select_view_profile(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn managed_hydra_build(
     root: &Utf8Path,
     platform: &str,
     profile: &str,
     config: &str,
     generator: Option<String>,
+    selected_intent: Option<String>,
     runtime: &Resolved,
     runtime_digest: &str,
+    fmt: Format,
 ) -> Result<Utf8PathBuf> {
     let (target, _) = build_target(platform, profile)?;
-    let build_dir = root.join("build").join(target.id());
-    let mut cache = BTreeMap::new();
-    cache.insert("OST_RENDERER_ADAPTERS".into(), "hydra2".into());
-    cache.insert(
-        "OST_RUNTIME_ROOT".into(),
-        portable_path(&runtime.artifact_prefix),
-    );
-    cache.insert("OST_RUNTIME_ID".into(), runtime.runtime.id());
-    cache.insert("OST_RUNTIME_DIGEST".into(), runtime_digest.into());
-    cache.insert("CMAKE_BUILD_TYPE".into(), config.into());
-    let mut intent = ost_build::BuildIntent {
-        name: "renderer-hydra2".into(),
-        cache,
+    let mut intent = match selected_intent.as_deref() {
+        Some(_) => build::resolve_declared_intent(root, selected_intent.as_deref())?,
+        None => BuildIntent {
+            name: "renderer-hydra2".into(),
+            cache: BTreeMap::new(),
+        },
     };
+    insert_domain_cache(
+        &mut intent,
+        "OST_RENDERER_ADAPTERS",
+        CMakeCacheEntry::string("hydra2"),
+    )?;
+    insert_domain_cache(
+        &mut intent,
+        "OST_RUNTIME_ROOT",
+        CMakeCacheEntry {
+            kind: CMakeCacheType::Path,
+            value: portable_path(&runtime.artifact_prefix),
+            portability: Some(CachePathPortability::LocalOverride),
+        },
+    )?;
+    insert_domain_cache(
+        &mut intent,
+        "OST_RUNTIME_ID",
+        CMakeCacheEntry::string(runtime.runtime.id()),
+    )?;
+    insert_domain_cache(
+        &mut intent,
+        "OST_RUNTIME_DIGEST",
+        CMakeCacheEntry::string(runtime_digest),
+    )?;
+    let build_dir = root.join(build::build_dir_for_intent(&target.id(), &intent));
 
-    println!("==> preparing managed Hydra build: {build_dir}");
+    if !fmt.is_json() {
+        println!("==> preparing managed Hydra build: {build_dir}");
+    }
     build::run_with_intent(
         BuildArgs::managed(
             platform.to_string(),
             profile.to_string(),
             generator.clone(),
             config.to_string(),
-        ),
-        Format::Human,
+        )
+        .machine_quiet(fmt.is_json()),
+        fmt,
         intent.clone(),
     )?;
 
@@ -1249,16 +1426,19 @@ fn managed_hydra_build(
     let options = hydra_option_entries(&source);
     if !options.iter().any(|(_, enabled)| *enabled) {
         if let [(option, false)] = options.as_slice() {
-            println!("==> adopted renderer mapping: enabling {option}");
-            intent.cache.insert(option.clone(), "ON".into());
+            if !fmt.is_json() {
+                println!("==> adopted renderer mapping: enabling {option}");
+            }
+            insert_domain_cache(&mut intent, option, CMakeCacheEntry::bool(true))?;
             build::run_with_intent(
                 BuildArgs::managed(
                     platform.to_string(),
                     profile.to_string(),
                     generator,
                     config.to_string(),
-                ),
-                Format::Human,
+                )
+                .machine_quiet(fmt.is_json()),
+                fmt,
                 intent,
             )?;
         }
@@ -1271,6 +1451,24 @@ fn managed_hydra_build(
         runtime_digest,
     )?;
     Ok(build_dir)
+}
+
+fn insert_domain_cache(
+    intent: &mut BuildIntent,
+    variable: &str,
+    entry: CMakeCacheEntry,
+) -> Result<()> {
+    if let Some(declared) = intent.cache.get(variable) {
+        if declared != &entry {
+            return Err(Error::config(format!(
+                "build intent '{}' sets {variable} incompatibly with this renderer workflow",
+                intent.name
+            )));
+        }
+        return Ok(());
+    }
+    intent.cache.insert(variable.to_string(), entry);
+    Ok(())
 }
 
 fn rooted(root: &Utf8Path, path: &Utf8Path) -> Utf8PathBuf {
@@ -1791,6 +1989,24 @@ mod tests {
             std::env::temp_dir().join(format!("ost-renderer-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&path).unwrap();
         Utf8PathBuf::from_path_buf(path).unwrap()
+    }
+
+    #[test]
+    fn viewport_launch_metadata_reads_reported_backend_device_and_presentation() {
+        let output = "noise\nSelected backend: vulkan (platform preference)\n\
+                      Device: Example GPU\nPresentation: GPU swapchain\n";
+        assert_eq!(
+            labeled_child_value(output, "Selected backend:").as_deref(),
+            Some("vulkan (platform preference)")
+        );
+        assert_eq!(
+            labeled_child_value(output, "Device:").as_deref(),
+            Some("Example GPU")
+        );
+        assert_eq!(
+            labeled_child_value(output, "Presentation:").as_deref(),
+            Some("GPU swapchain")
+        );
     }
 
     #[test]

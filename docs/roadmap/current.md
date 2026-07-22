@@ -67,6 +67,16 @@ Design target: [formations.md](../design/proposed/formations.md). The aggregate
 product artifact (Half A, P1) is the input Formation resolves against, which is
 why it moves out of the backlog and into this milestone.
 
+**Implemented on the v0.19.0 branch:** the isolated `ost-formation` domain crate
+owns a strict, versioned, full-digest manifest and portable lock model. The CLI
+ships the narrowed `resolve|inspect|lock|run` surface, expands aggregate plugin
+products, re-verifies stored archives, reuses plugin L1 compatibility checks and
+activation contracts, refuses duplicate plugin identities and lock drift,
+launches in the foreground, and records exact runtime/component/lock/environment
+evidence. Unit tests cover strict parsing and portable locks; an isolated CLI
+lifecycle exports a runtime artifact and passes resolve → lock → inspect → run.
+The four downstream clean-machine dogfoods remain the milestone acceptance task.
+
 If Half A consumes the milestone, Formation ships in v0.20.0 and the DCC host
 milestone moves to v0.21.0 — but Half A does **not** get deferred to protect the
 Formation date. A composition layer over artifacts that cannot be installed is
@@ -292,6 +302,14 @@ advice accurately arrives at a configuration `ost` cannot express. Note that
 manifest strictness (P2 below) is a prerequisite: the manifest cannot fail closed
 on a malformed intent declaration while it fails closed on nothing.
 
+**Implemented on the v0.19.0 branch:** `openstrata.toml` declares typed named
+intents under `[build.intents.<name>.cache.<variable>]`; BOOL/STRING/PATH/FILEPATH
+values are normalized into the build fingerprint, and path values record
+`portable` versus `local-override` provenance. `build --intent`, `test --intent`,
+`validate --intent`, `renderer view --intent`, and `renderer viewport --intent`
+share the resolver. Each intent receives an isolated build directory, so feature
+configurations cannot overwrite one another's CMake cache or completion record.
+
 ### P2 - contract and diagnostic consistency
 
 - **Print the exact immutable evidence-gap recovery command** (usd-3dgs-plugins
@@ -300,6 +318,9 @@ on a malformed intent declaration while it fails closed on nothing.
   `runtime_artifact`, the diagnostic names the exact safe
   `ost artifact pull ... --expect-artifact ...` command that refreshes missing
   SBOM/provenance evidence without changing the pinned artifact identity.
+  **Implemented on the v0.19.0 branch:** runtime evidence gaps now include the
+  digest-pinned `runtime_remote` URI, `--expect-artifact`, and
+  `--require-kind runtime` command in human and JSON diagnostics.
 - **Resolve package sessions from required capabilities, or name the failed
   profile choice** (usd-3dgs-plugins
   [report 02](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/02-2026-07-19-package-provenance-and-reproducibility.md)).
@@ -308,6 +329,10 @@ on a malformed intent declaration while it fails closed on nothing.
   package declares `requires.capabilities: [usd-stage-read]`. Resolve a unique
   satisfying profile from the capability graph; if none or several qualify,
   fail with the selected/defaulted profile and an exact `--profile` correction.
+  **Implemented on the v0.19.0 branch:** packaged run/test paths select the
+  unique narrowest satisfying profile (for example `usd-stage-read` selects
+  `usd` instead of the old `core` default); zero or tied candidates fail with
+  the defaulted choice and explicit `--profile` guidance.
 - **Offer an explicit across-build reproducibility check** (usd-3dgs-plugins
   report 02 observation). The package-twice gate correctly proves archive
   determinism for one build but cannot observe compiler/linker timestamps across
@@ -315,6 +340,11 @@ on a malformed intent declaration while it fails closed on nothing.
   roots, packages both, compares artifact digests, and identifies the earliest
   differing output. Keep it opt-in because it deliberately doubles native build
   cost.
+  **Implemented on the v0.19.0 branch:** release lanes accept
+  `reproducible_across_builds: true`, archive the checkout into a second isolated
+  root, rebuild and repackage there, compare checksums, and print the first
+  differing sorted manifest entry on mismatch. The existing same-build
+  `reproducible` gate remains separate.
 - **Normalize staged paths to `/`** (usd-vrm-plugins reports 22 §11.5, 23 §5,
   24 §3(5) — filed three times, and no longer cosmetic). A Windows-produced
   package writes `runtime/libraries\bin` into portable, digest-addressed data.
@@ -322,6 +352,9 @@ on a malformed intent declaration while it fails closed on nothing.
   the P1 activation contract above, and splitting it on `/` yields
   `libraries\bin`. A Windows-produced and a Linux-produced package must not
   differ in a field describing the same layout.
+  **Implemented on the v0.19.0 branch:** packaged manifest and aggregate
+  dependency-evidence runtime directories use the shared forward-slash
+  normalization path, covered by Windows-hosted lifecycle tests.
 - **Fail closed on unknown manifest keys** (hdMerlin OST19-RND-004). Unknown
   `openstrata.toml` tables — a plausible-but-unsupported `[build.intents.*]` and
   an outright `[nonsense_table]` alike — are accepted with `ok: true` and an
@@ -331,9 +364,12 @@ on a malformed intent declaration while it fails closed on nothing.
   tables and unknown keys in known tables, naming the offending path and the
   closest valid key; distinguish "unknown to this `ost` version" from "invalid
   anywhere"; fail closed on duplicate tables. An off-by-default
-  `--allow-unknown-manifest-keys` escape hatch may exist. **Open decision:**
-  whether this ships as a breaking change in v0.19.0 or needs a warning-only
-  deprecation window first.
+  `--allow-unknown-manifest-keys` escape hatch may exist.
+  **Implemented on the v0.19.0 branch:** v0.19.0 takes the hard-error option.
+  Every modeled project table denies unknown fields, serde's expected-key list
+  supplies valid alternatives, duplicate TOML tables remain parse errors, and
+  the diagnostic distinguishes keys unknown to this OST version. No fail-open
+  escape hatch ships in this slice.
 - **Honour `--json` on the viewport success path** (hdMerlin OST19-RND-008, and
   where the still-open half of OST18-RND-005 now lives).
   `ost renderer viewport --json` emits a well-formed envelope on failure and
@@ -343,6 +379,12 @@ on a malformed intent declaration while it fails closed on nothing.
   for, and today they are printed and discarded. One envelope on both paths with
   child output captured to a field or log path; a launch/readiness record that
   persists after exit; the same contract for `renderer view`.
+  **Implemented on the v0.19.0 branch:** both managed renderer launch paths
+  suppress nested build/child chatter under `--json`, capture child output,
+  emit one success envelope, and persist versioned launch records with the
+  executable, target/profile/config, arguments, exit state and reported
+  backend/device/presentation metadata. Failure emits the ordinary single error
+  envelope after the launch record is written.
 - **Warn on conflicting `plugin run` flags** (usd-vrm-plugins report 24 §2.4).
   `--no-inject` sounds like it makes the bundle argument inert; it does not — the
   bundle argument still selects whose `requires` get staged. This cost the
@@ -364,6 +406,10 @@ on a malformed intent declaration while it fails closed on nothing.
   OST18-RND-008). No `--redact-paths`, no `ost report` subcommand; machine JSON
   still carries the absolute project root, absolute rendered command paths, and
   a `runtime_env` array of user-profile runtime-store paths.
+  **Implemented on the v0.19.0 branch:** global `--json --redact-paths` emits
+  `openstrata.redaction/v1`, replaces local project/runtime/build/tool/scene
+  paths with stable typed placeholders, and retains managed environment keys
+  while replacing their values. Raw JSON remains unchanged by default.
 - **Correct the `--from-package` help text.** `ost plugin test --from-package`
   still documents itself as "incompatible with `--workspace`". The composition
   shipped in v0.18.0 and works; only the help text is stale. usd-vrm-plugins
@@ -371,11 +417,16 @@ on a malformed intent declaration while it fails closed on nothing.
   `scripts/clean_install_smoke.py`, and re-filed a capability that had shipped.
   Report 25 corrects the narrower cost: one wrong downstream conclusion and a
   duplicate ask, not the creation of that smoke harness.
+  **Implemented on the v0.19.0 branch:** generated CLI help says
+  `--from-package` composes with `--workspace` and describes extracted dependency
+  trees.
 
 ### P3 - cosmetic
 
 - `ost doctor` reports `env_keys` with `PATH` listed twice (hdMerlin
   OST19-RND-006). Deduplicate, or model the entries as ordered key/value pairs.
+  **Implemented on the v0.19.0 branch:** `env_keys` preserves first-seen order
+  while deduplicating repeated loader variables such as Windows `PATH`.
 - Observe localized MSVC `/showIncludes` output in the usd-3dgs-plugins hosted
   Windows lane before filing a stronger suppression/change. Japanese local
   output is very noisy during `ost plugin build --json`, but the build succeeds
@@ -389,9 +440,10 @@ positions taken above: (1) resolve compiler identity from the generator's own
 sources *and* model multi-config explicitly; (2) derive requirements from
 profile capabilities *and* accept an explicit `--capability`; (3) yes — a
 recommended command is verified applicable or replaced by an explanation;
-(4) open, and called out in the P2 item; (5) yes — `ost` stamps the session when
-it owns the build, and the schema version ships published; (6) both carried asks
-stay on v0.19.0 (OST19-RND-003 as P1 carry, OST19-RND-005 as P2).
+(4) v0.19.0 fails closed on unknown project-manifest keys; (5) yes — `ost`
+stamps the session when it owns the build, and the schema version ships
+published; (6) both carried asks ship in v0.19.0 (OST19-RND-003 as P1 carry,
+OST19-RND-005 as P2).
 
 ## Shipped: v0.18.0 - evidence integrity and ecosystem documentation
 

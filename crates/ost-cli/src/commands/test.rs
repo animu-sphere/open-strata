@@ -40,7 +40,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
 use clap::Args;
 
 use ost_build::{
@@ -72,6 +72,10 @@ pub struct TestArgs {
     /// Profile to test. Defaults to the project's profile.
     #[arg(long)]
     profile: Option<String>,
+
+    /// Test the build produced for this project-declared intent.
+    #[arg(long)]
+    intent: Option<String>,
 
     /// Only run tests whose name matches this regular expression (CTest `-R`).
     #[arg(long)]
@@ -130,11 +134,12 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     let (root, platform, profile) = resolve_selection(args.target.clone(), args.profile.clone())?;
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
+    let intent = crate::commands::build::resolve_declared_intent(&root, args.intent.as_deref())?;
 
     // 1. A test run is only meaningful against a completed build, and the build
     //    record is also where the configuration and generator come from. Read it
     //    before anything else so an untested-because-unbuilt target says so.
-    let relative_build_dir = Utf8PathBuf::from(format!("build/{id}"));
+    let relative_build_dir = crate::commands::build::build_dir_for_intent(&id, &intent);
     let build_dir = root.join(&relative_build_dir);
     let project = load_project(&root)?;
     let project_version = project.effective_version(&root)?;
@@ -151,6 +156,8 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
             Error::precondition(format!("target '{id}' is not built: {detail}"))
                 .with_hint("run `ost build` before `ost test`")
         })?;
+    crate::commands::build::validate_completed_intent(&build.intent, &intent)
+        .map_err(Error::precondition)?;
 
     // The configuration is propagated, not re-chosen: CMAKE_BUILD_TYPE as the
     // build actually used it. A multi-config generator needs it at test time
@@ -159,7 +166,7 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         .intent
         .cache
         .get("CMAKE_BUILD_TYPE")
-        .cloned()
+        .map(|entry| entry.value.clone())
         .unwrap_or_else(|| "Release".to_string());
 
     if !resolved.pulled {
@@ -530,12 +537,14 @@ fn quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camino::Utf8PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn args() -> TestArgs {
         TestArgs {
             target: None,
             profile: None,
+            intent: None,
             filter: None,
             test_timeout: 300,
             timeout: 3600,
