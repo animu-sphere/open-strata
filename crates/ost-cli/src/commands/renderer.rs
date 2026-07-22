@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
@@ -18,9 +19,9 @@ use ost_core::host::Os;
 use ost_core::paths::{find_project_root, PROJECT_MANIFEST, STATE_DIR};
 use ost_core::{tools, Category, Error, Host, Result};
 use ost_manifest::{
-    set_version_file, FrameContract, Project, ProjectMeta, RenderProducts, RendererComposition,
-    RendererIdentity, RendererManifest, RendererReport, RendererValidation, Requires,
-    RENDERER_MANIFEST, RENDERER_SCHEMA,
+    set_version_file, FrameContract, ProducerSession, Project, ProjectMeta, RenderProducts,
+    RendererComposition, RendererIdentity, RendererManifest, RendererReport, RendererValidation,
+    Requires, SessionOutcome, RENDERER_MANIFEST, RENDERER_REPORT_SCHEMA, RENDERER_SCHEMA,
 };
 use ost_runtime::{EnvOp, EnvVar, RuntimeManifest, MANIFEST_FILE};
 
@@ -38,6 +39,9 @@ pub enum RendererCmd {
 
     /// Merge independently produced renderer reports with conflict checks.
     Merge(RendererMergeArgs),
+
+    /// Attach an honest external/unverified producer session to a report.
+    AttachSession(RendererAttachSessionArgs),
 
     /// Open a scene in usdview with the built Hydra renderer selected.
     View {
@@ -179,10 +183,42 @@ pub struct RendererMergeArgs {
     replace: bool,
 }
 
+#[derive(Debug, Args)]
+pub struct RendererAttachSessionArgs {
+    /// Renderer report produced by the external invocation.
+    report: Utf8PathBuf,
+
+    /// Write to another path instead of atomically updating REPORT.
+    #[arg(long)]
+    out: Option<Utf8PathBuf>,
+
+    /// External producer's target/build identity.
+    #[arg(long)]
+    target: String,
+
+    /// Producer start time as Unix seconds.
+    #[arg(long)]
+    started_unix: u64,
+
+    /// Producer completion time as Unix seconds. Required for success/failure;
+    /// omitted for an incomplete producer.
+    #[arg(long)]
+    completed_unix: Option<u64>,
+
+    /// Producer outcome: success, failure, or incomplete.
+    #[arg(long, value_parser = ["success", "failure", "incomplete"])]
+    outcome: String,
+
+    /// Stable external invocation id. Generated when omitted.
+    #[arg(long)]
+    session_id: Option<String>,
+}
+
 pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
     match cmd {
         RendererCmd::Adopt(args) => adopt(args, fmt),
         RendererCmd::Merge(args) => merge_reports(args, fmt),
+        RendererCmd::AttachSession(args) => attach_session(args, fmt),
         RendererCmd::View {
             scene,
             build_dir,
@@ -216,6 +252,80 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
             args,
         }),
     }
+}
+
+fn attach_session(args: RendererAttachSessionArgs, fmt: Format) -> Result<()> {
+    let root = renderer_command_root()?;
+    let report_path = rooted(&root, &args.report);
+    let out_path = args
+        .out
+        .as_ref()
+        .map(|path| rooted(&root, path))
+        .unwrap_or_else(|| report_path.clone());
+    let outcome = match args.outcome.as_str() {
+        "success" => SessionOutcome::Success,
+        "failure" => SessionOutcome::Failure,
+        "incomplete" => SessionOutcome::Incomplete,
+        _ => unreachable!("clap restricts renderer producer outcomes"),
+    };
+    match (outcome, args.completed_unix) {
+        (SessionOutcome::Success | SessionOutcome::Failure, None) => {
+            return Err(Error::usage(
+                "--completed-unix is required when --outcome is success or failure",
+            ));
+        }
+        (SessionOutcome::Incomplete, Some(_)) => {
+            return Err(Error::usage(
+                "--completed-unix must be omitted when --outcome is incomplete",
+            ));
+        }
+        _ => {}
+    }
+
+    let session = ProducerSession {
+        id: args
+            .session_id
+            .unwrap_or_else(|| fresh_session_id("external-unverified")),
+        kind: "external-unverified".into(),
+        target: args.target,
+        started_unix: args.started_unix,
+        completed_unix: args.completed_unix,
+        outcome,
+    };
+    let manifest = RendererManifest::load(&root)?;
+    let mut report = RendererReport::load(&report_path)?;
+    if report.producer.is_some() || report.checks.iter().any(|check| check.producer.is_some()) {
+        return Err(Error::precondition(format!(
+            "renderer report '{report_path}' already carries producer provenance"
+        ))
+        .with_hint(
+            "attach-session cannot replace an existing owner; produce a fresh external report or use `ost renderer merge` to preserve both producers",
+        ));
+    }
+    report.attach_producer(session.clone())?;
+    if session.can_assert_pass() {
+        report.validate_overlay_against(&manifest)?;
+    } else {
+        report.validate_overlay_structure_against(&manifest)?;
+    }
+    write_renderer_report(&out_path, &report)?;
+
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "attached": true,
+            "report": report_path,
+            "out": out_path,
+            "schema": RENDERER_REPORT_SCHEMA,
+            "producer": session,
+            "verification": "external-unverified",
+        }));
+    } else {
+        println!("Attached external/unverified producer session to {out_path}");
+        println!("  session: {}", session.id);
+        println!("  target:  {}", session.target);
+        println!("  outcome: {}", session.outcome.as_str());
+    }
+    Ok(())
 }
 
 struct ViewportArgs {
@@ -520,6 +630,177 @@ fn renderer_command_root() -> Result<Utf8PathBuf> {
         .map_err(|path| Error::config(format!("non-UTF-8 project path: {}", path.display())))
 }
 
+pub(crate) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn fresh_session_id(kind: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{kind}-{}-{nanos}", std::process::id())
+}
+
+pub(crate) fn managed_producer_session(
+    kind: &str,
+    target: &str,
+    invocation: Option<&str>,
+    started_unix: u64,
+    completed_unix: Option<u64>,
+    outcome: SessionOutcome,
+) -> ProducerSession {
+    ProducerSession {
+        id: invocation
+            .map(|invocation| format!("{kind}-{invocation}"))
+            .unwrap_or_else(|| fresh_session_id(kind)),
+        kind: kind.into(),
+        target: target.into(),
+        started_unix,
+        completed_unix,
+        outcome,
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RendererReportSnapshot {
+    files: BTreeMap<Utf8PathBuf, RendererReportFileState>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RendererReportFileState {
+    bytes: Vec<u8>,
+    modified: Option<SystemTime>,
+}
+
+/// Capture direct build-tree renderer reports before a managed operation.
+/// Comparing content *and* modification time detects a deterministic report
+/// rewritten to identical bytes, while leaving an untouched incremental-build
+/// report attributed to the invocation that actually produced it.
+pub(crate) fn snapshot_managed_renderer_reports(
+    root: &Utf8Path,
+    build_dir: &Utf8Path,
+) -> Result<RendererReportSnapshot> {
+    if !root.join(RENDERER_MANIFEST).as_std_path().is_file() {
+        return Ok(RendererReportSnapshot::default());
+    }
+    let mut files = BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(build_dir.as_std_path()) else {
+        return Ok(RendererReportSnapshot { files });
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| Error::io(build_dir.to_string(), error))?;
+        let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
+            Error::config(format!(
+                "non-UTF-8 renderer report path: {}",
+                path.display()
+            ))
+        })?;
+        if !entry
+            .file_type()
+            .map_err(|error| Error::io(path.to_string(), error))?
+            .is_file()
+            || !is_renderer_report_path(&path)
+        {
+            continue;
+        }
+        files.insert(path.clone(), renderer_report_file_state(&path)?);
+    }
+    Ok(RendererReportSnapshot { files })
+}
+
+fn is_renderer_report_path(path: &Utf8Path) -> bool {
+    let name = path.file_name().unwrap_or_default().to_ascii_lowercase();
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        && name.contains("renderer")
+        && name.contains("report")
+}
+
+fn renderer_report_file_state(path: &Utf8Path) -> Result<RendererReportFileState> {
+    let bytes =
+        std::fs::read(path.as_std_path()).map_err(|error| Error::io(path.to_string(), error))?;
+    let modified = std::fs::metadata(path.as_std_path())
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    Ok(RendererReportFileState { bytes, modified })
+}
+
+/// Stamp every renderer report created or rewritten by this managed operation.
+/// A no-op incremental build therefore preserves the earlier producer instead
+/// of laundering old evidence through the new invocation.
+pub(crate) fn stamp_changed_managed_renderer_reports(
+    root: &Utf8Path,
+    build_dir: &Utf8Path,
+    before: &RendererReportSnapshot,
+    producer: ProducerSession,
+    validate_primary: bool,
+) -> Result<Vec<Utf8PathBuf>> {
+    if !root.join(RENDERER_MANIFEST).as_std_path().is_file() {
+        return Ok(Vec::new());
+    }
+    let manifest = RendererManifest::load(root)?;
+    let primary = manifest.report_path(build_dir);
+    let after = snapshot_managed_renderer_reports(root, build_dir)?;
+    let mut stamped = Vec::new();
+    for (path, state) in after.files {
+        if before.files.get(&path) == Some(&state) {
+            continue;
+        }
+        let validation = if validate_primary {
+            if path == primary {
+                ManagedReportValidation::Complete
+            } else {
+                ManagedReportValidation::Overlay
+            }
+        } else {
+            ManagedReportValidation::None
+        };
+        stamp_renderer_report_at(&manifest, &path, producer.clone(), validation)?;
+        stamped.push(path);
+    }
+    Ok(stamped)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ManagedReportValidation {
+    None,
+    Overlay,
+    Complete,
+}
+
+fn stamp_renderer_report_at(
+    manifest: &RendererManifest,
+    path: &Utf8Path,
+    producer: ProducerSession,
+    validation: ManagedReportValidation,
+) -> Result<()> {
+    let mut report = RendererReport::load(path)?;
+    report.attach_producer(producer)?;
+    // Persist the actual owner even when a successful managed operation
+    // exposes some other invalid report field. The returned validation error
+    // still fails the command, while later diagnostics can name the real run.
+    let validation = match validation {
+        ManagedReportValidation::None => None,
+        ManagedReportValidation::Overlay => Some(report.validate_overlay_against(manifest)),
+        ManagedReportValidation::Complete => Some(report.validate_against(manifest)),
+    };
+    write_renderer_report(path, &report)?;
+    if let Some(validation) = validation {
+        validation?;
+    }
+    Ok(())
+}
+
+fn write_renderer_report(path: &Utf8Path, report: &RendererReport) -> Result<()> {
+    let body = serde_json::to_string_pretty(report)
+        .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
+    write_atomic(path.as_std_path(), format!("{body}\n").as_bytes())
+}
+
 fn renderer_assertions() -> Vec<String> {
     [
         "renderer.core.boundary",
@@ -733,6 +1014,7 @@ fn view(args: ViewArgs) -> Result<()> {
 }
 
 fn viewport(args: ViewportArgs) -> Result<()> {
+    let viewport_started_unix = unix_now();
     let (root, platform, profile) = resolve_selection(args.target, args.profile)?;
     let manifest = RendererManifest::load(&root)?;
     let adapter = manifest
@@ -755,6 +1037,7 @@ fn viewport(args: ViewportArgs) -> Result<()> {
     // host-neutral profile suffices and no runtime fingerprint is recorded.
     let (target, _) = build_target(&platform, &profile)?;
     let build_dir = root.join("build").join(target.id());
+    let renderer_reports_before = snapshot_managed_renderer_reports(&root, &build_dir)?;
     let mut cache = BTreeMap::new();
     cache.insert("OST_RENDERER_ADAPTERS".into(), "viewport".into());
     cache.insert("CMAKE_BUILD_TYPE".into(), args.config.clone());
@@ -818,6 +1101,22 @@ fn viewport(args: ViewportArgs) -> Result<()> {
         .args(&args.args)
         .status()
         .map_err(|error| Error::io(format!("run {executable}"), error))?;
+    let outcome = viewport_session_outcome(status.code());
+    let producer = managed_producer_session(
+        "ost-renderer-viewport",
+        &target.id(),
+        None,
+        viewport_started_unix,
+        Some(unix_now()),
+        outcome,
+    );
+    stamp_changed_managed_renderer_reports(
+        &root,
+        &build_dir,
+        &renderer_reports_before,
+        producer,
+        outcome == SessionOutcome::Success,
+    )?;
     match status.code() {
         Some(0) => Ok(()),
         // The viewport smoke contract: 77 means this environment cannot
@@ -834,6 +1133,17 @@ fn viewport(args: ViewportArgs) -> Result<()> {
             exit_detail(&status)
         ))
         .with_phase("renderer-viewport-host")),
+    }
+}
+
+fn viewport_session_outcome(exit_code: Option<i32>) -> SessionOutcome {
+    // 77 is the viewport's capability-skip contract: the invocation concluded
+    // normally and established that presentation is unavailable. It must not
+    // invalidate PASS evidence produced by the managed build it wraps.
+    if matches!(exit_code, Some(0 | 77)) {
+        SessionOutcome::Success
+    } else {
+        SessionOutcome::Failure
     }
 }
 
@@ -1481,6 +1791,85 @@ mod tests {
             std::env::temp_dir().join(format!("ost-renderer-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&path).unwrap();
         Utf8PathBuf::from_path_buf(path).unwrap()
+    }
+
+    #[test]
+    fn managed_stamp_owns_only_reports_changed_by_the_invocation() {
+        let root = temp_dir("managed-stamp");
+        let build = root.join("build/target");
+        std::fs::create_dir_all(build.as_std_path()).unwrap();
+        std::fs::write(
+            root.join(RENDERER_MANIFEST).as_std_path(),
+            r#"schema: openstrata.renderer/v1alpha1
+renderer: { name: sample-renderer }
+composition:
+  backend: vulkan
+  scene_inputs: [headless]
+  units: { core: core, extraction: extraction, backend: backend }
+  adapters: { headless: headless }
+render_products: { required: [color] }
+frame: { contexts: 1, completion: explicit }
+validation:
+  gpu_smoke: true
+  validation_messages_are_errors: true
+  assertions: [renderer.core.boundary]
+"#,
+        )
+        .unwrap();
+        let before = snapshot_managed_renderer_reports(&root, &build).unwrap();
+        let report_path = build.join(ost_manifest::RENDERER_REPORT_FILE);
+        std::fs::write(
+            report_path.as_std_path(),
+            r#"{
+              "schema":"openstrata.renderer-report/v1alpha1",
+              "renderer":{"name":"sample-renderer"},
+              "checks":[{"id":"renderer.core.boundary","status":"pass"}]
+            }"#,
+        )
+        .unwrap();
+        let producer = managed_producer_session(
+            "ost-build",
+            "target",
+            Some("0123abcd"),
+            100,
+            Some(120),
+            SessionOutcome::Success,
+        );
+
+        assert_eq!(
+            stamp_changed_managed_renderer_reports(&root, &build, &before, producer, true).unwrap(),
+            vec![report_path.clone()]
+        );
+        let report = RendererReport::load(&report_path).unwrap();
+        assert_eq!(report.producer.as_ref().unwrap().id, "ost-build-0123abcd");
+        assert_eq!(
+            report.checks[0].producer.as_deref(),
+            Some("ost-build-0123abcd")
+        );
+
+        let unchanged = snapshot_managed_renderer_reports(&root, &build).unwrap();
+        let later = managed_producer_session(
+            "ost-build",
+            "target",
+            Some("later"),
+            200,
+            Some(220),
+            SessionOutcome::Success,
+        );
+        assert!(
+            stamp_changed_managed_renderer_reports(&root, &build, &unchanged, later, true,)
+                .unwrap()
+                .is_empty()
+        );
+        let report = RendererReport::load(&report_path).unwrap();
+        assert_eq!(report.producer.as_ref().unwrap().id, "ost-build-0123abcd");
+        std::fs::remove_dir_all(root.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn presentation_unavailable_is_a_completed_viewport_session() {
+        assert_eq!(viewport_session_outcome(Some(77)), SessionOutcome::Success);
+        assert_eq!(viewport_session_outcome(Some(1)), SessionOutcome::Failure);
     }
 
     #[test]

@@ -287,6 +287,7 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
     //    released between them would let a second writer reconfigure the tree
     //    this run is about to compile, or publish a completion for a build it
     //    did not perform.
+    let managed_started_unix = crate::commands::renderer::unix_now();
     let lease = acquire_target_lease(&root, &id, &args)?;
     if let Some(takeover) = lease.takeover() {
         // An inherited target is worth saying out loud: the tree on disk was
@@ -300,6 +301,15 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
     // 6. Generate the target's `.strata/` files now that checks have passed.
     rep.phase("Generating toolchain and presets");
     let build_dir = root.join("build").join(&id);
+    let renderer_reports_before =
+        crate::commands::renderer::snapshot_managed_renderer_reports(&root, &build_dir)?;
+    let producer_started_unix = lease
+        .owner()
+        .filter(|_| !lease.is_read_only())
+        .map_or(managed_started_unix, |owner| owner.acquired_unix);
+    let producer_invocation = (!lease.is_read_only())
+        .then(|| lease.invocation().map(str::to_owned))
+        .flatten();
     invalidate_completion(&build_dir)?;
     let g = generate_with_generator(&root, &platform, &profile, &compiler, &args.generator)?;
     debug_assert_eq!(g.id, id);
@@ -345,26 +355,111 @@ pub(crate) fn run_with_intent(args: BuildArgs, fmt: Format, intent: BuildIntent)
     // 9. Configure, then build — each a phase whose subprocess streams through
     //    the reporter (heartbeat while quiet, log capture, failure reporting).
     rep.phase("Configuring CMake");
-    rep.run(
+    let configure_status = match rep.run_status(
         &cmake_prog,
         &configure_args,
         &root,
         &extra_env,
         timeout(args.configure_timeout),
-    )?;
+    ) {
+        Ok(status) => status,
+        Err(error) => {
+            stamp_build_renderer_reports(
+                &root,
+                &build_dir,
+                &renderer_reports_before,
+                &id,
+                producer_invocation.as_deref(),
+                producer_started_unix,
+                None,
+                ost_manifest::SessionOutcome::Incomplete,
+                false,
+            )?;
+            return Err(error);
+        }
+    };
+    if !configure_status.success() {
+        stamp_build_renderer_reports(
+            &root,
+            &build_dir,
+            &renderer_reports_before,
+            &id,
+            producer_invocation.as_deref(),
+            producer_started_unix,
+            Some(crate::commands::renderer::unix_now()),
+            ost_manifest::SessionOutcome::Failure,
+            false,
+        )?;
+        rep.exit_unsuccessful(configure_status);
+    }
     rep.phase("Building targets");
-    rep.run(
+    let build_status = match rep.run_status(
         &cmake_prog,
         &build_args,
         &root,
         &extra_env,
         timeout(args.build_timeout),
-    )?;
+    ) {
+        Ok(status) => status,
+        Err(error) => {
+            stamp_build_renderer_reports(
+                &root,
+                &build_dir,
+                &renderer_reports_before,
+                &id,
+                producer_invocation.as_deref(),
+                producer_started_unix,
+                None,
+                ost_manifest::SessionOutcome::Incomplete,
+                false,
+            )?;
+            return Err(error);
+        }
+    };
+    if !build_status.success() {
+        stamp_build_renderer_reports(
+            &root,
+            &build_dir,
+            &renderer_reports_before,
+            &id,
+            producer_invocation.as_deref(),
+            producer_started_unix,
+            Some(crate::commands::renderer::unix_now()),
+            ost_manifest::SessionOutcome::Failure,
+            false,
+        )?;
+        rep.exit_unsuccessful(build_status);
+    }
 
     // 10. Verify the build produced outputs — a successful build with an empty
     //     tree means the preset built nothing useful.
     rep.phase("Verifying outputs");
-    verify_build(&root, &id)?;
+    if let Err(error) = verify_build(&root, &id) {
+        stamp_build_renderer_reports(
+            &root,
+            &build_dir,
+            &renderer_reports_before,
+            &id,
+            producer_invocation.as_deref(),
+            producer_started_unix,
+            Some(crate::commands::renderer::unix_now()),
+            ost_manifest::SessionOutcome::Failure,
+            false,
+        )?;
+        return Err(error);
+    }
+    let completed_unix = crate::commands::renderer::unix_now();
+    stamp_build_renderer_reports(
+        &root,
+        &build_dir,
+        &renderer_reports_before,
+        &id,
+        producer_invocation.as_deref(),
+        producer_started_unix,
+        Some(completed_unix),
+        ost_manifest::SessionOutcome::Success,
+        true,
+    )?;
     write_completion(&root, &id, &intent, lease.invocation())?;
 
     // The completion is published; the target is free for the next writer. On
@@ -391,6 +486,36 @@ fn acquire_target_lease(root: &Utf8Path, id: &str, args: &BuildArgs) -> Result<T
         .join(id)
         .join(TARGET_LEASE_FILE);
     TargetLease::acquire(&path, id, "ost build", mode)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stamp_build_renderer_reports(
+    root: &Utf8Path,
+    build_dir: &Utf8Path,
+    before: &crate::commands::renderer::RendererReportSnapshot,
+    id: &str,
+    invocation: Option<&str>,
+    started_unix: u64,
+    completed_unix: Option<u64>,
+    outcome: ost_manifest::SessionOutcome,
+    validate_primary: bool,
+) -> Result<()> {
+    let producer = crate::commands::renderer::managed_producer_session(
+        "ost-build",
+        id,
+        invocation,
+        started_unix,
+        completed_unix,
+        outcome,
+    );
+    crate::commands::renderer::stamp_changed_managed_renderer_reports(
+        root,
+        build_dir,
+        before,
+        producer,
+        validate_primary,
+    )?;
+    Ok(())
 }
 
 fn timeout(seconds: u64) -> Option<Duration> {

@@ -84,7 +84,8 @@
         },
         "kind": {
           "type": "string",
-          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$",
+          "description": "Producer kind. OpenStrata-owned operations emit ost-build, ost-test, or ost-renderer-viewport; `ost renderer attach-session` fixes genuinely external provenance to external-unverified."
         },
         "target": {
           "type": "string",
