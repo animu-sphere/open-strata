@@ -271,10 +271,13 @@ fn run_command(args: &FormationRunArgs, format: Format) -> Result<()> {
     write_atomic(evidence_path.as_std_path(), format!("{body}\n").as_bytes())?;
 
     if format.is_json() {
-        output::success(&serde_json::json!({
-            "run": evidence,
-            "evidence": evidence_path,
-        }));
+        output::report(
+            status.success(),
+            &serde_json::json!({
+                "run": evidence,
+                "evidence": evidence_path,
+            }),
+        );
     } else {
         println!("Formation evidence: {evidence_path}");
     }
@@ -501,7 +504,7 @@ fn product_payload(root: &Utf8Path) -> Result<(Vec<Bundle>, ActivationInput)> {
             &member.archive_digest,
         )?;
         let archive = safe_join(root, &member.archive, "product member archive")?;
-        let member_root = root.join("expanded").join(id);
+        let member_root = safe_join(&root.join("expanded"), id, "product member id")?;
         if !member_root.as_std_path().exists() {
             if let Some(parent) = member_root.parent() {
                 std::fs::create_dir_all(parent.as_std_path())
