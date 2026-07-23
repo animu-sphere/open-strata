@@ -2682,7 +2682,7 @@ fn verify_plugin_product(
     validate_product_contract(&contract)?;
 
     for member in &contract.members {
-        verify_product_member(&tree.path, member)?;
+        verify_product_member(&tree.path, &contract.target, member)?;
     }
 
     Ok(VerifiedPluginProduct {
@@ -2705,6 +2705,8 @@ fn resolve_product_archive(
             "plugin product path does not exist: {input}"
         )));
     }
+    let explicit_archive =
+        input.as_std_path().is_file() && input.file_name() != Some("manifest.json");
 
     let manifest_path = if input.as_std_path().is_dir() {
         Some(input.join("manifest.json"))
@@ -2719,20 +2721,49 @@ fn resolve_product_archive(
     };
 
     if let Some(manifest_path) = manifest_path.filter(|path| path.as_std_path().is_file()) {
-        let source = std::fs::read_to_string(manifest_path.as_std_path())
-            .map_err(|error| Error::io(manifest_path.to_string(), error))?;
-        let manifest: serde_json::Value = serde_json::from_str(&source)
-            .map_err(|error| Error::parse(manifest_path.to_string(), anyhow::Error::new(error)))?;
+        let source = match std::fs::read_to_string(manifest_path.as_std_path()) {
+            Ok(source) => source,
+            Err(_) if explicit_archive => {
+                return product_archive_from_file(&input, expect_digest);
+            }
+            Err(error) => return Err(Error::io(manifest_path.to_string(), error)),
+        };
+        let manifest: serde_json::Value = match serde_json::from_str(&source) {
+            Ok(manifest) => manifest,
+            Err(_) if explicit_archive => {
+                return product_archive_from_file(&input, expect_digest);
+            }
+            Err(error) => {
+                return Err(Error::parse(
+                    manifest_path.to_string(),
+                    anyhow::Error::new(error),
+                ));
+            }
+        };
         if manifest["kind"] != ost_artifact::PLUGIN_PRODUCT_KIND {
+            if explicit_archive {
+                return product_archive_from_file(&input, expect_digest);
+            }
             return Err(Error::validation(format!(
                 "'{manifest_path}' is not an aggregate plugin product manifest"
             )));
         }
-        let archive_name = manifest["archive"].as_str().ok_or_else(|| {
-            Error::validation(format!(
-                "'{manifest_path}' is missing string field 'archive'"
-            ))
-        })?;
+        let archive_name = match manifest["archive"].as_str() {
+            Some(archive_name) => archive_name,
+            None if explicit_archive => {
+                return product_archive_from_file(&input, expect_digest);
+            }
+            None => {
+                return Err(Error::validation(format!(
+                    "'{manifest_path}' is missing string field 'archive'"
+                )));
+            }
+        };
+        if explicit_archive && input.file_name() != Some(archive_name) {
+            // An explicitly named archive is authoritative unless the sibling
+            // product manifest actually names that archive.
+            return product_archive_from_file(&input, expect_digest);
+        }
         let digest = manifest["archive_digest"].as_str().ok_or_else(|| {
             Error::validation(format!(
                 "'{manifest_path}' is missing string field 'archive_digest'"
@@ -2751,14 +2782,6 @@ fn resolve_product_archive(
         }
         let root = manifest_path.parent().unwrap_or_else(|| Utf8Path::new("."));
         let archive = safe_product_join(root, archive_name, "manifest archive")?;
-        if input.as_std_path().is_file()
-            && input.file_name() != Some("manifest.json")
-            && input.file_name() != archive.file_name()
-        {
-            // A generic sibling manifest may belong to another artifact. In
-            // that case the explicitly named archive remains authoritative.
-            return product_archive_from_file(&input, expect_digest);
-        }
         let (actual, size) = digest_file(&archive)?;
         if actual != digest {
             return Err(product_digest_mismatch(&archive, digest, &actual));
@@ -2955,7 +2978,11 @@ fn validate_product_member_identity(member: &PluginProductMember) -> Result<()> 
     Ok(())
 }
 
-fn verify_product_member(root: &Utf8Path, member: &PluginProductMember) -> Result<()> {
+fn verify_product_member(
+    root: &Utf8Path,
+    product_target: &str,
+    member: &PluginProductMember,
+) -> Result<()> {
     let member_prefix = format!("members/{}/", member.id);
     for (field, relative) in [
         ("archive", member.archive.as_str()),
@@ -2987,7 +3014,7 @@ fn verify_product_member(root: &Utf8Path, member: &PluginProductMember) -> Resul
         .map_err(|error| Error::io(member_manifest.to_string(), error))?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest_source)
         .map_err(|error| Error::parse(member_manifest.to_string(), anyhow::Error::new(error)))?;
-    verify_product_member_manifest(member, &manifest)?;
+    verify_product_member_manifest(product_target, member, &manifest)?;
 
     let checksums = safe_product_join(root, &member.checksums, "product member checksums")?;
     verify_member_checksums(
@@ -3049,6 +3076,7 @@ fn verify_product_member(root: &Utf8Path, member: &PluginProductMember) -> Resul
 }
 
 fn verify_product_member_manifest(
+    product_target: &str,
     member: &PluginProductMember,
     manifest: &serde_json::Value,
 ) -> Result<()> {
@@ -3082,6 +3110,7 @@ fn verify_product_member_manifest(
                 .and_then(|value| value.as_str()),
             Some(member.kind.as_str()),
         ),
+        ("target", manifest["target"].as_str(), Some(product_target)),
         (
             "archive",
             manifest["archive"].as_str(),
@@ -6645,6 +6674,84 @@ mod tests {
                 { "path": "NOTICE.md", "sha256": "sha256:aa", "size": 1 },
             ],
         })
+    }
+
+    fn product_member() -> PluginProductMember {
+        PluginProductMember {
+            id: "toy".into(),
+            position: 0,
+            name: "toy".into(),
+            version: "0.1.0".into(),
+            kind: "usd-fileformat".into(),
+            archive: "members/toy/toy-0.1.0.tar.zst".into(),
+            archive_digest: format!("sha256:{}", "ab".repeat(32)),
+            archive_size: 1,
+            manifest: "members/toy/manifest.json".into(),
+            checksums: "members/toy/SHA256SUMS".into(),
+            evidence: vec!["members/toy/sbom.spdx.json".into()],
+            debug: RequiredProductDebug(None),
+            dependencies: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn explicit_product_archive_ignores_an_unrelated_sibling_manifest() {
+        let root = unique_tmp("explicit-product-archive");
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        let archive = root.join("downloaded-product.tar.zst");
+        std::fs::write(archive.as_std_path(), b"standalone product bytes").unwrap();
+        write_test_file(
+            &root.join("manifest.json"),
+            &pretty_json(&publishable_manifest()).unwrap(),
+        );
+
+        let source = resolve_product_archive(archive.as_str(), None)
+            .expect("an explicit archive must not be shadowed by an unrelated manifest");
+        let (digest, size) = digest_file(&archive).unwrap();
+        assert_eq!(source.archive, archive);
+        assert_eq!(source.digest, digest);
+        assert_eq!(source.size, size);
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn product_member_target_must_match_the_product_target() {
+        let mut manifest = publishable_manifest();
+        manifest["archive"] = "toy-0.1.0.tar.zst".into();
+        manifest["target"] = "cy2026-linux-x86_64-glibc228-py313-usd".into();
+
+        let error = verify_product_member_manifest(
+            "cy2026-windows-x86_64-msvc143-py313-usd",
+            &product_member(),
+            &manifest,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("manifest target"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("cy2026-windows-x86_64-msvc143-py313-usd"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn legacy_product_install_fields_remain_optional_in_v1alpha1() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../schemas/plugin-product.schema.json"
+        ))
+        .unwrap();
+        let required = schema["properties"]["install"]["required"]
+            .as_array()
+            .unwrap();
+
+        assert!(required.iter().any(|value| value == "layout"));
+        assert!(required.iter().any(|value| value == "order"));
+        assert!(required.iter().any(|value| value == "contract"));
+        assert!(!required.iter().any(|value| value == "destination"));
+        assert!(!required.iter().any(|value| value == "activation"));
     }
 
     #[test]

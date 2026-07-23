@@ -13,7 +13,7 @@
     "install": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["layout", "destination", "order", "activation", "contract"],
+      "required": ["layout", "order", "contract"],
       "properties": {
         "layout": { "const": "members/<bundle-id>/" },
         "destination": { "const": "bundles/<bundle-id>/" },
