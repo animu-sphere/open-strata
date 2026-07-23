@@ -114,6 +114,13 @@ pub enum Error {
         /// `schema-generate`, `compile-link`), surfaced in human + `--json`
         /// output so triage does not need to bisect which step failed.
         phase: Option<String>,
+        /// Optional structured evidence gathered before the operation failed.
+        ///
+        /// Commands such as `renderer viewport` persist a durable launch
+        /// record even for a build, presentation, or child-process failure.
+        /// Keeping that record on the error lets JSON mode return the same
+        /// machine-readable data shape on every terminal path.
+        data: Option<Box<serde_json::Value>>,
     },
 
     #[error("a project already exists here: {0}")]
@@ -162,6 +169,7 @@ impl Error {
             message: message.into(),
             hint: None,
             phase: None,
+            data: None,
         }
     }
 
@@ -208,10 +216,26 @@ impl Error {
         self
     }
 
+    /// Attach structured evidence to a categorized error.
+    pub fn with_data(mut self, data: serde_json::Value) -> Self {
+        if let Error::Coded { data: slot, .. } = &mut self {
+            *slot = Some(Box::new(data));
+        }
+        self
+    }
+
     /// The work phase this failure is attributed to, if any.
     pub fn phase(&self) -> Option<&str> {
         match self {
             Error::Coded { phase, .. } => phase.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Structured evidence captured before this operation failed.
+    pub fn data(&self) -> Option<&serde_json::Value> {
+        match self {
+            Error::Coded { data, .. } => data.as_deref(),
             _ => None,
         }
     }
@@ -334,5 +358,15 @@ mod tests {
         // Variants without a phase slot ignore it rather than panicking.
         let e = Error::Operation("legacy".into()).with_phase("configure");
         assert_eq!(e.phase(), None);
+    }
+
+    #[test]
+    fn coded_errors_can_carry_structured_failure_evidence() {
+        let e = Error::external_tool("viewport child failed")
+            .with_data(serde_json::json!({"launch": {"exit": {"state": "child-failure"}}}));
+        assert_eq!(
+            e.data().and_then(|data| data.pointer("/launch/exit/state")),
+            Some(&serde_json::Value::String("child-failure".into()))
+        );
     }
 }

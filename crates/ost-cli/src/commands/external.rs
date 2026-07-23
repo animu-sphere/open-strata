@@ -57,6 +57,11 @@ pub struct ImportArgs {
     /// be repeated; requirements are combined with the resolved profile.
     #[arg(long = "capability")]
     capabilities: Vec<String>,
+
+    /// Configuration whose binaries the import describes. Required for
+    /// multi-config generators such as Visual Studio and Ninja Multi-Config.
+    #[arg(long)]
+    config: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -111,9 +116,15 @@ fn import(args: ImportArgs, fmt: Format) -> Result<()> {
         capabilities,
     };
 
-    let record =
-        ExternalBuildProvenance::from_cache(&cache, runtime, openusd_version, scope, now_unix())
-            .map_err(|error| Error::validation(error.to_string()).with_hint(error.remediation()))?;
+    let record = ExternalBuildProvenance::from_cache_for_configuration(
+        &cache,
+        runtime,
+        openusd_version,
+        scope,
+        now_unix(),
+        args.config.as_deref(),
+    )
+    .map_err(|error| Error::validation(error.to_string()).with_hint(error.remediation()))?;
 
     let body = record
         .to_json()

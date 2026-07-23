@@ -148,6 +148,34 @@ args = ["--version"]
     let inspected = json(sandbox.ost(&["--json", "formation", "inspect", path(&formation)]));
     assert_eq!(inspected["data"]["lock"]["matches_manifest"], true);
 
+    let diagnosed = json(sandbox.ost(&["--json", "formation", "doctor", path(&formation)]));
+    assert_eq!(diagnosed["ok"], true);
+    assert!(diagnosed["data"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|check| check["status"] == "pass"));
+
+    let environment = json(sandbox.ost(&[
+        "--json",
+        "formation",
+        "env",
+        path(&formation),
+        "--shell",
+        "pwsh",
+    ]));
+    assert_eq!(environment["data"]["formation"], "runtime-smoke");
+    let materialized = PathBuf::from(environment["data"]["materialized"].as_str().unwrap());
+    assert!(
+        materialized.is_dir(),
+        "formation env paths must survive the command that exports them"
+    );
+    assert!(environment["data"]["env"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["name"] == "PATH"));
+
     let ran = json(sandbox.ost(&["--json", "formation", "run", path(&formation)]));
     assert_eq!(ran["data"]["run"]["success"], true);
     assert_eq!(ran["data"]["run"]["runtime"]["digest"], runtime_digest);

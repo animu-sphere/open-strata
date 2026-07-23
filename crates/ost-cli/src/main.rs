@@ -97,7 +97,7 @@ enum Command {
     #[command(subcommand)]
     Artifact(artifact::ArtifactCmd),
 
-    /// Resolve, inspect, lock, and run digest-pinned component Formations.
+    /// Resolve, inspect, diagnose, export, lock, and run digest-pinned Formations.
     #[command(subcommand)]
     Formation(formation::FormationCmd),
 

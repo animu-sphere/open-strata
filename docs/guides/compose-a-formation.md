@@ -1,7 +1,7 @@
 # Composing a Formation
 
-> `ost formation resolve|inspect|lock|run` is implemented on the v0.19.0
-> development branch. It is not part of the v0.18.0 release. The model is defined in
+> `ost formation resolve|inspect|lock|run` shipped in v0.19.0;
+> `env|doctor` are implemented for v0.20.0. The model is defined in
 > [design/proposed/formations.md](../design/proposed/formations.md); the
 > milestone is in the [roadmap backlog](../roadmap/backlog.md).
 
@@ -58,12 +58,21 @@ mismatch fails with a coded error naming the incompatible component.
 
 ## 3. Inspect the composed environment
 
-The composed environment is fully inspectable — nothing is mutated silently.
+The composed environment is fully inspectable — nothing is mutated silently:
+
+```sh
+ost formation env formation.toml --shell bash
+ost formation env formation.toml --json
+ost formation doctor formation.toml
+```
 
 `resolve --json` and `inspect --json` include the portable, component-relative
-environment contract. `formation env` is intentionally deferred past the
-v0.19.0 MVP. Duplicate plugin identities are rejected instead of allowing two
-ambiguous discovery roots.
+contract. `env` materializes the verified artifacts, retains that
+materialization so the exported paths remain usable by the caller, and prints
+either evaluable shell or ordered JSON variables. `doctor` checks resolution,
+lock freshness, environment conflicts, and command reachability. Duplicate
+plugin identities are rejected instead of allowing two ambiguous discovery
+roots.
 
 ## 4. Lock for reproducibility
 

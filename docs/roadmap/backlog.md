@@ -35,7 +35,8 @@ milestone, Formation ships in v0.20.0 and DCC host integration moves to v0.21.0.
   foreground process; emit a digest-pinned `formation.lock`; and record Formation
   Run evidence. CLI: `ost formation resolve|inspect|run|lock` for this
   milestone, using the shipped `{ok, schema, data, warnings}` envelope and
-  category exit codes; `formation env|doctor` defer to v0.20.0.
+  category exit codes; `formation env|doctor` deferred to and are implemented
+  on the v0.20.0 branch.
   Formation must **reuse** the runtime, artifact, plugin, renderer, target, and
   evidence contracts rather than fork them, and introduce no DCC-specific logic
   in the core model. Acceptance requires four first-party dogfoods run from

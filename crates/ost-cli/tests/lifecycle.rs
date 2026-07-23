@@ -635,6 +635,8 @@ fn external_import_is_generator_and_capability_aware() {
         "vs-core-build",
         "--profile",
         "core",
+        "--config",
+        "Release",
         "--capability",
         "build-cxx",
     ]);
@@ -644,6 +646,7 @@ fn external_import_is_generator_and_capability_aware() {
     assert_eq!(provenance["schema"], "openstrata.external-build/v2");
     assert_eq!(provenance["toolchain"]["generator_flavor"], "visual-studio");
     assert_eq!(provenance["toolchain"]["multi_config"], true);
+    assert_eq!(provenance["toolchain"]["configuration"], "Release");
     assert_eq!(
         provenance["toolchain"]["cxx_compiler_source"],
         "CMakeFiles/3.31.0/CMakeCXXCompiler.cmake:CMAKE_CXX_COMPILER"
@@ -671,6 +674,8 @@ fn external_import_is_generator_and_capability_aware() {
         "vs-core-build",
         "--profile",
         "core",
+        "--config",
+        "Release",
         "--capability",
         "usd-stage-read",
     ]);
@@ -1195,6 +1200,48 @@ fn renderer_managed_build_and_test_stamp_the_owning_sessions() {
     assert_eq!(build_producer.kind, "ost-build");
     assert_eq!(build_producer.target, id);
     assert!(build_producer.can_assert_pass());
+    let completion: ost_build::BuildCompletion = serde_json::from_str(
+        &std::fs::read_to_string(
+            sb.work
+                .join("build")
+                .join(&id)
+                .join(ost_build::BUILD_COMPLETION_FILE),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let binding = completion
+        .renderer_reports
+        .iter()
+        .find(|binding| binding.path == "renderer-report.json")
+        .expect("managed build completion binds the primary renderer report");
+    assert_eq!(binding.session, build_producer.id);
+    assert_eq!(
+        binding.sha256,
+        ost_core::digest::sha256_hex(&std::fs::read(&report_path).unwrap())
+    );
+
+    let pristine_report = std::fs::read(&report_path).unwrap();
+    let validate = sb.ost(&["--json", "validate"]);
+    assert!(
+        validate.status.success(),
+        "bound renderer evidence should validate:\n{}",
+        out_text(&validate)
+    );
+    let mut copied_or_stale = pristine_report.clone();
+    copied_or_stale.extend_from_slice(b"\n");
+    std::fs::write(&report_path, copied_or_stale).unwrap();
+    let stale = sb.ost(&["--json", "validate"]);
+    assert!(
+        !stale.status.success(),
+        "renderer report bytes not bound by completion must fail validation"
+    );
+    assert!(
+        out_text(&stale).contains("does not match managed producer"),
+        "{}",
+        out_text(&stale)
+    );
+    std::fs::write(&report_path, pristine_report).unwrap();
 
     let test = sb.ost(&["test", "--progress", "plain"]);
     assert!(
@@ -1216,6 +1263,19 @@ fn renderer_managed_build_and_test_stamp_the_owning_sessions() {
     assert_eq!(test_producer.target, id);
     assert!(test_producer.can_assert_pass());
     assert_ne!(build_producer.id, test_producer.id);
+    let test_completion: ost_build::TestCompletion = serde_json::from_str(
+        &std::fs::read_to_string(
+            sb.work
+                .join("build")
+                .join(&id)
+                .join(ost_build::TEST_COMPLETION_FILE),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(test_completion.renderer_reports.iter().any(|binding| {
+        binding.path == "renderer-ctest-report.json" && binding.session == test_producer.id
+    }));
 }
 
 #[test]

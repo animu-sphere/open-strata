@@ -24,8 +24,8 @@ use clap::Args;
 
 use ost_build::{
     BuildCompletion, BuildIntent, BuildProjectIdentity, CMakeCacheEntry, CMakeCacheType,
-    CachePathPortability, LeaseMode, Target, TargetLease, TargetLock, BUILD_COMPLETION_FILE,
-    TARGET_LEASE_FILE,
+    CachePathPortability, LeaseMode, RendererEvidenceBinding, Target, TargetLease, TargetLock,
+    BUILD_COMPLETION_FILE, TARGET_LEASE_FILE,
 };
 use ost_core::fs::write_atomic;
 use ost_core::host::Os;
@@ -517,7 +517,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         return Err(error);
     }
     let completed_unix = crate::commands::renderer::unix_now();
-    stamp_build_renderer_reports(
+    let renderer_reports = stamp_build_renderer_reports(
         &root,
         &build_dir,
         &renderer_reports_before,
@@ -528,7 +528,14 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         ost_manifest::SessionOutcome::Success,
         true,
     )?;
-    write_completion(&root, &id, &relative_build, &intent, lease.invocation())?;
+    write_completion(
+        &root,
+        &id,
+        &relative_build,
+        &intent,
+        lease.invocation(),
+        renderer_reports,
+    )?;
 
     // The completion is published; the target is free for the next writer.
     // Handled configure/build failures also clear their record before return;
@@ -566,7 +573,7 @@ fn stamp_build_renderer_reports(
     completed_unix: Option<u64>,
     outcome: ost_manifest::SessionOutcome,
     validate_primary: bool,
-) -> Result<()> {
+) -> Result<Vec<RendererEvidenceBinding>> {
     let producer = crate::commands::renderer::managed_producer_session(
         "ost-build",
         id,
@@ -581,8 +588,7 @@ fn stamp_build_renderer_reports(
         before,
         producer,
         validate_primary,
-    )?;
-    Ok(())
+    )
 }
 
 fn timeout(seconds: u64) -> Option<Duration> {
@@ -615,6 +621,7 @@ fn write_completion(
     relative_build: &Utf8Path,
     intent: &BuildIntent,
     invocation: Option<&str>,
+    renderer_reports: Vec<RendererEvidenceBinding>,
 ) -> Result<()> {
     let lock_path = root
         .join(STATE_DIR)
@@ -645,7 +652,8 @@ fn write_completion(
     let completion = match invocation {
         Some(invocation) => completion.with_invocation(invocation),
         None => completion,
-    };
+    }
+    .with_renderer_reports(renderer_reports);
     let body = completion
         .to_json()
         .map_err(|error| Error::parse(BUILD_COMPLETION_FILE, anyhow::Error::new(error)))?;
@@ -684,6 +692,12 @@ pub(crate) fn validate_completed_intent(
 ) -> std::result::Result<(), String> {
     let mut completed_cache = completed.cache.clone();
     completed_cache.remove("CMAKE_BUILD_TYPE");
+    // Domain workflows may add reserved OpenStrata cache entries around a
+    // project-declared intent. They remain recorded in completion/preflight
+    // evidence but are not authored in `[build.intents.*]`, so comparing them
+    // to the declaration would make every `renderer viewport --intent ...`
+    // completion look stale.
+    completed_cache.remove("OST_RENDERER_ADAPTERS");
     if completed.name != declared.name || completed_cache != declared.cache {
         let command = if declared.name == "default" {
             "ost build".to_string()
@@ -1088,5 +1102,31 @@ mod tests {
         assert!(generator_uses_ninja("Ninja Multi-Config"));
         assert!(generator_uses_ninja("ninja multi-config"));
         assert!(!generator_uses_ninja("Visual Studio 17 2022"));
+    }
+
+    #[test]
+    fn declared_intent_validation_accepts_the_renderer_domain_cache() {
+        let mut declared = BuildIntent {
+            name: "viewport-usd".into(),
+            cache: std::collections::BTreeMap::from([(
+                "MERLIN_ENABLE_HYDRA2".into(),
+                CMakeCacheEntry::bool(true),
+            )]),
+        };
+        let mut completed = declared.clone();
+        completed.cache.insert(
+            "OST_RENDERER_ADAPTERS".into(),
+            CMakeCacheEntry::string("viewport"),
+        );
+        completed.cache.insert(
+            "CMAKE_BUILD_TYPE".into(),
+            CMakeCacheEntry::string("Release"),
+        );
+        assert!(validate_completed_intent(&completed, &declared).is_ok());
+
+        declared
+            .cache
+            .insert("MERLIN_ENABLE_HYDRA2".into(), CMakeCacheEntry::bool(false));
+        assert!(validate_completed_intent(&completed, &declared).is_err());
     }
 }

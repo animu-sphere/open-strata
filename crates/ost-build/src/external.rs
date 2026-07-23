@@ -316,6 +316,17 @@ pub enum ImportError {
     },
     /// The tree resolved `pxr` from somewhere other than the selected runtime.
     ForeignRuntime { found: String, expected: String },
+    /// A multi-config generator requires the concrete built configuration.
+    ConfigurationRequired {
+        generator: String,
+        available: Vec<String>,
+    },
+    /// The requested configuration is not selectable in this build tree.
+    ConfigurationUnavailable {
+        generator: String,
+        requested: String,
+        available: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for ImportError {
@@ -334,6 +345,23 @@ impl std::fmt::Display for ImportError {
                 f,
                 "the build tree resolved pxr from '{found}', not from the selected runtime at \
                  '{expected}'"
+            ),
+            ImportError::ConfigurationRequired {
+                generator,
+                available,
+            } => write!(
+                f,
+                "{generator} is multi-config; select the configuration whose binaries this provenance describes with --config (available: {})",
+                available.join(", ")
+            ),
+            ImportError::ConfigurationUnavailable {
+                generator,
+                requested,
+                available,
+            } => write!(
+                f,
+                "configuration '{requested}' is not available in {generator} (available: {})",
+                available.join(", ")
             ),
         }
     }
@@ -363,6 +391,10 @@ impl ImportError {
                  selected runtime before importing"
                     .into()
             }
+            ImportError::ConfigurationRequired { .. }
+            | ImportError::ConfigurationUnavailable { .. } => {
+                "pass --config with one configuration listed by the CMake build tree".into()
+            }
         }
     }
 }
@@ -379,6 +411,25 @@ impl ExternalBuildProvenance {
         openusd_version: Option<String>,
         scope: ExternalImportScope,
         imported_unix: u64,
+    ) -> Result<ExternalBuildProvenance, ImportError> {
+        Self::from_cache_for_configuration(
+            cache,
+            runtime,
+            openusd_version,
+            scope,
+            imported_unix,
+            None,
+        )
+    }
+
+    /// Derive provenance for one concrete single- or multi-config output.
+    pub fn from_cache_for_configuration(
+        cache: &CMakeCache,
+        runtime: ExternalRuntime,
+        openusd_version: Option<String>,
+        scope: ExternalImportScope,
+        imported_unix: u64,
+        selected_configuration: Option<&str>,
     ) -> Result<ExternalBuildProvenance, ImportError> {
         let detected_generator = cache.get("CMAKE_GENERATOR").unwrap_or("unresolved");
         let source_root = cache.get("CMAKE_HOME_DIRECTORY").ok_or_else(|| {
@@ -465,6 +516,35 @@ impl ExternalBuildProvenance {
         } else {
             Vec::new()
         };
+        let configuration = if multi_config {
+            let selected = selected_configuration
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| ImportError::ConfigurationRequired {
+                    generator: generator_diagnostic.clone(),
+                    available: configurations.clone(),
+                })?;
+            if !configurations.iter().any(|value| value == selected) {
+                return Err(ImportError::ConfigurationUnavailable {
+                    generator: generator_diagnostic,
+                    requested: selected.to_string(),
+                    available: configurations,
+                });
+            }
+            selected.to_string()
+        } else {
+            let configured = cache.get("CMAKE_BUILD_TYPE").unwrap_or("").to_string();
+            if let Some(selected) = selected_configuration.filter(|value| !value.trim().is_empty())
+            {
+                if !configured.is_empty() && configured != selected {
+                    return Err(ImportError::ConfigurationUnavailable {
+                        generator: generator_diagnostic,
+                        requested: selected.to_string(),
+                        available: vec![configured],
+                    });
+                }
+            }
+            configured
+        };
         let cache_digest = cache.identity_digest_for_scope(scope.requires_openusd);
 
         Ok(ExternalBuildProvenance {
@@ -483,13 +563,7 @@ impl ExternalBuildProvenance {
                 generator_instance: cache.get("CMAKE_GENERATOR_INSTANCE").map(normalize),
                 generator_platform: cache.get("CMAKE_GENERATOR_PLATFORM").map(str::to_string),
                 generator_toolset: cache.get("CMAKE_GENERATOR_TOOLSET").map(str::to_string),
-                // Multi-config trees carry their selectable configurations as
-                // a set; only single-config trees have one CMAKE_BUILD_TYPE.
-                configuration: if multi_config {
-                    String::new()
-                } else {
-                    cache.get("CMAKE_BUILD_TYPE").unwrap_or("").to_string()
-                },
+                configuration,
                 cxx_compiler,
                 cxx_compiler_source: Some(cxx_compiler_source),
                 cxx_standard: cache.get("CMAKE_CXX_STANDARD").map(str::to_string),
@@ -846,17 +920,51 @@ FIND_PACKAGE_MESSAGE_DETAILS_Python3:INTERNAL=[C:/py.lib][C:/Include][found comp
                  pxr_DIR:PATH={}\n",
                 runtime().root
             ));
-            let record =
-                ExternalBuildProvenance::from_cache(&cache, runtime(), None, usd_scope(), 100)
-                    .unwrap();
+            let record = ExternalBuildProvenance::from_cache_for_configuration(
+                &cache,
+                runtime(),
+                None,
+                usd_scope(),
+                100,
+                Some("Release"),
+            )
+            .unwrap();
             assert_eq!(record.toolchain.generator_flavor, flavor);
             assert!(record.toolchain.multi_config);
-            assert!(record.toolchain.configuration.is_empty());
+            assert_eq!(record.toolchain.configuration, "Release");
             assert_eq!(
                 record.toolchain.configurations,
                 ["Debug", "Release", "RelWithDebInfo"]
             );
         }
+    }
+
+    #[test]
+    fn multi_config_import_requires_one_available_configuration() {
+        let cache = CMakeCache::parse(&format!(
+            "CMAKE_HOME_DIRECTORY:INTERNAL=/src\n\
+             CMAKE_CACHEFILE_DIR:INTERNAL=/build\n\
+             CMAKE_GENERATOR:INTERNAL=Ninja Multi-Config\n\
+             CMAKE_CONFIGURATION_TYPES:STRING=Debug;Release\n\
+             CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++\n\
+             pxr_DIR:PATH={}\n",
+            runtime().root
+        ));
+        assert!(matches!(
+            ExternalBuildProvenance::from_cache(&cache, runtime(), None, usd_scope(), 100),
+            Err(ImportError::ConfigurationRequired { .. })
+        ));
+        assert!(matches!(
+            ExternalBuildProvenance::from_cache_for_configuration(
+                &cache,
+                runtime(),
+                None,
+                usd_scope(),
+                100,
+                Some("MinSizeRel"),
+            ),
+            Err(ImportError::ConfigurationUnavailable { .. })
+        ));
     }
 
     #[test]
@@ -891,8 +999,15 @@ FIND_PACKAGE_MESSAGE_DETAILS_Python3:INTERNAL=[C:/py.lib][C:/Include][found comp
 
         let cache = CMakeCache::load(&build_dir.join("CMakeCache.txt")).unwrap();
         let digest_before = cache.identity_digest();
-        let record =
-            ExternalBuildProvenance::from_cache(&cache, runtime(), None, usd_scope(), 100).unwrap();
+        let record = ExternalBuildProvenance::from_cache_for_configuration(
+            &cache,
+            runtime(),
+            None,
+            usd_scope(),
+            100,
+            Some("Release"),
+        )
+        .unwrap();
         assert_eq!(record.toolchain.generator_flavor, "visual-studio");
         assert!(record.toolchain.multi_config);
         assert_eq!(record.toolchain.cxx_compiler, "C:/MSVC/bin/cl.exe");

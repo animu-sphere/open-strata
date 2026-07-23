@@ -339,14 +339,15 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         Some(completed_unix),
         producer_outcome,
     );
-    crate::commands::renderer::stamp_changed_managed_renderer_reports(
+    let renderer_reports = crate::commands::renderer::stamp_changed_managed_renderer_reports(
         &root,
         &build_dir,
         &renderer_reports_before,
         producer,
         producer_outcome == ost_manifest::SessionOutcome::Success,
     )?;
-    let mut completion = TestCompletion::new(&build, &configuration, totals, completed_unix);
+    let mut completion = TestCompletion::new(&build, &configuration, totals, completed_unix)
+        .with_renderer_reports(renderer_reports);
     if let Some(invocation) = lease.invocation() {
         completion = completion.with_invocation(invocation);
     }
