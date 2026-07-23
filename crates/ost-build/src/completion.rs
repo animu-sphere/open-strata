@@ -116,6 +116,19 @@ pub struct BuildOutput {
     pub size: u64,
 }
 
+/// Exact renderer-report bytes published by a completed managed operation.
+///
+/// The same session id is stamped into the report. Recording its digest here
+/// prevents a copied or stale report from borrowing a newer producer id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RendererEvidenceBinding {
+    /// Build-directory-relative, forward-slashed report path.
+    pub path: String,
+    pub session: String,
+    pub sha256: String,
+}
+
 impl Default for BuildIntent {
     fn default() -> Self {
         Self {
@@ -149,6 +162,9 @@ pub struct BuildCompletion {
     /// v0.18.0 project completions and non-package-producing builds remain valid.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<BuildOutput>,
+    /// Renderer reports atomically attributed to this managed build.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renderer_reports: Vec<RendererEvidenceBinding>,
     pub completed_unix: u64,
 }
 
@@ -171,6 +187,7 @@ impl BuildCompletion {
             intent,
             invocation: None,
             outputs: Vec::new(),
+            renderer_reports: Vec::new(),
             completed_unix,
         }
     }
@@ -185,6 +202,11 @@ impl BuildCompletion {
     /// finalized. Callers provide a deterministic, path-sorted collection.
     pub fn with_outputs(mut self, outputs: Vec<BuildOutput>) -> Self {
         self.outputs = outputs;
+        self
+    }
+
+    pub fn with_renderer_reports(mut self, reports: Vec<RendererEvidenceBinding>) -> Self {
+        self.renderer_reports = reports;
         self
     }
 
@@ -292,6 +314,7 @@ impl BuildCompletion {
                 ));
             }
         }
+        validate_renderer_bindings(&self.renderer_reports)?;
         Ok(())
     }
 }
@@ -334,6 +357,9 @@ pub struct TestCompletion {
     pub totals: TestTotals,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation: Option<String>,
+    /// Renderer reports atomically attributed to this managed test run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renderer_reports: Vec<RendererEvidenceBinding>,
     pub completed_unix: u64,
 }
 
@@ -366,12 +392,18 @@ impl TestCompletion {
             build_fingerprint: build.fingerprint(),
             totals,
             invocation: None,
+            renderer_reports: Vec::new(),
             completed_unix,
         }
     }
 
     pub fn with_invocation(mut self, invocation: impl Into<String>) -> Self {
         self.invocation = Some(invocation.into());
+        self
+    }
+
+    pub fn with_renderer_reports(mut self, reports: Vec<RendererEvidenceBinding>) -> Self {
+        self.renderer_reports = reports;
         self
     }
 
@@ -412,8 +444,49 @@ impl TestCompletion {
         if self.totals.total == 0 {
             return Err("test completion records no tests".into());
         }
+        validate_renderer_bindings(&self.renderer_reports)?;
         Ok(())
     }
+}
+
+fn validate_renderer_bindings(bindings: &[RendererEvidenceBinding]) -> Result<(), String> {
+    let mut paths = BTreeSet::new();
+    for binding in bindings {
+        let path_bytes = binding.path.as_bytes();
+        let has_windows_drive_prefix =
+            path_bytes.len() >= 2 && path_bytes[0].is_ascii_alphabetic() && path_bytes[1] == b':';
+        if binding.path.is_empty()
+            || binding.path.starts_with('/')
+            || binding.path.starts_with('\\')
+            || has_windows_drive_prefix
+            || binding.path.contains('\\')
+            || binding.path.split('/').any(|segment| segment == "..")
+        {
+            return Err(format!(
+                "renderer evidence path '{}' is not build-directory-relative",
+                binding.path
+            ));
+        }
+        if !paths.insert(binding.path.as_str()) {
+            return Err(format!(
+                "renderer evidence repeats report '{}'",
+                binding.path
+            ));
+        }
+        if binding.session.trim().is_empty() {
+            return Err(format!(
+                "renderer evidence '{}' has an empty producer session",
+                binding.path
+            ));
+        }
+        if !is_sha256(&binding.sha256) {
+            return Err(format!(
+                "renderer evidence '{}' has an invalid SHA-256 digest",
+                binding.path
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -486,6 +559,35 @@ mod tests {
         let mut regenerated = build_completion();
         regenerated.generator = "Visual Studio 17 2022".into();
         assert_ne!(build_completion().fingerprint(), regenerated.fingerprint());
+    }
+
+    #[test]
+    fn renderer_evidence_bindings_are_portable_and_digest_pinned() {
+        let mut completion =
+            build_completion().with_renderer_reports(vec![RendererEvidenceBinding {
+                path: "renderer-report.json".into(),
+                session: "ost-build-session".into(),
+                sha256: format!("sha256:{}", "a".repeat(64)),
+            }]);
+        assert!(completion
+            .validate_against(
+                &lock(),
+                "demo",
+                "1.2.3",
+                Utf8Path::new("build/cy2026-linux-x86_64-py313-usd"),
+            )
+            .is_ok());
+
+        completion.renderer_reports[0].path = "../copied-report.json".into();
+        assert!(completion
+            .validate_against(
+                &lock(),
+                "demo",
+                "1.2.3",
+                Utf8Path::new("build/cy2026-linux-x86_64-py313-usd"),
+            )
+            .unwrap_err()
+            .contains("build-directory-relative"));
     }
 
     #[test]

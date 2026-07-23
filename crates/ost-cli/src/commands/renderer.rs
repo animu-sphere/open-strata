@@ -14,7 +14,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
 use serde_json::Value;
 
-use ost_build::{BuildIntent, CMakeCacheEntry, CMakeCacheType, CachePathPortability};
+use ost_build::{
+    BuildIntent, CMakeCacheEntry, CMakeCacheType, CachePathPortability, RendererEvidenceBinding,
+};
 use ost_core::fs::write_atomic;
 use ost_core::host::Os;
 use ost_core::paths::{find_project_root, PROJECT_MANIFEST, STATE_DIR};
@@ -767,13 +769,14 @@ pub(crate) fn stamp_changed_managed_renderer_reports(
     before: &RendererReportSnapshot,
     producer: ProducerSession,
     validate_primary: bool,
-) -> Result<Vec<Utf8PathBuf>> {
+) -> Result<Vec<RendererEvidenceBinding>> {
     if !root.join(RENDERER_MANIFEST).as_std_path().is_file() {
         return Ok(Vec::new());
     }
     let manifest = RendererManifest::load(root)?;
     let primary = manifest.report_path(build_dir);
     let after = snapshot_managed_renderer_reports(root, build_dir)?;
+    let session = producer.id.clone();
     let mut stamped = Vec::new();
     for (path, state) in after.files {
         if before.files.get(&path) == Some(&state) {
@@ -789,7 +792,18 @@ pub(crate) fn stamp_changed_managed_renderer_reports(
             ManagedReportValidation::None
         };
         stamp_renderer_report_at(&manifest, &path, producer.clone(), validation)?;
-        stamped.push(path);
+        let relative = path.strip_prefix(build_dir).map_err(|_| {
+            Error::validation(format!(
+                "managed renderer report '{path}' is outside build directory '{build_dir}'"
+            ))
+        })?;
+        let bytes = std::fs::read(path.as_std_path())
+            .map_err(|error| Error::io(path.to_string(), error))?;
+        stamped.push(RendererEvidenceBinding {
+            path: relative.as_str().replace('\\', "/"),
+            session: session.clone(),
+            sha256: ost_core::digest::sha256_hex(&bytes),
+        });
     }
     Ok(stamped)
 }
@@ -1104,7 +1118,7 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
     // One ordinary managed build with the viewport intent. A host-neutral
     // viewport may use `core`; a scene workflow must select a profile carrying
     // the capabilities implied by its passthrough arguments.
-    let (target, _) = build_target(&platform, &profile)?;
+    let (target, resolved) = build_target(&platform, &profile)?;
     let mut intent = match args.intent.as_deref() {
         Some(_) => build::resolve_declared_intent(&root, args.intent.as_deref())?,
         None => BuildIntent {
@@ -1152,11 +1166,10 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         return Ok(());
     }
     let build_dir = root.join(build::build_dir_for_intent(&target.id(), &intent));
-    let renderer_reports_before = snapshot_managed_renderer_reports(&root, &build_dir)?;
     if !fmt.is_json() {
         println!("==> preparing managed viewport build: {build_dir}");
     }
-    build::run_with_intent(
+    if let Err(error) = build::run_with_intent(
         BuildArgs::managed(
             platform.clone(),
             profile.clone(),
@@ -1166,7 +1179,20 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         .machine_quiet(fmt.is_json()),
         fmt,
         intent.clone(),
-    )?;
+    ) {
+        return Err(error.with_data(write_viewport_build_failure_record(
+            &root,
+            &target.id(),
+            &platform,
+            &profile,
+            &args.config,
+            &build_dir,
+            &intent,
+            &preflight,
+            &args.args,
+            viewport_started_unix,
+        )?));
+    }
 
     // Adopted projects may expose a project-specific viewport option without
     // consuming OST_RENDERER_ADAPTERS. Discover the one exact option from
@@ -1184,7 +1210,7 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
                 println!("==> adopted renderer mapping: enabling {option}");
             }
             insert_domain_cache(&mut intent, option, CMakeCacheEntry::bool(true))?;
-            build::run_with_intent(
+            if let Err(error) = build::run_with_intent(
                 BuildArgs::managed(
                     platform.clone(),
                     profile.clone(),
@@ -1194,7 +1220,20 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
                 .machine_quiet(fmt.is_json()),
                 fmt,
                 intent.clone(),
-            )?;
+            ) {
+                return Err(error.with_data(write_viewport_build_failure_record(
+                    &root,
+                    &target.id(),
+                    &platform,
+                    &profile,
+                    &args.config,
+                    &build_dir,
+                    &intent,
+                    &preflight,
+                    &args.args,
+                    viewport_started_unix,
+                )?));
+            }
         }
     }
 
@@ -1218,8 +1257,17 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
     if !fmt.is_json() {
         println!("==> viewport: {executable}");
     }
+    // The nested managed build owns reports written while it configures and
+    // compiles. Snapshot only after that transaction, so a viewport child
+    // failure cannot overwrite valid build provenance with launch provenance.
+    let renderer_reports_before = snapshot_managed_renderer_reports(&root, &build_dir)?;
     let mut command = Command::new(executable.as_std_path());
     command.args(&args.args);
+    // The viewport was linked against the selected runtime during the managed
+    // build; launch it in that same activation environment. On Windows this is
+    // load-bearing because OpenUSD and dependency DLL directories are carried
+    // on PATH rather than encoded in the executable.
+    command.envs(resolved.env.resolve());
     let (status, child_stdout, child_stderr) =
         run_renderer_child(&mut command, fmt.is_json(), executable.as_str())?;
     let outcome = viewport_session_outcome(status.code());
@@ -1231,7 +1279,7 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         Some(unix_now()),
         outcome,
     );
-    stamp_changed_managed_renderer_reports(
+    let renderer_reports = stamp_changed_managed_renderer_reports(
         &root,
         &build_dir,
         &renderer_reports_before,
@@ -1239,6 +1287,25 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         outcome == SessionOutcome::Success,
     )?;
     let completed_unix = unix_now();
+    let backend = labeled_child_value(&child_stdout, "Selected backend:")
+        .unwrap_or_else(|| manifest.composition.backend.clone());
+    let device = labeled_child_value(&child_stdout, "Device:");
+    let device_status = if device.is_some() {
+        "reported"
+    } else {
+        "unreported"
+    };
+    let presentation = labeled_child_value(&child_stdout, "Presentation:").or_else(|| {
+        args.args
+            .iter()
+            .any(|arg| arg.eq_ignore_ascii_case("--hidden"))
+            .then(|| "hidden".to_string())
+    });
+    let record_path = root
+        .join(STATE_DIR)
+        .join("renderer-viewport")
+        .join(target.id())
+        .join("launch.json");
     let record = serde_json::json!({
         "schema": "openstrata.renderer-launch/v1",
         "kind": "renderer-viewport",
@@ -1254,25 +1321,35 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         "completed_unix": completed_unix,
         "exit_code": status.code(),
         "outcome": outcome.as_str(),
-        "backend": labeled_child_value(&child_stdout, "Selected backend:"),
-        "device": labeled_child_value(&child_stdout, "Device:"),
-        "presentation": labeled_child_value(&child_stdout, "Presentation:"),
+        "backend": backend,
+        "device": device,
+        "device_status": device_status,
+        "presentation": presentation,
+        "readiness": {
+            "reached": matches!(status.code(), Some(0 | 77)),
+            "reported": labeled_child_value(&child_stdout, "Ready:"),
+        },
+        "exit": {
+            "state": viewport_exit_state(status.code()),
+            "code": status.code(),
+        },
+        "renderer_reports": renderer_reports,
+        "outputs": {
+            "launch_record": record_path,
+            "build_log": root.join(STATE_DIR).join("targets").join(target.id()).join("build.log"),
+        },
         "stdout": child_stdout,
         "stderr": child_stderr,
     });
-    let record_path = root
-        .join(STATE_DIR)
-        .join("renderer-viewport")
-        .join(target.id())
-        .join("launch.json");
     write_launch_record(&record_path, &record)?;
+    let evidence = serde_json::json!({
+        "launch": record,
+        "record": record_path,
+    });
     match status.code() {
         Some(0) => {
             if fmt.is_json() {
-                output::success(&serde_json::json!({
-                    "launch": record,
-                    "record": record_path,
-                }));
+                output::success(&evidence);
             }
             Ok(())
         }
@@ -1284,13 +1361,75 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
             "the viewport reported that this environment cannot present",
         )
         .with_hint("run on a host with a display and a Vulkan 1.3 capable device")
-        .with_phase("renderer-viewport-host")),
+        .with_phase("renderer-viewport-host")
+        .with_data(evidence)),
         _ => Err(Error::external_tool(format!(
             "the viewport exited unsuccessfully{}",
             exit_detail(&status)
         ))
-        .with_phase("renderer-viewport-host")),
+        .with_phase("renderer-viewport-host")
+        .with_data(evidence)),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_viewport_build_failure_record(
+    root: &Utf8Path,
+    target_id: &str,
+    platform: &str,
+    profile: &str,
+    config: &str,
+    build_dir: &Utf8Path,
+    intent: &BuildIntent,
+    preflight: &Value,
+    args: &[String],
+    started_unix: u64,
+) -> Result<Value> {
+    let record_path = root
+        .join(STATE_DIR)
+        .join("renderer-viewport")
+        .join(target_id)
+        .join("launch.json");
+    let record = serde_json::json!({
+        "schema": "openstrata.renderer-launch/v1",
+        "kind": "renderer-viewport",
+        "executable": Value::Null,
+        "target": platform,
+        "profile": profile,
+        "config": config,
+        "build_dir": build_dir,
+        "intent": intent,
+        "preflight": preflight,
+        "args": args,
+        "started_unix": started_unix,
+        "completed_unix": unix_now(),
+        "exit_code": Value::Null,
+        "outcome": "failure",
+        "backend": Value::Null,
+        "device": Value::Null,
+        "device_status": "unavailable-before-launch",
+        "presentation": Value::Null,
+        "readiness": {
+            "reached": false,
+            "reported": Value::Null,
+        },
+        "exit": {
+            "state": "build-failure",
+            "code": Value::Null,
+        },
+        "renderer_reports": [],
+        "outputs": {
+            "launch_record": record_path,
+            "build_log": root.join(STATE_DIR).join("targets").join(target_id).join("build.log"),
+        },
+        "stdout": "",
+        "stderr": "",
+    });
+    write_launch_record(&record_path, &record)?;
+    Ok(serde_json::json!({
+        "launch": record,
+        "record": record_path,
+    }))
 }
 
 fn viewport_capability_preflight(
@@ -1381,25 +1520,29 @@ fn viewport_session_outcome(exit_code: Option<i32>) -> SessionOutcome {
     }
 }
 
+fn viewport_exit_state(exit_code: Option<i32>) -> &'static str {
+    match exit_code {
+        Some(0) => "success",
+        Some(77) => "presentation-unavailable",
+        _ => "child-failure",
+    }
+}
+
 fn run_renderer_child(
     command: &mut Command,
     capture: bool,
     label: &str,
 ) -> Result<(std::process::ExitStatus, String, String)> {
-    if capture {
-        let output = command
-            .output()
-            .map_err(|error| Error::io(format!("run {label}"), error))?;
-        return Ok((
-            output.status,
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-        ));
-    }
-    let status = command
-        .status()
+    let output = command
+        .output()
         .map_err(|error| Error::io(format!("run {label}"), error))?;
-    Ok((status, String::new(), String::new()))
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if !capture {
+        print!("{stdout}");
+        eprint!("{stderr}");
+    }
+    Ok((output.status, stdout, stderr))
 }
 
 fn labeled_child_value(output: &str, label: &str) -> Option<String> {
@@ -2233,10 +2376,12 @@ validation:
             SessionOutcome::Success,
         );
 
-        assert_eq!(
-            stamp_changed_managed_renderer_reports(&root, &build, &before, producer, true).unwrap(),
-            vec![report_path.clone()]
-        );
+        let bindings =
+            stamp_changed_managed_renderer_reports(&root, &build, &before, producer, true).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].path, ost_manifest::RENDERER_REPORT_FILE);
+        assert_eq!(bindings[0].session, "ost-build-0123abcd");
+        assert!(bindings[0].sha256.starts_with("sha256:"));
         let report = RendererReport::load(&report_path).unwrap();
         assert_eq!(report.producer.as_ref().unwrap().id, "ost-build-0123abcd");
         assert_eq!(

@@ -89,6 +89,16 @@ The JSON form publishes normalized `requested`, `applied`, `skipped`, and
 build tree is touched—unless the selected profile provides `usd-stage-read`.
 The same preflight object is retained in the durable viewport launch record.
 
+Managed build and test completions also bind changed renderer reports by
+producer session, build-relative path, and SHA-256. `ost validate` recomputes
+that digest, so copying an older report beside a newer completion cannot upgrade
+it into managed PASS evidence. External reports remain available through the
+explicit `external-unverified` attachment path.
+
+Viewport success, build failure, presentation-unavailable, and child failure
+all retain the same launch data shape. In `--json` mode, failures include the
+durable record under `data.launch` alongside the normal structured error.
+
 `renderer view` defaults to automatic camera selection and classifies optional
 host warnings separately from real plugin-discovery, renderer-selection, or
 first-frame failures.

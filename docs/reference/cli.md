@@ -28,7 +28,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost env`](#ost-env) — Print the environment that activates a runtime (for `eval`)
 - [`ost extension`](#ost-extension) — Inspect and request controlled extensions
 - [`ost external`](#ost-external) — Import and inspect provenance for a build OpenStrata did not perform
-- [`ost formation`](#ost-formation) — Resolve, inspect, lock, and run digest-pinned component Formations
+- [`ost formation`](#ost-formation) — Resolve, inspect, diagnose, export, lock, and run digest-pinned Formations
 - [`ost init`](#ost-init) — Initialise an OpenStrata project in the current directory
 - [`ost lock`](#ost-lock) — Generate or verify the project lockfile (strata.lock)
 - [`ost package`](#ost-package) — Install and pack a built target into a tar.zst artifact
@@ -476,6 +476,7 @@ Inspect an external build tree's CMake cache and record its provenance
 | --- | --- |
 | `--build-dir <BUILD_DIR>` | The external build tree to inspect |
 | `--capability <CAPABILITIES>` | Additional capability this external tree is intended to exercise. May be repeated; requirements are combined with the resolved profile |
+| `--config <CONFIG>` | Configuration whose binaries the import describes. Required for multi-config generators such as Visual Studio and Ninja Multi-Config |
 | `--profile <PROFILE>` | Profile. Defaults to the project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 
@@ -493,16 +494,48 @@ Show the provenance recorded for an external build tree
 
 ### `ost formation`
 
-Resolve, inspect, lock, and run digest-pinned component Formations
+Resolve, inspect, diagnose, export, lock, and run digest-pinned Formations
 
 **Usage:** `ost formation <COMMAND>`
 
 **Subcommands:**
 
+- [`ost formation doctor`](#ost-formation-doctor) — Diagnose resolution, lock state, environment, and command reachability
+- [`ost formation env`](#ost-formation-env) — Print the fully composed Formation environment
 - [`ost formation inspect`](#ost-formation-inspect) — Inspect the current resolution and any adjacent lock state
 - [`ost formation lock`](#ost-formation-lock) — Write a deterministic, digest-pinned formation.lock
 - [`ost formation resolve`](#ost-formation-resolve) — Resolve immutable artifacts, compatibility, and environment without launching
 - [`ost formation run`](#ost-formation-run) — Launch the Formation's command in the foreground and record evidence
+
+#### `ost formation doctor`
+
+Diagnose resolution, lock state, environment, and command reachability
+
+**Usage:** `ost formation doctor [<PATH>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<PATH>` | no | Formation manifest to resolve |
+
+#### `ost formation env`
+
+Print the fully composed Formation environment
+
+**Usage:** `ost formation env [OPTIONS] [<PATH>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<PATH>` | no | Formation manifest to resolve |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--shell <SHELL>` | Target shell. Defaults to the host's conventional shell |
 
 #### `ost formation inspect`
 

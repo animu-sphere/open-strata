@@ -28,6 +28,10 @@ pub enum FormationCmd {
     Inspect(FormationPathArgs),
     /// Write a deterministic, digest-pinned formation.lock.
     Lock(FormationLockArgs),
+    /// Print the fully composed Formation environment.
+    Env(FormationEnvArgs),
+    /// Diagnose resolution, lock state, environment, and command reachability.
+    Doctor(FormationPathArgs),
     /// Launch the Formation's command in the foreground and record evidence.
     Run(FormationRunArgs),
 }
@@ -51,6 +55,17 @@ pub struct FormationLockArgs {
 }
 
 #[derive(Debug, Clone, Args)]
+pub struct FormationEnvArgs {
+    /// Formation manifest to resolve.
+    #[arg(default_value = "formation.toml")]
+    pub path: Utf8PathBuf,
+
+    /// Target shell. Defaults to the host's conventional shell.
+    #[arg(long)]
+    pub shell: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
 pub struct FormationRunArgs {
     /// Formation manifest to run.
     #[arg(default_value = "formation.toml")]
@@ -66,6 +81,8 @@ pub fn run(command: FormationCmd, format: Format) -> Result<()> {
         FormationCmd::Resolve(args) => resolve_command(&args.path, format),
         FormationCmd::Inspect(args) => inspect_command(&args.path, format),
         FormationCmd::Lock(args) => lock_command(&args, format),
+        FormationCmd::Env(args) => env_command(&args, format),
+        FormationCmd::Doctor(args) => doctor_command(&args.path, format),
         FormationCmd::Run(args) => run_command(&args, format),
     }
 }
@@ -152,6 +169,135 @@ fn lock_command(args: &FormationLockArgs, format: Format) -> Result<()> {
         ),
     }
     Ok(())
+}
+
+fn env_command(args: &FormationEnvArgs, format: Format) -> Result<()> {
+    let mut resolution = resolve_path(&args.path)?;
+    let shell = super::devshell::pick_shell(args.shell.as_deref(), ost_core::Host::detect().os)?;
+    let env = resolution.materialized.env.resolve_over(&HashMap::new());
+    match format {
+        Format::Json => output::success(&serde_json::json!({
+            "formation": resolution.materialized.resolved.name,
+            "manifest_digest": resolution.materialized.resolved.manifest_digest,
+            "target": resolution.materialized.resolved.target,
+            "shell": format!("{shell:?}").to_lowercase(),
+            "env": env
+                .iter()
+                .map(|(name, value)| serde_json::json!({"name": name, "value": value}))
+                .collect::<Vec<_>>(),
+            "materialized": resolution.staging.path,
+        })),
+        Format::Human => {
+            println!(
+                "# OpenStrata Formation environment for {}",
+                resolution.materialized.resolved.name
+            );
+            print!("{}", resolution.materialized.env.render(shell));
+        }
+    }
+    // Unlike resolve/inspect, `env` exports paths for a later shell process.
+    // Keep this verified materialization alive so those paths remain usable.
+    resolution.staging.retain();
+    Ok(())
+}
+
+fn doctor_command(path: &Utf8Path, format: Format) -> Result<()> {
+    let resolution = resolve_path(path)?;
+    let materialized = &resolution.materialized;
+    let lock_path = default_lock_path(&resolution.manifest_path);
+    let lock = read_lock_if_present(&lock_path)?;
+    let lock_state = match &lock {
+        Some(lock)
+            if lock.resolution.manifest_digest == materialized.resolved.manifest_digest
+                && lock.resolution == materialized.resolved =>
+        {
+            ("pass", "formation.lock matches the current resolution")
+        }
+        Some(_) => ("fail", "formation.lock is stale or has resolution drift"),
+        None => ("fail", "formation.lock is absent"),
+    };
+    let environment = materialized.env.resolve_over(&HashMap::new());
+    let command_reachable =
+        formation_command_reachable(&materialized.resolved.command.program, &environment);
+    let checks = serde_json::json!([
+        {
+            "id": "formation.resolution",
+            "status": "pass",
+            "detail": format!("{} digest-pinned component(s) resolved", materialized.resolved.components.len()),
+        },
+        {
+            "id": "formation.lock",
+            "status": lock_state.0,
+            "detail": lock_state.1,
+        },
+        {
+            "id": "formation.environment",
+            "status": if materialized.resolved.conflicts.is_empty() { "pass" } else { "fail" },
+            "detail": format!("{} composed variable(s), {} conflict(s)", environment.len(), materialized.resolved.conflicts.len()),
+        },
+        {
+            "id": "formation.command",
+            "status": if command_reachable { "pass" } else { "fail" },
+            "detail": if command_reachable {
+                format!("'{}' is reachable in the composed environment", materialized.resolved.command.program)
+            } else {
+                format!("'{}' is not reachable in the composed environment", materialized.resolved.command.program)
+            },
+        },
+    ]);
+    let passed = checks
+        .as_array()
+        .is_some_and(|items| items.iter().all(|item| item["status"] != "fail"));
+    if format.is_json() {
+        output::report(
+            passed,
+            &serde_json::json!({
+                "formation": materialized.resolved.name,
+                "manifest_digest": materialized.resolved.manifest_digest,
+                "target": materialized.resolved.target,
+                "checks": checks,
+            }),
+        );
+    } else {
+        println!("Diagnosing Formation {}", materialized.resolved.name);
+        for check in checks.as_array().into_iter().flatten() {
+            println!(
+                "  [{}] {} — {}",
+                if check["status"] == "pass" {
+                    "✓"
+                } else {
+                    "✗"
+                },
+                check["id"].as_str().unwrap_or_default(),
+                check["detail"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    if !passed {
+        std::process::exit(Category::Validation.exit_code() as i32);
+    }
+    Ok(())
+}
+
+fn formation_command_reachable(program: &str, env: &[(String, String)]) -> bool {
+    let path = std::path::Path::new(program);
+    if path.is_absolute() || path.components().count() > 1 {
+        return path.is_file();
+    }
+    let Some(path_value) = env
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| value)
+    else {
+        return false;
+    };
+    std::env::split_paths(path_value).any(|directory| {
+        let candidate = directory.join(program);
+        if candidate.is_file() {
+            return true;
+        }
+        cfg!(windows) && directory.join(format!("{program}.exe")).is_file()
+    })
 }
 
 fn run_command(args: &FormationRunArgs, format: Format) -> Result<()> {
@@ -302,17 +448,24 @@ impl ResolvedPath {
 
 struct StagingRoot {
     path: Utf8PathBuf,
+    retained: bool,
 }
 
 impl StagingRoot {
     fn cleanup(&self) {
         let _ = ost_core::fs::remove_dir_all_robust(self.path.as_std_path());
     }
+
+    fn retain(&mut self) {
+        self.retained = true;
+    }
 }
 
 impl Drop for StagingRoot {
     fn drop(&mut self) {
-        self.cleanup();
+        if !self.retained {
+            self.cleanup();
+        }
     }
 }
 
@@ -327,6 +480,7 @@ fn resolve_path(path: &Utf8Path) -> Result<ResolvedPath> {
             .join(&declared.formation.name)
             .join("materialized")
             .join(format!("{}-{}", std::process::id(), now_nanos())),
+        retained: false,
     };
     let staging_root = &staging.path;
     let store = ArtifactStore::discover();

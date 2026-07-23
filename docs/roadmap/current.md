@@ -99,18 +99,44 @@ or building. Passing `--usd`, `--scene`, or a USD-family scene path requires
 exact `--profile usd` correction. The same preflight record is embedded in a
 successful durable viewport launch record.
 
-### P1/P2 - remaining renderer evidence closure
+**Implemented on the v0.20.0 branch:** `renderer viewport --preflight` resolves
+the adapter, intent, target/profile, passthrough workflow, and normalized
+capabilities without touching the build tree. The durable launch artifact
+retains the same preflight.
 
-- **OST20-RND-002:** bind the producer session and completion/report digests so
-  copied or stale reports cannot be upgraded into a managed PASS. Preserve
-  `external-unverified` attachment as the explicit external path.
-- **OST20-RND-003/005:** dogfood one real USD viewport success and keep one JSON
-  envelope for success, build failure, presentation-unavailable, and child
-  failure. Persist launch/readiness, backend/device, output locations, and exit
-  state beside completion evidence.
-- **OST20-RND-007:** add repeatable Ninja Multi-Config and Visual Studio
-  configuration-specific provenance fixtures. This is build provenance, not a
-  DCC-host implementation.
+### P1/P2 - renderer evidence closure
+
+**Implemented on the v0.20.0 branch:** managed build/test completions bind every
+changed renderer report by producer session, build-relative path, and SHA-256;
+validation recomputes the digest and refuses copied or stale report bytes.
+`external-unverified` remains the explicit non-managed attachment path.
+
+Viewport success, build failure, presentation-unavailable, and child failure
+now share one JSON data shape and one durable launch record containing
+preflight, launch/readiness, backend/device/presentation, output locations,
+report bindings, and exit state. Failure envelopes retain that record as
+structured `data` rather than reducing it to an error string.
+
+External import now requires `--config` for Ninja Multi-Config, Visual Studio,
+and other multi-config trees, validates it against
+`CMAKE_CONFIGURATION_TYPES`, and records the concrete configuration. Repeatable
+Ninja Multi-Config and Visual Studio fixtures cover generator-specific compiler
+and configuration provenance.
+
+**Acceptance exercised 2026-07-23:** the local hdMerlin `viewport-usd` intent
+resolved a real `cy2026/windows/usd` runtime, built the viewport, opened
+OpenUSD's `HelloWorld.usda`, rendered one hidden frame, exited `0`, retained the
+durable launch record, and passed `ost validate --intent viewport-usd --profile
+usd`. The first attempt exposed a missing launch-time runtime activation
+(`0xC0000135`); passing the selected runtime environment to the child closed it,
+and the failure record remained a useful proof of the unified envelope.
+
+### P1 - Formation environment and diagnostics carry-over
+
+**Implemented on the v0.20.0 branch:** `ost formation env` exports the complete
+composed environment from a retained verified materialization, while
+`ost formation doctor` reports resolution, lock freshness, environment
+conflicts, and command reachability under the same digest-pinned model.
 
 ## Shipped: v0.19.0 - composition and reach
 
@@ -171,7 +197,8 @@ Formation slice is started, because it is Formation's own precondition.
 ### Half B - Formation composition (narrowed)
 
 The Formation MVP as scoped in the [backlog ladder](backlog.md), narrowed to
-`ost formation resolve|inspect|run|lock` — `env` and `doctor` move to v0.20.0.
+`ost formation resolve|inspect|run|lock` — `env` and `doctor` moved to and are
+implemented on the v0.20.0 branch.
 Design target: [formations.md](../design/proposed/formations.md). The aggregate
 product artifact (Half A, P1) is the input Formation resolves against, which is
 why it moves out of the backlog and into this milestone.

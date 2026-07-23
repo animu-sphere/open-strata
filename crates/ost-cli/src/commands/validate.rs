@@ -10,10 +10,11 @@ use clap::Args;
 
 use camino::Utf8PathBuf;
 use ost_build::{
-    BuildCompletion, TargetLock, TestCompletion, BUILD_COMPLETION_FILE, TEST_COMPLETION_FILE,
+    BuildCompletion, RendererEvidenceBinding, TargetLock, TestCompletion, BUILD_COMPLETION_FILE,
+    TEST_COMPLETION_FILE,
 };
 use ost_core::paths::STATE_DIR;
-use ost_core::{digest, Result};
+use ost_core::{digest, Error, Result};
 use ost_manifest::{RendererCheckStatus, RendererManifest, RendererReport, RENDERER_MANIFEST};
 
 use crate::commands::configure::{build_target, load_project, resolve_selection};
@@ -39,7 +40,7 @@ pub struct ValidateArgs {
     build_dir: Option<Utf8PathBuf>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Status {
     Pass,
     Fail,
@@ -141,6 +142,7 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     let build_dir = external_build.as_ref().unwrap_or(&managed_build_dir);
     // The validated build record, kept so the `tested` check can bind against it.
     let mut built_completion: Option<BuildCompletion> = None;
+    let mut tested_completion: Option<TestCompletion> = None;
     if external_build.is_some() {
         checks.push(Check::skip(
             "built",
@@ -222,7 +224,10 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
         ) {
             (Some(build), Ok(source)) => match serde_json::from_str::<TestCompletion>(&source) {
                 Ok(tested) => match tested.validate_against(build) {
-                    Ok(()) => checks.push(Check::pass("tested")),
+                    Ok(()) => {
+                        checks.push(Check::pass("tested"));
+                        tested_completion = Some(tested);
+                    }
                     Err(detail) => checks.push(Check::fail("tested", detail)),
                 },
                 Err(error) => checks.push(Check::fail(
@@ -257,6 +262,16 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                 if report_path.as_std_path().is_file() {
                     match RendererReport::load(&report_path).and_then(|report| {
                         report.validate_against(&manifest)?;
+                        verify_managed_renderer_binding(
+                            &root,
+                            &id,
+                            build_dir,
+                            &report_path,
+                            &report,
+                            built_completion.as_ref(),
+                            tested_completion.as_ref(),
+                        )
+                        .map_err(Error::validation)?;
                         Ok(report)
                     }) {
                         Ok(report) => {
@@ -304,6 +319,7 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                         ),
                     ));
                 }
+                checks.push(viewport_launch_check(&root, &id, build_dir));
             }
             Err(error) => checks.push(Check::fail(
                 "renderer-manifest",
@@ -376,6 +392,213 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     // this command's report, so exit with that category code directly.
     if failed {
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
+    }
+    Ok(())
+}
+
+fn viewport_launch_check(
+    root: &camino::Utf8Path,
+    target_id: &str,
+    build_dir: &camino::Utf8Path,
+) -> Check {
+    let path = root
+        .join(STATE_DIR)
+        .join("renderer-viewport")
+        .join(target_id)
+        .join("launch.json");
+    let source = match std::fs::read_to_string(path.as_std_path()) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Check::skip("renderer-viewport", "no durable viewport launch");
+        }
+        Err(error) => {
+            return Check::fail(
+                "renderer-viewport",
+                format!("cannot read viewport launch record {path}: {error}"),
+            );
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_str(&source) {
+        Ok(value) => value,
+        Err(error) => {
+            return Check::fail("renderer-viewport", format!("{path} is invalid: {error}"));
+        }
+    };
+    if value["schema"] != "openstrata.renderer-launch/v1" || value["kind"] != "renderer-viewport" {
+        return Check::fail(
+            "renderer-viewport",
+            format!("{path} is not an openstrata.renderer-launch/v1 viewport record"),
+        );
+    }
+    if value.pointer("/preflight/passed") != Some(&serde_json::Value::Bool(true))
+        || value
+            .pointer("/preflight/target")
+            .and_then(|item| item.as_str())
+            != Some(target_id)
+    {
+        return Check::fail(
+            "renderer-viewport",
+            "viewport launch preflight is absent, failed, or names another target",
+        );
+    }
+    let bindings: Vec<RendererEvidenceBinding> = match serde_json::from_value(
+        value
+            .get("renderer_reports")
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+    ) {
+        Ok(bindings) => bindings,
+        Err(error) => {
+            return Check::fail(
+                "renderer-viewport",
+                format!("viewport renderer report bindings are invalid: {error}"),
+            );
+        }
+    };
+    for binding in bindings {
+        let path_bytes = binding.path.as_bytes();
+        if binding.path.is_empty()
+            || binding.path.starts_with('/')
+            || binding.path.starts_with('\\')
+            || binding.path.contains('\\')
+            || binding.path.split('/').any(|segment| segment == "..")
+            || (path_bytes.len() >= 2
+                && path_bytes[0].is_ascii_alphabetic()
+                && path_bytes[1] == b':')
+        {
+            return Check::fail(
+                "renderer-viewport",
+                format!(
+                    "viewport renderer report path '{}' is not build-directory-relative",
+                    binding.path
+                ),
+            );
+        }
+        let report_path = build_dir.join(&binding.path);
+        let bytes = match std::fs::read(report_path.as_std_path()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Check::fail(
+                    "renderer-viewport",
+                    format!("bound viewport report '{report_path}' is unavailable: {error}"),
+                );
+            }
+        };
+        let observed = digest::sha256_hex(&bytes);
+        if observed != binding.sha256 {
+            return Check::fail(
+                "renderer-viewport",
+                format!(
+                    "bound viewport report '{}' digest {} != {}",
+                    binding.path, observed, binding.sha256
+                ),
+            );
+        }
+    }
+    match value.pointer("/exit/state").and_then(|item| item.as_str()) {
+        Some("success")
+            if value["outcome"] == "success"
+                && value.pointer("/exit/code").and_then(|item| item.as_i64()) == Some(0)
+                && value.pointer("/readiness/reached") == Some(&serde_json::Value::Bool(true)) =>
+        {
+            Check::pass("renderer-viewport")
+        }
+        Some("presentation-unavailable") => Check::skip(
+            "renderer-viewport",
+            "viewport completed but this host cannot present",
+        ),
+        Some(state @ ("build-failure" | "child-failure")) => Check::fail(
+            "renderer-viewport",
+            format!("last durable viewport launch ended in {state}"),
+        ),
+        Some(state) => Check::fail(
+            "renderer-viewport",
+            format!("viewport launch has unsupported exit state '{state}'"),
+        ),
+        None => Check::fail("renderer-viewport", "viewport launch has no exit state"),
+    }
+}
+
+fn verify_managed_renderer_binding(
+    root: &camino::Utf8Path,
+    target_id: &str,
+    build_dir: &camino::Utf8Path,
+    report_path: &camino::Utf8Path,
+    report: &RendererReport,
+    build: Option<&BuildCompletion>,
+    tested: Option<&TestCompletion>,
+) -> std::result::Result<(), String> {
+    let Some(producer) = report.producer.as_ref() else {
+        return Ok(());
+    };
+    if !producer.kind.starts_with("ost-") {
+        // External producers remain explicitly unverified. Their PASS contract
+        // is governed by the producer outcome, not an OST completion record.
+        return Ok(());
+    }
+
+    let bindings = match producer.kind.as_str() {
+        "ost-build" => build
+            .map(|completion| completion.renderer_reports.clone())
+            .unwrap_or_default(),
+        "ost-test" => tested
+            .map(|completion| completion.renderer_reports.clone())
+            .unwrap_or_default(),
+        "ost-renderer-viewport" => {
+            let path = root
+                .join(STATE_DIR)
+                .join("renderer-viewport")
+                .join(target_id)
+                .join("launch.json");
+            let source = std::fs::read_to_string(path.as_std_path()).map_err(|error| {
+                format!(
+                    "managed producer '{}' has no durable viewport record at {} ({error})",
+                    producer.id, path
+                )
+            })?;
+            let value: serde_json::Value = serde_json::from_str(&source)
+                .map_err(|error| format!("{path} is invalid: {error}"))?;
+            serde_json::from_value(
+                value
+                    .get("renderer_reports")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+            )
+            .map_err(|error| format!("{path} renderer_reports are invalid: {error}"))?
+        }
+        kind => {
+            return Err(format!(
+                "managed renderer producer kind '{kind}' has no supported completion binding"
+            ))
+        }
+    };
+
+    let relative = report_path
+        .strip_prefix(build_dir)
+        .map_err(|_| {
+            format!("renderer report '{report_path}' is outside build directory '{build_dir}'")
+        })?
+        .as_str()
+        .replace('\\', "/");
+    let binding = bindings
+        .iter()
+        .find(|binding: &&RendererEvidenceBinding| {
+            binding.path == relative && binding.session == producer.id
+        })
+        .ok_or_else(|| {
+            format!(
+                "managed producer '{}' does not bind renderer report '{}' in its completion evidence",
+                producer.id, relative
+            )
+        })?;
+    let bytes = std::fs::read(report_path.as_std_path())
+        .map_err(|error| format!("cannot digest renderer report '{report_path}': {error}"))?;
+    let observed = digest::sha256_hex(&bytes);
+    if observed != binding.sha256 {
+        return Err(format!(
+            "renderer report '{}' digest {} does not match managed producer '{}' completion digest {}",
+            relative, observed, producer.id, binding.sha256
+        ));
     }
     Ok(())
 }
@@ -516,4 +739,63 @@ fn emit(id: &str, checks: &[Check], fmt: Format) {
             "Result: passed"
         }
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durable_viewport_exit_states_are_validation_evidence() {
+        let root = std::env::temp_dir().join(format!(
+            "ost-viewport-validate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = camino::Utf8PathBuf::from_path_buf(root).unwrap();
+        let target = "cy2026-windows-x86_64-py313-usd";
+        let build = root.join("build").join(target);
+        let record_path = root
+            .join(STATE_DIR)
+            .join("renderer-viewport")
+            .join(target)
+            .join("launch.json");
+        std::fs::create_dir_all(record_path.parent().unwrap().as_std_path()).unwrap();
+        std::fs::create_dir_all(build.as_std_path()).unwrap();
+        let mut record = serde_json::json!({
+            "schema": "openstrata.renderer-launch/v1",
+            "kind": "renderer-viewport",
+            "preflight": {"passed": true, "target": target},
+            "renderer_reports": [],
+            "outcome": "success",
+            "readiness": {"reached": true},
+            "exit": {"state": "success", "code": 0},
+        });
+        std::fs::write(
+            record_path.as_std_path(),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            viewport_launch_check(&root, target, &build).status,
+            Status::Pass
+        );
+
+        record["outcome"] = "failure".into();
+        record["readiness"]["reached"] = false.into();
+        record["exit"] = serde_json::json!({"state": "child-failure", "code": 1});
+        std::fs::write(
+            record_path.as_std_path(),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            viewport_launch_check(&root, target, &build).status,
+            Status::Fail
+        );
+        std::fs::remove_dir_all(root.as_std_path()).unwrap();
+    }
 }

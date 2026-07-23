@@ -56,12 +56,16 @@ pub fn error(err: &ost_core::Error, fmt: Format) {
             if let Some(phase) = err.phase() {
                 error["phase"] = serde_json::Value::String(phase.to_string());
             }
-            json(&serde_json::json!({
+            let mut envelope = serde_json::json!({
                 "ok": false,
                 "schema": SCHEMA_VERSION,
                 "error": error,
                 "warnings": [],
-            }));
+            });
+            if let Some(data) = err.data() {
+                envelope["data"] = data.clone();
+            }
+            json(&envelope);
             // A `--json` stdout is routinely redirected to a file for later
             // parsing. When it is, the failure envelope goes with it and the
             // terminal shows nothing at all — a command that failed looks like

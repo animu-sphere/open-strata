@@ -29,6 +29,18 @@ The recorded `generator_flavor` is `ninja`, `ninja-multi-config`,
 missing compiler diagnostic names both the detected flavor and the identity
 sources that were inspected.
 
+Multi-config imports must also select the concrete output being described:
+
+```sh
+ost external import --build-dir build --config Release
+```
+
+The value must appear in `CMAKE_CONFIGURATION_TYPES` and is recorded as
+`toolchain.configuration`; the full selectable set remains in
+`toolchain.configurations`. This prevents one Visual Studio or Ninja
+Multi-Config cache from ambiguously standing behind binaries from another
+configuration.
+
 ## Capability-scoped requirements
 
 Import combines the resolved profile capabilities with every repeated

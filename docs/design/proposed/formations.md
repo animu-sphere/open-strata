@@ -1,8 +1,8 @@
 # OpenStrata Formations — cross-repository composition (direction)
 
-> Status: **implemented on the v0.19.0 development branch** for the narrowed
-> `resolve|inspect|lock|run` MVP; not available in v0.18.0. `env` and `doctor`
-> remain deferred. First-party cross-repository dogfood remains an acceptance
+> Status: **implemented** for the v0.19.0 `resolve|inspect|lock|run` MVP, with
+> `env|doctor` implemented on the v0.20.0 branch. First-party cross-repository
+> dogfood remains an acceptance
 > task — see the
 > [roadmap backlog](../../roadmap/backlog.md) for the milestone entry.
 
@@ -191,7 +191,8 @@ ost formation resolve [path]            # Declared -> Resolved, no launch
 ost formation inspect [path]            # show the resolved model
 ost formation run     [path] -- [cmd…]  # launch the command, foreground
 ost formation lock    [path]            # write formation.lock (digest-pinned)
-# `env` and `doctor` are deferred beyond the narrowed v0.19.0 MVP
+ost formation env     [path]            # export retained composed environment
+ost formation doctor  [path]            # diagnose lock/env/command readiness
 ```
 
 Every subcommand accepts `--json` and emits the shipped
