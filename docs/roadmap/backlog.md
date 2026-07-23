@@ -9,9 +9,9 @@ Legend: ⬜ not started
 ## Milestone ladder (beyond next)
 
 The v0.19.0 composition and reach milestone is shipped in
-[v0.19.0](../releases/v0.19.0.md). The active v0.20.0 dogfood-closure and
-renderer-workflow milestone is in [current.md](current.md). DCC host integration
-follows it in v0.21.0.
+[v0.19.0](../releases/v0.19.0.md). The v0.20.0 dogfood-closure and
+renderer-workflow milestone is shipped in [v0.20.0](../releases/v0.20.0.md).
+DCC host integration is active in v0.21.0 via [current.md](current.md).
 
 The Formation scope below is **Half B** of v0.19.0, narrowed to
 `resolve|inspect|run|lock`. It is gated on Half A (artifact closure, staged-byte
@@ -19,7 +19,8 @@ reach, external-provenance reach, producer-session publication) because
 Formation's own acceptance criteria — three dogfoods run from packaged,
 digest-pinned artifacts on a clean machine — cannot pass while a packaged bundle
 from a split workspace is not independently installable. If Half A consumes the
-milestone, Formation ships in v0.20.0 and DCC host integration moves to v0.21.0.
+milestone. Formation shipped across v0.19.0 and v0.20.0; DCC host integration
+follows in v0.21.0.
 
 - ✅ **v0.19.0 Half B - Formation composition.** Turn the reference-project
   ecosystem documented in v0.18.0 into an executable contract. A **Formation** is a
@@ -35,8 +36,7 @@ milestone, Formation ships in v0.20.0 and DCC host integration moves to v0.21.0.
   foreground process; emit a digest-pinned `formation.lock`; and record Formation
   Run evidence. CLI: `ost formation resolve|inspect|run|lock` for this
   milestone, using the shipped `{ok, schema, data, warnings}` envelope and
-  category exit codes; `formation env|doctor` deferred to and are implemented
-  on the v0.20.0 branch.
+  category exit codes; `formation env|doctor` shipped in v0.20.0.
   Formation must **reuse** the runtime, artifact, plugin, renderer, target, and
   evidence contracts rather than fork them, and introduce no DCC-specific logic
   in the core model. Acceptance requires four first-party dogfoods run from
@@ -49,8 +49,9 @@ milestone, Formation ships in v0.20.0 and DCC host integration moves to v0.21.0.
   namespace / overlayfs sandboxing, detached session management, general-purpose
   package solving, automatic Formation-bundle publication, and implicit download
   from untrusted sources.
-- ⬜ **v0.21.0 - DCC host integration (Phase 10).** Deferred from v0.20.0 by
-  the v0.19.0 package/release and renderer dogfooding findings. Extends
+- ⬜ **v0.21.0 - DCC host integration (Phase 10).** Follows v0.20.0 package
+  and renderer closure, informed by the v0.19.0 package/release and renderer
+  dogfooding findings. Extends
   OpenStrata beyond runtime-native OpenUSD
   applications without redistributing DCC SDKs or inventing one false cross-DCC
   API: an `ost-host` model with a versioned host record (product, version,

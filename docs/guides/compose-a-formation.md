@@ -1,7 +1,7 @@
 # Composing a Formation
 
 > `ost formation resolve|inspect|lock|run` shipped in v0.19.0;
-> `env|doctor` are implemented for v0.20.0. The model is defined in
+> `env|doctor` shipped in v0.20.0. The model is defined in
 > [design/proposed/formations.md](../design/proposed/formations.md); the
 > milestone is in the [roadmap backlog](../roadmap/backlog.md).
 

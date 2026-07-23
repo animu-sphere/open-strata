@@ -3,9 +3,20 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## v0.20.0 - dogfood closure and renderer workflow
+## v0.21.0 - DCC host integration
 
-**Status:** 🚧 in progress from 2026-07-23 · **Depends on:** v0.19.0 reachable
+**Status:** 🚧 next milestone from 2026-07-23 · **Depends on:** v0.20.0
+package/product closure, renderer workflow, and Formation diagnostics.
+
+The next milestone adds versioned host records, deterministic Maya and Houdini
+discovery, minimal headless host adapters, and support-matrix cells with
+pinned host evidence. Host integration consumes Formation as its environment
+and component-assembly layer and reuses the renderer identity/evidence model.
+Sessions, GPU/AI, and broader DCC matrices remain later work.
+
+## Shipped: v0.20.0 - dogfood closure and renderer workflow
+
+**Status:** ✅ shipped 2026-07-23 · **Depends on:** v0.19.0 reachable
 packages, aggregate products, managed producer sessions, and Formation.
 
 The v0.20.0 scope is driven by the first v0.19.0 release-lane and renderer
@@ -48,7 +59,7 @@ metadata but embedded freshly timestamped member `manifest.json` sidecars in
 the product; member archive digests therefore stayed stable while the aggregate
 changed.
 
-**Implemented on the v0.20.0 branch:** plugin and product producer manifests use
+**Implemented in v0.20.0:** plugin and product producer manifests use
 the same reproducible timestamp contract as archive entries
 (`SOURCE_DATE_EPOCH`, otherwise epoch 0). The lifecycle waits across a wall-clock
 tick, packages again, and requires the product digest to remain identical.
@@ -60,7 +71,7 @@ remain part of the aggregate bytes.
 The aggregate is one release artifact, not merely a tar file containing a
 manual install recipe.
 
-**Implemented on the v0.20.0 branch:** `ost plugin product verify` checks the
+**Implemented in v0.20.0:** `ost plugin product verify` checks the
 outer digest (optionally pinned by `--expect-digest`), strict product contract,
 member identities/order, member archive digests and sizes, every member
 `SHA256SUMS`, evidence presence, extracted file inventory, and bundle validity.
@@ -85,7 +96,7 @@ cwd, retained log, output tail, and process-tree cleanup result. A timeout OST
 handles must reap descendants and clear the target lease before returning;
 only an actually interrupted/killed OST process leaves takeover evidence.
 
-**Implemented on the v0.20.0 branch:** the shared process runner reports that
+**Implemented in v0.20.0:** the shared process runner reports that
 complete diagnostic and verifies child termination, and managed build failure
 paths release their lease after renderer failure evidence is stamped.
 
@@ -99,14 +110,14 @@ or building. Passing `--usd`, `--scene`, or a USD-family scene path requires
 exact `--profile usd` correction. The same preflight record is embedded in a
 successful durable viewport launch record.
 
-**Implemented on the v0.20.0 branch:** `renderer viewport --preflight` resolves
+**Implemented in v0.20.0:** `renderer viewport --preflight` resolves
 the adapter, intent, target/profile, passthrough workflow, and normalized
 capabilities without touching the build tree. The durable launch artifact
 retains the same preflight.
 
 ### P1/P2 - renderer evidence closure
 
-**Implemented on the v0.20.0 branch:** managed build/test completions bind every
+**Implemented in v0.20.0:** managed build/test completions bind every
 changed renderer report by producer session, build-relative path, and SHA-256;
 validation recomputes the digest and refuses copied or stale report bytes.
 `external-unverified` remains the explicit non-managed attachment path.
@@ -133,7 +144,7 @@ and the failure record remained a useful proof of the unified envelope.
 
 ### P1 - Formation environment and diagnostics carry-over
 
-**Implemented on the v0.20.0 branch:** `ost formation env` exports the complete
+**Implemented in v0.20.0:** `ost formation env` exports the complete
 composed environment from a retained verified materialization, while
 `ost formation doctor` reports resolution, lock freshness, environment
 conflicts, and command reachability under the same digest-pinned model.

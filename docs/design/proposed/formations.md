@@ -1,7 +1,7 @@
 # OpenStrata Formations — cross-repository composition (direction)
 
 > Status: **implemented** for the v0.19.0 `resolve|inspect|lock|run` MVP, with
-> `env|doctor` implemented on the v0.20.0 branch. First-party cross-repository
+> `env|doctor` shipped in v0.20.0. First-party cross-repository
 > dogfood remains an acceptance
 > task — see the
 > [roadmap backlog](../../roadmap/backlog.md) for the milestone entry.

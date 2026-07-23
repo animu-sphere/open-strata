@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.20.0 | [v0.20.0.md](v0.20.0.md) | Dogfood closure + renderer workflow |
 | v0.19.0 | [v0.19.0.md](v0.19.0.md) | Reachable packages + Formation composition |
 | v0.18.0 | [v0.18.0.md](v0.18.0.md) | Evidence integrity + ecosystem documentation |
 | v0.17.0 | [v0.17.0.md](v0.17.0.md) | Renderer build truth + managed Hydra inspection |

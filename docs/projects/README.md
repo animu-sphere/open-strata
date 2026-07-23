@@ -76,9 +76,9 @@ viewport; Gaussian PLY stage inspection supplies another independent packaged
 plugin dogfood without claiming renderer compatibility.
 
 That composition is the planned [Formation](../design/proposed/formations.md)
-model. `ost formation resolve|inspect|lock|run` is implemented on the v0.19.0
-development branch (not in v0.18.0); the
-planned cross-repository workflows are documented — clearly labeled as planned —
+model. `ost formation resolve|inspect|lock|run` shipped in v0.19.0 and
+`ost formation env|doctor` shipped in v0.20.0; the
+cross-repository workflows are documented — clearly labeled as examples —
 in [combined-formations.md](combined-formations.md).
 
 ## Adopting OpenStrata for your own project
@@ -89,7 +89,7 @@ becoming project-specific build guides:
 
 - [Adopt a plugin workspace](../guides/adopt-a-plugin-workspace.md)
 - [Adopt a renderer project](../guides/adopt-a-renderer-project.md)
-- [Compose a formation](../guides/compose-a-formation.md) (v0.19.0-oriented)
+- [Compose a formation](../guides/compose-a-formation.md) (v0.19.0–v0.20.0)
 
 ## Cross-repository link policy
 

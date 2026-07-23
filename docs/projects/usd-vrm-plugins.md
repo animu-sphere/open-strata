@@ -102,8 +102,8 @@ ost plugin view plugins/usdVrmFileFormat avatar.vrm \
 That last `--with` composition — assembling several bundles into one session by
 hand — is exactly what the [Formation](../design/proposed/formations.md)
 model makes declarative and reproducible. `ost formation resolve|inspect|lock|run`
-is implemented on the v0.19.0 development branch; the real cross-repository run
-remains an acceptance task. See
+is implemented as of v0.19.0; the v0.20.0 package and renderer closure
+completes the downstream acceptance path. See
 [combined-formations.md](combined-formations.md).
 
 ## Dogfooding and evidence
