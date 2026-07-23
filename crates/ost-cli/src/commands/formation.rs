@@ -274,6 +274,7 @@ fn doctor_command(path: &Utf8Path, format: Format) -> Result<()> {
         }
     }
     if !passed {
+        resolution.cleanup();
         std::process::exit(Category::Validation.exit_code() as i32);
     }
     Ok(())

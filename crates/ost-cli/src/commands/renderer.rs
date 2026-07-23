@@ -1165,6 +1165,9 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         }
         return Ok(());
     }
+    // A failed run must not leave a previous successful launch record looking
+    // current to `ost validate`.
+    invalidate_viewport_launch_record(&root, &target.id())?;
     let build_dir = root.join(build::build_dir_for_intent(&target.id(), &intent));
     if !fmt.is_json() {
         println!("==> preparing managed viewport build: {build_dir}");
@@ -1430,6 +1433,19 @@ fn write_viewport_build_failure_record(
         "launch": record,
         "record": record_path,
     }))
+}
+
+fn invalidate_viewport_launch_record(root: &Utf8Path, target_id: &str) -> Result<()> {
+    let path = root
+        .join(STATE_DIR)
+        .join("renderer-viewport")
+        .join(target_id)
+        .join("launch.json");
+    match std::fs::remove_file(path.as_std_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::io(path.to_string(), error)),
+    }
 }
 
 fn viewport_capability_preflight(

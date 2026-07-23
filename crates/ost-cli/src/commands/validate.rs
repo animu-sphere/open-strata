@@ -319,7 +319,15 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                         ),
                     ));
                 }
-                checks.push(viewport_launch_check(&root, &id, build_dir));
+                if external_build.is_none() {
+                    checks.push(viewport_launch_check(
+                        &root,
+                        &id,
+                        build_dir,
+                        &intent,
+                        built_completion.as_ref(),
+                    ));
+                }
             }
             Err(error) => checks.push(Check::fail(
                 "renderer-manifest",
@@ -400,6 +408,8 @@ fn viewport_launch_check(
     root: &camino::Utf8Path,
     target_id: &str,
     build_dir: &camino::Utf8Path,
+    expected_intent: &ost_build::BuildIntent,
+    build: Option<&BuildCompletion>,
 ) -> Check {
     let path = root
         .join(STATE_DIR)
@@ -429,6 +439,35 @@ fn viewport_launch_check(
             "renderer-viewport",
             format!("{path} is not an openstrata.renderer-launch/v1 viewport record"),
         );
+    }
+    let recorded_build_dir = value.get("build_dir").and_then(|item| item.as_str());
+    if recorded_build_dir.is_none_or(|recorded| !same_path(recorded, build_dir.as_str())) {
+        return Check::fail(
+            "renderer-viewport",
+            "viewport launch describes a different build directory",
+        );
+    }
+    if value.pointer("/intent/name").and_then(|item| item.as_str())
+        != Some(expected_intent.name.as_str())
+    {
+        return Check::fail(
+            "renderer-viewport",
+            "viewport launch describes a different build intent",
+        );
+    }
+    if let Some(build) = build {
+        let expected_config = build
+            .intent
+            .cache
+            .get("CMAKE_BUILD_TYPE")
+            .map(|entry| entry.value.as_str())
+            .unwrap_or("Release");
+        if value.get("config").and_then(|item| item.as_str()) != Some(expected_config) {
+            return Check::fail(
+                "renderer-viewport",
+                "viewport launch describes a different build configuration",
+            );
+        }
     }
     if value.pointer("/preflight/passed") != Some(&serde_json::Value::Bool(true))
         || value
@@ -516,6 +555,17 @@ fn viewport_launch_check(
             format!("viewport launch has unsupported exit state '{state}'"),
         ),
         None => Check::fail("renderer-viewport", "viewport launch has no exit state"),
+    }
+}
+
+fn same_path(left: &str, right: &str) -> bool {
+    let normalize = |path: &str| path.replace('\\', "/").trim_end_matches('/').to_string();
+    let left = normalize(left);
+    let right = normalize(right);
+    if cfg!(windows) {
+        left.eq_ignore_ascii_case(&right)
+    } else {
+        left == right
     }
 }
 
@@ -768,22 +818,49 @@ mod tests {
         let mut record = serde_json::json!({
             "schema": "openstrata.renderer-launch/v1",
             "kind": "renderer-viewport",
+            "build_dir": build,
+            "intent": {"name": "default", "cache": {}},
             "preflight": {"passed": true, "target": target},
             "renderer_reports": [],
             "outcome": "success",
             "readiness": {"reached": true},
             "exit": {"state": "success", "code": 0},
         });
+        let expected_intent = ost_build::BuildIntent::default();
         std::fs::write(
             record_path.as_std_path(),
             serde_json::to_vec(&record).unwrap(),
         )
         .unwrap();
         assert_eq!(
-            viewport_launch_check(&root, target, &build).status,
+            viewport_launch_check(&root, target, &build, &expected_intent, None).status,
             Status::Pass
         );
 
+        record["build_dir"] = root.join("other-build").to_string().into();
+        std::fs::write(
+            record_path.as_std_path(),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            viewport_launch_check(&root, target, &build, &expected_intent, None).status,
+            Status::Fail
+        );
+
+        record["build_dir"] = build.to_string().into();
+        record["intent"]["name"] = "other".into();
+        std::fs::write(
+            record_path.as_std_path(),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            viewport_launch_check(&root, target, &build, &expected_intent, None).status,
+            Status::Fail
+        );
+
+        record["intent"]["name"] = "default".into();
         record["outcome"] = "failure".into();
         record["readiness"]["reached"] = false.into();
         record["exit"] = serde_json::json!({"state": "child-failure", "code": 1});
@@ -793,7 +870,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            viewport_launch_check(&root, target, &build).status,
+            viewport_launch_check(&root, target, &build, &expected_intent, None).status,
             Status::Fail
         );
         std::fs::remove_dir_all(root.as_std_path()).unwrap();
