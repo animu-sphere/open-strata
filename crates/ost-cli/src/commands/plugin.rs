@@ -17,13 +17,15 @@
 //! The CLI stays thin: it resolves paths and the runtime, then calls into
 //! `ost-plugin` for the model, checks, execution levels, and report shapes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
+use serde::Deserialize;
 
 use ost_build::{
     pack_dir_with, stage_files, BuildCompletion, BuildIntent, BuildOutput, BuildProjectIdentity,
@@ -144,6 +146,9 @@ pub enum PluginCmd {
         #[arg(long)]
         allow_unmanaged_output: bool,
     },
+    /// Verify or install an aggregate plugin product artifact.
+    #[command(subcommand)]
+    Product(ProductCmd),
     /// Publish a packaged plugin artifact into the local registry (by digest).
     Publish {
         /// Path to the bundle directory.
@@ -265,6 +270,29 @@ pub enum PluginCmd {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum ProductCmd {
+    /// Verify the product archive and every member archive/checksum.
+    Verify {
+        /// Product dist directory, manifest.json, or product .tar.zst archive.
+        product: String,
+        /// Require the outer product archive to have this full sha256 digest.
+        #[arg(long)]
+        expect_digest: Option<String>,
+    },
+    /// Verify and install every member in dependency order.
+    Install {
+        /// Product dist directory, manifest.json, or product .tar.zst archive.
+        product: String,
+        /// New installation root. The command refuses to overwrite it.
+        #[arg(long)]
+        prefix: String,
+        /// Require the outer product archive to have this full sha256 digest.
+        #[arg(long)]
+        expect_digest: Option<String>,
+    },
+}
+
 pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
     match cmd {
         PluginCmd::New {
@@ -339,6 +367,7 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
                 "missing bundle path (or pass --workspace to package every bundle)",
             )),
         },
+        PluginCmd::Product(command) => product(command, fmt),
         PluginCmd::Publish {
             bundle,
             target,
@@ -1964,15 +1993,12 @@ fn package_bundle(
         .map(|m| m.validation.as_str().to_string())
         .unwrap_or_else(|| "unknown".into());
 
-    // Under SOURCE_DATE_EPOCH the whole dist output — archive *and* manifest —
-    // must reproduce, so pin `created_unix` to it too; otherwise stamp wall-clock
-    // provenance.
-    let created = ost_build::source_date_epoch_opt().unwrap_or_else(|| {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    });
+    // `manifest.json` is itself embedded by aggregate products. A wall-clock
+    // value here made two identical `--workspace --product` invocations produce
+    // different product bytes even though every member archive was stable.
+    // Use the same reproducible timestamp contract as tar entries: an explicit
+    // SOURCE_DATE_EPOCH, otherwise epoch 0.
+    let created = ost_build::source_date_epoch();
     let files_json: Vec<_> = packed.files.iter().map(|f| f.manifest_json()).collect();
     // A sibling `*-debug` package, when symbols were split out: its own archive
     // digest/size and file list, so a consumer can pull and overlay it to restore
@@ -2433,8 +2459,10 @@ fn package_workspace_product(
         "target": target,
         "install": {
             "layout": "members/<bundle-id>/",
+            "destination": "bundles/<bundle-id>/",
             "order": order,
-            "contract": "verify each member SHA256SUMS, then extract its archive in dependency order",
+            "activation": "openstrata.activation.json",
+            "contract": "run `ost plugin product verify`, then `ost plugin product install --prefix <dir>`; members are verified and installed in dependency order",
         },
         "members": members,
     });
@@ -2465,12 +2493,7 @@ fn package_workspace_product(
     let packed = pack_dir_with(&stage, &archive_path, &staged, pack_opts, &mut |_| {})
         .map_err(|e| Error::io(archive_path.to_string(), e))?;
 
-    let created = ost_build::source_date_epoch_opt().unwrap_or_else(|| {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0)
-    });
+    let created = ost_build::source_date_epoch();
     let mut provenance = first
         .manifest
         .get("provenance")
@@ -2520,6 +2543,910 @@ fn package_workspace_product(
         members: outcomes.len(),
         stage_warnings,
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginProductContract {
+    schema: String,
+    name: String,
+    version: String,
+    target: String,
+    install: PluginProductInstall,
+    members: Vec<PluginProductMember>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginProductInstall {
+    layout: String,
+    order: Vec<String>,
+    contract: String,
+    #[serde(default = "default_product_destination")]
+    destination: String,
+    #[serde(default = "default_product_activation")]
+    activation: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginProductMember {
+    id: String,
+    position: usize,
+    name: String,
+    version: String,
+    kind: String,
+    archive: String,
+    archive_digest: String,
+    archive_size: u64,
+    manifest: String,
+    checksums: String,
+    evidence: Vec<String>,
+    debug: RequiredProductDebug,
+    #[serde(rename = "dependencies")]
+    dependencies: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginProductDebug {
+    archive: String,
+    archive_digest: String,
+    archive_size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
+struct RequiredProductDebug(Option<PluginProductDebug>);
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductMemberActivation {
+    schema: String,
+    target_os: String,
+    root: String,
+    environment: serde_json::Value,
+    plugin_paths: Vec<String>,
+    library_paths: Vec<String>,
+    python_paths: Vec<String>,
+    entrypoints: serde_json::Value,
+    python_dll_search: serde_json::Value,
+}
+
+#[derive(Debug)]
+struct ProductArchiveSource {
+    archive: Utf8PathBuf,
+    digest: String,
+    size: u64,
+}
+
+#[derive(Debug)]
+struct TemporaryProductTree {
+    path: Utf8PathBuf,
+    remove_on_drop: bool,
+}
+
+impl Drop for TemporaryProductTree {
+    fn drop(&mut self) {
+        if self.remove_on_drop {
+            let _ = std::fs::remove_dir_all(self.path.as_std_path());
+        }
+    }
+}
+
+struct VerifiedPluginProduct {
+    source: ProductArchiveSource,
+    tree: TemporaryProductTree,
+    contract: PluginProductContract,
+}
+
+fn default_product_destination() -> String {
+    "bundles/<bundle-id>/".into()
+}
+
+fn default_product_activation() -> String {
+    "openstrata.activation.json".into()
+}
+
+fn product(command: ProductCmd, fmt: Format) -> Result<()> {
+    match command {
+        ProductCmd::Verify {
+            product,
+            expect_digest,
+        } => {
+            let verified = verify_plugin_product(&product, expect_digest.as_deref())?;
+            report_product_verification(&verified, fmt);
+            Ok(())
+        }
+        ProductCmd::Install {
+            product,
+            prefix,
+            expect_digest,
+        } => install_plugin_product(&product, &prefix, expect_digest.as_deref(), fmt),
+    }
+}
+
+fn verify_plugin_product(
+    product: &str,
+    expect_digest: Option<&str>,
+) -> Result<VerifiedPluginProduct> {
+    let source = resolve_product_archive(product, expect_digest)?;
+    let tree = temporary_product_tree(std::env::temp_dir().as_path(), "verify")?;
+    ost_artifact::extract_archive(&source.archive, &source.digest, &tree.path)?;
+
+    let contract_path = tree.path.join("openstrata.product.json");
+    let source_text = std::fs::read_to_string(contract_path.as_std_path())
+        .map_err(|error| Error::io(contract_path.to_string(), error))?;
+    let contract: PluginProductContract = serde_json::from_str(&source_text)
+        .map_err(|error| Error::parse(contract_path.to_string(), anyhow::Error::new(error)))?;
+    validate_product_contract(&contract)?;
+
+    for member in &contract.members {
+        verify_product_member(&tree.path, member)?;
+    }
+
+    Ok(VerifiedPluginProduct {
+        source,
+        tree,
+        contract,
+    })
+}
+
+fn resolve_product_archive(
+    product: &str,
+    expect_digest: Option<&str>,
+) -> Result<ProductArchiveSource> {
+    if let Some(digest) = expect_digest {
+        validate_sha256_digest(digest, "--expect-digest")?;
+    }
+    let input = Utf8PathBuf::from(product);
+    if !input.as_std_path().exists() {
+        return Err(Error::precondition(format!(
+            "plugin product path does not exist: {input}"
+        )));
+    }
+
+    let manifest_path = if input.as_std_path().is_dir() {
+        Some(input.join("manifest.json"))
+    } else if input.file_name() == Some("manifest.json") {
+        Some(input.clone())
+    } else {
+        let sibling = input
+            .parent()
+            .unwrap_or_else(|| Utf8Path::new("."))
+            .join("manifest.json");
+        sibling.as_std_path().is_file().then_some(sibling)
+    };
+
+    if let Some(manifest_path) = manifest_path.filter(|path| path.as_std_path().is_file()) {
+        let source = std::fs::read_to_string(manifest_path.as_std_path())
+            .map_err(|error| Error::io(manifest_path.to_string(), error))?;
+        let manifest: serde_json::Value = serde_json::from_str(&source)
+            .map_err(|error| Error::parse(manifest_path.to_string(), anyhow::Error::new(error)))?;
+        if manifest["kind"] != ost_artifact::PLUGIN_PRODUCT_KIND {
+            return Err(Error::validation(format!(
+                "'{manifest_path}' is not an aggregate plugin product manifest"
+            )));
+        }
+        let archive_name = manifest["archive"].as_str().ok_or_else(|| {
+            Error::validation(format!(
+                "'{manifest_path}' is missing string field 'archive'"
+            ))
+        })?;
+        let digest = manifest["archive_digest"].as_str().ok_or_else(|| {
+            Error::validation(format!(
+                "'{manifest_path}' is missing string field 'archive_digest'"
+            ))
+        })?;
+        validate_sha256_digest(digest, "manifest archive_digest")?;
+        if expect_digest.is_some_and(|expected| expected != digest) {
+            return Err(Error::coded(
+                "PLUGIN_PRODUCT_DIGEST_MISMATCH",
+                Category::Validation,
+                format!(
+                    "product manifest pins {digest}, but --expect-digest requested {}",
+                    expect_digest.unwrap_or_default()
+                ),
+            ));
+        }
+        let root = manifest_path.parent().unwrap_or_else(|| Utf8Path::new("."));
+        let archive = safe_product_join(root, archive_name, "manifest archive")?;
+        if input.as_std_path().is_file()
+            && input.file_name() != Some("manifest.json")
+            && input.file_name() != archive.file_name()
+        {
+            // A generic sibling manifest may belong to another artifact. In
+            // that case the explicitly named archive remains authoritative.
+            return product_archive_from_file(&input, expect_digest);
+        }
+        let (actual, size) = digest_file(&archive)?;
+        if actual != digest {
+            return Err(product_digest_mismatch(&archive, digest, &actual));
+        }
+        return Ok(ProductArchiveSource {
+            archive,
+            digest: digest.to_string(),
+            size,
+        });
+    }
+
+    if input.as_std_path().is_dir() {
+        return Err(Error::precondition(format!(
+            "product directory '{input}' has no manifest.json"
+        )));
+    }
+    product_archive_from_file(&input, expect_digest)
+}
+
+fn product_archive_from_file(
+    archive: &Utf8Path,
+    expect_digest: Option<&str>,
+) -> Result<ProductArchiveSource> {
+    let (actual, size) = digest_file(archive)?;
+    if let Some(expected) = expect_digest {
+        if actual != expected {
+            return Err(product_digest_mismatch(archive, expected, &actual));
+        }
+    }
+    Ok(ProductArchiveSource {
+        archive: archive.to_path_buf(),
+        digest: actual,
+        size,
+    })
+}
+
+fn product_digest_mismatch(path: &Utf8Path, expected: &str, actual: &str) -> Error {
+    Error::coded(
+        "PLUGIN_PRODUCT_DIGEST_MISMATCH",
+        Category::Validation,
+        format!("product archive '{path}' hashes to {actual}, expected {expected}"),
+    )
+}
+
+fn digest_file(path: &Utf8Path) -> Result<(String, u64)> {
+    let mut file =
+        File::open(path.as_std_path()).map_err(|error| Error::io(path.to_string(), error))?;
+    ost_core::digest::sha256_hex_reader(&mut file)
+        .map_err(|error| Error::io(path.to_string(), error))
+}
+
+fn validate_sha256_digest(digest: &str, field: &str) -> Result<()> {
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return Err(Error::validation(format!(
+            "{field} must be a full sha256:<64 hex> digest"
+        )));
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::validation(format!(
+            "{field} must be a full sha256:<64 hex> digest"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_product_contract(contract: &PluginProductContract) -> Result<()> {
+    if contract.schema != "openstrata.plugin-product/v1alpha1" {
+        return Err(Error::config(format!(
+            "unsupported plugin product schema '{}'",
+            contract.schema
+        )));
+    }
+    for (field, value) in [
+        ("name", contract.name.as_str()),
+        ("version", contract.version.as_str()),
+        ("target", contract.target.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(Error::validation(format!(
+                "plugin product {field} must not be empty"
+            )));
+        }
+    }
+    if contract.install.layout != "members/<bundle-id>/" {
+        return Err(Error::validation(format!(
+            "unsupported product archive layout '{}'",
+            contract.install.layout
+        )));
+    }
+    if contract.install.destination != "bundles/<bundle-id>/" {
+        return Err(Error::validation(format!(
+            "unsupported product installation layout '{}'",
+            contract.install.destination
+        )));
+    }
+    if contract.install.activation != "openstrata.activation.json" {
+        return Err(Error::validation(format!(
+            "unsupported product activation contract '{}'",
+            contract.install.activation
+        )));
+    }
+    if contract.install.contract.trim().is_empty() {
+        return Err(Error::validation(
+            "plugin product install.contract must not be empty",
+        ));
+    }
+    if contract.members.is_empty() {
+        return Err(Error::validation(
+            "plugin product must contain at least one member",
+        ));
+    }
+
+    let mut ids = BTreeSet::new();
+    for (position, member) in contract.members.iter().enumerate() {
+        validate_product_member_identity(member)?;
+        if member.position != position {
+            return Err(Error::validation(format!(
+                "product member '{}' has position {}, expected {position}",
+                member.id, member.position
+            )));
+        }
+        if !ids.insert(member.id.clone()) {
+            return Err(Error::validation(format!(
+                "plugin product repeats member id '{}'",
+                member.id
+            )));
+        }
+    }
+    let member_order = contract
+        .members
+        .iter()
+        .map(|member| member.id.as_str())
+        .collect::<Vec<_>>();
+    let install_order = contract
+        .install
+        .order
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if install_order != member_order {
+        return Err(Error::validation(format!(
+            "plugin product install order {install_order:?} does not match member order {member_order:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_product_member_identity(member: &PluginProductMember) -> Result<()> {
+    if member.id.is_empty()
+        || member.id != member.name
+        || member
+            .id
+            .bytes()
+            .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')))
+    {
+        return Err(Error::validation(format!(
+            "plugin product member id/name must be one matching portable identity, got id='{}' name='{}'",
+            member.id, member.name
+        )));
+    }
+    for (field, value) in [
+        ("version", member.version.as_str()),
+        ("kind", member.kind.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(Error::validation(format!(
+                "product member '{}' {field} must not be empty",
+                member.id
+            )));
+        }
+    }
+    validate_sha256_digest(
+        &member.archive_digest,
+        &format!("product member '{}' archive_digest", member.id),
+    )?;
+    if member.evidence.is_empty() {
+        return Err(Error::validation(format!(
+            "product member '{}' must carry at least one evidence file",
+            member.id
+        )));
+    }
+    if !member.dependencies.is_null() && !member.dependencies.is_object() {
+        return Err(Error::validation(format!(
+            "product member '{}' dependencies must be an object or null",
+            member.id
+        )));
+    }
+    if let Some(debug) = &member.debug.0 {
+        validate_sha256_digest(
+            &debug.archive_digest,
+            &format!("product member '{}' debug archive_digest", member.id),
+        )?;
+    }
+    Ok(())
+}
+
+fn verify_product_member(root: &Utf8Path, member: &PluginProductMember) -> Result<()> {
+    let member_prefix = format!("members/{}/", member.id);
+    for (field, relative) in [
+        ("archive", member.archive.as_str()),
+        ("manifest", member.manifest.as_str()),
+        ("checksums", member.checksums.as_str()),
+    ] {
+        if !relative.starts_with(&member_prefix) {
+            return Err(Error::validation(format!(
+                "product member '{}' {field} must stay under '{member_prefix}'",
+                member.id
+            )));
+        }
+    }
+    let archive = safe_product_join(root, &member.archive, "product member archive")?;
+    let (digest, size) = digest_file(&archive)?;
+    if digest != member.archive_digest || size != member.archive_size {
+        return Err(Error::coded(
+            "PLUGIN_PRODUCT_MEMBER_DIGEST_MISMATCH",
+            Category::Validation,
+            format!(
+                "product member '{}' archive is {digest} ({size} bytes), expected {} ({} bytes)",
+                member.id, member.archive_digest, member.archive_size
+            ),
+        ));
+    }
+
+    let member_manifest = safe_product_join(root, &member.manifest, "product member manifest")?;
+    let manifest_source = std::fs::read_to_string(member_manifest.as_std_path())
+        .map_err(|error| Error::io(member_manifest.to_string(), error))?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_source)
+        .map_err(|error| Error::parse(member_manifest.to_string(), anyhow::Error::new(error)))?;
+    verify_product_member_manifest(member, &manifest)?;
+
+    let checksums = safe_product_join(root, &member.checksums, "product member checksums")?;
+    verify_member_checksums(
+        checksums
+            .parent()
+            .ok_or_else(|| Error::validation("product member checksums have no parent"))?,
+        &checksums,
+        archive
+            .file_name()
+            .ok_or_else(|| Error::validation("product member archive has no filename"))?,
+    )?;
+
+    for evidence in &member.evidence {
+        if !evidence.starts_with(&member_prefix) {
+            return Err(Error::validation(format!(
+                "product member '{}' evidence path must stay under '{member_prefix}'",
+                member.id
+            )));
+        }
+        let path = safe_product_join(root, evidence, "product member evidence")?;
+        if !path.as_std_path().is_file() {
+            return Err(Error::validation(format!(
+                "product member '{}' is missing evidence '{evidence}'",
+                member.id
+            )));
+        }
+    }
+    if let Some(debug) = &member.debug.0 {
+        if !debug.archive.starts_with(&member_prefix) {
+            return Err(Error::validation(format!(
+                "product member '{}' debug archive must stay under '{member_prefix}'",
+                member.id
+            )));
+        }
+        let path = safe_product_join(root, &debug.archive, "product member debug archive")?;
+        let (actual, size) = digest_file(&path)?;
+        if actual != debug.archive_digest || size != debug.archive_size {
+            return Err(Error::coded(
+                "PLUGIN_PRODUCT_MEMBER_DIGEST_MISMATCH",
+                Category::Validation,
+                format!(
+                    "product member '{}' debug archive is {actual} ({size} bytes), expected {} ({} bytes)",
+                    member.id, debug.archive_digest, debug.archive_size
+                ),
+            ));
+        }
+    }
+
+    let expanded = root.join("expanded").join(&member.id);
+    ost_artifact::extract_archive(&archive, &member.archive_digest, &expanded)?;
+    verify_member_manifest_files(&expanded, &manifest)?;
+    Bundle::load(&expanded).map_err(|error| {
+        Error::validation(format!(
+            "installed product member '{}' is not a valid plugin bundle: {error}",
+            member.id
+        ))
+    })?;
+    Ok(())
+}
+
+fn verify_product_member_manifest(
+    member: &PluginProductMember,
+    manifest: &serde_json::Value,
+) -> Result<()> {
+    let expected_archive = Utf8Path::new(&member.archive)
+        .file_name()
+        .unwrap_or_default();
+    let checks = [
+        (
+            "kind",
+            manifest["kind"].as_str(),
+            Some(ost_artifact::PLUGIN_BUNDLE_KIND),
+        ),
+        (
+            "plugin.name",
+            manifest
+                .pointer("/plugin/name")
+                .and_then(|value| value.as_str()),
+            Some(member.name.as_str()),
+        ),
+        (
+            "plugin.version",
+            manifest
+                .pointer("/plugin/version")
+                .and_then(|value| value.as_str()),
+            Some(member.version.as_str()),
+        ),
+        (
+            "plugin.kind",
+            manifest
+                .pointer("/plugin/kind")
+                .and_then(|value| value.as_str()),
+            Some(member.kind.as_str()),
+        ),
+        (
+            "archive",
+            manifest["archive"].as_str(),
+            Some(expected_archive),
+        ),
+        (
+            "archive_digest",
+            manifest["archive_digest"].as_str(),
+            Some(member.archive_digest.as_str()),
+        ),
+    ];
+    for (field, actual, expected) in checks {
+        if actual != expected {
+            return Err(Error::validation(format!(
+                "product member '{}' manifest {field} is {actual:?}, expected {expected:?}",
+                member.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_member_checksums(
+    member_root: &Utf8Path,
+    checksums: &Utf8Path,
+    required_archive: &str,
+) -> Result<()> {
+    let source = std::fs::read_to_string(checksums.as_std_path())
+        .map_err(|error| Error::io(checksums.to_string(), error))?;
+    let mut paths = BTreeSet::new();
+    for (line_number, line) in source.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (expected, relative) = line.split_once("  ").ok_or_else(|| {
+            Error::validation(format!(
+                "'{checksums}' line {} is not '<sha256>  <path>'",
+                line_number + 1
+            ))
+        })?;
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::validation(format!(
+                "'{checksums}' line {} has an invalid SHA-256",
+                line_number + 1
+            )));
+        }
+        if !paths.insert(relative.to_string()) {
+            return Err(Error::validation(format!(
+                "'{checksums}' repeats path '{relative}'"
+            )));
+        }
+        let path = safe_product_join(member_root, relative, "member checksum path")?;
+        let (actual, _) = digest_file(&path)?;
+        if bare_sha256(&actual) != expected {
+            return Err(Error::coded(
+                "PLUGIN_PRODUCT_MEMBER_CHECKSUM_MISMATCH",
+                Category::Validation,
+                format!(
+                    "member file '{relative}' hashes to {}, expected sha256:{expected}",
+                    bare_sha256(&actual)
+                ),
+            ));
+        }
+    }
+    if !paths.contains(required_archive) {
+        return Err(Error::validation(format!(
+            "'{checksums}' does not cover member archive '{required_archive}'"
+        )));
+    }
+    Ok(())
+}
+
+fn verify_member_manifest_files(root: &Utf8Path, manifest: &serde_json::Value) -> Result<()> {
+    let files = manifest["files"].as_array().ok_or_else(|| {
+        Error::validation("product member manifest is missing array field 'files'")
+    })?;
+    for entry in files {
+        let relative = entry["path"].as_str().ok_or_else(|| {
+            Error::validation("product member manifest file entry is missing string 'path'")
+        })?;
+        let expected = entry["sha256"].as_str().ok_or_else(|| {
+            Error::validation(format!(
+                "product member manifest entry '{relative}' is missing string 'sha256'"
+            ))
+        })?;
+        validate_sha256_digest(expected, "product member file sha256")?;
+        let expected_size = entry["size"].as_u64().ok_or_else(|| {
+            Error::validation(format!(
+                "product member manifest entry '{relative}' is missing integer 'size'"
+            ))
+        })?;
+        let path = safe_product_join(root, relative, "product member file")?;
+        let (actual, size) = digest_file(&path)?;
+        if actual != expected || size != expected_size {
+            return Err(Error::coded(
+                "PLUGIN_PRODUCT_MEMBER_FILE_MISMATCH",
+                Category::Validation,
+                format!(
+                    "installed member file '{relative}' is {actual} ({size} bytes), expected {expected} ({expected_size} bytes)"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn safe_product_join(root: &Utf8Path, relative: &str, field: &str) -> Result<Utf8PathBuf> {
+    let bytes = relative.as_bytes();
+    let has_drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if relative.is_empty()
+        || relative.starts_with('/')
+        || relative.starts_with('\\')
+        || relative.contains('\\')
+        || relative.contains(':')
+        || has_drive
+        || relative
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return Err(Error::validation(format!(
+            "{field} must be a portable path below the product root, got '{relative}'"
+        )));
+    }
+    Ok(root.join(relative))
+}
+
+fn temporary_product_tree(parent: &std::path::Path, label: &str) -> Result<TemporaryProductTree> {
+    let parent = Utf8PathBuf::from_path_buf(parent.to_path_buf()).map_err(|path| {
+        Error::config(format!(
+            "temporary directory is not UTF-8: {}",
+            path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent.as_std_path())
+        .map_err(|error| Error::io(parent.to_string(), error))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let path = parent.join(format!(
+        ".ost-plugin-product-{label}-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&path).map_err(|error| Error::io(path.to_string(), error))?;
+    Ok(TemporaryProductTree {
+        path,
+        remove_on_drop: true,
+    })
+}
+
+fn install_plugin_product(
+    product: &str,
+    prefix: &str,
+    expect_digest: Option<&str>,
+    fmt: Format,
+) -> Result<()> {
+    let verified = verify_plugin_product(product, expect_digest)?;
+    let prefix = Utf8PathBuf::from(prefix);
+    if prefix.as_std_path().exists() {
+        return Err(Error::precondition(format!(
+            "product installation prefix already exists: {prefix}"
+        ))
+        .with_hint(
+            "choose a new empty prefix; product install never overwrites an existing tree",
+        ));
+    }
+    let parent = prefix
+        .parent()
+        .filter(|parent| !parent.as_str().is_empty())
+        .unwrap_or_else(|| Utf8Path::new("."));
+    let mut staging = temporary_product_tree(parent.as_std_path(), "install")?;
+
+    for member in &verified.contract.members {
+        let expanded = verified.tree.path.join("expanded").join(&member.id);
+        let destination = Utf8Path::new("bundles").join(&member.id);
+        copy_tree_required(&expanded, &destination, &staging.path)?;
+    }
+    write_product_activation(&staging.path, &verified.contract)?;
+    let receipt = serde_json::json!({
+        "schema": "openstrata.plugin-product-install/v1alpha1",
+        "name": verified.contract.name,
+        "version": verified.contract.version,
+        "target": verified.contract.target,
+        "archive_digest": verified.source.digest,
+        "members": verified.contract.install.order,
+        "layout": verified.contract.install.destination,
+        "activation": verified.contract.install.activation,
+    });
+    write_text(
+        &staging.path.join("openstrata.product-install.json"),
+        &pretty_json(&receipt)?,
+    )?;
+    std::fs::rename(staging.path.as_std_path(), prefix.as_std_path())
+        .map_err(|error| Error::io(format!("{} -> {prefix}", staging.path), error))?;
+    // The path moved successfully; the installed tree now belongs to the user.
+    staging.remove_on_drop = false;
+
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "installed": true,
+            "name": verified.contract.name,
+            "version": verified.contract.version,
+            "target": verified.contract.target,
+            "archive_digest": verified.source.digest,
+            "prefix": prefix,
+            "members": verified.contract.install.order,
+            "activation": prefix.join("openstrata.activation.json"),
+        }));
+    } else {
+        println!(
+            "Installed plugin product {} {} for {}",
+            verified.contract.name, verified.contract.version, verified.contract.target
+        );
+        println!("  digest:     {}", verified.source.digest);
+        println!("  prefix:     {prefix}");
+        println!(
+            "  members:    {} ({})",
+            verified.contract.members.len(),
+            verified.contract.install.order.join(", ")
+        );
+        println!(
+            "  activation: {}",
+            prefix.join("openstrata.activation.json")
+        );
+    }
+    Ok(())
+}
+
+fn write_product_activation(root: &Utf8Path, contract: &PluginProductContract) -> Result<()> {
+    let mut target_os: Option<Os> = None;
+    let mut plugin_paths = Vec::new();
+    let mut library_paths = Vec::new();
+    let mut python_paths = Vec::new();
+    for member in &contract.members {
+        let member_root = root.join("bundles").join(&member.id);
+        let path = member_root.join("openstrata.activation.json");
+        let source = std::fs::read_to_string(path.as_std_path())
+            .map_err(|error| Error::io(path.to_string(), error))?;
+        let activation: ProductMemberActivation = serde_json::from_str(&source)
+            .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
+        if activation.schema != "openstrata.activation/v1alpha1" || activation.root != "." {
+            return Err(Error::validation(format!(
+                "product member '{}' has unsupported activation contract",
+                member.id
+            )));
+        }
+        let os = parse_product_os(&activation.target_os)?;
+        if target_os.is_some_and(|selected| selected != os) {
+            return Err(Error::validation(
+                "plugin product members target different operating systems",
+            ));
+        }
+        target_os = Some(os);
+        // Deserializing the complete strict member contract above ensures these
+        // fields were present even though the merged contract computes them.
+        let _ = (
+            &activation.environment,
+            &activation.entrypoints,
+            &activation.python_dll_search,
+        );
+        extend_product_activation_paths(&mut plugin_paths, &member.id, &activation.plugin_paths)?;
+        extend_product_activation_paths(&mut library_paths, &member.id, &activation.library_paths)?;
+        extend_product_activation_paths(&mut python_paths, &member.id, &activation.python_paths)?;
+    }
+    let target_os = target_os
+        .ok_or_else(|| Error::validation("cannot write activation for an empty plugin product"))?;
+    let loader_env = activation_loader_key(target_os);
+    let activation = serde_json::json!({
+        "schema": "openstrata.activation/v1alpha1",
+        "target_os": target_os.as_str(),
+        "root": ".",
+        "environment": {
+            "plugin": "PXR_PLUGINPATH_NAME",
+            "loader": loader_env,
+            "python": "PYTHONPATH",
+        },
+        "plugin_paths": plugin_paths,
+        "library_paths": library_paths,
+        "python_paths": python_paths,
+        "entrypoints": {
+            "powershell": "activate.ps1",
+            "bash": "activate.sh",
+            "python": "openstrata_activate.py",
+        },
+        "python_dll_search": {
+            "windows": "import openstrata_activate before importing pxr; the module retains os.add_dll_directory handles",
+        },
+    });
+    write_text(
+        &root.join("openstrata.activation.json"),
+        &pretty_json(&activation)?,
+    )?;
+    write_text(
+        &root.join("activate.ps1"),
+        &render_powershell_activation(&plugin_paths, &library_paths, &python_paths, loader_env),
+    )?;
+    write_text(
+        &root.join("activate.sh"),
+        &render_bash_activation(
+            &plugin_paths,
+            &library_paths,
+            &python_paths,
+            loader_env,
+            target_os,
+        ),
+    )?;
+    write_text(
+        &root.join("openstrata_activate.py"),
+        &render_python_activation(&plugin_paths, &library_paths, &python_paths),
+    )
+}
+
+fn extend_product_activation_paths(
+    output: &mut Vec<String>,
+    member: &str,
+    relative_paths: &[String],
+) -> Result<()> {
+    for relative in relative_paths {
+        // Validate the member-authored relative path independently before
+        // prefixing it into the aggregate installation layout.
+        safe_product_join(Utf8Path::new("."), relative, "member activation path")?;
+        let aggregate = format!("bundles/{member}/{relative}");
+        if !output.contains(&aggregate) {
+            output.push(aggregate);
+        }
+    }
+    Ok(())
+}
+
+fn parse_product_os(value: &str) -> Result<Os> {
+    match value {
+        "linux" => Ok(Os::Linux),
+        "macos" => Ok(Os::Macos),
+        "windows" => Ok(Os::Windows),
+        other => Err(Error::validation(format!(
+            "unsupported product activation target_os '{other}'"
+        ))),
+    }
+}
+
+fn report_product_verification(product: &VerifiedPluginProduct, fmt: Format) {
+    if fmt.is_json() {
+        output::success(&serde_json::json!({
+            "verified": true,
+            "name": product.contract.name,
+            "version": product.contract.version,
+            "target": product.contract.target,
+            "archive": product.source.archive,
+            "archive_digest": product.source.digest,
+            "archive_size": product.source.size,
+            "members": product.contract.install.order,
+        }));
+    } else {
+        println!(
+            "Verified plugin product {} {} for {}",
+            product.contract.name, product.contract.version, product.contract.target
+        );
+        println!("  digest:  {}", product.source.digest);
+        println!("  archive: {}", product.source.archive);
+        println!(
+            "  members: {} ({})",
+            product.contract.members.len(),
+            product.contract.install.order.join(", ")
+        );
+    }
 }
 
 /// The hex digest without the `sha256:` scheme prefix (the `sha256sum -c`

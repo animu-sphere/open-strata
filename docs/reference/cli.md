@@ -660,6 +660,7 @@ Scaffold, inspect, build, and diagnose OpenUSD plugin bundles
 - [`ost plugin inspect`](#ost-plugin-inspect) — Report a bundle's Level 0 structure
 - [`ost plugin new`](#ost-plugin-new) — Scaffold a new plugin bundle from a template
 - [`ost plugin package`](#ost-plugin-package) — Pack a built plugin bundle into a target-specific tar.zst artifact
+- [`ost plugin product`](#ost-plugin-product) — Verify or install an aggregate plugin product artifact
 - [`ost plugin publish`](#ost-plugin-publish) — Publish a packaged plugin artifact into the local registry (by digest)
 - [`ost plugin run`](#ost-plugin-run) — Launch a command inside the plugin's runtime session (needs a real runtime)
 - [`ost plugin schema`](#ost-plugin-schema) — Manage a bundle's co-located USD schema
@@ -776,6 +777,54 @@ Pack a built plugin bundle into a target-specific tar.zst artifact
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 | `--with-debug` | Ship debug symbols (`.pdb`, `.dwo`) *inside* the main package instead of the default lean package. By default the main archive is lean and any debug symbols are split into a sibling `*-debug` package |
 | `--workspace` | Package every discovered bundle, in dependency order, using the same validated graph `plugin test --workspace` checks |
+
+#### `ost plugin product`
+
+Verify or install an aggregate plugin product artifact
+
+**Usage:** `ost plugin product <COMMAND>`
+
+**Subcommands:**
+
+- [`ost plugin product install`](#ost-plugin-product-install) — Verify and install every member in dependency order
+- [`ost plugin product verify`](#ost-plugin-product-verify) — Verify the product archive and every member archive/checksum
+
+##### `ost plugin product install`
+
+Verify and install every member in dependency order
+
+**Usage:** `ost plugin product install [OPTIONS] <PRODUCT>`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<PRODUCT>` | yes | Product dist directory, manifest.json, or product .tar.zst archive |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--expect-digest <EXPECT_DIGEST>` | Require the outer product archive to have this full sha256 digest |
+| `--prefix <PREFIX>` | New installation root. The command refuses to overwrite it |
+
+##### `ost plugin product verify`
+
+Verify the product archive and every member archive/checksum
+
+**Usage:** `ost plugin product verify [OPTIONS] <PRODUCT>`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<PRODUCT>` | yes | Product dist directory, manifest.json, or product .tar.zst archive |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--expect-digest <EXPECT_DIGEST>` | Require the outer product archive to have this full sha256 digest |
 
 #### `ost plugin publish`
 
@@ -1079,6 +1128,7 @@ Build and launch the standalone native viewport adapter
 | `--config <CONFIG>` | CMake configuration to build |
 | `--generator <GENERATOR>` | CMake generator for the managed build. Ninja remains the default |
 | `--intent <INTENT>` | Project-declared build intent to combine with the viewport workflow |
+| `--preflight` | Resolve the intent, runtime profile, adapter, and scene capabilities, then stop before configuring or building |
 | `--profile <PROFILE>` | Profile for the managed build. Defaults to the project's profile; the standalone viewport needs no OpenUSD runtime |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 

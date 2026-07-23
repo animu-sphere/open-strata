@@ -1627,6 +1627,11 @@ fn build_failure_names_the_phase_and_log() {
         text.contains("build.log"),
         "should point at the build log:\n{text}"
     );
+    let lease_path = single_target_dir(&sb.work).join(TARGET_LEASE_FILE);
+    assert!(
+        lease_is_unowned(&lease_path),
+        "a handled build failure must release its target lease"
+    );
 }
 
 #[test]
@@ -2477,6 +2482,26 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         .as_str()
         .unwrap()
         .ends_with("-plugin-product.tar.zst"));
+    let first_product_digest = value["data"]["product"]["archive_digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The aggregate embeds member manifests and evidence, not only their stable
+    // archives. Those sidecars used to carry a fresh wall-clock created_unix,
+    // so product bytes changed while every member digest stayed identical.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let repeated = sb.ost(&["--json", "plugin", "package", "--workspace", "--product"]);
+    assert!(
+        repeated.status.success(),
+        "repeated workspace package failed:\n{}",
+        out_text(&repeated)
+    );
+    let repeated: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    assert_eq!(
+        repeated["data"]["product"]["archive_digest"], first_product_digest,
+        "an unchanged aggregate product must be byte-reproducible"
+    );
 
     // The consumer's artifact carries the bundle it needs, so a consumer can
     // detect a missing provider from the manifest instead of at load time.
@@ -2613,6 +2638,67 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         .any(|path| path.starts_with("members/consumer/") && path.ends_with("manifest.json")));
 
     let product_dist = product_manifest.parent().unwrap().to_str().unwrap();
+    let verified = sb.ost(&["--json", "plugin", "product", "verify", product_dist]);
+    assert!(
+        verified.status.success(),
+        "product verify must cover the outer archive and every member:\n{}",
+        out_text(&verified)
+    );
+    let verified: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(verified["data"]["verified"], true);
+    assert_eq!(verified["data"]["archive_digest"], first_product_digest);
+    assert_eq!(
+        verified["data"]["members"],
+        serde_json::json!(["schema", "consumer"])
+    );
+
+    let install_prefix = sb.work_file("installed-product");
+    let install_prefix_arg = install_prefix.to_str().unwrap();
+    let installed = sb.ost(&[
+        "--json",
+        "plugin",
+        "product",
+        "install",
+        product_dist,
+        "--prefix",
+        install_prefix_arg,
+        "--expect-digest",
+        &first_product_digest,
+    ]);
+    assert!(
+        installed.status.success(),
+        "product install failed:\n{}",
+        out_text(&installed)
+    );
+    for path in [
+        "bundles/schema/openstrata.plugin.yaml",
+        "bundles/consumer/openstrata.plugin.yaml",
+        "openstrata.activation.json",
+        "activate.ps1",
+        "activate.sh",
+        "openstrata_activate.py",
+        "openstrata.product-install.json",
+    ] {
+        assert!(
+            install_prefix.join(path).is_file(),
+            "product install omitted {path}"
+        );
+    }
+    let aggregate_activation: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(install_prefix.join("openstrata.activation.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(aggregate_activation["plugin_paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path == "bundles/schema/plugin/resources/schema"));
+    assert!(aggregate_activation["library_paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path == "bundles/consumer/third_party/bin"));
+
     let imported = sb.ost(&["--json", "artifact", "import", product_dist]);
     assert!(
         imported.status.success(),

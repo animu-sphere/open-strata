@@ -156,6 +156,24 @@ retains the handles for the life of the process. This is the supported bridge
 from `requires.runtime_libs` to non-`ost` consumers; parsing the plugin YAML and
 guessing loader behavior is not.
 
+For example, after the OpenUSD host itself is active:
+
+```powershell
+# OpenUSD command-line host
+. .\activate.ps1
+usdcat tests/fixtures/minimal.vrm
+
+# Python 3.8+ on Windows: retain package DLL-directory handles before pxr loads.
+python -c "import openstrata_activate; from pxr import Usd; assert Usd.Stage.Open('tests/fixtures/minimal.vrm')"
+```
+
+The OpenUSD installation remains responsible for activating its own
+`bin`/`lib`/Python directories; the package entrypoint adds and retains the
+package's staged dependency directories. A vendor/runtime Python launcher
+normally provides the first half. When embedding OpenUSD into a stock Windows
+Python process, register the host's DLL directories with
+`os.add_dll_directory()` before importing `openstrata_activate`.
+
 Package-origin verification carries its oracle too. For every declared
 `tests.roundtrip` fixture that has an adjacent `<fixture>.golden.usda`,
 `ost plugin package` stages both files and emits
@@ -204,11 +222,34 @@ members/<bundle-id>/provenance.intoto.jsonl  # when the member has provenance
 member's archive digest, manifest, checksums, evidence, optional debug archive,
 and dependency closure. The product is built from the exact per-bundle package
 outputs—not from sibling source paths—so every member remains independently
-verifiable after a single product download. Verify the product `SHA256SUMS`,
-then each member `SHA256SUMS`, and extract members in `install.order`. The
-aggregate itself has a producer manifest, SBOM, digest, and registry kind
-`product`, so `ost artifact import` / `verify` / transport treat it as a
-first-class artifact.
+verifiable after a single product download. Product identity is the enclosing
+project's `project.name`, effective project version, and target; its archive is
+named `<name>-<version>-<target>-plugin-product.tar.zst`. Member bundle names and
+versions stay independent and are pinned by the product contract.
+
+Use the product commands instead of unpacking members manually:
+
+```sh
+# A producer dist directory or its manifest.json carries the expected digest.
+ost plugin product verify dist/products/<name>/<version>/<target>
+ost plugin product install dist/products/<name>/<version>/<target> \
+  --prefix ./installed-product
+
+# A standalone downloaded archive can be pinned explicitly.
+ost plugin product verify product.tar.zst --expect-digest sha256:<64-hex>
+ost plugin product install product.tar.zst --expect-digest sha256:<64-hex> \
+  --prefix ./installed-product
+```
+
+Verification covers the product digest, strict contract and order, member
+archive digests/sizes, each member `SHA256SUMS`, evidence presence, extracted
+file inventory, and bundle validity. Installation refuses to replace an
+existing prefix, expands members under `bundles/<id>/` in dependency order, and
+emits aggregate `activate.ps1`, `activate.sh`,
+`openstrata.activation.json`, and `openstrata_activate.py` entrypoints. The
+aggregate itself also has a producer manifest, SBOM, digest, and registry kind
+`product`, so `ost artifact import` / `verify` / transport remain available for
+digest-addressed registry workflows.
 
 A `requires.bundles` provider travels as **both halves**. Its link half is staged
 under `runtime/bundles/<id>/lib`, beside the provider-relative path its

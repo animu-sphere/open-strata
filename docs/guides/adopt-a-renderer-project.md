@@ -76,6 +76,19 @@ ost renderer view scene.usda --profile usd     # managed usdview session
 ost renderer viewport -- --frames 8 --hidden   # standalone native viewport
 ```
 
+Before paying the configure/build cost, resolve the named intent and
+scene/runtime capabilities:
+
+```sh
+ost renderer viewport --preflight --intent viewport-usd --profile usd -- \
+  --usd path/to/scene.usd --frames 1 --hidden
+```
+
+The JSON form publishes normalized `requested`, `applied`, `skipped`, and
+`unrequested` capability evidence. A USD scene workflow fails here—before the
+build tree is touched—unless the selected profile provides `usd-stage-read`.
+The same preflight object is retained in the durable viewport launch record.
+
 `renderer view` defaults to automatic camera selection and classifies optional
 host warnings separately from real plugin-discovery, renderer-selection, or
 first-frame failures.

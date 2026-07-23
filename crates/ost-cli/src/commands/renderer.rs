@@ -107,6 +107,11 @@ pub enum RendererCmd {
         #[arg(long)]
         profile: Option<String>,
 
+        /// Resolve the intent, runtime profile, adapter, and scene capabilities,
+        /// then stop before configuring or building.
+        #[arg(long)]
+        preflight: bool,
+
         /// Arguments passed to the viewport executable after `--`, e.g.
         /// `ost renderer viewport -- --frames 8 --hidden`.
         #[arg(last = true)]
@@ -258,6 +263,7 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
             intent,
             target,
             profile,
+            preflight,
             args,
         } => viewport(
             ViewportArgs {
@@ -266,6 +272,7 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
                 intent,
                 target,
                 profile,
+                preflight,
                 args,
             },
             fmt,
@@ -353,6 +360,7 @@ struct ViewportArgs {
     intent: Option<String>,
     target: Option<String>,
     profile: Option<String>,
+    preflight: bool,
     args: Vec<String>,
 }
 
@@ -1093,9 +1101,9 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         })?
         .clone();
 
-    // One ordinary managed build with the viewport intent. The standalone
-    // viewport renders the project bootstrap scene, so the project's
-    // host-neutral profile suffices and no runtime fingerprint is recorded.
+    // One ordinary managed build with the viewport intent. A host-neutral
+    // viewport may use `core`; a scene workflow must select a profile carrying
+    // the capabilities implied by its passthrough arguments.
     let (target, _) = build_target(&platform, &profile)?;
     let mut intent = match args.intent.as_deref() {
         Some(_) => build::resolve_declared_intent(&root, args.intent.as_deref())?,
@@ -1109,6 +1117,40 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         "OST_RENDERER_ADAPTERS",
         CMakeCacheEntry::string("viewport"),
     )?;
+    let preflight = viewport_capability_preflight(
+        &adapter,
+        &target.id(),
+        &platform,
+        &profile,
+        &intent,
+        &args.args,
+        &target.capabilities,
+    )?;
+    if args.preflight {
+        if fmt.is_json() {
+            output::success(&serde_json::json!({ "preflight": preflight }));
+        } else {
+            println!("Renderer viewport preflight passed");
+            println!("  target:       {}", target.id());
+            println!("  adapter:      {adapter}");
+            println!("  intent:       {}", intent.name);
+            println!(
+                "  capabilities: {}",
+                preflight["capabilities"]["applied"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "none requested".into())
+            );
+        }
+        return Ok(());
+    }
     let build_dir = root.join(build::build_dir_for_intent(&target.id(), &intent));
     let renderer_reports_before = snapshot_managed_renderer_reports(&root, &build_dir)?;
     if !fmt.is_json() {
@@ -1206,6 +1248,7 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         "config": args.config,
         "build_dir": build_dir,
         "intent": intent,
+        "preflight": preflight,
         "args": args.args,
         "started_unix": viewport_started_unix,
         "completed_unix": completed_unix,
@@ -1248,6 +1291,83 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         ))
         .with_phase("renderer-viewport-host")),
     }
+}
+
+fn viewport_capability_preflight(
+    adapter: &str,
+    target_id: &str,
+    platform: &str,
+    profile: &str,
+    intent: &BuildIntent,
+    args: &[String],
+    available: &[String],
+) -> Result<serde_json::Value> {
+    let usd_scene = args.iter().any(|arg| {
+        let lower = arg.to_ascii_lowercase();
+        matches!(lower.as_str(), "--usd" | "--scene")
+            || lower.starts_with("--usd=")
+            || lower.starts_with("--scene=")
+            || [".usd", ".usda", ".usdc", ".usdz"]
+                .iter()
+                .any(|extension| lower.ends_with(extension))
+    });
+    let requested = if usd_scene {
+        vec!["usd-stage-read"]
+    } else {
+        Vec::new()
+    };
+    let missing = requested
+        .iter()
+        .filter(|capability| !available.iter().any(|value| value == **capability))
+        .copied()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(Error::coded(
+            "RENDERER_VIEWPORT_CAPABILITY_MISSING",
+            Category::Precondition,
+            format!(
+                "viewport scene workflow requests {}, but profile '{profile}' provides [{}]",
+                missing.join(", "),
+                available.join(", ")
+            ),
+        )
+        .with_hint(format!(
+            "select a profile that provides {} (for the built-in catalog, pass `--profile usd`)",
+            missing.join(", ")
+        ))
+        .with_phase("renderer-viewport-preflight"));
+    }
+    let applied = requested.clone();
+    let unrequested = available
+        .iter()
+        .filter(|capability| !requested.iter().any(|value| value == capability))
+        .cloned()
+        .collect::<Vec<_>>();
+    let skipped = if usd_scene {
+        Vec::new()
+    } else {
+        vec![serde_json::json!({
+            "capability": "usd-stage-read",
+            "reason": "no USD scene argument was requested",
+        })]
+    };
+    Ok(serde_json::json!({
+        "schema": "openstrata.renderer-preflight/v1alpha1",
+        "passed": true,
+        "workflow": if usd_scene { "usd-scene" } else { "standalone" },
+        "adapter": adapter,
+        "target": target_id,
+        "platform": platform,
+        "profile": profile,
+        "intent": intent,
+        "args": args,
+        "capabilities": {
+            "requested": requested,
+            "applied": applied,
+            "skipped": skipped,
+            "unrequested": unrequested,
+        },
+    }))
 }
 
 fn viewport_session_outcome(exit_code: Option<i32>) -> SessionOutcome {
@@ -2006,6 +2126,67 @@ mod tests {
         assert_eq!(
             labeled_child_value(output, "Presentation:").as_deref(),
             Some("GPU swapchain")
+        );
+    }
+
+    #[test]
+    fn viewport_preflight_requires_usd_capability_before_building() {
+        let error = viewport_capability_preflight(
+            "merlinViewport",
+            "cy2026-windows-core",
+            "cy2026",
+            "core",
+            &BuildIntent::default(),
+            &["--usd".into(), "scene.usd".into()],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "RENDERER_VIEWPORT_CAPABILITY_MISSING");
+        assert_eq!(error.phase(), Some("renderer-viewport-preflight"));
+        assert!(error.to_string().contains("profile 'core'"));
+    }
+
+    #[test]
+    fn viewport_preflight_records_requested_applied_and_skipped_capabilities() {
+        let usd = viewport_capability_preflight(
+            "merlinViewport",
+            "cy2026-windows-usd",
+            "cy2026",
+            "usd",
+            &BuildIntent::default(),
+            &["--usd=scene.usda".into()],
+            &["usd-stage-read".into(), "usd-python".into()],
+        )
+        .unwrap();
+        assert_eq!(usd["workflow"], "usd-scene");
+        assert_eq!(
+            usd["capabilities"]["requested"],
+            serde_json::json!(["usd-stage-read"])
+        );
+        assert_eq!(
+            usd["capabilities"]["applied"],
+            serde_json::json!(["usd-stage-read"])
+        );
+        assert_eq!(
+            usd["capabilities"]["unrequested"],
+            serde_json::json!(["usd-python"])
+        );
+        assert_eq!(usd["capabilities"]["skipped"], serde_json::json!([]));
+
+        let standalone = viewport_capability_preflight(
+            "merlinViewport",
+            "cy2026-windows-core",
+            "cy2026",
+            "core",
+            &BuildIntent::default(),
+            &["--frames".into(), "1".into()],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(standalone["workflow"], "standalone");
+        assert_eq!(
+            standalone["capabilities"]["skipped"][0]["capability"],
+            "usd-stage-read"
         );
     }
 

@@ -9,9 +9,9 @@ Legend: ⬜ not started
 ## Milestone ladder (beyond next)
 
 The v0.19.0 composition and reach milestone is shipped in
-[v0.19.0](../releases/v0.19.0.md). Its remaining clean-machine acceptance
-dogfoods stay visible in [current.md](current.md); the next scheduled milestone
-is v0.20.0.
+[v0.19.0](../releases/v0.19.0.md). The active v0.20.0 dogfood-closure and
+renderer-workflow milestone is in [current.md](current.md). DCC host integration
+follows it in v0.21.0.
 
 The Formation scope below is **Half B** of v0.19.0, narrowed to
 `resolve|inspect|run|lock`. It is gated on Half A (artifact closure, staged-byte
@@ -48,10 +48,9 @@ milestone, Formation ships in v0.20.0 and DCC host integration moves to v0.21.0.
   namespace / overlayfs sandboxing, detached session management, general-purpose
   package solving, automatic Formation-bundle publication, and implicit download
   from untrusted sources.
-- ⬜ **v0.20.0 - DCC host integration (Phase 10).** Deferred from the v0.19.0
-  slot by the inserted Formation milestone (and originally from v0.18.0 by the
-  v0.17.0 dogfooding findings). Moves again to v0.21.0 if v0.19.0 Half A pushes
-  Formation into the v0.20.0 slot. Extends OpenStrata beyond runtime-native OpenUSD
+- ⬜ **v0.21.0 - DCC host integration (Phase 10).** Deferred from v0.20.0 by
+  the v0.19.0 package/release and renderer dogfooding findings. Extends
+  OpenStrata beyond runtime-native OpenUSD
   applications without redistributing DCC SDKs or inventing one false cross-DCC
   API: an `ost-host` model with a versioned host record (product, version,
   install root, executable/API locations, Python ABI, platform fingerprint,
