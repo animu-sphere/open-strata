@@ -401,7 +401,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     ) {
         Ok(status) => status,
         Err(error) => {
-            stamp_build_renderer_reports(
+            let stamp = stamp_build_renderer_reports(
                 &root,
                 &build_dir,
                 &renderer_reports_before,
@@ -411,12 +411,17 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
                 None,
                 ost_manifest::SessionOutcome::Incomplete,
                 false,
-            )?;
+            );
+            // A timed-out child has already been reaped by the reporter. Clear
+            // the owning record too, so retry does not inherit a stale lease
+            // from a failure OST handled deterministically.
+            lease.release();
+            stamp?;
             return Err(error);
         }
     };
     if !configure_status.success() {
-        stamp_build_renderer_reports(
+        let stamp = stamp_build_renderer_reports(
             &root,
             &build_dir,
             &renderer_reports_before,
@@ -426,14 +431,18 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
             Some(crate::commands::renderer::unix_now()),
             ost_manifest::SessionOutcome::Failure,
             false,
-        )?;
+        );
         if args.nested {
+            lease.release();
+            stamp?;
             return Err(Error::external_tool(format!(
                 "managed CMake configure failed{}",
                 exit_detail(&configure_status)
             ))
             .with_phase("configure"));
         }
+        lease.release();
+        stamp?;
         rep.exit_unsuccessful(configure_status);
     }
     rep.phase("Building targets");
@@ -446,7 +455,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     ) {
         Ok(status) => status,
         Err(error) => {
-            stamp_build_renderer_reports(
+            let stamp = stamp_build_renderer_reports(
                 &root,
                 &build_dir,
                 &renderer_reports_before,
@@ -456,12 +465,14 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
                 None,
                 ost_manifest::SessionOutcome::Incomplete,
                 false,
-            )?;
+            );
+            lease.release();
+            stamp?;
             return Err(error);
         }
     };
     if !build_status.success() {
-        stamp_build_renderer_reports(
+        let stamp = stamp_build_renderer_reports(
             &root,
             &build_dir,
             &renderer_reports_before,
@@ -471,14 +482,18 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
             Some(crate::commands::renderer::unix_now()),
             ost_manifest::SessionOutcome::Failure,
             false,
-        )?;
+        );
         if args.nested {
+            lease.release();
+            stamp?;
             return Err(Error::external_tool(format!(
                 "managed CMake build failed{}",
                 exit_detail(&build_status)
             ))
             .with_phase("build"));
         }
+        lease.release();
+        stamp?;
         rep.exit_unsuccessful(build_status);
     }
 
@@ -486,7 +501,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     //     tree means the preset built nothing useful.
     rep.phase("Verifying outputs");
     if let Err(error) = verify_build(&build_dir) {
-        stamp_build_renderer_reports(
+        let stamp = stamp_build_renderer_reports(
             &root,
             &build_dir,
             &renderer_reports_before,
@@ -496,7 +511,9 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
             Some(crate::commands::renderer::unix_now()),
             ost_manifest::SessionOutcome::Failure,
             false,
-        )?;
+        );
+        lease.release();
+        stamp?;
         return Err(error);
     }
     let completed_unix = crate::commands::renderer::unix_now();
@@ -513,10 +530,9 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     )?;
     write_completion(&root, &id, &relative_build, &intent, lease.invocation())?;
 
-    // The completion is published; the target is free for the next writer. On
-    // any earlier `?` the lease drops instead, which releases the lock without
-    // clearing the record — leaving the evidence of an interrupted run for the
-    // next invocation to report as a takeover.
+    // The completion is published; the target is free for the next writer.
+    // Handled configure/build failures also clear their record before return;
+    // only an actually interrupted process leaves takeover evidence behind.
     lease.release();
 
     rep.done();

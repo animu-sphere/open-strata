@@ -475,9 +475,14 @@ impl Reporter {
                         drop(out);
                         drop(err);
                         let tail = output_tail(&tail);
+                        let log = self
+                            .log
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<disabled>".into());
                         self.close_current(Outcome::Failed(None));
                         return Err(Error::external_tool(format!(
-                            "command timed out after {}s: {} (pid {pid}, cwd '{cwd}', cleanup: {cleanup}, last output: {})",
+                            "command timed out after {}s: {} (phase '{phase}', pid {pid}, cwd '{cwd}', log '{log}', cleanup: {cleanup}, last output: {})",
                             timeout.unwrap_or_default().as_secs(),
                             render_command(program, args),
                             if tail.is_empty() { "<none>".into() } else { one_line(&tail) }
@@ -829,13 +834,28 @@ mod tests {
         };
         let mut reporter = Reporter::new(ProgressMode::Plain, 1, true);
         reporter.phase("Timeout fixture");
+        let log = camino::Utf8PathBuf::from_path_buf(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "ost-timeout-fixture-{}-{}.log",
+                std::process::id(),
+                now_unix()
+            ));
+        reporter.set_log(&log);
         let started = Instant::now();
         let error = reporter
             .run_status(&program, &args, &cwd, &[], Some(Duration::from_millis(100)))
             .unwrap_err();
         assert_eq!(error.category(), ost_core::Category::ExternalTool);
         assert_eq!(error.phase(), Some("timeout-fixture"));
-        assert!(error.to_string().contains("timed out"));
+        let message = error.to_string();
+        assert!(message.contains("timed out"));
+        assert!(message.contains("phase 'timeout-fixture'"), "{message}");
+        assert!(message.contains("pid "), "{message}");
+        assert!(message.contains("log '"), "{message}");
+        assert!(message.contains("cleanup:"), "{message}");
+        assert!(message.contains("last output:"), "{message}");
         assert!(started.elapsed() < Duration::from_secs(5));
+        let _ = std::fs::remove_file(log);
     }
 }

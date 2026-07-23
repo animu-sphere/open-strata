@@ -16,12 +16,14 @@
       "required": ["layout", "order", "contract"],
       "properties": {
         "layout": { "const": "members/<bundle-id>/" },
+        "destination": { "const": "bundles/<bundle-id>/" },
         "order": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
+        "activation": { "const": "openstrata.activation.json" },
         "contract": { "type": "string", "minLength": 1 }
       }
     },

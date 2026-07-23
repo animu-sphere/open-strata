@@ -38,8 +38,10 @@ Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-Live downstream release-lane dogfood, sessions, GPU/AI, and broader DCC matrices
-are still ahead.
+The active **v0.20.0** milestone closes downstream package/product
+reproducibility and renderer-workflow findings. DCC host integration is
+explicitly deferred to **v0.21.0**; sessions, GPU/AI, and broader DCC matrices
+remain ahead.
 Linux x86_64 is the first-class target; other OS targets are modeled and
 partially working — these examples were exercised on Windows.
 

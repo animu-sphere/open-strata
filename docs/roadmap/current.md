@@ -3,6 +3,115 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
+## v0.20.0 - dogfood closure and renderer workflow
+
+**Status:** 🚧 in progress from 2026-07-23 · **Depends on:** v0.19.0 reachable
+packages, aggregate products, managed producer sessions, and Formation.
+
+The v0.20.0 scope is driven by the first v0.19.0 release-lane and renderer
+dogfoods:
+
+- usd-vrm-plugins
+  ([adoption asks](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/26-2026-07-23-v0.19.0-v0.20.0-asks.md),
+  [aggregate reproducibility](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/27-2026-07-23-v0.19.0-aggregate-product-reproducibility.md));
+- hdMerlin
+  ([renderer asks](https://github.com/animu-sphere/hydra-merlin/blob/main/docs/reports/ost/09-2026-07-23-v0.20.0-asks.md),
+  findings OST20-RND-001..007).
+
+This is a corrective/reach milestone. **DCC host integration does not ship in
+v0.20.0; it moves to v0.21.0.** The work below remains runtime-, package-, and
+renderer-native and introduces no DCC adapter or host-discovery surface.
+
+### P0 - independently installable package closure
+
+A package with `requires.bundles` must carry the provider's USD registration
+tree and link/runtime tree and activate both without a sibling source package.
+The acceptance command remains:
+
+```console
+ost plugin test plugins/usdVrmFileFormat --from-package --up-to 4
+```
+
+It must pass L2 discovery, L3 `usdcat`, and L4 `Usd.Stage.Open()` with no
+separate `--with vrmSchema`. The v0.20.0 intake re-ran this against the current
+usd-vrm-plugins main package and a real `cy2026/windows/usd` runtime: all three
+levels pass and the archive contains the provider `plugInfo.json`,
+`generatedSchema.usda`, and library. v0.20.0 keeps this as an explicit regression
+gate so a stale or partially re-packaged v0.2.0-shaped artifact cannot re-open
+the defect.
+
+### P0 - byte-reproducible aggregate products
+
+Two unchanged `plugin package --workspace --product` invocations must produce
+the same aggregate digest on Windows, Linux, and macOS. v0.19.0 normalized tar
+metadata but embedded freshly timestamped member `manifest.json` sidecars in
+the product; member archive digests therefore stayed stable while the aggregate
+changed.
+
+**Implemented on the v0.20.0 branch:** plugin and product producer manifests use
+the same reproducible timestamp contract as archive entries
+(`SOURCE_DATE_EPOCH`, otherwise epoch 0). The lifecycle waits across a wall-clock
+tick, packages again, and requires the product digest to remain identical.
+Member order, manifests, checksums, evidence, activation contracts, and paths
+remain part of the aggregate bytes.
+
+### P1 - first-class product verification and installation
+
+The aggregate is one release artifact, not merely a tar file containing a
+manual install recipe.
+
+**Implemented on the v0.20.0 branch:** `ost plugin product verify` checks the
+outer digest (optionally pinned by `--expect-digest`), strict product contract,
+member identities/order, member archive digests and sizes, every member
+`SHA256SUMS`, evidence presence, extracted file inventory, and bundle validity.
+`ost plugin product install --prefix <new-dir>` runs that verification, extracts
+members in dependency order under `bundles/<id>/`, refuses to overwrite an
+existing prefix, and emits aggregate PowerShell, Bash, JSON, and Python
+activation entrypoints. Product identity is the enclosing project's
+`project.name` + effective version + target; member identities and versions stay
+independent and pinned in `openstrata.product.json`.
+
+The package-level non-`ost` activation contract remains load-bearing. On
+Windows, `activate.ps1` is sufficient for OpenUSD executables, while Python 3.8+
+consumers import `openstrata_activate` before `pxr` so the package's staged DLL
+directories are registered and retained. A real extracted usdVrmFileFormat
+package has been exercised through both plain `usdcat` and a host Python/OpenUSD
+process.
+
+### P1 - actionable managed timeout recovery (OST20-RND-001)
+
+Configure/build timeout errors must name the active phase, child PID, command,
+cwd, retained log, output tail, and process-tree cleanup result. A timeout OST
+handles must reap descendants and clear the target lease before returning;
+only an actually interrupted/killed OST process leaves takeover evidence.
+
+**Implemented on the v0.20.0 branch:** the shared process runner reports that
+complete diagnostic and verifies child termination, and managed build failure
+paths release their lease after renderer failure evidence is stamped.
+
+### P1 - renderer intent/capability preflight (OST20-RND-004/006)
+
+`ost renderer viewport --preflight` resolves the adapter, named build intent,
+target/profile, passthrough scene workflow, and normalized
+requested/applied/skipped/unrequested capability evidence without configuring
+or building. Passing `--usd`, `--scene`, or a USD-family scene path requires
+`usd-stage-read`; an incompatible profile fails in the preflight phase with an
+exact `--profile usd` correction. The same preflight record is embedded in a
+successful durable viewport launch record.
+
+### P1/P2 - remaining renderer evidence closure
+
+- **OST20-RND-002:** bind the producer session and completion/report digests so
+  copied or stale reports cannot be upgraded into a managed PASS. Preserve
+  `external-unverified` attachment as the explicit external path.
+- **OST20-RND-003/005:** dogfood one real USD viewport success and keep one JSON
+  envelope for success, build failure, presentation-unavailable, and child
+  failure. Persist launch/readiness, backend/device, output locations, and exit
+  state beside completion evidence.
+- **OST20-RND-007:** add repeatable Ninja Multi-Config and Visual Studio
+  configuration-specific provenance fixtures. This is build provenance, not a
+  DCC-host implementation.
+
 ## Shipped: v0.19.0 - composition and reach
 
 **Status:** ✅ shipped 2026-07-23 · **Depends on:** the v0.18.0 evidence-integrity,
