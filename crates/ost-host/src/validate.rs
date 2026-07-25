@@ -8,6 +8,7 @@
 //! setup, never launches a GUI, never writes inside a host install, and
 //! isolates its failures so one unreadable candidate cannot sink a scan.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -57,9 +58,13 @@ pub struct HostValidation {
 }
 
 /// One executable a family is known to ship, by role.
+///
+/// `relative` is borrowed when the layout is constant and owned only where the
+/// executable suffix varies, so building the table allocates at most a handful
+/// of short strings and leaks none of them.
 struct ExecutableSpec {
     role: &'static str,
-    relative: &'static str,
+    relative: Cow<'static, str>,
     /// An anchor is a name only this product ships; finding one is what makes
     /// a directory an install rather than a directory.
     anchor: bool,
@@ -82,7 +87,7 @@ pub fn validate(
     let mut executables = BTreeMap::new();
     let mut found_anchor = false;
     for spec in &specs {
-        let path = root.join(spec.relative);
+        let path = root.join(spec.relative.as_ref());
         let Ok(metadata) = std::fs::metadata(path.as_std_path()) else {
             continue;
         };
@@ -104,7 +109,7 @@ pub fn validate(
         let looked_for = specs
             .iter()
             .filter(|spec| spec.anchor)
-            .map(|spec| spec.relative)
+            .map(|spec| spec.relative.as_ref())
             .collect::<Vec<_>>()
             .join(", ");
         return Err(HostRejection {
@@ -134,7 +139,7 @@ fn executable_specs(family: HostFamily, os: Os) -> Vec<ExecutableSpec> {
         HostFamily::Maya => {
             let mut specs = vec![ExecutableSpec {
                 role: "interpreter",
-                relative: leak(format!("bin/mayapy{exe}")),
+                relative: format!("bin/mayapy{exe}").into(),
                 anchor: true,
             }];
             // macOS keeps the interactive binary inside the app bundle while
@@ -142,13 +147,13 @@ fn executable_specs(family: HostFamily, os: Os) -> Vec<ExecutableSpec> {
             if os == Os::Macos {
                 specs.push(ExecutableSpec {
                     role: "interactive",
-                    relative: "Maya.app/Contents/MacOS/Maya",
+                    relative: "Maya.app/Contents/MacOS/Maya".into(),
                     anchor: true,
                 });
             } else {
                 specs.push(ExecutableSpec {
                     role: "interactive",
-                    relative: leak(format!("bin/maya{exe}")),
+                    relative: format!("bin/maya{exe}").into(),
                     anchor: true,
                 });
             }
@@ -157,13 +162,13 @@ fn executable_specs(family: HostFamily, os: Os) -> Vec<ExecutableSpec> {
                 // is `maya -batch`, which is the interactive executable.
                 specs.push(ExecutableSpec {
                     role: "batch",
-                    relative: "bin/mayabatch.exe",
+                    relative: "bin/mayabatch.exe".into(),
                     anchor: false,
                 });
             }
             specs.push(ExecutableSpec {
                 role: "render",
-                relative: leak(format!("bin/Render{exe}")),
+                relative: format!("bin/Render{exe}").into(),
                 anchor: false,
             });
             specs
@@ -186,17 +191,17 @@ fn executable_specs(family: HostFamily, os: Os) -> Vec<ExecutableSpec> {
                 specs.extend([
                     ExecutableSpec {
                         role: "interpreter",
-                        relative: leak(format!("{bin}/hython{exe}")),
+                        relative: format!("{bin}/hython{exe}").into(),
                         anchor: true,
                     },
                     ExecutableSpec {
                         role: "interactive",
-                        relative: leak(format!("{bin}/houdini{exe}")),
+                        relative: format!("{bin}/houdini{exe}").into(),
                         anchor: true,
                     },
                     ExecutableSpec {
                         role: "render",
-                        relative: leak(format!("{bin}/husk{exe}")),
+                        relative: format!("{bin}/husk{exe}").into(),
                         anchor: false,
                     },
                 ]);
@@ -204,15 +209,6 @@ fn executable_specs(family: HostFamily, os: Os) -> Vec<ExecutableSpec> {
             specs
         }
     }
-}
-
-/// Build an OS-dependent relative path with a `'static` lifetime.
-///
-/// The spec table is `&'static str` because it is otherwise entirely constant;
-/// only the executable suffix varies, and it varies over a closed set of four
-/// names per family. Leaking those is bounded and happens once per validation.
-fn leak(value: String) -> &'static str {
-    Box::leak(value.into_boxed_str())
 }
 
 /// Directories the vendor ships that corroborate the identification. Recorded
@@ -576,11 +572,6 @@ fn modified_unix(metadata: &std::fs::Metadata) -> Option<i64> {
         Ok(duration) => i64::try_from(duration.as_secs()).ok(),
         Err(error) => i64::try_from(error.duration().as_secs()).ok().map(|s| -s),
     }
-}
-
-/// Not used by discovery: exposed so a caller can report the fixed timeout.
-pub fn probe_timeout_secs(options: &ValidateOptions) -> u64 {
-    options.probe_timeout.as_secs()
 }
 
 #[cfg(test)]

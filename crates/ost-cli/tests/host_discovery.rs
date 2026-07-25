@@ -202,6 +202,45 @@ fn finding_nothing_is_an_answer_not_a_failure() {
 }
 
 #[test]
+fn an_install_upgraded_in_place_stays_one_record() {
+    // An instance id carries the version, so a re-scan after an in-place upgrade
+    // mints a new one. The cache merge has to recognize the *root*, or `list`
+    // would serve the pre-upgrade record as a second usable Maya at the very same
+    // directory — two answers to "which Maya do I have" for one install.
+    let sandbox = Sandbox::new("upgrade");
+    let root = sandbox.path("dcc/maya");
+    maya_install(&root, "2025");
+    let root = root.to_string_lossy().into_owned();
+    let discover = [
+        "host",
+        "discover",
+        "--host",
+        "maya",
+        "--path",
+        &root,
+        HERMETIC[0],
+        HERMETIC[1],
+    ];
+
+    let first = sandbox.json(&discover, 0);
+    assert_eq!(first["data"]["records"][0]["version"]["raw"], "2025");
+
+    // Only the shipped metadata moves, exactly as a patch that swaps a devkit
+    // header leaves the executables it did not touch.
+    write(
+        &sandbox.path("dcc/maya/include/maya/MTypes.h"),
+        "#define MAYA_APP_VERSION 2026\n",
+    );
+    sandbox.json(&discover, 0);
+
+    let listed = sandbox.json(&["host", "list"], 0);
+    let records = listed["data"]["records"].as_array().unwrap();
+    assert_eq!(records.len(), 1, "one install is one record: {records:#?}");
+    assert_eq!(records[0]["version"]["raw"], "2026");
+    assert_eq!(records[0]["status"], "validated");
+}
+
+#[test]
 fn a_named_path_that_is_not_a_host_is_refused_with_the_reason() {
     let sandbox = Sandbox::new("reject");
     let root = sandbox.path("not-a-host");

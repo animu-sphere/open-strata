@@ -13,7 +13,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use ost_core::host::Os;
 use ost_host::{
     discover, DiscoveryRequest, DiscoverySource, FingerprintMode, HostFamily, HostInventory,
-    HostStatus, Selection, ValidateOptions, VersionSource,
+    HostRecord, HostStatus, Selection, ValidateOptions, VersionSource,
 };
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -73,6 +73,33 @@ fn houdini_install(root: &Utf8Path, os: Os, toolkit_version: Option<&str>) {
     }
 }
 
+/// Alias a directory the way a site aliases a version
+/// (`/tools/maya/current -> .../maya2025.3`).
+///
+/// A junction on Windows rather than a symlink: it is what a site actually uses
+/// there, and unlike `symlink_dir` it needs no elevation — so the real layout is
+/// covered on every platform CI runs rather than on unix only.
+fn link_dir(target: &Utf8Path, link: &Utf8Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target.as_std_path(), link.as_std_path()).unwrap();
+    #[cfg(windows)]
+    {
+        let backslashed = |path: &Utf8Path| path.as_str().replace('/', "\\");
+        let status = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                &backslashed(link),
+                &backslashed(target),
+            ])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("spawn mklink");
+        assert!(status.success(), "mklink /J {link} {target}");
+    }
+}
+
 /// A hermetic request: no environment, no known roots, no `PATH`. Providers a
 /// test does not name must not be able to reach into the machine running it.
 fn request(os: Os) -> DiscoveryRequest {
@@ -118,6 +145,10 @@ fn an_explicit_maya_path_validates_with_metadata_version_and_python_abi() {
     assert!(record.executables.contains_key("interpreter"));
     assert!(record.executables.contains_key("interactive"));
     assert!(record.markers.contains(&"modules".to_string()));
+    // A record states the OS whose layout rules produced it. Without that, this
+    // fixture pass would validate Linux paths and stamp them with whichever
+    // machine happened to run the suite.
+    assert_eq!(record.platform.os, Os::Linux);
     assert_eq!(record.evidence.len(), 1);
     assert_eq!(record.evidence[0].source, DiscoverySource::ExplicitPath);
     assert!(record
@@ -207,6 +238,77 @@ fn a_named_path_is_refused_with_a_reason_but_a_scanned_one_is_skipped() {
     })
     .unwrap();
     assert!(scanned.records.is_empty(), "{:?}", scanned.records);
+
+    std::fs::remove_dir_all(dir.as_std_path()).ok();
+}
+
+#[test]
+fn a_scan_resolves_a_version_alias_link_to_the_install_behind_it() {
+    // A link is not a directory to `DirEntry::file_type`, so every scanning
+    // provider used to skip `current -> maya2026` while `--path` on the same
+    // link validated — and a version alias is a standard site layout.
+    let dir = scratch("alias-link");
+    let real = dir.join("installs/maya2026");
+    maya_install(&real, Os::Linux, Some("2026"));
+    let site = dir.join("site");
+    std::fs::create_dir_all(site.as_std_path()).unwrap();
+    link_dir(&real, &site.join("current"));
+
+    let outcome = discover(&DiscoveryRequest {
+        configured_roots: vec![site],
+        max_depth: 1,
+        families: vec![HostFamily::Maya],
+        ..request(Os::Linux)
+    })
+    .unwrap();
+
+    let validated: Vec<&HostRecord> = outcome.validated().collect();
+    assert_eq!(validated.len(), 1, "{:?}", outcome.records);
+    assert_eq!(validated[0].version.as_ref().unwrap().raw, "2026");
+    // And the record names the install rather than the alias: canonicalizing is
+    // what makes one install reached two ways one record.
+    assert!(
+        validated[0].root.as_str().ends_with("installs/maya2026"),
+        "{}",
+        validated[0].root
+    );
+
+    std::fs::remove_dir_all(dir.as_std_path()).ok();
+}
+
+#[test]
+fn a_declared_root_that_is_absent_is_named_and_a_refusal_stays_reachable() {
+    let dir = scratch("missing-root");
+    let named = dir.join("not-a-host");
+    std::fs::create_dir_all(named.join("bin").as_std_path()).unwrap();
+
+    let outcome = discover(&DiscoveryRequest {
+        configured_roots: vec![dir.join("no-such-site")],
+        explicit_paths: vec![named],
+        families: vec![HostFamily::Maya],
+        ..request(Os::Linux)
+    })
+    .unwrap();
+
+    // A root the site declared and does not have is a misconfiguration worth a
+    // sentence; a documented default location that is absent is not.
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "HOST_ROOT_NOT_FOUND"),
+        "{:?}",
+        outcome.warnings
+    );
+
+    // Selection is status-agnostic: `inspect` is the command that explains a
+    // refusal, so a family selector has to reach a rejected record.
+    assert_eq!(outcome.records.len(), 1);
+    assert_eq!(outcome.records[0].status, HostStatus::Rejected);
+    match ost_host::select(&outcome.records, "maya") {
+        Selection::One(record) => assert_eq!(record.status, HostStatus::Rejected),
+        other => panic!("the only maya record must be reachable by family: {other:?}"),
+    }
 
     std::fs::remove_dir_all(dir.as_std_path()).ok();
 }

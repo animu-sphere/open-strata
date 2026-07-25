@@ -9,13 +9,16 @@
 //! Nothing here launches, configures, or modifies a host. Composing one into a
 //! runnable environment is Formation's job.
 
+use std::collections::BTreeSet;
+
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
 use ost_core::paths::{find_project_root, PROJECT_MANIFEST};
 use ost_core::{Category, Error, Result};
 use ost_host::{
-    discover, project_inventory_path, select, user_cache_path, DiscoveryRequest, FingerprintMode,
-    HostFamily, HostInventory, HostRecord, HostStatus, Selection, ValidateOptions,
+    canonical_root_key, discover, project_inventory_path, select, user_cache_path,
+    DiscoveryRequest, FingerprintMode, HostFamily, HostInventory, HostRecord, HostStatus,
+    Selection, ValidateOptions,
 };
 use ost_manifest::{Project, DEFAULT_DISCOVERY_DEPTH};
 
@@ -97,7 +100,7 @@ pub struct ListArgs {
 
 #[derive(Debug, Args)]
 pub struct InspectArgs {
-    /// Instance id, install path, id prefix, or family name — the last three
+    /// Instance id, install path, family name, or id prefix — the last three
     /// only when they name exactly one install.
     pub selector: String,
 }
@@ -291,22 +294,28 @@ fn consulted(request: &DiscoveryRequest) -> String {
 
 /// Keep cached records the current scan did not re-find, but let the scan's own
 /// view win wherever the two overlap.
+///
+/// Overlap is decided by **canonical root, not by id**: an id carries the
+/// version, so an install upgraded in place mints a new one, and matching on ids
+/// would keep the pre-upgrade record as a second usable host at a single root —
+/// two answers to "which Maya do I have" for one install. Whatever this scan saw
+/// at a root is the whole truth about that root.
 fn merge_with_cache(cache_path: &Utf8Path, fresh: Vec<HostRecord>) -> Result<Vec<HostRecord>> {
     let Some(mut cached) = HostInventory::load(cache_path)? else {
         return Ok(fresh);
     };
     cached.refresh_statuses();
     let mut records = fresh;
+    let rescanned: BTreeSet<String> = records
+        .iter()
+        .map(|record| canonical_root_key(&record.root))
+        .collect();
     for record in cached.records {
-        if !records.iter().any(|kept| kept.id == record.id) {
+        if !rescanned.contains(&canonical_root_key(&record.root)) {
             records.push(record);
         }
     }
-    records.sort_by(|left, right| {
-        let key =
-            |record: &HostRecord| (!record.status.is_usable(), record.family, record.id.clone());
-        key(left).cmp(&key(right))
-    });
+    records.sort_by(|left, right| left.listing_order().cmp(&right.listing_order()));
     Ok(records)
 }
 

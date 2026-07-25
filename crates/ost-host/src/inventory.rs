@@ -169,8 +169,18 @@ pub enum Selection<'a> {
     Ambiguous(Vec<String>),
 }
 
-/// Resolve a selector: an exact instance id, an install path, an id prefix, or
-/// a family name — the last three only when they name exactly one install.
+/// Resolve a selector: an exact instance id, an install path, a family name, or
+/// an id prefix — the last three only when they name exactly one install.
+///
+/// A family is matched *before* an id prefix even though every id begins with
+/// its family slug, because the two stop agreeing the moment a family name is a
+/// prefix of another (`maya` would otherwise also match a `mayalt-…` id).
+///
+/// Selection is deliberately status-agnostic. `inspect` is the command that
+/// explains a rejection, so it has to be able to reach a rejected record; a
+/// caller that needs an install it can *run* filters on
+/// [`HostStatus::is_usable`] at its own call site, which is also the only place
+/// that can say so in its own error message.
 pub fn select<'a>(records: &'a [HostRecord], selector: &str) -> Selection<'a> {
     if let Some(record) = records.iter().find(|record| record.id == selector) {
         return Selection::One(record);
@@ -185,24 +195,22 @@ pub fn select<'a>(records: &'a [HostRecord], selector: &str) -> Selection<'a> {
         return selection;
     }
 
+    if let Ok(family) = HostFamily::parse(selector) {
+        let by_family: Vec<&HostRecord> = records
+            .iter()
+            .filter(|record| record.family == family)
+            .collect();
+        if let Some(selection) = unique(&by_family) {
+            return selection;
+        }
+    }
+
     let by_prefix: Vec<&HostRecord> = records
         .iter()
         .filter(|record| record.id.starts_with(selector))
         .collect();
     if let Some(selection) = unique(&by_prefix) {
         return selection;
-    }
-
-    if let Ok(family) = HostFamily::parse(selector) {
-        // A family selector names an install to *use*, so it only considers
-        // ones that are usable; a rejected record is not a candidate answer.
-        let by_family: Vec<&HostRecord> = records
-            .iter()
-            .filter(|record| record.family == family && record.status.is_usable())
-            .collect();
-        if let Some(selection) = unique(&by_family) {
-            return selection;
-        }
     }
     Selection::None
 }

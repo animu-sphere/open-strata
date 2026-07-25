@@ -136,6 +136,20 @@ pub fn discover(request: &DiscoveryRequest) -> Result<DiscoveryOutcome> {
     }
 
     for root in &request.configured_roots {
+        // A root a site *declared* and does not have is a misconfiguration, and
+        // the symptom without this is an empty result that names no cause. A
+        // documented default location is the opposite case — most machines have
+        // none of them — so only declared roots are reported.
+        if !root.as_std_path().is_dir() {
+            outcome.warnings.push(DiscoveryWarning {
+                code: "HOST_ROOT_NOT_FOUND",
+                message: format!(
+                    "configured discovery root '{}' is not a readable directory",
+                    normalize_path(root)
+                ),
+            });
+            continue;
+        }
         scan_root(
             root,
             request.max_depth,
@@ -193,13 +207,11 @@ pub fn discover(request: &DiscoveryRequest) -> Result<DiscoveryOutcome> {
         validate_candidate(&candidate, &families, request, &mut outcome);
     }
 
-    outcome.records.sort_by(|left, right| {
-        // Validated installs first: the answer to "what do I have" comes before
-        // the answer to "what did you look at and refuse".
-        let key =
-            |record: &HostRecord| (!record.status.is_usable(), record.family, record.id.clone());
-        key(left).cmp(&key(right))
-    });
+    // Validated installs first: the answer to "what do I have" comes before the
+    // answer to "what did you look at and refuse".
+    outcome
+        .records
+        .sort_by(|left, right| left.listing_order().cmp(&right.listing_order()));
     Ok(outcome)
 }
 
@@ -369,17 +381,17 @@ fn scan_root(
                 }
                 return;
             }
-            if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let child = directory.join(&name);
+            if !is_directory(&entry, &child) {
                 continue;
             }
             *budget -= 1;
-            let name = entry.file_name().to_string_lossy().into_owned();
             // Dot-directories are caches and version-control state, never an
             // install; skipping them keeps a site root cheap to scan.
             if name.starts_with('.') {
                 continue;
             }
-            let child = directory.join(&name);
             match filter {
                 Some((family, prefixes)) => {
                     let lowered = name.to_lowercase();
@@ -410,6 +422,24 @@ fn scan_root(
                 }
             }
         }
+    }
+}
+
+/// Whether an entry names a directory worth scanning, **resolving links**.
+///
+/// [`std::fs::DirEntry::file_type`] deliberately does not traverse a link, so a
+/// site that aliases a version — `/tools/maya/current -> 2025.3`, the very
+/// layout canonicalization exists to collapse — would be skipped by every
+/// scanning provider while `--path` on the same link validated fine. A Windows
+/// junction reports as a link here too, and is the same case.
+///
+/// The extra `stat` is paid only for links, and a link cycle is already bounded
+/// by `max_depth` and the scan budget.
+fn is_directory(entry: &std::fs::DirEntry, path: &Utf8Path) -> bool {
+    match entry.file_type() {
+        Ok(kind) if kind.is_dir() => true,
+        Ok(kind) if kind.is_symlink() => path.as_std_path().is_dir(),
+        _ => false,
     }
 }
 
@@ -521,7 +551,7 @@ fn validate_candidate(
     for family in attempts {
         match validate::validate(family, &candidate.root, &request.validate) {
             Ok(validation) => {
-                let platform = HostPlatform::detect();
+                let platform = HostPlatform::for_os(request.validate.os);
                 let identity = HostIdentity {
                     family,
                     root: &candidate.root,
@@ -584,7 +614,7 @@ fn validate_candidate(
             version: None,
             executables: BTreeMap::new(),
             python: None,
-            platform: HostPlatform::detect(),
+            platform: HostPlatform::for_os(request.validate.os),
             markers: Vec::new(),
             evidence: candidate.evidence.clone(),
             fingerprint: None,

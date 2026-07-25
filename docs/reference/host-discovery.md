@@ -45,12 +45,19 @@ Documented install locations, scanned one level deep with a name filter:
 | Platform | Maya | Houdini |
 | --- | --- | --- |
 | Windows | `%ProgramFiles%\Autodesk\Maya*` (and `%ProgramW6432%`) | `%ProgramFiles%\Side Effects Software\Houdini*` |
-| Linux | `/usr/autodesk/maya*` | `/opt/hfs*`, `/opt/sidefx/*`, `/usr/local/sidefx/*` |
+| Linux | `/usr/autodesk/maya*` | `/opt`, `/opt/sidefx`, `/usr/local/sidefx`, each filtered to `hfs*`/`houdini*` |
 | macOS | `/Applications/Autodesk/maya*` | `/Applications/Houdini/Houdini*` |
 
 A root reached by several providers is **one** record carrying all of them: an
 install found three ways is one install with three provenances, and dropping two
 would hide how a site is actually configured.
+
+A scan resolves directory links, so a site that aliases a version
+(`/tools/maya/current → /tools/maya/2025.3`, or a Windows junction) is found
+through the alias and recorded under the install it points at. A declared root
+that is not a readable directory is reported as `HOST_ROOT_NOT_FOUND` rather than
+silently contributing nothing; an absent *default* location is not, because most
+machines have none of them.
 
 ## Declaring discovery roots
 
@@ -153,6 +160,12 @@ or `invalidated` rather than served stale.
 narrow scan must not silently delete hosts a wider one recorded earlier.
 `--refresh` is how an operator says "forget what you knew".
 
+Overlap between a scan and the cache is decided by **canonical root, not by
+instance id**. An id carries the version, so an install upgraded in place mints a
+new one; matching on ids would keep the pre-upgrade record as a second usable
+host at a single root. Whatever a scan saw at a root is the whole truth about
+that root.
+
 `cached_at` is cache metadata only; it takes no part in any record's identity or
 fingerprint, so re-running discovery on an unchanged machine produces identical
 records.
@@ -160,9 +173,15 @@ records.
 ## Selectors
 
 `ost host inspect <SELECTOR>` accepts, in order: an exact instance id, an
-install path, an instance-id prefix, or a family name. The last three resolve
+install path, a family name, or an instance-id prefix. The last three resolve
 **only when they name exactly one install**; an ambiguous selector fails with
-the candidate list and is never resolved by scan order.
+the candidate list and is never resolved by scan order. A family is matched
+before a prefix even though every id begins with its family slug, because the two
+stop agreeing as soon as one family name is a prefix of another.
+
+Selection is status-agnostic: `inspect` is the command that explains a refusal,
+so it must be able to reach a `rejected` record. A caller that needs an install
+it can *run* filters on `validated` itself.
 
 ## Exit behaviour and stable codes
 
@@ -186,6 +205,7 @@ Warnings carried in the envelope's `warnings` array:
 | --- | --- |
 | `HOST_NONE_VALIDATED` | Nothing validated; the message names which providers were consulted. |
 | `HOST_INVENTORY_EMPTY` | No matching records; run `ost host discover` first. |
+| `HOST_ROOT_NOT_FOUND` | A declared discovery root is not a readable directory. |
 | `HOST_SCAN_BUDGET_EXHAUSTED` | The scan hit its directory budget and stopped. |
 | `HOST_FINGERPRINT_UNAVAILABLE` | An install validated but could not be fingerprinted, so it stays a `candidate`. |
 

@@ -310,8 +310,15 @@ pub struct HostPlatform {
 
 impl HostPlatform {
     pub fn detect() -> HostPlatform {
+        HostPlatform::for_os(Os::current())
+    }
+
+    /// This machine's architecture, against the OS a scan was run for — which
+    /// tests inject. A record must state the OS whose layout rules produced it,
+    /// or a fixture pass would validate Linux paths and stamp them `windows`.
+    pub fn for_os(os: Os) -> HostPlatform {
         HostPlatform {
-            os: Os::current(),
+            os,
             arch: Arch::current(),
         }
     }
@@ -426,6 +433,13 @@ impl HostRecord {
             .map(|fingerprint| fingerprint.digest.as_str())
     }
 
+    /// The order records are listed in: usable installs first, then family, then
+    /// id. Shared by the scan and every listing so a printed inventory cannot
+    /// drift from the order a scan produced.
+    pub fn listing_order(&self) -> (bool, HostFamily, &str) {
+        (!self.status.is_usable(), self.family, self.id.as_str())
+    }
+
     /// A one-line human summary: id, version, and what the version is worth.
     pub fn summary(&self) -> String {
         let version = match &self.version {
@@ -459,6 +473,10 @@ pub fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
 /// The key a root is identified by. Case is folded on platforms whose paths
 /// are case-insensitive, so `C:\Program Files\...` and `c:\program files\...`
 /// are one install rather than two.
+///
+/// The fold follows the *running* machine, not the OS a scan was requested for:
+/// whether two paths are one directory is a fact about the filesystem doing the
+/// lookup, and a record never travels to another platform anyway.
 pub fn canonical_root_key(root: &Utf8Path) -> String {
     let normalized = normalize_path(root).into_string();
     if matches!(Os::current(), Os::Windows | Os::Macos) {

@@ -637,7 +637,7 @@ Show one host record in full
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `<SELECTOR>` | yes | Instance id, install path, id prefix, or family name — the last three only when they name exactly one install |
+| `<SELECTOR>` | yes | Instance id, install path, family name, or id prefix — the last three only when they name exactly one install |
 
 #### `ost host list`
 
