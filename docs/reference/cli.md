@@ -29,6 +29,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost extension`](#ost-extension) — Inspect and request controlled extensions
 - [`ost external`](#ost-external) — Import and inspect provenance for a build OpenStrata did not perform
 - [`ost formation`](#ost-formation) — Resolve, inspect, diagnose, export, lock, and run digest-pinned Formations
+- [`ost host`](#ost-host) — Discover, list, and inspect third-party DCC hosts (Maya, Houdini)
 - [`ost init`](#ost-init) — Initialise an OpenStrata project in the current directory
 - [`ost lock`](#ost-lock) — Generate or verify the project lockfile (strata.lock)
 - [`ost package`](#ost-package) — Install and pack a built target into a tar.zst artifact
@@ -591,6 +592,65 @@ Launch the Formation's command in the foreground and record evidence
 | --- | --- | --- |
 | `<PATH>` | no | Formation manifest to run |
 | `<COMMAND>` | no | Override `[command]` with a program and arguments after `--` |
+
+### `ost host`
+
+Discover, list, and inspect third-party DCC hosts (Maya, Houdini)
+
+**Usage:** `ost host <COMMAND>`
+
+**Subcommands:**
+
+- [`ost host discover`](#ost-host-discover) — Scan for DCC installs and record what was found
+- [`ost host inspect`](#ost-host-inspect) — Show one host record in full
+- [`ost host list`](#ost-host-list) — List the hosts already recorded, re-checked against the filesystem
+
+#### `ost host discover`
+
+Scan for DCC installs and record what was found
+
+**Usage:** `ost host discover [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--depth <DEPTH>` | How deep below each scanned root an install may sit |
+| `--fingerprint <FINGERPRINT>` | Fingerprint depth: `standard` (identity and layout) or `deep` (also hashes the selected executables) |
+| `--from-path` | Also accept install roots derived from executables on PATH. Off by default: PATH reflects the calling shell, not the machine |
+| `--host <FAMILY>` | Restrict discovery to one family (maya, houdini). Repeatable |
+| `--no-environment` | Skip the vendor environment variables (MAYA_LOCATION, HFS) |
+| `--no-known-roots` | Skip this platform's documented default install locations |
+| `--path <PATH>` | Validate this exact install root. Repeatable. A path that is not a host is reported with the reason, rather than silently skipped |
+| `--probe` | Run each host's own `--version` when shipped metadata cannot answer. Executes the host binary under a bounded timeout |
+| `--refresh` | Ignore the cached inventory and rescan. Discovery always rescans; this additionally discards records the scan did not re-find |
+| `--register` | Also write the result to the project's reviewable `.strata/hosts/` inventory |
+| `--root <PATH>` | Scan this directory in addition to `[host.discovery].roots`. Repeatable |
+
+#### `ost host inspect`
+
+Show one host record in full
+
+**Usage:** `ost host inspect <SELECTOR>`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<SELECTOR>` | yes | Instance id, install path, id prefix, or family name — the last three only when they name exactly one install |
+
+#### `ost host list`
+
+List the hosts already recorded, re-checked against the filesystem
+
+**Usage:** `ost host list [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--host <FAMILY>` | Restrict the listing to one family |
+| `--status <STATUS>` | Restrict the listing to one status |
 
 ### `ost init`
 

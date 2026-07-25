@@ -4,7 +4,7 @@ Ordered but unscheduled work. The next milestone and active carry-overs are in
 [current.md](current.md); shipped detail is in [releases/](../releases/) and the
 [delivery history](../reports/delivery-history.md).
 
-Legend: ⬜ not started
+Legend: ⬜ not started · 🚧 in progress · ✅ scheduled or shipped elsewhere
 
 ## Milestone ladder (beyond next)
 
@@ -49,7 +49,9 @@ follows in v0.21.0.
   namespace / overlayfs sandboxing, detached session management, general-purpose
   package solving, automatic Formation-bundle publication, and implicit download
   from untrusted sources.
-- ⬜ **v0.21.0 - DCC host integration (Phase 10).** Follows v0.20.0 package
+- 🚧 **v0.21.0 - DCC host integration (Phase 10).** Active in
+  [current.md](current.md); the discovery foundation has landed and the adapter
+  and matrix slices remain. Follows v0.20.0 package
   and renderer closure, informed by the v0.19.0 package/release and renderer
   dogfooding findings. Extends
   OpenStrata beyond runtime-native OpenUSD

@@ -1,0 +1,16 @@
+[package]
+name = "ost-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Discovery, validation, and versioned records for third-party DCC hosts (Maya, Houdini)."
+
+[dependencies]
+ost-core.workspace = true
+ost-manifest.workspace = true
+anyhow.workspace = true
+camino.workspace = true
+serde.workspace = true
+serde_json.workspace = true

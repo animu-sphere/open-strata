@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openstrata.dev/schemas/host-inventory.schema.json",
+  "title": "OpenStrata Host Inventory",
+  "description": "A persisted set of host records: the project's reviewable .strata/hosts/inventory.json and the user cache under ~/.ost/cache/host-discovery. An inventory records a past observation, so every read re-checks the installs it names before serving any of them as usable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "records"],
+  "properties": {
+    "schema": { "const": "openstrata.host-inventory/v1alpha1" },
+    "cached_at": {
+      "description": "Seconds since the Unix epoch. Cache metadata only: it deliberately takes no part in any record's identity or fingerprint, so re-running discovery on an unchanged machine still produces identical records.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "records": {
+      "type": "array",
+      "items": { "$ref": "https://openstrata.dev/schemas/host-record.schema.json" }
+    }
+  }
+}

@@ -177,10 +177,11 @@ Recommended primary cells: `maya-2026 + linux + MayaUSD + production`,
 ## Command surface
 
 ```text
-# Hosts (third-party installs)
-ost host discover [--host maya] [--roots …] [--path …] [--refresh] [--register]
-ost host list
-ost host inspect <instance-id>
+# Hosts (third-party installs) — discover/list/inspect ship in v0.21.0
+ost host discover [--host maya] [--root …] [--path …] [--depth N] [--probe]
+                  [--fingerprint standard|deep] [--refresh] [--register]
+ost host list [--host <family>] [--status <status>]
+ost host inspect <selector>
 ost host probe <instance-id> [--fingerprint deep] [--output <file>]
 ost host run  <instance-id> -- <cmd …>          # composed env, exit-code passthrough
 ost host test <instance-id> --tool <t> --suite <s>
@@ -253,6 +254,28 @@ over explicit/configured/known roots, validating `bin/maya`/`bin/mayapy`
 fixtures without a GUI, deterministic human + JSON output, the status model, a
 minimal cache + `--refresh`, with unit + integration tests and documented config.
 No generic plugin matrix, fleet service, remote execution, or DCC UI in that PR.
+
+### Implementation status
+
+Phase 1 and the discovery half of phase 2 landed on the v0.21.0 branch: the
+`ost-host` crate, the versioned record and status model, all five providers
+(with `PATH` opt-in), Maya **and** Houdini validators, the `[host.discovery]`
+declarative config, the cache and project inventories, and
+`ost host discover | list | inspect`. The shipped contract is documented in
+[reference/host-discovery.md](../../reference/host-discovery.md); the record and
+inventory documents are published as
+[`host-record.schema.json`](../../../schemas/host-record.schema.json) and
+[`host-inventory.schema.json`](../../../schemas/host-inventory.schema.json).
+
+All three version rungs are implemented — shipped metadata, an opt-in bounded
+probe of the host's own version banner, and the directory name as an explicitly
+low-confidence fallback. The probe asks `maya -v` and `husk --version`;
+Houdini's interpreter is deliberately not asked, because `hython --version`
+reports Python's version and would answer confidently and wrongly.
+
+Still open from phase 2 onward: a Nuke validator, JSONL output, headless
+`run`/`test` and host-standard packaging (phase 3), the matrix and cross-DCC
+compatibility edges (phase 4), and fleet/productization (phase 5).
 
 ## Positioning
 

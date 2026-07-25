@@ -479,6 +479,7 @@ dependencies = [
  "ost-core",
  "ost-extension",
  "ost-formation",
+ "ost-host",
  "ost-manifest",
  "ost-platform",
  "ost-plugin",
@@ -528,6 +529,18 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "ost-host"
+version = "0.20.0"
+dependencies = [
+ "anyhow",
+ "camino",
+ "ost-core",
+ "ost-manifest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

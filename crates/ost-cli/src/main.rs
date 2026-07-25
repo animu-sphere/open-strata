@@ -14,8 +14,9 @@ mod project_template;
 use clap::{Parser, Subcommand};
 
 use commands::{
-    artifact, build, ci, configure, devshell, doctor, env, extension, external, formation, init,
-    internal, lock, package, platform, plugin, presets, renderer, runtime, test, uv, validate,
+    artifact, build, ci, configure, devshell, doctor, env, extension, external, formation, host,
+    init, internal, lock, package, platform, plugin, presets, renderer, runtime, test, uv,
+    validate,
 };
 
 /// OpenStrata: VFX Reference Platform aware runtime, build and extension manager.
@@ -101,6 +102,10 @@ enum Command {
     #[command(subcommand)]
     Formation(formation::FormationCmd),
 
+    /// Discover, list, and inspect third-party DCC hosts (Maya, Houdini).
+    #[command(subcommand)]
+    Host(host::HostCmd),
+
     /// Manage the CI support matrix and generate CI configuration.
     #[command(subcommand)]
     Ci(ci::CiCmd),
@@ -140,6 +145,7 @@ fn main() -> std::process::ExitCode {
         Command::Renderer(cmd) => renderer::run(cmd, fmt),
         Command::Artifact(cmd) => artifact::run(cmd, fmt),
         Command::Formation(cmd) => formation::run(cmd, fmt),
+        Command::Host(cmd) => host::run(cmd, fmt),
         Command::Ci(cmd) => ci::run(cmd, fmt),
         Command::Lock(args) => lock::run(args, fmt),
         Command::Uv(args) => uv::run(args, fmt),
