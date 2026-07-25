@@ -15,14 +15,14 @@ jobs:
   licenses:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Prebuilt cargo-deny / cargo-about (no compile). The toolchain pinned in
       # rust-toolchain.toml is auto-installed by rustup when cargo is invoked.
       # Versions are pinned: cargo-about's output formatting can change between
       # releases, which would make the THIRD_PARTY_NOTICES.md sync check below
       # fail on an unrelated PR. Bump deliberately and regenerate the file.
-      - uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2
+      - uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2
         with:
           tool: cargo-deny@0.19.9,cargo-about@0.9.0
 

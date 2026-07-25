@@ -9,7 +9,7 @@ not edit by hand.
 
 ## Overview
 
-- Apache License 2.0 (95)
+- Apache License 2.0 (96)
 - MIT License (9)
 - ISC License (3)
 - BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License (1)
@@ -447,20 +447,20 @@ Used by:
 - anstyle-query 1.1.5 — https://github.com/rust-cli/anstyle.git
 - anstyle-wincon 3.0.11 — https://github.com/rust-cli/anstyle.git
 - anstyle 1.0.14 — https://github.com/rust-cli/anstyle.git
-- clap 4.6.2 — https://github.com/clap-rs/clap
+- clap 4.6.4 — https://github.com/clap-rs/clap
 - clap_builder 4.6.2 — https://github.com/clap-rs/clap
-- clap_derive 4.6.1 — https://github.com/clap-rs/clap
+- clap_derive 4.6.4 — https://github.com/clap-rs/clap
 - clap_lex 1.1.0 — https://github.com/clap-rs/clap
 - colorchoice 1.0.5 — https://github.com/rust-cli/anstyle.git
 - crc32fast 1.5.0 — https://github.com/srijs/rust-crc32fast
 - is_terminal_polyfill 1.70.2 — https://github.com/polyfill-rs/is_terminal_polyfill
 - once_cell_polyfill 1.70.2 — https://github.com/polyfill-rs/once_cell_polyfill
 - serde_spanned 1.1.1 — https://github.com/toml-rs/toml
-- toml 1.1.2+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml 1.1.3+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_datetime 1.1.1+spec-1.1.0 — https://github.com/toml-rs/toml
-- toml_edit 0.25.12+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml_edit 0.25.13+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_parser 1.1.2+spec-1.1.0 — https://github.com/toml-rs/toml
-- toml_writer 1.1.1+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml_writer 1.1.2+spec-1.1.0 — https://github.com/toml-rs/toml
 
 ```
                                  Apache License
@@ -2178,11 +2178,12 @@ Used by:
 - ost-core 0.20.0
 - ost-extension 0.20.0
 - ost-formation 0.20.0 — https://github.com/animu-sphere/open-strata
+- ost-host 0.20.0 — https://github.com/animu-sphere/open-strata
 - ost-manifest 0.20.0
 - ost-platform 0.20.0
 - ost-plugin 0.20.0
 - ost-runtime 0.20.0
-- anyhow 1.0.103 — https://github.com/dtolnay/anyhow
+- anyhow 1.0.104 — https://github.com/dtolnay/anyhow
 - directories 6.0.0 — https://github.com/soc/directories-rs
 - dirs-sys 0.5.0 — https://github.com/dirs-dev/dirs-sys-rs
 - itoa 1.0.18 — https://github.com/dtolnay/itoa
@@ -2191,15 +2192,15 @@ Used by:
 - proc-macro2 1.0.106 — https://github.com/dtolnay/proc-macro2
 - quote 1.0.46 — https://github.com/dtolnay/quote
 - ryu 1.0.23 — https://github.com/dtolnay/ryu
-- serde 1.0.228 — https://github.com/serde-rs/serde
-- serde_core 1.0.228 — https://github.com/serde-rs/serde
-- serde_derive 1.0.228 — https://github.com/serde-rs/serde
-- serde_json 1.0.150 — https://github.com/serde-rs/json
+- serde 1.0.229 — https://github.com/serde-rs/serde
+- serde_core 1.0.229 — https://github.com/serde-rs/serde
+- serde_derive 1.0.229 — https://github.com/serde-rs/serde
+- serde_json 1.0.151 — https://github.com/serde-rs/json
 - serde_yaml 0.9.34+deprecated — https://github.com/dtolnay/serde-yaml
 - shlex 2.0.1 — https://github.com/comex/rust-shlex
-- syn 2.0.118 — https://github.com/dtolnay/syn
-- thiserror-impl 2.0.18 — https://github.com/dtolnay/thiserror
-- thiserror 2.0.18 — https://github.com/dtolnay/thiserror
+- syn 3.0.3 — https://github.com/dtolnay/syn
+- thiserror-impl 2.0.19 — https://github.com/dtolnay/thiserror
+- thiserror 2.0.19 — https://github.com/dtolnay/thiserror
 - unicode-ident 1.0.24 — https://github.com/dtolnay/unicode-ident
 - ureq-proto 0.6.0 — https://github.com/algesten/ureq-proto
 - utf8-zero 0.8.1 — https://github.com/algesten/utf8-zero
@@ -3126,3 +3127,4 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 
 ```
+
