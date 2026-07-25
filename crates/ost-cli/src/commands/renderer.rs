@@ -444,6 +444,7 @@ fn adopt(args: RendererAdoptArgs, fmt: Format) -> Result<()> {
                 extensions: Vec::new(),
             },
             build: None,
+            host: None,
         };
         let body = project.to_toml()?;
         (project, "create", Some(body))

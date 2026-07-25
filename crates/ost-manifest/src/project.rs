@@ -130,6 +130,49 @@ fn default_compiler() -> String {
     "host".into()
 }
 
+/// `[host]` table — third-party DCC host support.
+///
+/// "Host" here is a *DCC install already on the machine* (Maya, Houdini), not
+/// the machine itself ([`ost_core::Host`]). OpenStrata never installs, mutates,
+/// or licenses one; this table only says where a site keeps them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<HostDiscoveryConfig>,
+}
+
+/// `[host.discovery]` table — declarative, bounded discovery roots.
+///
+/// Declarative only: no globs are executed, no shell is sourced, and no rule
+/// may name a filesystem root. Depth is bounded so a mistyped root cannot turn
+/// into a whole-disk walk.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostDiscoveryConfig {
+    /// Absolute site directories holding host installs, e.g. `/tools/maya`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<String>,
+    /// How far below each root an install may sit (1..=[`MAX_DISCOVERY_DEPTH`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<u8>,
+    /// Restrict discovery to these host families; empty means every family this
+    /// `ost` version knows. Family names are validated by `ost-host`, which owns
+    /// the list, so an unknown name fails there naming the supported ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub families: Vec<String>,
+}
+
+/// The deepest a configured discovery root may be walked.
+///
+/// Site layouts nest a version below a product below a root
+/// (`/tools/maya/2025.3`, `/tools/dcc/maya/2025.3`); beyond that a root is
+/// almost certainly wrong, and the cost of finding out is a filesystem walk.
+pub const MAX_DISCOVERY_DEPTH: u8 = 4;
+
+/// The depth used when `[host.discovery]` declares roots but no `max_depth`.
+pub const DEFAULT_DISCOVERY_DEPTH: u8 = 2;
+
 impl Default for BuildConfig {
     fn default() -> Self {
         BuildConfig {
@@ -149,6 +192,8 @@ pub struct Project {
     pub requires: Requires,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<BuildConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostConfig>,
 }
 
 impl Project {
@@ -168,6 +213,7 @@ impl Project {
                 extensions: Vec::new(),
             },
             build: None,
+            host: None,
         }
     }
 
@@ -186,6 +232,7 @@ impl Project {
         }
         project.validate_version_source()?;
         project.validate_build_intents()?;
+        project.validate_host_discovery()?;
         Ok(project)
     }
 
@@ -287,6 +334,100 @@ impl Project {
         }
         Ok(())
     }
+
+    /// Reject a discovery declaration that could turn into an unbounded or
+    /// executed scan before any filesystem is touched.
+    fn validate_host_discovery(&self) -> Result<()> {
+        let Some(discovery) = self.host.as_ref().and_then(|host| host.discovery.as_ref()) else {
+            return Ok(());
+        };
+        for root in &discovery.roots {
+            let reason = match discovery_root_problem(root) {
+                None => continue,
+                Some(reason) => reason,
+            };
+            return Err(Error::InvalidManifest(format!(
+                "host.discovery.roots entry '{root}' {reason}"
+            )));
+        }
+        if let Some(depth) = discovery.max_depth {
+            if depth == 0 || depth > MAX_DISCOVERY_DEPTH {
+                return Err(Error::InvalidManifest(format!(
+                    "host.discovery.max_depth must be between 1 and {MAX_DISCOVERY_DEPTH} (got {depth})"
+                )));
+            }
+        }
+        for family in &discovery.families {
+            if !safe_family_name(family) {
+                return Err(Error::InvalidManifest(format!(
+                    "host.discovery.families entry '{family}' must match [a-z][a-z0-9-]*"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why a declared discovery root is unusable, or `None` when it is fine.
+///
+/// Checked as *declared text*, not against this machine's filesystem: a
+/// manifest is portable and a Windows root must still be rejected when the
+/// check runs on Linux.
+fn discovery_root_problem(root: &str) -> Option<&'static str> {
+    let trimmed = root.trim();
+    if trimmed.is_empty() {
+        return Some("must not be empty");
+    }
+    if trimmed != root {
+        return Some("must not have leading or trailing whitespace");
+    }
+    if trimmed.contains(['*', '?', '[', ']', '{', '}']) {
+        return Some("must be a literal directory: discovery roots are declarative, not globs");
+    }
+    if trimmed.contains('$') || trimmed.contains('~') || trimmed.contains('%') {
+        return Some("must not need shell or environment expansion");
+    }
+    if !is_absolute_declared_path(trimmed) {
+        return Some("must be an absolute path");
+    }
+    if trimmed
+        .split(['/', '\\'])
+        .any(|component| component == "..")
+    {
+        return Some("must not contain '..'");
+    }
+    if is_filesystem_root(trimmed) {
+        return Some("must not be a filesystem root: discovery is bounded, never disk-wide");
+    }
+    None
+}
+
+fn is_absolute_declared_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with('/')
+        || path.starts_with('\\')
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\'))
+}
+
+fn is_filesystem_root(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_end_matches('/');
+    // `/`, `C:` (from `C:/`), and a bare UNC prefix all normalize to nothing
+    // meaningful once the trailing separators are gone.
+    trimmed.is_empty()
+        || (trimmed.len() == 2 && trimmed.as_bytes()[1] == b':')
+        || normalized.trim_matches('/').is_empty()
+}
+
+fn safe_family_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.as_bytes()[0].is_ascii_lowercase()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn safe_intent_name(name: &str) -> bool {
@@ -486,6 +627,57 @@ portability = "local-override"
         );
         let error = Project::from_toml(&src).unwrap_err().to_string();
         assert!(error.contains("portability is required"), "{error}");
+    }
+
+    #[test]
+    fn host_discovery_declares_bounded_literal_roots() {
+        let src = format!(
+            "{SAMPLE}\n[host.discovery]\nroots = [\"/tools/maya\"]\nmax_depth = 3\nfamilies = [\"maya\"]\n"
+        );
+        let discovery = Project::from_toml(&src)
+            .unwrap()
+            .host
+            .expect("host table")
+            .discovery
+            .expect("discovery table");
+        assert_eq!(discovery.roots, vec!["/tools/maya".to_string()]);
+        assert_eq!(discovery.max_depth, Some(3));
+        assert_eq!(discovery.families, vec!["maya".to_string()]);
+    }
+
+    #[test]
+    fn host_discovery_refuses_unbounded_expanded_or_executable_roots() {
+        // Each of these would turn a declaration into a scan nobody asked for:
+        // a whole-disk walk, a glob, a shell expansion, or an escape upward.
+        // They are rejected as *text*, so a Windows root fails on Linux too.
+        for (root, expected) in [
+            ("/", "filesystem root"),
+            ("C:\\", "filesystem root"),
+            ("/tools/maya*", "globs"),
+            ("$STUDIO_TOOLS/maya", "expansion"),
+            ("tools/maya", "absolute"),
+            ("/tools/../..", "'..'"),
+        ] {
+            // A TOML literal string so a Windows separator stays a separator.
+            let src = format!("{SAMPLE}\n[host.discovery]\nroots = ['{root}']\n");
+            let error = Project::from_toml(&src)
+                .expect_err(&format!("'{root}' must be rejected"))
+                .to_string();
+            assert!(error.contains(expected), "'{root}': {error}");
+        }
+    }
+
+    #[test]
+    fn host_discovery_depth_stays_inside_the_bound() {
+        for depth in ["0", "5"] {
+            let src =
+                format!("{SAMPLE}\n[host.discovery]\nroots = [\"/tools\"]\nmax_depth = {depth}\n");
+            let error = Project::from_toml(&src).unwrap_err().to_string();
+            assert!(
+                error.contains("max_depth must be between 1 and 4"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

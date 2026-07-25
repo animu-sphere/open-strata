@@ -31,17 +31,16 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.19.0** — independently reachable packaged
-workspaces, aggregate product artifacts, named build intents, and digest-pinned
-Formation composition through `ost formation resolve|inspect|lock|run`.
+The current release is **v0.20.0** — independently installable and
+byte-reproducible packaged products, first-class product verification and
+installation, renderer workflow/evidence closure, and Formation environment
+diagnostics through `ost formation env|doctor`.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.20.0** milestone closes downstream package/product
-reproducibility and renderer-workflow findings. DCC host integration is
-explicitly deferred to **v0.21.0**; sessions, GPU/AI, and broader DCC matrices
-remain ahead.
+The active **v0.21.0** milestone adds DCC host integration on top of Formation;
+sessions, GPU/AI, and broader DCC matrices remain ahead.
 Linux x86_64 is the first-class target; other OS targets are modeled and
 partially working — these examples were exercised on Windows.
 
@@ -71,7 +70,7 @@ boundaries:
 
 Together they exercise distinct plugin-workspace shapes and the renderer side
 of the ecosystem, including the cross-repository **Formation** composition
-surface shipped in v0.19.0. See
+surface shipped in v0.19.0 and extended in v0.20.0. See
 [docs/projects/](docs/projects/README.md).
 
 ## Install

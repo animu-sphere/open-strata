@@ -10,6 +10,7 @@ pub mod env;
 pub mod extension;
 pub mod external;
 pub mod formation;
+pub mod host;
 pub mod init;
 pub mod internal;
 pub mod lock;

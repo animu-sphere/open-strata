@@ -18,6 +18,7 @@ drift in CI — do not edit them by hand.
 | [external-build-provenance.md](external-build-provenance.md) | hand-written | Imported CMake identity, generator sources, scoped requirements, and validation semantics. |
 | [template-catalog.md](template-catalog.md) | hand-written | Embedded scaffold ids, maturity, inputs, provenance, and copied CMake helper contract. |
 | [plugin-workspace.md](plugin-workspace.md) | hand-written | Bundle dependency declarations, schema contracts, graph validation, and stable issue codes. |
+| [host-discovery.md](host-discovery.md) | hand-written | DCC host providers, `[host.discovery]` config, status/confidence model, fingerprints, inventories, and stable codes. |
 
 To regenerate the generated pages, from the repository root:
 

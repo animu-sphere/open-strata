@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openstrata.dev/schemas/host-record.schema.json",
+  "title": "OpenStrata Host Record",
+  "description": "What OpenStrata observed about one third-party DCC install: where it was found, what confirmed it, how its version was resolved and how much that resolution is worth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "family", "product", "status", "root", "platform", "evidence"],
+  "properties": {
+    "schema_version": { "const": "openstrata.host-record/v1alpha1" },
+    "id": {
+      "description": "Deterministic instance id, stable across re-discovery of the same install root.",
+      "$ref": "#/$defs/id"
+    },
+    "family": { "$ref": "#/$defs/family" },
+    "product": {
+      "description": "The vendor's product name.",
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "description": "Only `validated` may be used to run something.",
+      "enum": ["candidate", "validated", "rejected", "stale", "unreachable", "invalidated"]
+    },
+    "root": {
+      "description": "The canonical install root on the machine the record was written on.",
+      "type": "string",
+      "minLength": 1
+    },
+    "version": { "$ref": "#/$defs/version" },
+    "executables": {
+      "description": "Selected executables by role (interactive, interpreter, batch, render).",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/executable" }
+    },
+    "python": { "$ref": "#/$defs/python" },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch"],
+      "properties": {
+        "os": { "enum": ["linux", "macos", "windows"] },
+        "arch": { "enum": ["x86_64", "arm64"] }
+      }
+    },
+    "markers": {
+      "description": "Root-relative directories the vendor ships that corroborate the identification.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "evidence": {
+      "description": "Every provider that reached this root, in resolution order. All provenances are retained: one install found three ways is one install with three provenances.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "detail"],
+        "properties": {
+          "source": {
+            "enum": [
+              "explicit-path",
+              "configured-root",
+              "environment",
+              "known-install-root",
+              "executable-path"
+            ]
+          },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "fingerprint": { "$ref": "#/$defs/fingerprint" },
+    "rejection": {
+      "description": "Present when a validator refused this root.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "family": { "enum": ["maya", "houdini"] },
+    "source": {
+      "description": "Vendor metadata and the host's own answer are high confidence; a directory name is a convention, not a guarantee.",
+      "enum": ["metadata", "probe", "directory-name"]
+    },
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw", "major", "source", "confidence"],
+      "properties": {
+        "raw": { "type": "string", "minLength": 1 },
+        "major": { "type": "integer", "minimum": 0 },
+        "minor": { "type": "integer", "minimum": 0 },
+        "build": { "type": "string" },
+        "source": { "$ref": "#/$defs/source" },
+        "confidence": { "enum": ["high", "low"] }
+      }
+    },
+    "executable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size"],
+      "properties": {
+        "path": {
+          "description": "Root-relative, forward-slash normalized.",
+          "type": "string",
+          "minLength": 1
+        },
+        "size": { "type": "integer", "minimum": 0 },
+        "modified_unix": { "type": "integer" }
+      }
+    },
+    "python": {
+      "description": "The host's embedded Python: the ABI a plugin built for this host must match.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "abi_tag", "source", "evidence"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+        "abi_tag": { "type": "string", "pattern": "^cp[0-9]+$" },
+        "source": { "$ref": "#/$defs/source" },
+        "evidence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "fingerprint": {
+      "description": "A digest over a versioned input set, distinguishing installs that share a nominal version but differ in patch level, runtime, or layout.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "inputs_version", "digest"],
+      "properties": {
+        "mode": { "enum": ["standard", "deep"] },
+        "inputs_version": { "type": "integer", "minimum": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

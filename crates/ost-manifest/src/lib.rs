@@ -15,7 +15,8 @@ mod renderer;
 pub use lock::{Lock, LockExtension, LockPython, LockRuntime, Validation};
 pub use project::{
     add_extension, set_version_file, BuildCacheEntry, BuildCacheType, BuildCacheValue, BuildConfig,
-    BuildIntentConfig, BuildPathPortability, Project, ProjectMeta, Requires,
+    BuildIntentConfig, BuildPathPortability, HostConfig, HostDiscoveryConfig, Project, ProjectMeta,
+    Requires, DEFAULT_DISCOVERY_DEPTH, MAX_DISCOVERY_DEPTH,
 };
 pub use renderer::{
     FrameContract, ProducerSession, RenderProducts, RendererCheck, RendererCheckStatus,

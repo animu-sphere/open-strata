@@ -22,6 +22,7 @@ authoritative crate list is the `members` array in the root
 | `ost-artifact` | Artifact registry: identity records, content-addressed store, verification, OCI transport. |
 | `ost-ci` | CI support matrix (`openstrata.ci.yaml`) + workflow generation (GitHub Actions). |
 | `ost-formation` | Digest-pinned Formation manifest, compatibility resolution, portable environment, and lock model. |
+| `ost-host` | Third-party DCC hosts: versioned host records, discovery providers, per-family validators, fingerprints, and inventories. |
 
 ## Crate boundaries
 
@@ -55,6 +56,13 @@ authoritative crate list is the `members` array in the root
   resolved/lock model, artifact/runtime/plugin compatibility checks, and portable
   environment contributions. Materialization and foreground process launch stay
   at the CLI boundary.
+- **`ost-host`** owns the third-party DCC host record: its status model,
+  deterministic instance id, versioned fingerprint, order-stable discovery
+  providers, and the per-family validators that confirm or refuse a candidate
+  root. It never installs, mutates, or licenses a host, and it deliberately does
+  **not** compose one into a runnable environment — that is Formation's job, so
+  a host launch and a runtime-native app share one environment contract instead
+  of growing a parallel DCC-specific one.
 - **`ost-cli`** only parses arguments, calls the libraries, and renders results
   (human or `--json`). It never embeds domain rules.
 
@@ -64,6 +72,6 @@ Not yet created; introduced as their phase lands, not up front:
 
 - `ost-solver`, `ost-session`, `ost-validation`.
 
-(`ost-artifact` and `ost-ci` were on this list historically; both now exist and
-are shipped, listed above. `ost-execution` and `ost-host` are proposed for the
-Kubernetes and DCC-host phases — see [roadmap/backlog.md](../roadmap/backlog.md).)
+(`ost-artifact`, `ost-ci`, and `ost-host` were on this list historically; all
+three now exist and are listed above. `ost-execution` remains proposed for the
+Kubernetes phase — see [roadmap/backlog.md](../roadmap/backlog.md).)

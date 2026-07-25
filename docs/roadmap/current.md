@@ -3,9 +3,88 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## v0.20.0 - dogfood closure and renderer workflow
+## v0.21.0 - DCC host integration
 
-**Status:** 🚧 in progress from 2026-07-23 · **Depends on:** v0.19.0 reachable
+**Status:** 🚧 in progress from 2026-07-23 · **Depends on:** v0.20.0
+package/product closure, renderer workflow, and Formation diagnostics.
+
+This milestone adds versioned host records, deterministic Maya and Houdini
+discovery, minimal headless host adapters, and support-matrix cells with
+pinned host evidence. Host integration consumes Formation as its environment
+and component-assembly layer and reuses the renderer identity/evidence model.
+Sessions, GPU/AI, and broader DCC matrices remain later work.
+Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md).
+
+The milestone is ordered so each slice is usable on its own and no later slice
+gates the first. OpenStrata never installs, updates, licenses, or modifies a
+host, and no DCC API is abstracted: differences are pushed into host adapters,
+never leaked into the core.
+
+### P0 - discovery foundation and versioned host records
+
+**Implemented on the v0.21.0 branch:** the isolated `ost-host` crate owns the
+versioned [host record](../reference/host-discovery.md) — product, version,
+install root, selected executables, Python ABI, platform fingerprint, and
+discovery evidence — plus its status model
+(`candidate · validated · rejected · stale · unreachable · invalidated`), a
+deterministic instance id, and a fingerprint over an explicitly versioned input
+set. `ost host discover | list | inspect` ship on the standard envelope and
+category exit codes; `discover` and `list` are diagnostic, so finding nothing
+exits `0` and names the providers consulted.
+
+Providers are composable and order-stable (explicit path → configured root →
+vendor environment variable → documented install location → opt-in `PATH`),
+deduplicated by canonical root while retaining every provenance. `PATH` is
+opt-in: an ambient entry describes the calling shell, not the machine. Maya and
+Houdini validators are read-only, bounded, and never interactive, resolving a
+version metadata-first and recording what the answer is worth — a directory name
+is reported as low confidence rather than as a fact. `[host.discovery]` in
+`openstrata.toml` declares bounded, literal roots; a root that is relative, a
+filesystem root, a glob, or needs shell expansion is refused at parse time,
+before any filesystem is touched. Inventories persist to a machine-wide cache
+and, with `--register`, to a reviewable `.strata/hosts/` file; every read
+re-checks the installs it names rather than serving a stale record as usable.
+
+Covered by unit tests plus fixture-install-tree integration tests for both
+families and a CLI suite for the command contract — all runnable on a machine
+with no DCC installed.
+
+### P1 - headless host adapters
+
+Not started. A host adapter boundary running minimal headless load/open/validate
+probes with preserved output and an explained SKIP for an unavailable license,
+display, or capability. The adapter's `environment` capability contributes to
+Formation resolution rather than composing paths on its own, so a host probe and
+a runtime-native app share one environment contract. Host-standard packaging
+(Maya `.mod`, Houdini package JSON) belongs to this slice; editing `Maya.env` or
+any user configuration does not.
+
+**Acceptance exercised 2026-07-25 (Windows):** `ost host discover` resolved a
+real Autodesk Maya 2024 and SideFX Houdini 20.5.522 from their default install
+locations, reading both versions from shipped metadata (`MTypes.h`,
+`SYS_Version.h`) and both Python ABIs (cp310, cp311) from the shipped layout.
+`--probe` was exercised against a real `husk.exe` from a root with its metadata
+absent: the version moved from `unknown` to `20.5.522` recorded as
+`source: probe`. The pass corrected three defects the fixtures could not see —
+instance ids carrying the `sha256:` prefix, doubled prefixes in fingerprint
+digests, and mixed path separators in recorded roots and evidence — each now
+covered by a test.
+
+Still owed: the same pass on Linux and macOS, where the install layouts (and,
+for Houdini on macOS, the framework root shape) are encoded from documentation
+rather than demonstrated.
+
+### P1 - support-matrix cells with pinned host evidence
+
+Not started. Matrix cells carrying a pinned host record, stable/nightly/release/
+legacy tiers, and trusted release candidates fed in without weakening the
+artifact publisher boundary. A cell is one production-guaranteed runtime set,
+and cross-DCC data contracts are edges — the matrix is a graph, not a Cartesian
+product.
+
+## Shipped: v0.20.0 - dogfood closure and renderer workflow
+
+**Status:** ✅ shipped 2026-07-23 · **Depends on:** v0.19.0 reachable
 packages, aggregate products, managed producer sessions, and Formation.
 
 The v0.20.0 scope is driven by the first v0.19.0 release-lane and renderer
@@ -48,7 +127,7 @@ metadata but embedded freshly timestamped member `manifest.json` sidecars in
 the product; member archive digests therefore stayed stable while the aggregate
 changed.
 
-**Implemented on the v0.20.0 branch:** plugin and product producer manifests use
+**Implemented in v0.20.0:** plugin and product producer manifests use
 the same reproducible timestamp contract as archive entries
 (`SOURCE_DATE_EPOCH`, otherwise epoch 0). The lifecycle waits across a wall-clock
 tick, packages again, and requires the product digest to remain identical.
@@ -60,7 +139,7 @@ remain part of the aggregate bytes.
 The aggregate is one release artifact, not merely a tar file containing a
 manual install recipe.
 
-**Implemented on the v0.20.0 branch:** `ost plugin product verify` checks the
+**Implemented in v0.20.0:** `ost plugin product verify` checks the
 outer digest (optionally pinned by `--expect-digest`), strict product contract,
 member identities/order, member archive digests and sizes, every member
 `SHA256SUMS`, evidence presence, extracted file inventory, and bundle validity.
@@ -85,7 +164,7 @@ cwd, retained log, output tail, and process-tree cleanup result. A timeout OST
 handles must reap descendants and clear the target lease before returning;
 only an actually interrupted/killed OST process leaves takeover evidence.
 
-**Implemented on the v0.20.0 branch:** the shared process runner reports that
+**Implemented in v0.20.0:** the shared process runner reports that
 complete diagnostic and verifies child termination, and managed build failure
 paths release their lease after renderer failure evidence is stamped.
 
@@ -99,14 +178,14 @@ or building. Passing `--usd`, `--scene`, or a USD-family scene path requires
 exact `--profile usd` correction. The same preflight record is embedded in a
 successful durable viewport launch record.
 
-**Implemented on the v0.20.0 branch:** `renderer viewport --preflight` resolves
+**Implemented in v0.20.0:** `renderer viewport --preflight` resolves
 the adapter, intent, target/profile, passthrough workflow, and normalized
 capabilities without touching the build tree. The durable launch artifact
 retains the same preflight.
 
 ### P1/P2 - renderer evidence closure
 
-**Implemented on the v0.20.0 branch:** managed build/test completions bind every
+**Implemented in v0.20.0:** managed build/test completions bind every
 changed renderer report by producer session, build-relative path, and SHA-256;
 validation recomputes the digest and refuses copied or stale report bytes.
 `external-unverified` remains the explicit non-managed attachment path.
@@ -133,7 +212,7 @@ and the failure record remained a useful proof of the unified envelope.
 
 ### P1 - Formation environment and diagnostics carry-over
 
-**Implemented on the v0.20.0 branch:** `ost formation env` exports the complete
+**Implemented in v0.20.0:** `ost formation env` exports the complete
 composed environment from a retained verified materialization, while
 `ost formation doctor` reports resolution, lock freshness, environment
 conflicts, and command reachability under the same digest-pinned model.

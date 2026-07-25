@@ -29,6 +29,41 @@ A digest-pinned runtime and packaged component set composed for one foreground c
 | `runtime` | object | yes |  |
 | `schema` | — | yes |  |
 
+## `host-inventory.schema.json`
+
+OpenStrata Host Inventory
+
+A persisted set of host records: the project's reviewable .strata/hosts/inventory.json and the user cache under ~/.ost/cache/host-discovery. An inventory records a past observation, so every read re-checks the installs it names before serving any of them as usable.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cached_at` | integer | no | Seconds since the Unix epoch. Cache metadata only: it deliberately takes no part in any record's identity or fingerprint, so re-running discovery on an unchanged machine still produces identical records. |
+| `records` | array | yes |  |
+| `schema` | — | yes |  |
+
+## `host-record.schema.json`
+
+OpenStrata Host Record
+
+What OpenStrata observed about one third-party DCC install: where it was found, what confirmed it, how its version was resolved and how much that resolution is worth.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `evidence` | array | yes | Every provider that reached this root, in resolution order. All provenances are retained: one install found three ways is one install with three provenances. |
+| `executables` | object | no | Selected executables by role (interactive, interpreter, batch, render). |
+| `family` | — | yes |  |
+| `fingerprint` | — | no |  |
+| `id` | — | yes | Deterministic instance id, stable across re-discovery of the same install root. |
+| `markers` | array | no | Root-relative directories the vendor ships that corroborate the identification. |
+| `platform` | object | yes |  |
+| `product` | string | yes | The vendor's product name. |
+| `python` | — | no |  |
+| `rejection` | object | no | Present when a validator refused this root. |
+| `root` | string | yes | The canonical install root on the machine the record was written on. |
+| `schema_version` | — | yes |  |
+| `status` | — | yes | Only `validated` may be used to run something. |
+| `version` | — | no |  |
+
 ## `library.schema.json`
 
 OpenStrata Plain Library Manifest
