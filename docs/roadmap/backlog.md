@@ -11,8 +11,9 @@ Legend: ⬜ not started · 🚧 in progress · ✅ scheduled or shipped elsewher
 The v0.19.0 composition and reach milestone is shipped in
 [v0.19.0](../releases/v0.19.0.md). The v0.20.0 dogfood-closure and
 renderer-workflow milestone is shipped in [v0.20.0](../releases/v0.20.0.md).
-DCC host integration is split: discovery is active in v0.21.0 via
-[current.md](current.md), and the adapters and host matrix follow in v0.22.0.
+DCC host integration is split: discovery and the v0.20.0 dogfooding closure
+shipped in [v0.21.0](../releases/v0.21.0.md), and the adapters and host matrix
+are active in v0.22.0 via [current.md](current.md).
 
 The Formation scope below is **Half B** of v0.19.0, narrowed to
 `resolve|inspect|run|lock`. It is gated on Half A (artifact closure, staged-byte
@@ -21,7 +22,7 @@ Formation's own acceptance criteria — three dogfoods run from packaged,
 digest-pinned artifacts on a clean machine — cannot pass while a packaged bundle
 from a split workspace is not independently installable. If Half A consumes the
 milestone. Formation shipped across v0.19.0 and v0.20.0; DCC host discovery
-follows in v0.21.0 and the host adapters in v0.22.0.
+shipped in v0.21.0 and the host adapters follow in v0.22.0.
 
 - ✅ **v0.19.0 Half B - Formation composition.** Turn the reference-project
   ecosystem documented in v0.18.0 into an executable contract. A **Formation** is a
@@ -50,21 +51,19 @@ follows in v0.21.0 and the host adapters in v0.22.0.
   namespace / overlayfs sandboxing, detached session management, general-purpose
   package solving, automatic Formation-bundle publication, and implicit download
   from untrusted sources.
-- 🚧 **v0.21.0 - host discovery and dogfooding closure (Phase 10, first half).**
-  Active in [current.md](current.md). Follows v0.20.0 package
-  and renderer closure, informed by the v0.19.0 package/release and renderer
-  dogfooding findings. Extends
-  OpenStrata beyond runtime-native OpenUSD
-  applications without redistributing DCC SDKs or inventing one false cross-DCC
-  API: an `ost-host` model with a versioned host record (product, version,
-  install root, executable/API locations, Python ABI, platform fingerprint,
-  discovery evidence) and `ost host discover|list|inspect` with deterministic
-  Maya and Houdini detectors that never mutate a host install or accept ambient
-  PATH guesses. That foundation has landed; the rest of the milestone is the
-  corrective work from the v0.20.0 dogfooding intake.
-- ⬜ **v0.22.0 - DCC host adapters and matrix (Phase 10, second half).** Split out
-  of v0.21.0 on 2026-07-27: discovery answers which hosts are installed, and
-  *running* something in one is its own milestone. A host adapter boundary
+- ✅ **v0.21.0 - host discovery and dogfooding closure (Phase 10, first half).**
+  Shipped in [v0.21.0](../releases/v0.21.0.md). It extended OpenStrata beyond
+  runtime-native OpenUSD applications without redistributing DCC SDKs or
+  inventing one false cross-DCC API: an `ost-host` model with a versioned host
+  record (product, version, install root, executable/API locations, Python ABI,
+  platform fingerprint, discovery evidence) and `ost host discover|list|inspect`
+  with deterministic Maya and Houdini detectors that never mutate a host install
+  or accept ambient PATH guesses — plus the corrective work from the v0.20.0
+  dogfooding intake.
+- 🚧 **v0.22.0 - DCC host adapters and matrix (Phase 10, second half).** Active
+  in [current.md](current.md). Split out of v0.21.0 on 2026-07-27: discovery
+  answers which hosts are installed, and *running* something in one is its own
+  milestone. A host adapter boundary
   running minimal headless load/open/validate probes with preserved output and
   explained SKIP for unavailable licenses/display/capability; host-standard
   packaging (Maya `.mod`, Houdini package JSON); support-matrix cells with pinned

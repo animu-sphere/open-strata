@@ -3,12 +3,67 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## v0.21.0 - host discovery and dogfooding closure
+## v0.22.0 - DCC host adapters and matrix
 
-**Status:** 🚧 in progress from 2026-07-23 · **Depends on:** v0.20.0
+**Status:** 🚧 next milestone from 2026-07-27 · **Depends on:** v0.21.0 host
+discovery, over the v0.20.0 package/product closure and Formation diagnostics
+below it.
+
+v0.21.0 answered *which hosts are installed*. This milestone is everything that
+*runs* one: a host adapter boundary executing minimal headless
+load/open/validate probes with preserved output and an explained SKIP for an
+unavailable license, display, or capability. The adapter's `environment`
+capability contributes to Formation resolution rather than composing paths on
+its own, so a host probe and a runtime-native app share one environment
+contract. Host-standard packaging (Maya `.mod`, Houdini package JSON) belongs to
+this slice; editing `Maya.env` or any user configuration does not.
+
+Support-matrix cells follow the adapters, because a matrix cell pins host
+evidence that only a host probe can produce. A cell carries a pinned host
+record, stable/nightly/release/legacy tiers, and trusted release candidates fed
+in without weakening the artifact publisher boundary. A cell is one
+production-guaranteed runtime set, and cross-DCC data contracts are edges — the
+matrix is a graph, not a Cartesian product.
+
+Host integration consumes Formation as its environment and component-assembly
+layer and reuses the renderer identity/evidence model. OpenStrata never
+installs, updates, licenses, or modifies a host, and no DCC API is abstracted:
+differences are pushed into host adapters, never leaked into the core. Sessions,
+GPU/AI, and broader DCC matrices remain later work still. Direction:
+[dcc-hosts.md](../design/proposed/dcc-hosts.md).
+
+### Carried acceptance
+
+- **Linux and macOS host discovery passes.** v0.21.0's discovery slice was
+  accepted on Windows against a real Maya 2024 and Houdini 20.5.522. The Linux
+  and macOS install layouts — and, for Houdini on macOS, the framework root
+  shape — are encoded from documentation rather than demonstrated. They travel
+  with the adapters because both need a real install to exercise.
+- **One successful hdMerlin managed launch.** OST20-RND-002/003/005 —
+  producer-bound evidence, the viewport JSON success contract, and the durable
+  launch record — shipped in v0.20.0 and were exercised locally on 2026-07-23
+  against a real runtime. They stay open **as unverified downstream** until a
+  managed build completes in that repository. The task is one successful launch,
+  not a reimplementation.
+- **The usd-vrm-plugins v0.21.0 re-run** that consumes the workspace cell, the
+  tool member, and the `consumer-configure` gate.
+
+### Carried from the v0.21.0 intake
+
+- **A runtime *declares* what a consumer needs.** v0.21.0 shipped the half that
+  lets `ost` *notice* an unmet host requirement (`runtime validate`'s
+  `consumer-configure` check) and the half that lets a CI contract *say* it
+  (`host_packages`). The open half is a declarative `host_requirements` list in
+  the runtime record — renderable into CI and checkable at `artifact pull` — so
+  a consumer learns the requirement from the artifact instead of from a red
+  lane.
+
+## Shipped: v0.21.0 - host discovery and dogfooding closure
+
+**Status:** ✅ shipped 2026-07-27 · **Depends on:** v0.20.0
 package/product closure, renderer workflow, and Formation diagnostics.
 
-This milestone ships the **discovery** half of DCC host integration — versioned
+This milestone shipped the **discovery** half of DCC host integration — versioned
 host records and deterministic Maya and Houdini discovery — plus the corrective
 half driven by six v0.20.0 dogfooding passes. Host integration consumes Formation
 as its environment and component-assembly layer and reuses the renderer
@@ -18,24 +73,17 @@ identity/evidence model. Direction:
 **Deferred to v0.22.0 on 2026-07-27:** working Maya and Houdini support — the
 headless host adapters and the support-matrix cells that carry pinned host
 evidence. Discovery answers *which hosts are installed*, which is useful on its
-own and is what the milestone keeps; *running* something in a host is the next
-milestone. Sessions, GPU/AI, and broader DCC matrices remain later work still.
+own and is what the milestone kept; *running* something in a host is the next
+milestone.
 
-The milestone is ordered so each slice is usable on its own and no later slice
+The milestone was ordered so each slice is usable on its own and no later slice
 gates the first. OpenStrata never installs, updates, licenses, or modifies a
 host, and no DCC API is abstracted: differences are pushed into host adapters,
 never leaked into the core.
 
 A second, corrective half was added on 2026-07-27 from six v0.20.0 dogfooding
-passes. It does not displace the host slices; it is what the same downstreams
+passes. It did not displace the host slices; it is what the same downstreams
 hit while shipping real work against v0.20.0, and most of it is small.
-
-**Remaining as of 2026-07-27:** every intake slice below is implemented on the
-branch. What is left is *acceptance*, not code — one successful hdMerlin managed
-launch (OST20-RND-002/003/005, unverified downstream), and the usd-vrm-plugins
-re-run that consumes the workspace cell, the tool member, and the
-consumer-configure gate. The host discovery slice still owes its Linux and macOS
-passes, which move to v0.22.0 with the adapters.
 
 ### Dogfooding intake (2026-07-26/27)
 
@@ -87,7 +135,7 @@ time a tool caught that trap on that repo instead of a human.
 
 ### P0 - discovery foundation and versioned host records
 
-**Implemented on the v0.21.0 branch:** the isolated `ost-host` crate owns the
+**Implemented in v0.21.0:** the isolated `ost-host` crate owns the
 versioned [host record](../reference/host-discovery.md) — product, version,
 install root, selected executables, Python ABI, platform fingerprint, and
 discovery evidence — plus its status model
@@ -114,20 +162,6 @@ Covered by unit tests plus fixture-install-tree integration tests for both
 families and a CLI suite for the command contract — all runnable on a machine
 with no DCC installed.
 
-### Deferred to v0.22.0 - headless host adapters
-
-**Moved out of v0.21.0 on 2026-07-27.** A host adapter boundary running minimal
-headless load/open/validate probes with preserved output and an explained SKIP
-for an unavailable license, display, or capability. The adapter's `environment`
-capability contributes to Formation resolution rather than composing paths on its
-own, so a host probe and a runtime-native app share one environment contract.
-Host-standard packaging (Maya `.mod`, Houdini package JSON) belongs to this
-slice; editing `Maya.env` or any user configuration does not.
-
-The discovery foundation below it is shipped and unaffected: `ost host
-discover | list | inspect` resolves real Maya and Houdini installs today. What
-moves is everything that *runs* a host.
-
 **Acceptance exercised 2026-07-25 (Windows):** `ost host discover` resolved a
 real Autodesk Maya 2024 and SideFX Houdini 20.5.522 from their default install
 locations, reading both versions from shipped metadata (`MTypes.h`,
@@ -143,14 +177,12 @@ Still owed, and moving to v0.22.0 with the adapters: the same pass on Linux and
 macOS, where the install layouts (and, for Houdini on macOS, the framework root
 shape) are encoded from documentation rather than demonstrated.
 
-### Deferred to v0.22.0 - support-matrix cells with pinned host evidence
-
-**Moved out of v0.21.0 on 2026-07-27.** Matrix cells carrying a pinned host
-record, stable/nightly/release/legacy tiers, and trusted release candidates fed
-in without weakening the artifact publisher boundary. A cell is one
-production-guaranteed runtime set, and cross-DCC data contracts are edges — the
-matrix is a graph, not a Cartesian product. It follows the adapters: a matrix
-cell pins host evidence that only a host probe can produce.
+**Moved out of v0.21.0 on 2026-07-27** and now scoped in the
+[v0.22.0 milestone](#v0220---dcc-host-adapters-and-matrix) above: the headless
+host adapters, host-standard packaging, and the support-matrix cells that carry
+pinned host evidence. The discovery foundation is shipped and unaffected —
+`ost host discover | list | inspect` resolves real Maya and Houdini installs
+today. What moved is everything that *runs* a host.
 
 ### P0 - `--build-arg` reaches the components `runtime pull --build` decides
 
@@ -166,7 +198,7 @@ reference material. All three 26.08 runtimes were consequently built by driving
 `build_usd.py` directly and adopting with `--from-usd`, trading away the `build`
 provenance to turn on a build flag.
 
-**Implemented on the v0.21.0 branch:** the forced-off set is applied only when
+**Implemented in v0.21.0:** the forced-off set is applied only when
 the caller named neither half of the pair, matching the bare flag and the
 `--x=value` form; re-passing the negative half is a no-op rather than a
 duplicate. A caller who names both halves themselves is refused before the spawn
@@ -188,7 +220,7 @@ manager over, and the fix — one `apt-get install libx11-dev libxt-dev` — had
 be hand-written into generated output, which `ci generate github --force` then
 deletes without a word.
 
-**Implemented on the v0.21.0 branch:** a source cell declares `host_packages`
+**Implemented in v0.21.0:** a source cell declares `host_packages`
 keyed by the runner's native installer (`apt`, `brew`), and the generator renders
 one provisioning step before the build, per-cell gated and dispatched on
 `$RUNNER_OS`. Package names are validated as bare names at parse time, since the
@@ -210,7 +242,7 @@ interpreter and pins all three Development variables in its generated
 and `Python3_FIND_STRATEGY=LOCATION` all failed to help and the lane shipped
 disabled rather than pretending.
 
-**Implemented on the v0.21.0 branch:** a `plugin run` session exports
+**Implemented in v0.21.0:** a `plugin run` session exports
 `CMAKE_TOOLCHAIN_FILE` pointing at the same `toolchain.cmake` `plugin build`
 uses, rendering it on demand when the bundle has not been configured yet. CMake
 ≥ 3.21 reads that variable from the environment, so
@@ -231,7 +263,7 @@ copy of the runtime digest pins, which must be re-pinned together on every
 republish. A motion lane silently left on an older OpenUSD than the bundle cells
 would be worse than no lane: it would look like coverage.
 
-**Implemented on the v0.21.0 branch:** `ost ci matrix [--lane <lane>] [--json]`
+**Implemented in v0.21.0:** `ost ci matrix [--lane <lane>] [--json]`
 emits the resolved cells — name, lane, runner, resolved `runs_on`, hosted flag,
 platform/profile/bundle, `up_to`, runtime artifact and remote reference, pinned
 OCI digest, host Python and host packages — plus the `ost` bootstrap pin, which
@@ -249,7 +281,7 @@ changed which per-bundle check failed first. A repo wanting the graph as a cheap
 early PR gate had to build all four bundles in a lane whose purpose was to cover
 what those bundles' own cells do not, or parse `data.graph` out of `--json`.
 
-**Implemented on the v0.21.0 branch:** `ost plugin test --workspace
+**Implemented in v0.21.0:** `ost plugin test --workspace
 --graph-only` runs the dependency-graph checks and exits on their result. No
 build, no resolved runtime, no packaged artifact. The three workspace entry
 points now share one discovery-and-graph helper and one summary line, so a
@@ -265,7 +297,7 @@ From reports 29 §2 and 30 §3. OpenUSD 26.08 installs everything built by
 runtime whose examples were built and then silently dropped. This is the
 MaterialX `resources/` defect one directory over.
 
-**Implemented on the v0.21.0 branch:** `share` joins the SDK layout, so a slim
+**Implemented in v0.21.0:** `share` joins the SDK layout, so a slim
 export keeps it. The reporting half the ask also raised was already present:
 `--slim` prints the top-level trees it drops and records them as
 `excluded_top_level` in `--json`.
@@ -281,7 +313,7 @@ the artifact shipped (report 29 §3).
 
 From reports 30 §1 and 31 §4, the theme of this whole intake.
 
-**Implemented on the v0.21.0 branch**, in three parts.
+**Implemented in v0.21.0**, in three parts.
 
 - **macOS now records an ABI floor.** Linux measures its glibc floor into the
   target (`linux-x86_64-glibc238-py313`) and Windows carries `msvc143`; macOS got
@@ -336,7 +368,7 @@ requires: `vrmRetarget` deliberately has no bundle consumer, because the edge
 that would give it one is a documented contract violation. "Make a bundle depend
 on it" is not available.
 
-**Implemented on the v0.21.0 branch:** a cell declares `kind: workspace` and
+**Implemented in v0.21.0:** a cell declares `kind: workspace` and
 builds the workspace CMake tree instead of one bundle — the tree that compiles
 the plain libraries and executables the bundle verbs never reach. It renders as
 its own job (`pr-workspace` / `mainline-workspace`) sharing the runtime preamble:
@@ -362,7 +394,7 @@ user-facing deliverable with no member archive that could carry it. A release
 either omitted the tool or the repo hand-rolled a second packaging path — and
 hand-rolled packaging is what report 27 was about.
 
-**Implemented on the v0.21.0 branch:** an `openstrata.tool.yaml` member declares
+**Implemented in v0.21.0:** an `openstrata.tool.yaml` member declares
 a workspace-built executable — identity, the executables to ship, and the
 directories the build writes them to. `plugin package --workspace` packages each
 after the bundles into the *same* dist shape a bundle package has (archive,
@@ -398,7 +430,7 @@ the report:
 - **Generated preset includes must be self-contained for the selected profile.**
   `renderer view --profile usd` must not fail because an unrelated core preset is
   absent.
-  **Implemented on the v0.21.0 branch:** CMake resolves every `include` of a
+  **Implemented in v0.21.0:** CMake resolves every `include` of a
   presets document before it evaluates any preset, so one managed include
   pointing at a target that no longer exists fails the preset that is present and
   correct. `configure`/`build` now drop managed includes whose per-target presets
@@ -410,7 +442,7 @@ the report:
   leases deterministically. v0.20.0 implemented this for the *timeout* path; this
   pass says the *stall* path still reports nothing useful and left OST/cmake/ninja
   descendants to clean up by hand.
-  **Implemented on the v0.21.0 branch:** a heartbeat is chatter and is suppressed
+  **Implemented in v0.21.0:** a heartbeat is chatter and is suppressed
   under `--quiet`, which is exactly how `renderer view --json` runs its nested
   build — so the stall reported nothing at all. A stall is now a distinct event
   that survives quiet and the JSON stream, naming the active child (pid, command,
@@ -425,8 +457,9 @@ the report:
 - OST20-RND-002/003/005 (producer-bound evidence, viewport JSON success contract,
   durable launch record) ship in v0.20.0 and were exercised locally on 2026-07-23
   against a real runtime; they stay open **as unverified downstream** until a
-  managed build completes in that repository. The v0.21.0 acceptance task is one
-  successful hdMerlin managed launch, not a reimplementation.
+  managed build completes in that repository. The acceptance task is one
+  successful hdMerlin managed launch, not a reimplementation; it carries into
+  v0.22.0.
 
 ### P2 - carried
 

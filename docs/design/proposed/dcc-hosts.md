@@ -258,7 +258,8 @@ No generic plugin matrix, fleet service, remote execution, or DCC UI in that PR.
 
 ### Implementation status
 
-Phase 1 and the discovery half of phase 2 landed on the v0.21.0 branch: the
+Phase 1 and the discovery half of phase 2 shipped in
+[v0.21.0](../../releases/v0.21.0.md): the
 `ost-host` crate, the versioned record and status model, all five providers
 (with `PATH` opt-in), Maya **and** Houdini validators, the `[host.discovery]`
 declarative config, the cache and project inventories, and
@@ -278,11 +279,11 @@ Still open from phase 2 onward: a Nuke validator, JSONL output, headless
 `run`/`test` and host-standard packaging (phase 3), the matrix and cross-DCC
 compatibility edges (phase 4), and fleet/productization (phase 5).
 
-**Milestone split (2026-07-27).** v0.21.0 ships the discovery half above and
+**Milestone split (2026-07-27).** v0.21.0 shipped the discovery half above and
 nothing that runs a host; phases 3 and 4 — the headless adapters, host-standard
-packaging, and matrix cells with pinned host evidence — move to **v0.22.0**,
+packaging, and matrix cells with pinned host evidence — moved to **v0.22.0**,
 along with the Linux and macOS discovery acceptance passes that are still owed.
-Knowing which hosts are installed is useful on its own, so it ships on its own.
+Knowing which hosts are installed is useful on its own, so it shipped on its own.
 
 ## Positioning
 
