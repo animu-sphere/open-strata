@@ -16,9 +16,10 @@ pub use github::{
     RELEASE_WORKFLOW_PATH, SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
 };
 pub use matrix::{
-    is_placeholder_digest, starter_matrix, Acknowledgement, Billing, Bootstrap, HostOs,
+    is_placeholder_digest, starter_matrix, Acknowledgement, Billing, Bootstrap, CellKind, HostOs,
     HostPackages, HostSpec, Lane, OstBootstrap, Publish, ReleaseLane, ReleaseMode, RequireEvidence,
     RunnerKind, RunnerProfile, RuntimeRemote, SourceCheck, SupportCell, SupportClaim,
-    SupportMatrix, TrustRequirements, MATRIX_FILE, MATRIX_SCHEMA, MAX_LEVEL,
+    SupportMatrix, TrustRequirements, WorkspaceVerify, DEFAULT_UP_TO, MATRIX_FILE, MATRIX_SCHEMA,
+    MAX_LEVEL,
 };
 pub use support::SupportDeclaration;

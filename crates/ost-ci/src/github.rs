@@ -19,7 +19,9 @@
 //! is pinned to a full commit SHA (SEC-004), reusing the SHAs this repository
 //! itself pins.
 
-use crate::matrix::{Bootstrap, Lane, ReleaseMode, SourceCheck, SupportCell, SupportMatrix};
+use crate::matrix::{
+    Bootstrap, CellKind, Lane, ReleaseMode, SourceCheck, SupportCell, SupportMatrix,
+};
 
 /// Default path of the generated support-matrix workflow.
 pub const WORKFLOW_PATH: &str = ".github/workflows/ost-support-matrix.yml";
@@ -177,7 +179,7 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
         evidence_flags = matrix.require_evidence(cell).verify_flags(),
         platform = cell.platform,
         profile = cell.profile,
-        up_to = cell.up_to,
+        up_to = cell.up_to(),
         hosted = matrix.is_hosted(cell),
     )
 }
@@ -607,8 +609,12 @@ fn prebuild_steps(matrix: &SupportMatrix) -> String {
     out
 }
 
-/// The shared step list of a source-CI job.
-fn source_steps(matrix: &SupportMatrix) -> String {
+/// The steps every source-CI job runs before it builds anything: checkout,
+/// bootstrap, manifest validation, and the verified pinned runtime.
+///
+/// Shared by the bundle and workspace jobs so the two cell shapes cannot drift
+/// on how the runtime they build against is obtained and trusted.
+fn source_preamble(matrix: &SupportMatrix) -> String {
     let bootstrap = matrix
         .bootstrap
         .as_ref()
@@ -640,7 +646,53 @@ fn source_steps(matrix: &SupportMatrix) -> String {
           printf '{{\"schema\":1,\"runtime_artifact\":\"%s\",\"source\":\"%s\"}}\\n' \"${{{{ matrix.runtime_artifact }}}}\" \"${{{{ matrix.runtime_remote != '' && 'remote-pull' || 'local-registry' }}}}\" > .ost-ci/runtime-source.json
           ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}}{policy}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
-{prebuild}\
+{prebuild}",
+        version_check = ost_version_step(matrix.bootstrap.as_ref()),
+        fetch = runtime_fetch_steps(matrix.bootstrap.as_ref()),
+        prebuild = prebuild_steps(matrix),
+    )
+}
+
+/// The step list of a **workspace** source-CI job: the dependency-graph gate,
+/// then the workspace CMake tree, then its CTest suite.
+///
+/// This is the cell shape a plain library or a workspace-built executable has;
+/// `ost build` and `ost test` are the verbs that reach them, and the graph gate
+/// is `ost plugin test --workspace --graph-only`, which needs no build at all.
+/// Each rung is gated on `matrix.verify` so one job serves every rung.
+fn workspace_steps(matrix: &SupportMatrix) -> String {
+    format!(
+        "\
+{preamble}\
+\x20     - name: Validate the workspace dependency graph
+        shell: bash
+        run: ost plugin test --workspace --graph-only --json
+      - name: Build the workspace from source
+        if: ${{{{ matrix.verify != 'graph' }}}}
+        shell: bash
+        run: ost build --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
+      - name: Run the workspace test suite
+        if: ${{{{ matrix.verify == 'test' }}}}
+        shell: bash
+        run: ost test --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
+      - name: Upload the build logs and CI evidence
+        if: always()
+        uses: {UPLOAD_ARTIFACT}
+        with:
+          name: report-${{{{ matrix.name }}}}
+          path: |
+            .strata/targets/
+            .ost-ci/
+",
+        preamble = source_preamble(matrix),
+    )
+}
+
+/// The step list of a **bundle** source-CI job.
+fn source_steps(matrix: &SupportMatrix) -> String {
+    format!(
+        "\
+{preamble}\
 \x20     - name: Build the plugin from source
         shell: bash
         run: ost plugin build ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
@@ -660,9 +712,7 @@ fn source_steps(matrix: &SupportMatrix) -> String {
             ${{{{ matrix.bundle }}}}/.strata/reports/
             .ost-ci/
 ",
-        version_check = ost_version_step(matrix.bootstrap.as_ref()),
-        fetch = runtime_fetch_steps(matrix.bootstrap.as_ref()),
-        prebuild = prebuild_steps(matrix),
+        preamble = source_preamble(matrix),
         checks = source_check_steps(&matrix.source_checks),
     )
 }
@@ -682,6 +732,30 @@ fn source_steps(matrix: &SupportMatrix) -> String {
 /// per-cell gate tests, so a cell that declares nothing costs nothing.
 fn source_build_include_keys(cell: &SupportCell) -> String {
     let bundle = cell.bundle.as_deref().unwrap_or(".");
+    format!(
+        "            bundle: {bundle}\n{}",
+        prerequisite_include_keys(cell)
+    )
+}
+
+/// The include keys a **workspace** cell needs: the same build prerequisites,
+/// plus the rung its steps are gated on. It deliberately defines no `bundle`
+/// key — nothing in a workspace job addresses one, and a key that no step reads
+/// is how a stale contract hides.
+fn workspace_include_keys(cell: &SupportCell) -> String {
+    format!(
+        "            verify: {}\n{}",
+        cell.verify().as_str(),
+        prerequisite_include_keys(cell)
+    )
+}
+
+/// The per-cell inputs [`prebuild_steps`] and the runtime fetch are gated on,
+/// shared by every job that builds from the checkout.
+///
+/// Package lists are space-joined; empty strings are what the rendered step's
+/// per-cell gate tests, so a cell that declares nothing costs nothing.
+fn prerequisite_include_keys(cell: &SupportCell) -> String {
     let remote = cell
         .runtime_remote
         .as_ref()
@@ -693,8 +767,7 @@ fn source_build_include_keys(cell: &SupportCell) -> String {
         None => (String::new(), String::new()),
     };
     format!(
-        "            bundle: {bundle}\n\
-         \x20           runtime_remote: \"{remote}\"\n\
+        "            runtime_remote: \"{remote}\"\n\
          \x20           host_python: \"{host_python}\"\n\
          \x20           host_packages_apt: \"{apt}\"\n\
          \x20           host_packages_brew: \"{brew}\"\n"
@@ -702,14 +775,25 @@ fn source_build_include_keys(cell: &SupportCell) -> String {
 }
 
 /// One source-CI job (`pr` or `mainline`) over the given cells.
-fn source_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportCell]) -> String {
+///
+/// `kind` selects both the per-cell include keys and the step list, so bundle
+/// and workspace cells of the same lane render as two jobs rather than one job
+/// whose every step is gated. A step that exists but never runs is the shape
+/// that let a release candidate skip its own host provisioning.
+fn source_job(
+    matrix: &SupportMatrix,
+    id: &str,
+    event: &str,
+    kind: CellKind,
+    cells: &[&SupportCell],
+) -> String {
     let mut include = String::new();
     for cell in cells {
-        include.push_str(&include_entry(
-            matrix,
-            cell,
-            &source_build_include_keys(cell),
-        ));
+        let keys = match kind {
+            CellKind::Bundle => source_build_include_keys(cell),
+            CellKind::Workspace => workspace_include_keys(cell),
+        };
+        include.push_str(&include_entry(matrix, cell, &keys));
     }
     // Hosted cells get a workspace-local OST_HOME so the registry the cache
     // step saves/restores has a deterministic path on every runner OS;
@@ -734,7 +818,10 @@ fn source_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportCe
 {include}\
 {steps}",
         env = ci_env(false),
-        steps = source_steps(matrix),
+        steps = match kind {
+            CellKind::Bundle => source_steps(matrix),
+            CellKind::Workspace => workspace_steps(matrix),
+        },
     )
 }
 
@@ -745,31 +832,62 @@ pub fn generate_source(matrix: &SupportMatrix) -> Option<String> {
     if source.is_empty() {
         return None;
     }
-    let pr: Vec<&SupportCell> = source
-        .iter()
-        .filter(|c| c.lane == Lane::PullRequest)
-        .copied()
-        .collect();
-    let mainline: Vec<&SupportCell> = source
-        .iter()
-        .filter(|c| c.lane == Lane::Main)
-        .copied()
-        .collect();
+    let lane_cells = |lane: Lane, kind: CellKind| -> Vec<&SupportCell> {
+        source
+            .iter()
+            .filter(|c| c.lane == lane && c.kind == kind)
+            .copied()
+            .collect()
+    };
+    let pr = lane_cells(Lane::PullRequest, CellKind::Bundle);
+    let pr_workspace = lane_cells(Lane::PullRequest, CellKind::Workspace);
+    let mainline = lane_cells(Lane::Main, CellKind::Bundle);
+    let mainline_workspace = lane_cells(Lane::Main, CellKind::Workspace);
 
     let mut on = String::new();
-    if !pr.is_empty() {
+    if !pr.is_empty() || !pr_workspace.is_empty() {
         on.push_str("  pull_request:\n");
     }
-    if !mainline.is_empty() {
+    if !mainline.is_empty() || !mainline_workspace.is_empty() {
         on.push_str("  push:\n    branches: [main]\n");
     }
 
     let mut jobs = String::new();
     if !pr.is_empty() {
-        jobs.push_str(&source_job(matrix, "pr", "pull_request", &pr));
+        jobs.push_str(&source_job(
+            matrix,
+            "pr",
+            "pull_request",
+            CellKind::Bundle,
+            &pr,
+        ));
+    }
+    if !pr_workspace.is_empty() {
+        jobs.push_str(&source_job(
+            matrix,
+            "pr-workspace",
+            "pull_request",
+            CellKind::Workspace,
+            &pr_workspace,
+        ));
     }
     if !mainline.is_empty() {
-        jobs.push_str(&source_job(matrix, "mainline", "push", &mainline));
+        jobs.push_str(&source_job(
+            matrix,
+            "mainline",
+            "push",
+            CellKind::Bundle,
+            &mainline,
+        ));
+    }
+    if !mainline_workspace.is_empty() {
+        jobs.push_str(&source_job(
+            matrix,
+            "mainline-workspace",
+            "push",
+            CellKind::Workspace,
+            &mainline_workspace,
+        ));
     }
 
     Some(format!(
@@ -1099,7 +1217,7 @@ mod tests {
     use crate::matrix::{
         Acknowledgement, Billing, HostOs, HostSpec, Lane, OstBootstrap, Publish, ReleaseLane,
         RequireEvidence, RunnerKind, RunnerProfile, RuntimeRemote, SourceCheck, SupportCell,
-        TrustRequirements, MATRIX_SCHEMA,
+        TrustRequirements, WorkspaceVerify, MATRIX_SCHEMA,
     };
     use ost_artifact::TrustLevel;
     use std::collections::BTreeMap;
@@ -1114,10 +1232,12 @@ mod tests {
             runtime_artifact: format!("sha256:{}", "ab".repeat(32)),
             runtime_remote: None,
             plugin_artifact: Some(format!("sha256:{}", "cd".repeat(32))),
+            kind: CellKind::default(),
             bundle: None,
+            verify: None,
             platform: "cy2026".into(),
             profile: "usd".into(),
-            up_to: 5,
+            up_to: Some(5),
             host_python: None,
             host_packages: None,
             publish: Publish::default(),
@@ -1137,7 +1257,7 @@ mod tests {
             release: None,
             cells: vec![
                 SupportCell {
-                    up_to: 4,
+                    up_to: Some(4),
                     host: HostSpec {
                         os: HostOs::Linux,
                         labels: vec!["self-hosted".into(), "linux".into()],
@@ -1190,7 +1310,7 @@ mod tests {
                     runner: Some("windows-hosted".into()),
                     plugin_artifact: None,
                     bundle: Some("plugins/toy".into()),
-                    up_to: 4,
+                    up_to: Some(4),
                     runtime_remote: Some(RuntimeRemote {
                         uri: format!(
                             "oci://ghcr.io/owner/openstrata-runtime@sha256:{}",
@@ -1357,6 +1477,112 @@ mod tests {
         assert_eq!(workflows.len(), 2);
         assert_eq!(workflows[0].path, WORKFLOW_PATH);
         assert_eq!(workflows[1].path, SOURCE_WORKFLOW_PATH);
+    }
+
+    /// usd-vrm-plugins reports 28 §2 / 32 §1: a plain library and a CLI
+    /// executable that no bundle requires need a cell of their own. It renders
+    /// as a separate job — same runtime preamble, different verbs — so a
+    /// bundle job never carries steps it would always skip.
+    #[test]
+    fn a_workspace_cell_renders_its_own_job_with_the_workspace_verbs() {
+        let mut m = lanes_matrix();
+        m.cells.push(SupportCell {
+            kind: CellKind::Workspace,
+            lane: Lane::PullRequest,
+            plugin_artifact: None,
+            up_to: None,
+            verify: Some(WorkspaceVerify::Test),
+            host: HostSpec {
+                os: HostOs::Linux,
+                labels: vec!["self-hosted".into(), "linux".into()],
+            },
+            ..cell("workspace-pr-linux")
+        });
+        m.validate().unwrap();
+
+        let yaml = generate_source(&m).unwrap();
+        assert_eq!(yaml, generate_source(&m).unwrap(), "deterministic");
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+
+        // The bundle job is untouched and the workspace job is its own.
+        let bundle_entries = doc["jobs"]["pr"]["strategy"]["matrix"]["include"]
+            .as_sequence()
+            .unwrap();
+        assert_eq!(bundle_entries.len(), 1);
+        let entries = doc["jobs"]["pr-workspace"]["strategy"]["matrix"]["include"]
+            .as_sequence()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["name"], "workspace-pr-linux");
+        assert_eq!(entries[0]["verify"], "test");
+        assert!(
+            entries[0].get("bundle").is_none(),
+            "a workspace cell addresses no bundle"
+        );
+
+        let steps = doc["jobs"]["pr-workspace"]["steps"].as_sequence().unwrap();
+        let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+        assert!(names.iter().any(|n| n.contains("dependency graph")));
+        assert!(names.iter().any(|n| n.contains("Build the workspace")));
+        assert!(names.iter().any(|n| n.contains("workspace test suite")));
+        assert!(
+            !names.iter().any(|n| n.contains("Build the plugin")),
+            "the workspace job runs no bundle verb: {names:?}"
+        );
+        // It shares the preamble that obtains and trusts the runtime.
+        assert!(names.iter().any(|n| n.contains("materialize the pinned")));
+
+        let runs: Vec<&str> = steps.iter().filter_map(|s| s["run"].as_str()).collect();
+        assert!(runs
+            .iter()
+            .any(|r| r.contains("ost plugin test --workspace --graph-only")));
+        assert!(runs.iter().any(|r| r.starts_with("ost build --target")));
+        assert!(runs.iter().any(|r| r.starts_with("ost test --target")));
+    }
+
+    /// `verify: graph` is the cheap PR gate; the later rungs stay in the job
+    /// and are gated on the rung, so one job serves every cell.
+    #[test]
+    fn the_workspace_rungs_gate_the_build_and_test_steps() {
+        let mut m = lanes_matrix();
+        m.cells.push(SupportCell {
+            kind: CellKind::Workspace,
+            lane: Lane::PullRequest,
+            plugin_artifact: None,
+            up_to: None,
+            verify: Some(WorkspaceVerify::Graph),
+            host: HostSpec {
+                os: HostOs::Linux,
+                labels: vec!["self-hosted".into(), "linux".into()],
+            },
+            ..cell("workspace-graph-gate")
+        });
+        m.validate().unwrap();
+
+        let doc: serde_yaml::Value = serde_yaml::from_str(&generate_source(&m).unwrap()).unwrap();
+        let entries = doc["jobs"]["pr-workspace"]["strategy"]["matrix"]["include"]
+            .as_sequence()
+            .unwrap();
+        assert_eq!(entries[0]["verify"], "graph");
+
+        let steps = doc["jobs"]["pr-workspace"]["steps"].as_sequence().unwrap();
+        let gated = |name: &str| -> String {
+            steps
+                .iter()
+                .find(|s| s["name"].as_str().is_some_and(|n| n.contains(name)))
+                .and_then(|s| s["if"].as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(
+            gated("Build the workspace"),
+            "${{ matrix.verify != 'graph' }}"
+        );
+        assert_eq!(
+            gated("workspace test suite"),
+            "${{ matrix.verify == 'test' }}"
+        );
+        assert_eq!(gated("dependency graph"), "", "the graph gate always runs");
     }
 
     #[test]

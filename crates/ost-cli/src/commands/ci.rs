@@ -663,8 +663,13 @@ fn resolved_matrix(matrix_flag: Option<&str>, lane_flag: Option<&str>, fmt: Form
                     "os": matrix.resolved_os(cell).map(|os| os.as_str()),
                     "platform": cell.platform,
                     "profile": cell.profile,
-                    "bundle": cell.bundle.as_deref().unwrap_or("."),
-                    "up_to": cell.up_to,
+                    "kind": cell.kind.as_str(),
+                    // A workspace cell addresses no bundle and runs no pyramid;
+                    // it carries its own ladder instead.
+                    "bundle": (!cell.is_workspace())
+                        .then(|| cell.bundle.as_deref().unwrap_or(".")),
+                    "up_to": (!cell.is_workspace()).then(|| cell.up_to()),
+                    "verify": cell.is_workspace().then(|| cell.verify().as_str()),
                     "runtime_artifact": cell.runtime_artifact,
                     "runtime_remote": cell.runtime_remote.as_ref().map(|r| r.uri.as_str()),
                     "expected_oci_digest": cell
@@ -709,8 +714,17 @@ fn resolved_matrix(matrix_flag: Option<&str>, lane_flag: Option<&str>, fmt: Form
             .unwrap_or_default()
     );
     for cell in &cells {
+        let builds = if cell.is_workspace() {
+            format!("workspace, verify {}", cell.verify().as_str())
+        } else {
+            format!(
+                "bundle {}, up to L{}",
+                cell.bundle.as_deref().unwrap_or("."),
+                cell.up_to()
+            )
+        };
         println!(
-            "  {} [{}] {}/{} on {} — runtime {}",
+            "  {} [{}] {}/{} on {} — {builds} — runtime {}",
             cell.name,
             cell.lane.as_str(),
             cell.platform,

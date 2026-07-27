@@ -303,21 +303,28 @@ Not started. From reports 30 §1 and 31 §4, the theme of this whole intake.
 
 ### P1 - a CI cell that is not a bundle
 
-Not started, and the P0 of every usd-vrm-plugins report in this intake (28 §2,
-restated in 32 §1). Cells name a `bundle:` and `ost ci generate github` renders
-one job per cell, so there is no cell shape for a plain library
-(`openstrata.library.yaml`) that no bundle requires, or for a CLI executable
-built from the workspace against the runtime. Both are legitimate workspace
-members that repository's own architecture requires: `vrmRetarget` deliberately
-has no bundle consumer, because the edge that would give it one is a documented
-contract violation. "Make a bundle depend on it" is not available.
+The P0 of every usd-vrm-plugins report in this intake (28 §2, restated in 32 §1).
+Cells named a `bundle:` and `ost ci generate github` rendered one job per cell,
+so there was no cell shape for a plain library (`openstrata.library.yaml`) that
+no bundle requires, or for a CLI executable built from the workspace against the
+runtime. Both are legitimate workspace members that repository's own architecture
+requires: `vrmRetarget` deliberately has no bundle consumer, because the edge
+that would give it one is a documented contract violation. "Make a bundle depend
+on it" is not available.
 
-The preferred shape is a cell targeting a library or the whole workspace — which
-would also give the repo its workspace graph gate in CI, an item the same cell
-shape satisfies. `--graph-only` above is the verb such a cell would call; the
-cell itself is the remaining work. Note that report 32 §5's configure gap is a
-prerequisite for the *hand-rolled* alternative, not for this: a first-class cell
-would call `ost plugin build`, which never had the problem.
+**Implemented on the v0.21.0 branch:** a cell declares `kind: workspace` and
+builds the workspace CMake tree instead of one bundle — the tree that compiles
+the plain libraries and executables the bundle verbs never reach. It renders as
+its own job (`pr-workspace` / `mainline-workspace`) sharing the runtime preamble:
+`ost plugin test --workspace --graph-only`, then `ost build`, then `ost test` for
+the workspace's own CTest suite. A `verify: graph|build|test` ladder gates the
+last two rungs, so `verify: graph` is the milliseconds-long early PR gate the
+`--graph-only` verb above exists for.
+
+Every bundle-only knob is refused on a workspace cell by name rather than
+ignored — `bundle`, `up_to`, `publish`, and any support lane — and `verify` is
+refused on a bundle cell, whose ladder is `up_to`. `ci matrix --json` projects
+`kind`, and the ladder that applies, for hand-written lanes.
 
 ### P1 - a workspace-built executable can ship in a product
 

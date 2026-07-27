@@ -90,6 +90,28 @@ Pinning a `runtime_artifact` by digest keeps every cell reproducible. If a cell
 pins a runtime that lacks the evidence a generated gate demands, `ost ci
 generate` warns and `ost ci validate` fails fast (v0.18.0).
 
+Not every workspace member is a bundle. A plain library that no bundle requires,
+and a CLI executable built from the workspace, are invisible to a cell that names
+a `bundle:` — so declare `kind: workspace` for a cell that builds the workspace
+CMake tree instead (v0.21.0):
+
+```yaml
+cells:
+  - name: workspace-pr-linux
+    kind: workspace
+    lane: pull_request
+    runtime_artifact: sha256:<runtime SDK digest>
+    platform: cy2026
+    profile: usd
+    verify: test          # graph | build | test (default test)
+```
+
+It validates the dependency graph, runs `ost build`, then runs the workspace's
+own CTest suite — the members the bundle verbs never reach. `verify: graph` is
+the cheap early PR gate: the graph alone, with nothing built and no runtime
+materialized. Source lanes only; a workspace cell names no bundle and publishes
+nothing.
+
 ## 6. Keep OpenStrata and plain CMake both working
 
 A workspace stays dual-mode: the same tree builds with `ost` and with plain
