@@ -69,6 +69,15 @@ pub enum RuntimeCmd {
         /// e.g. `--build-arg -DPXR_BUILD_IMAGING=OFF`. Hyphen values allowed.
         #[arg(long = "build-arg", allow_hyphen_values = true)]
         build_args: Vec<String>,
+        /// macOS SDK to build `--build` against: a full path, or a version like
+        /// `15.2` resolved with `xcrun --sdk macosx<version> --show-sdk-path`.
+        /// Sets `CMAKE_OSX_SYSROOT` for the whole build.
+        #[arg(long)]
+        sdk: Option<String>,
+        /// macOS deployment target for `--build` (`CMAKE_OSX_DEPLOYMENT_TARGET`),
+        /// e.g. `14.5` — the oldest macOS the produced runtime must load on.
+        #[arg(long)]
+        deployment_target: Option<String>,
         /// Dependency prefix for a direct CMake build of `--build` (repeatable;
         /// joined into `CMAKE_PREFIX_PATH`). When given, OpenUSD is built with
         /// CMake against these deps instead of via build_usd.py. Falls back to
@@ -161,6 +170,8 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             build,
             jobs,
             build_args,
+            sdk,
+            deployment_target,
             deps,
             from_artifact,
         } => pull(
@@ -172,6 +183,8 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
                 build,
                 jobs,
                 build_args,
+                sdk,
+                deployment_target,
                 deps,
                 from_artifact,
             },
@@ -226,6 +239,10 @@ pub struct PullSource {
     pub build: Option<String>,
     pub jobs: Option<u32>,
     pub build_args: Vec<String>,
+    /// `--sdk <path|version>`: the macOS SDK to build against.
+    pub sdk: Option<String>,
+    /// `--deployment-target <version>`: the oldest macOS the build must load on.
+    pub deployment_target: Option<String>,
     /// `--deps <prefix>` (or `OST_USD_DEPS`): when non-empty, build OpenUSD with
     /// CMake directly against these dependency prefixes instead of build_usd.py.
     pub deps: Vec<String>,
@@ -278,6 +295,10 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
         let opts = BuildOpts {
             jobs: src.jobs,
             extra: src.build_args,
+            macos: MacosBuildOpts {
+                sdk: src.sdk,
+                deployment_target: src.deployment_target,
+            },
             deps,
         };
         build_from_source(&r, &usd_src, &opts, extensions, created)?
@@ -665,8 +686,29 @@ fn build_usd_args(
 pub struct BuildOpts {
     pub jobs: Option<u32>,
     pub extra: Vec<String>,
+    /// macOS SDK and deployment floor for this build.
+    pub macos: MacosBuildOpts,
     /// Dependency prefixes; non-empty selects the CMake-direct path.
     pub deps: Vec<String>,
+}
+
+/// The two macOS knobs a 26.08 build needs and could previously only reach by
+/// smuggling them through `--build-arg --cmake-build-args=...`, where they
+/// competed with the `CMAKE_POLICY_VERSION_MINIMUM` the same host also needs.
+///
+/// OpenUSD 26.08 cannot be compiled against the macOS 14.5 SDK at C++17 — libc++
+/// only routes `allocate_shared` through the allocator under C++20 there, so
+/// `HD_DECLARE_DATASOURCE`'s friendship never applies — and installing a newer
+/// clang does not get you a newer SDK, because `xcrun` selects the SDK matching
+/// the running OS. Two full builds failed at 73% before that was understood
+/// (report 30 §2); one `xcrun --show-sdk-path` before the spawn turns it into a
+/// sentence.
+#[derive(Debug, Default, Clone)]
+pub struct MacosBuildOpts {
+    /// A full SDK path, or a version like `15.2` resolved through `xcrun`.
+    pub sdk: Option<String>,
+    /// `CMAKE_OSX_DEPLOYMENT_TARGET`, e.g. `14.5`.
+    pub deployment_target: Option<String>,
 }
 
 /// CMake configure arguments for a direct OpenUSD build: source, build dir,
@@ -1054,13 +1096,162 @@ fn current_validation_report(
         report.checks.push(ost_runtime::Check {
             name: "openusd-version-drift",
             passed: false,
+            skipped: false,
             detail: Some(format!(
                 "manifest records OpenUSD {recorded}, but the install's pxr.h reports {real}; \
                  fix with `{fix}`"
             )),
         });
     }
+    if let Some(check) = consumer_configure_check(artifact_prefix, manifest) {
+        report.checks.push(check);
+    }
     report
+}
+
+/// Configure a trivial `find_package(pxr)` consumer against the materialized
+/// runtime, in a scratch directory.
+///
+/// OpenStrata measured what a runtime *is* far more carefully than what a
+/// runtime *needs*: a published 26.08 Linux runtime passed `runtime validate`
+/// 7/7 on a machine where consuming it was impossible, because its bundled
+/// MaterialX exports an unconditional `find_dependency(X11 REQUIRED)` and
+/// `pxrConfig.cmake` chains into it — four CI lanes went red in under twenty
+/// seconds (report 31 §4). Every consumer starts with this configure, so this is
+/// the cheapest possible reproduction of the thing that actually broke, run on
+/// the producer's machine before the digest ever reaches a matrix.
+///
+/// It never fails for its own missing preconditions: no CMake, or a runtime
+/// carrying no `pxrConfig.cmake` to find, is a skip that names what was missing.
+fn consumer_configure_check(
+    prefix: &Utf8Path,
+    manifest: &RuntimeManifest,
+) -> Option<ost_runtime::Check> {
+    const NAME: &str = "consumer-configure";
+    if !manifest.source.is_real() {
+        return None;
+    }
+    // Nothing to find: a profile that ships no CMake package is not a consumer
+    // configure failure, and reporting one would be noise on every core runtime.
+    let has_config = ["lib/cmake/pxr/pxrConfig.cmake", "pxrConfig.cmake"]
+        .iter()
+        .any(|relative| prefix.join(relative).as_std_path().is_file());
+    if !has_config {
+        return Some(ost_runtime::Check::skip(
+            NAME,
+            format!("no pxrConfig.cmake under {prefix}"),
+        ));
+    }
+    let Some(cmake) = ost_core::tools::which("cmake") else {
+        return Some(ost_runtime::Check::skip(
+            NAME,
+            "cmake is not on PATH, so a consumer configure cannot be attempted",
+        ));
+    };
+
+    let scratch = match scratch_dir("consumer-configure") {
+        Ok(scratch) => scratch,
+        Err(error) => return Some(ost_runtime::Check::skip(NAME, error.to_string())),
+    };
+    let project = "\
+cmake_minimum_required(VERSION 3.21)
+project(ost_consumer_configure LANGUAGES CXX)
+find_package(pxr REQUIRED)
+";
+    if let Err(error) = std::fs::write(scratch.path.join("CMakeLists.txt").as_std_path(), project) {
+        return Some(ost_runtime::Check::skip(NAME, error.to_string()));
+    }
+
+    let mut command = std::process::Command::new(&cmake);
+    command
+        .arg("-S")
+        .arg(scratch.path.as_std_path())
+        .arg("-B")
+        .arg(scratch.path.join("build").as_std_path())
+        .arg(format!("-Dpxr_ROOT={prefix}"))
+        // The consumer contract `ost plugin build` pins for the caller. Without
+        // it an adopted runtime's baked Python paths decide the outcome, and the
+        // check would report the host's interpreter rather than the runtime.
+        .arg("-DCMAKE_POLICY_VERSION_MINIMUM=3.5");
+    // The same three Development variables `plugin build`'s toolchain pins. An
+    // adopted runtime bakes the export machine's interpreter paths into
+    // `pxrConfig.cmake`, so without these the check would report a Python that
+    // exists on no consumer's machine instead of the runtime's real state.
+    if let Some(python) = ost_build::resolve_for_runtime(prefix, &manifest.python) {
+        for name in ["Python3", "Python"] {
+            command.arg(format!("-D{name}_EXECUTABLE={}", python.executable));
+            command.arg(format!("-D{name}_LIBRARY={}", python.library));
+            command.arg(format!("-D{name}_INCLUDE_DIR={}", python.include_dir));
+        }
+    }
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => {
+            return Some(ost_runtime::Check::skip(
+                NAME,
+                format!("could not run {}: {error}", cmake.display()),
+            ))
+        }
+    };
+    if output.status.success() {
+        return Some(ost_runtime::Check {
+            name: NAME,
+            passed: true,
+            skipped: false,
+            detail: Some(format!("find_package(pxr) configures against {prefix}")),
+        });
+    }
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some(ost_runtime::Check {
+        name: NAME,
+        passed: false,
+        skipped: false,
+        detail: Some(format!(
+            "find_package(pxr) failed against {prefix}: {}",
+            configure_failure_tail(&combined)
+        )),
+    })
+}
+
+/// The last few meaningful lines of a failed configure, for a one-line detail.
+fn configure_failure_tail(output: &str) -> String {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(6);
+    if lines.is_empty() {
+        return "<no output>".into();
+    }
+    lines[start..].join(" / ")
+}
+
+/// A scratch directory removed when the returned guard drops.
+struct ScratchDir {
+    path: Utf8PathBuf,
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.path.as_std_path());
+    }
+}
+
+fn scratch_dir(label: &str) -> Result<ScratchDir> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let base = Utf8PathBuf::from_path_buf(std::env::temp_dir())
+        .map_err(|path| Error::config(format!("temp dir is not UTF-8: {}", path.display())))?;
+    let path = base.join(format!("ost-{label}-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(path.as_std_path()).map_err(|e| Error::io(path.to_string(), e))?;
+    Ok(ScratchDir { path })
 }
 
 fn failed_validation_summary(report: &ost_runtime::ValidationReport) -> String {
@@ -1174,6 +1365,25 @@ fn variant_for_measured_floor(variant: &Variant, floor: Option<GlibcVersion>) ->
         }
         _ => None,
     }
+}
+
+/// The variant a measured macOS deployment floor implies.
+///
+/// `Abi::Native` on macOS asserts nothing, so a measured floor replaces it: a
+/// runtime whose binaries require macOS 14.5 is labeled `macos145` and a
+/// consumer's `--require-target` can finally mean something. A re-measured
+/// runtime that already carries a floor is relabeled the same way, so a rebuild
+/// that raises the floor cannot keep an old, lower label.
+fn variant_for_macos_floor(variant: &Variant, floor: ost_build::MacosFloor) -> Option<Variant> {
+    let target = floor.deployment_target?;
+    if variant.os != ost_core::host::Os::Macos {
+        return None;
+    }
+    let mut corrected = variant.clone();
+    corrected.abi = Abi::Macos {
+        version: target.token(),
+    };
+    (corrected.abi != variant.abi).then_some(corrected)
 }
 
 /// Compression knobs for `ost runtime export` (`--level` / `--jobs`).
@@ -1468,6 +1678,60 @@ fn export(
         }
     }
 
+    // macOS gets the same treatment one platform over: Linux measures its glibc
+    // floor into the target string and Windows carries `msvc143`, while macOS
+    // carried `"abi": "native"` — which asserts nothing, so `--require-target
+    // macos-arm64-py313` passed for an artifact the host could not load (report
+    // 30 §1). The deployment target and SDK are read out of the binaries' own
+    // load commands, so the measurement is the artifact's, not the builder's
+    // claim about it.
+    let macos_floor = if manifest.variant.os == ost_core::host::Os::Macos {
+        ost_build::max_macos_floor(files.iter().map(Utf8PathBuf::as_path))
+            .map_err(|e| Error::io(effective.to_string(), e))?
+    } else {
+        ost_build::MacosFloor::default()
+    };
+    if !macos_floor.is_empty() {
+        let corrected = variant_for_macos_floor(&manifest.variant, macos_floor);
+        if let Some(obj) = producer.as_object_mut() {
+            if let Some(corrected) = &corrected {
+                obj.insert("target".into(), serde_json::json!(corrected.slug()));
+            }
+            obj.insert(
+                "macos_floor".into(),
+                serde_json::json!({
+                    "deployment_target": macos_floor.deployment_target.map(|v| v.to_string()),
+                    "sdk": macos_floor.sdk.map(|v| v.to_string()),
+                    "recorded": manifest.variant.abi.describe(),
+                    "source": "mach-o-load-commands",
+                }),
+            );
+        }
+        if !fmt.is_json() {
+            let sdk = macos_floor
+                .sdk
+                .map(|sdk| format!(", built against the {sdk} SDK"))
+                .unwrap_or_default();
+            match &corrected {
+                Some(corrected) => println!(
+                    "Measured macOS deployment target {}{sdk}; labeling the artifact target {}",
+                    macos_floor
+                        .deployment_target
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                    corrected.slug()
+                ),
+                None => println!(
+                    "Measured macOS deployment target {}{sdk}",
+                    macos_floor
+                        .deployment_target
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "unknown".into())
+                ),
+            }
+        }
+    }
+
     // Record which layout was shipped so a fetch/inspection can tell a slim SDK
     // artifact from a full one (they are distinct digests of the same runtime).
     if let Some(obj) = producer.as_object_mut() {
@@ -1695,9 +1959,102 @@ fn missing_dep_warning(
     ]
 }
 
+/// Resolve `--sdk` / `--deployment-target` into the environment every build
+/// tool in the tree reads.
+///
+/// `SDKROOT` and `MACOSX_DEPLOYMENT_TARGET` are what initialize
+/// `CMAKE_OSX_SYSROOT` and `CMAKE_OSX_DEPLOYMENT_TARGET`, and — unlike a `-D`
+/// on one configure — they reach every dependency `build_usd.py` builds on the
+/// way to OpenUSD, which is exactly the scope the problem has.
+///
+/// A version is resolved with `xcrun` *before* the spawn, so an SDK that is not
+/// installed is one sentence now rather than a build that fails at 73%.
+fn macos_build_env(opts: &MacosBuildOpts) -> Result<Vec<(String, String)>> {
+    let mut env = Vec::new();
+    if opts.sdk.is_none() && opts.deployment_target.is_none() {
+        return Ok(env);
+    }
+    if Host::detect().os != Os::Macos {
+        return Err(Error::usage(
+            "--sdk and --deployment-target are macOS build knobs and this host is not macOS",
+        )
+        .with_hint("drop the flag, or run the build on a macOS host"));
+    }
+    if let Some(sdk) = &opts.sdk {
+        let path = if Utf8PathBuf::from(sdk).as_std_path().is_dir() {
+            sdk.clone()
+        } else {
+            resolve_macos_sdk(sdk)?
+        };
+        env.push(("SDKROOT".to_string(), path));
+    }
+    if let Some(target) = &opts.deployment_target {
+        env.push(("MACOSX_DEPLOYMENT_TARGET".to_string(), target.clone()));
+    }
+    Ok(env)
+}
+
+/// The explicit `-D` form of the macOS build environment, for the CMake-direct
+/// path. The environment initializes these variables anyway; naming them on the
+/// command line puts them in the printed configure line and in `CMakeCache.txt`,
+/// where the build that produced a runtime can be read back.
+fn macos_cmake_args(env: &[(String, String)]) -> Vec<String> {
+    env.iter()
+        .filter_map(|(key, value)| match key.as_str() {
+            "SDKROOT" => Some(format!("-DCMAKE_OSX_SYSROOT={value}")),
+            "MACOSX_DEPLOYMENT_TARGET" => Some(format!("-DCMAKE_OSX_DEPLOYMENT_TARGET={value}")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Ask `xcrun` for the path of a named macOS SDK version.
+fn resolve_macos_sdk(version: &str) -> Result<String> {
+    let sdk = format!("macosx{version}");
+    let output = Command::new("xcrun")
+        .args(["--sdk", &sdk, "--show-sdk-path"])
+        .output()
+        .map_err(|error| Error::io("run xcrun", error))?;
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || path.is_empty() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(Error::coded(
+            "REQUIRED_TOOL_MISSING",
+            ost_core::Category::Precondition,
+            format!(
+                "no macOS SDK '{sdk}' on this host{}",
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                }
+            ),
+        )
+        .with_hint(
+            "install the SDK (a newer Xcode), or pass --sdk with the full path to one; \
+             `xcrun --show-sdk-path` prints the default, which matches the running OS",
+        ));
+    }
+    Ok(path)
+}
+
 fn emit_macos_build_notes(opts: &BuildOpts) {
     if Host::detect().os != Os::Macos {
         return;
+    }
+    if opts.macos.sdk.is_none() {
+        eprintln!(
+            "note: OpenUSD 26.08 needs the macOS 15.2 SDK at C++17 (libc++ routes \
+             allocate_shared through the allocator only under C++20 on 14.5); select one \
+             with `--sdk 15.2` rather than relying on the SDK matching the running OS"
+        );
+    }
+    if opts.macos.deployment_target.is_none() {
+        eprintln!(
+            "note: no --deployment-target: the produced runtime's macOS floor will be \
+             whatever the toolchain defaults to, and is measured into its target string at \
+             `runtime export`"
+        );
     }
 
     eprintln!(
@@ -1768,7 +2125,9 @@ fn build_with_script(
         r.prefix
     );
     println!("    {python} {}", args.join(" "));
-    run_build_step(python.as_str(), &args, &msvc_env(), "build_usd.py")
+    let mut env = msvc_env();
+    env.extend(macos_build_env(&opts.macos)?);
+    run_build_step(python.as_str(), &args, &env, "build_usd.py")
 }
 
 /// Build OpenUSD directly with CMake against pre-provided dependency prefixes,
@@ -1821,7 +2180,9 @@ fn build_with_cmake(r: &crate::commands::Resolved, src: &Utf8Path, opts: &BuildO
     std::fs::create_dir_all(build_dir.as_std_path())
         .map_err(|e| Error::io(build_dir.to_string(), e))?;
 
-    let env = msvc_env();
+    let mut env = msvc_env();
+    let macos = macos_build_env(&opts.macos)?;
+    env.extend(macos.iter().cloned());
     let configure = cmake_configure_args(
         src,
         &build_dir,
@@ -1829,7 +2190,10 @@ fn build_with_cmake(r: &crate::commands::Resolved, src: &Utf8Path, opts: &BuildO
         &opts.deps,
         &python,
         ninja.as_deref(),
-        &opts.extra,
+        &macos_cmake_args(&macos)
+            .into_iter()
+            .chain(opts.extra.iter().cloned())
+            .collect::<Vec<_>>(),
     );
     let build = cmake_build_args(&build_dir, opts.jobs);
 
@@ -2083,6 +2447,8 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
                 serde_json::json!({
                     "name": c.name,
                     "passed": c.passed,
+                    "skipped": c.skipped,
+                    "status": c.status(),
                     "detail": c.detail,
                 })
             })
@@ -2098,7 +2464,11 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     } else {
         println!("Validating {}", manifest.id);
         for c in &report.checks {
-            let mark = if c.passed { "ok  " } else { "FAIL" };
+            let mark = match (c.passed, c.skipped) {
+                (_, true) => "skip",
+                (true, false) => "ok  ",
+                (false, false) => "FAIL",
+            };
             match &c.detail {
                 Some(d) => println!("  [{mark}] {} — {d}", c.name),
                 None => println!("  [{mark}] {}", c.name),
@@ -2512,6 +2882,112 @@ mod tests {
             })
         )
         .is_none());
+    }
+
+    /// Report 30 §1: macOS recorded `"abi": "native"`, which asserts nothing,
+    /// so `--require-target macos-arm64-py313` passed for a runtime the host
+    /// could not load. The measured deployment floor goes into the target the
+    /// way Linux's glibc floor does.
+    #[test]
+    fn a_measured_macos_floor_replaces_the_empty_native_abi() {
+        let host = ost_core::Host {
+            os: Os::Macos,
+            arch: Arch::Arm64,
+        };
+        let rt = Runtime::resolve("cy2026", "usd", &host, "3.13.x");
+        let mac = RuntimeManifest::build(
+            &rt,
+            "3.13.x",
+            vec![],
+            vec![],
+            vec![],
+            1_750_000_000,
+            RuntimeSource::Build,
+        );
+        assert_eq!(mac.variant.slug(), "macos-arm64-py313");
+
+        let floor = ost_build::MacosFloor {
+            deployment_target: Some(ost_build::MacosVersion {
+                major: 14,
+                minor: 5,
+            }),
+            sdk: Some(ost_build::MacosVersion {
+                major: 15,
+                minor: 2,
+            }),
+        };
+        let corrected = variant_for_macos_floor(&mac.variant, floor)
+            .expect("a measured deployment target relabels the variant");
+        assert_eq!(corrected.slug(), "macos-arm64-macos145-py313");
+
+        // Re-measuring an already-labeled runtime at the same floor is a no-op,
+        // and a floor that moved relabels rather than keeping the old claim.
+        assert!(variant_for_macos_floor(&corrected, floor).is_none());
+        let raised = variant_for_macos_floor(
+            &corrected,
+            ost_build::MacosFloor {
+                deployment_target: Some(ost_build::MacosVersion {
+                    major: 15,
+                    minor: 0,
+                }),
+                sdk: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(raised.slug(), "macos-arm64-macos150-py313");
+
+        // No measurement, and a non-macOS runtime, both leave the label alone.
+        assert!(variant_for_macos_floor(&mac.variant, ost_build::MacosFloor::default()).is_none());
+        let linux = exportable_manifest();
+        assert!(variant_for_macos_floor(&linux.variant, floor).is_none());
+    }
+
+    /// The macOS build knobs reach every dependency `build_usd.py` builds,
+    /// because they travel as the environment CMake initializes from.
+    #[test]
+    fn the_macos_build_knobs_render_as_environment_and_cache_entries() {
+        let env = vec![
+            ("SDKROOT".to_string(), "/SDKs/MacOSX15.2.sdk".to_string()),
+            ("MACOSX_DEPLOYMENT_TARGET".to_string(), "14.5".to_string()),
+            ("VSCMD_VER".to_string(), "17.0".to_string()),
+        ];
+        assert_eq!(
+            macos_cmake_args(&env),
+            vec![
+                "-DCMAKE_OSX_SYSROOT=/SDKs/MacOSX15.2.sdk".to_string(),
+                "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.5".to_string(),
+            ]
+        );
+
+        // Nothing requested is nothing applied, on every host.
+        assert!(macos_build_env(&MacosBuildOpts::default())
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A macOS-only knob on another host is refused rather than silently
+    /// dropped: a build that ignored `--sdk` would produce the artifact the
+    /// caller was trying to avoid.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn the_macos_build_knobs_are_refused_off_macos() {
+        let err = macos_build_env(&MacosBuildOpts {
+            sdk: Some("15.2".into()),
+            deployment_target: None,
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("not macOS"), "{err}");
+    }
+
+    #[test]
+    fn a_configure_failure_tail_keeps_the_last_meaningful_lines() {
+        let output = "-- Detecting CXX compiler\n\n\
+                      CMake Error at pxrConfig.cmake:1 (find_dependency):\n\
+                      \x20 Could NOT find X11 (missing: X11_Xt_LIB)\n";
+        let tail = configure_failure_tail(output);
+        assert!(tail.contains("Could NOT find X11"), "{tail}");
+        assert!(!tail.contains("\n"), "the tail is one line: {tail}");
+        assert_eq!(configure_failure_tail("   \n\n"), "<no output>");
     }
 
     #[test]

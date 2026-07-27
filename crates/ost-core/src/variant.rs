@@ -22,7 +22,15 @@ pub enum Abi {
     Glibc { version: String },
     /// MSVC toolset, e.g. `msvc143`.
     Msvc { toolset: String },
-    /// macOS / generic — no extra ABI token beyond os+arch.
+    /// macOS deployment floor, e.g. `macos145` for a runtime that cannot load
+    /// below macOS 14.5. Measured from the binaries' own load commands, the way
+    /// the glibc floor is measured from ELF symbol versions — a declared floor
+    /// that nothing checked is what made `--require-target macos-arm64-py313`
+    /// pass for an artifact the host could not load.
+    Macos { version: String },
+    /// Generic — no extra ABI token beyond os+arch. A macOS runtime whose
+    /// binaries record no deployment target still lands here, because inventing
+    /// a floor would be worse than reporting none.
     Native,
 }
 
@@ -32,6 +40,7 @@ impl Abi {
         match self {
             Abi::Glibc { version } => Some(format!("glibc{}", version.replace('.', ""))),
             Abi::Msvc { toolset } => Some(format!("msvc{toolset}")),
+            Abi::Macos { version } => Some(format!("macos{}", version.replace('.', ""))),
             Abi::Native => None,
         }
     }
@@ -41,6 +50,7 @@ impl Abi {
         match self {
             Abi::Glibc { version } => format!("glibc {version}"),
             Abi::Msvc { toolset } => format!("msvc {toolset}"),
+            Abi::Macos { version } => format!("macos {version}"),
             Abi::Native => "native".to_string(),
         }
     }
@@ -138,13 +148,27 @@ mod tests {
     }
 
     #[test]
-    fn macos_slug_has_no_abi_token() {
+    fn macos_slug_has_no_abi_token_until_a_floor_is_measured() {
         let host = Host {
             os: Os::Macos,
             arch: Arch::Arm64,
         };
         let v = Variant::new(&host, Abi::default_for(Os::Macos), "313");
         assert_eq!(v.slug(), "macos-arm64-py313");
+
+        // A measured deployment floor is a real ABI bound and appears in the
+        // slug the way glibc228 and msvc143 do.
+        let floored = Variant::new(
+            &host,
+            Abi::Macos {
+                version: "14.5".into(),
+            },
+            "313",
+        );
+        assert_eq!(floored.slug(), "macos-arm64-macos145-py313");
+        assert_eq!(floored.abi.describe(), "macos 14.5");
+        // The short slug stays the human-facing runtime id, ABI-free.
+        assert_eq!(floored.short_slug(), "macos-arm64-py313");
     }
 
     #[test]

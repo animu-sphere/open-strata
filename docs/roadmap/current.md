@@ -272,34 +272,51 @@ the artifact shipped (report 29 §3).
 
 ### P1 - a runtime records what a consumer needs, not only what it is
 
-Not started. From reports 30 §1 and 31 §4, the theme of this whole intake.
+From reports 30 §1 and 31 §4, the theme of this whole intake.
 
-- **macOS records no ABI floor.** Linux measures its glibc floor into the target
-  (`linux-x86_64-glibc238-py313`) and Windows carries `msvc143`; macOS gets
-  `"abi": "native"`, which asserts nothing. The 26.08 build pinned
-  `CMAKE_OSX_DEPLOYMENT_TARGET=14.5` deliberately so a 15.2-SDK build would not
-  produce a runtime unloadable on the host that built it — and a consumer cannot
-  tell that from the artifact, while `--require-target macos-arm64-py313` passes
-  regardless. Measure and record the deployment target and SDK, and reflect the
-  floor in the target string.
+**Implemented on the v0.21.0 branch**, in three parts.
+
+- **macOS now records an ABI floor.** Linux measures its glibc floor into the
+  target (`linux-x86_64-glibc238-py313`) and Windows carries `msvc143`; macOS got
+  `"abi": "native"`, which asserts nothing, so `--require-target
+  macos-arm64-py313` passed for a runtime the host could not load. `runtime
+  export` now reads the deployment target and SDK out of the artifact's own
+  Mach-O load commands — `LC_BUILD_VERSION`, or the older
+  `LC_VERSION_MIN_MACOSX` — takes the highest across every binary, and labels the
+  artifact `macos-arm64-macos145-py313`. The measurement parses the files
+  directly, so it gives the same answer from a Linux CI runner that `otool -l`
+  would give on a Mac, and `macos_floor` in the producer manifest records the
+  measured pair beside what was declared.
 - **A first-class SDK knob for `runtime pull --build`.** OpenUSD 26.08 cannot be
   compiled against the macOS 14.5 SDK at C++17 (libc++ only routes
   `allocate_shared` through the allocator under C++20 there, so
   `HD_DECLARE_DATASOURCE`'s friendship never applies); it needs the 15.2 SDK, and
   installing clang 16 does not get you one because `xcrun` selects the SDK
-  matching the running OS. Reaching `CMAKE_OSX_SYSROOT` today means smuggling it
+  matching the running OS. Reaching `CMAKE_OSX_SYSROOT` meant smuggling it
   through `--build-arg --cmake-build-args=…`, competing with the
-  `CMAKE_POLICY_VERSION_MINIMUM=3.5` the same host needs. Two full builds failed
-  at 73% before this was understood; `xcrun --show-sdk-path` before the spawn
-  turns that into one sentence.
-- **Consumption requirements belong in the record.** Either a
-  `host_requirements` list `ost` can render into CI and check at `artifact pull`,
-  or a `consumer-configure` check in `runtime validate` that runs a trivial
-  `find_package(pxr)` against the materialized runtime in a scratch directory.
-  The second is cheap and would have caught the X11 break at publish time, on the
-  producer's machine, before the digest ever reached `openstrata.ci.yaml`. The
-  `host_packages` knob above lets the contract *say* what the host needs; this is
-  the half that lets `ost` *notice*.
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` the same host needs, and two full builds
+  failed at 73% before that was understood. `--sdk 15.2` and
+  `--deployment-target 14.5` now travel as `SDKROOT` and
+  `MACOSX_DEPLOYMENT_TARGET`, which is the scope the problem has: they reach
+  every dependency `build_usd.py` builds on the way to OpenUSD, not one configure
+  line. A version is resolved through `xcrun` *before* the spawn, so an SDK that
+  is not installed is one sentence rather than a build that dies at 73%; on a
+  non-macOS host the flags are refused rather than silently dropped.
+- **`runtime validate` notices what a consumer needs.** A new
+  `consumer-configure` check configures a trivial `find_package(pxr REQUIRED)` in
+  a scratch directory against the materialized runtime, with the same Python
+  Development pins `plugin build` supplies. That is the first thing every
+  consumer does, and it is what four CI lanes died on in twenty seconds while
+  `runtime validate` passed 7/7 — now it fails on the producer's machine, before
+  the digest reaches `openstrata.ci.yaml`. `runtime export` re-runs the current
+  checks, so the gate is at publish time. Checks gained a real `skip` state: no
+  CMake on PATH, or a profile that ships no `pxrConfig.cmake`, is reported as not
+  checked rather than counted as proof.
+
+The `host_packages` knob above lets a CI contract *say* what the host needs; this
+is the half that lets `ost` *notice*. A declarative `host_requirements` list in
+the record — renderable into CI and checkable at `artifact pull` — remains the
+open half of the ask.
 
 ### P1 - a CI cell that is not a bundle
 
