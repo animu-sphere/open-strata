@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Subcommand;
 
@@ -1153,68 +1153,166 @@ fn consumer_configure_check(
         Ok(scratch) => scratch,
         Err(error) => return Some(ost_runtime::Check::skip(NAME, error.to_string())),
     };
-    let project = "\
-cmake_minimum_required(VERSION 3.21)
-project(ost_consumer_configure LANGUAGES CXX)
-find_package(pxr REQUIRED)
-";
-    if let Err(error) = std::fs::write(scratch.path.join("CMakeLists.txt").as_std_path(), project) {
-        return Some(ost_runtime::Check::skip(NAME, error.to_string()));
-    }
 
-    let mut command = std::process::Command::new(&cmake);
-    command
-        .arg("-S")
-        .arg(scratch.path.as_std_path())
-        .arg("-B")
-        .arg(scratch.path.join("build").as_std_path())
-        .arg(format!("-Dpxr_ROOT={prefix}"))
-        // The consumer contract `ost plugin build` pins for the caller. Without
-        // it an adopted runtime's baked Python paths decide the outcome, and the
-        // check would report the host's interpreter rather than the runtime.
-        .arg("-DCMAKE_POLICY_VERSION_MINIMUM=3.5");
     // The same three Development variables `plugin build`'s toolchain pins. An
     // adopted runtime bakes the export machine's interpreter paths into
     // `pxrConfig.cmake`, so without these the check would report a Python that
     // exists on no consumer's machine instead of the runtime's real state.
+    let mut args = vec![
+        format!("-Dpxr_ROOT={prefix}"),
+        // The consumer contract `ost plugin build` pins for the caller. Without
+        // it an adopted runtime's baked Python paths decide the outcome, and the
+        // check would report the host's interpreter rather than the runtime.
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5".to_string(),
+    ];
     if let Some(python) = ost_build::resolve_for_runtime(prefix, &manifest.python) {
         for name in ["Python3", "Python"] {
-            command.arg(format!("-D{name}_EXECUTABLE={}", python.executable));
-            command.arg(format!("-D{name}_LIBRARY={}", python.library));
-            command.arg(format!("-D{name}_INCLUDE_DIR={}", python.include_dir));
+            args.push(format!("-D{name}_EXECUTABLE={}", python.executable));
+            args.push(format!("-D{name}_LIBRARY={}", python.library));
+            args.push(format!("-D{name}_INCLUDE_DIR={}", python.include_dir));
         }
     }
-    let output = match command.output() {
-        Ok(output) => output,
-        Err(error) => {
-            return Some(ost_runtime::Check::skip(
-                NAME,
-                format!("could not run {}: {error}", cmake.display()),
-            ))
-        }
-    };
-    if output.status.success() {
-        return Some(ost_runtime::Check {
+
+    match scratch_configure(
+        &cmake,
+        &scratch.path,
+        "consumer",
+        "find_package(pxr REQUIRED)\n",
+        &args,
+    ) {
+        ConfigureOutcome::Passed => Some(ost_runtime::Check {
             name: NAME,
             passed: true,
             skipped: false,
             detail: Some(format!("find_package(pxr) configures against {prefix}")),
-        });
+        }),
+        ConfigureOutcome::NoAnswer(detail) => Some(ost_runtime::Check::skip(NAME, detail)),
+        ConfigureOutcome::Failed(tail) => {
+            // A failed configure is only evidence about the *runtime* if this
+            // host can configure at all. `project(LANGUAGES CXX)` compiles a
+            // probe, so no compiler — or one that cannot link — fails the same
+            // check for a reason the artifact has nothing to do with. Ask the
+            // toolchain the question on its own before blaming the runtime;
+            // paid only on the failure path, so a passing host runs one
+            // configure as before.
+            match scratch_configure(&cmake, &scratch.path, "toolchain", "", &[]) {
+                ConfigureOutcome::Passed => Some(ost_runtime::Check {
+                    name: NAME,
+                    passed: false,
+                    skipped: false,
+                    detail: Some(format!("find_package(pxr) failed against {prefix}: {tail}")),
+                }),
+                ConfigureOutcome::Failed(probe) | ConfigureOutcome::NoAnswer(probe) => {
+                    Some(ost_runtime::Check::skip(
+                        NAME,
+                        format!(
+                            "this host cannot configure a trivial CXX project, so a consumer \
+                             configure proves nothing about the runtime: {probe}"
+                        ),
+                    ))
+                }
+            }
+        }
     }
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+}
+
+/// How long one scratch configure may run before it is treated as no answer.
+///
+/// A compiler-ABI try-compile against a broken toolchain is one of the ways a
+/// configure hangs rather than fails, and a validation check that never returns
+/// is worse than one that reports it could not tell.
+const CONSUMER_CONFIGURE_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// What one scratch configure concluded.
+enum ConfigureOutcome {
+    Passed,
+    /// Configure ran and failed; carries the tail of its output.
+    Failed(String),
+    /// Configure could not be run to a conclusion here (no spawn, timeout, I/O).
+    NoAnswer(String),
+}
+
+/// Configure a one-file CMake project under `scratch/<name>`, capturing output
+/// to a file so a large failure cannot deadlock on a full pipe, and bounding it
+/// with [`CONSUMER_CONFIGURE_TIMEOUT`].
+fn scratch_configure(
+    cmake: &std::path::Path,
+    scratch: &Utf8Path,
+    name: &str,
+    body: &str,
+    args: &[String],
+) -> ConfigureOutcome {
+    let root = scratch.join(name);
+    let log_path = scratch.join(format!("{name}.log"));
+    let project = format!(
+        "cmake_minimum_required(VERSION 3.21)\n\
+         project(ost_{name}_configure LANGUAGES CXX)\n{body}"
     );
-    Some(ost_runtime::Check {
-        name: NAME,
-        passed: false,
-        skipped: false,
-        detail: Some(format!(
-            "find_package(pxr) failed against {prefix}: {}",
-            configure_failure_tail(&combined)
-        )),
-    })
+    if let Err(error) = std::fs::create_dir_all(root.as_std_path())
+        .and_then(|()| std::fs::write(root.join("CMakeLists.txt").as_std_path(), project))
+    {
+        return ConfigureOutcome::NoAnswer(format!("{root}: {error}"));
+    }
+    let log = match std::fs::File::create(log_path.as_std_path()) {
+        Ok(log) => log,
+        Err(error) => return ConfigureOutcome::NoAnswer(format!("{log_path}: {error}")),
+    };
+    let stderr_log = match log.try_clone() {
+        Ok(clone) => clone,
+        Err(error) => return ConfigureOutcome::NoAnswer(format!("{log_path}: {error}")),
+    };
+
+    let mut child = match Command::new(cmake)
+        .arg("-S")
+        .arg(root.as_std_path())
+        .arg("-B")
+        .arg(root.join("build").as_std_path())
+        .args(args)
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(stderr_log))
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            return ConfigureOutcome::NoAnswer(format!(
+                "could not run {}: {error}",
+                cmake.display()
+            ))
+        }
+    };
+
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() >= CONSUMER_CONFIGURE_TIMEOUT {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return ConfigureOutcome::NoAnswer(format!(
+                        "configure did not finish within {}s: {}",
+                        CONSUMER_CONFIGURE_TIMEOUT.as_secs(),
+                        configure_failure_tail(&read_lossy(&log_path))
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                return ConfigureOutcome::NoAnswer(format!("wait {}: {error}", cmake.display()))
+            }
+        }
+    };
+    if status.success() {
+        ConfigureOutcome::Passed
+    } else {
+        ConfigureOutcome::Failed(configure_failure_tail(&read_lossy(&log_path)))
+    }
+}
+
+fn read_lossy(path: &Utf8Path) -> String {
+    std::fs::read(path.as_std_path())
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default()
 }
 
 /// The last few meaningful lines of a failed configure, for a one-line detail.
@@ -1250,7 +1348,11 @@ fn scratch_dir(label: &str) -> Result<ScratchDir> {
     let base = Utf8PathBuf::from_path_buf(std::env::temp_dir())
         .map_err(|path| Error::config(format!("temp dir is not UTF-8: {}", path.display())))?;
     let path = base.join(format!("ost-{label}-{}-{nonce}", std::process::id()));
-    std::fs::create_dir_all(path.as_std_path()).map_err(|e| Error::io(path.to_string(), e))?;
+    // `create_dir`, not `create_dir_all`: the temp directory is world-writable on
+    // Unix, and this must fail rather than adopt a path someone else placed there
+    // — including a symlink pointing somewhere we would then write into and
+    // recursively remove on drop.
+    std::fs::create_dir(path.as_std_path()).map_err(|e| Error::io(path.to_string(), e))?;
     Ok(ScratchDir { path })
 }
 

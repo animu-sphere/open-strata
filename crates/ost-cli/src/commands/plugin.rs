@@ -2363,14 +2363,19 @@ fn assess_tool_build_provenance(
         ));
     };
     // Outputs are recorded relative to the project root; a tool's own paths are
-    // relative to its member root.
-    let Ok(member) = tool.root.strip_prefix(&project_root) else {
+    // relative to its member root. Both sides are compared canonically so a case
+    // difference or a symlinked temp directory does not silently detach a tool
+    // from the build that produced it.
+    let Some(member) = member_relative(&canonical_root(&project_root), &tool.root) else {
         return Ok(untracked_build_provenance(
             observed.len(),
-            "the tool is not inside the enclosing project, so its outputs cannot be attributed",
+            &format!(
+                "the tool at {} is not inside the enclosing project {project_root}, so its \
+                 outputs cannot be attributed",
+                tool.root
+            ),
         ));
     };
-    let member = portable(member);
     let expected: BTreeMap<&str, &BuildOutput> = completion
         .outputs
         .iter()
@@ -5217,30 +5222,101 @@ fn discover_workspace_bundles(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
 /// The executables every workspace tool declares, as managed build outputs
 /// relative to the project root, for `ost build` to record in its completion.
 ///
-/// A tool that has not been built yet contributes nothing rather than failing
-/// the build: `ost build` is what produces it, and a workspace may add a tool
-/// descriptor before its CMake target lands.
-pub(crate) fn workspace_tool_outputs(root: &Utf8Path, os: Os) -> Result<Vec<BuildOutput>> {
+/// Returns the outputs and any warnings, and **never fails**: this runs after a
+/// successful build, only to record evidence about it, so nothing here may turn
+/// a built target into a failed command. A tool that has not been built yet, an
+/// unreadable descriptor, or an executable that cannot be digested each drop out
+/// with a warning — the packaged tool then reports `untracked` provenance, which
+/// is the honest answer rather than a build the caller has to re-run.
+pub(crate) fn workspace_tool_outputs(root: &Utf8Path, os: Os) -> (Vec<BuildOutput>, Vec<String>) {
     let mut outputs = Vec::new();
-    for tool_root in discover_workspace_tools(root)? {
-        let tool = ost_plugin::Tool::load(&tool_root)?;
+    let mut warnings = Vec::new();
+    let tool_roots = match discover_workspace_tools(root) {
+        Ok(roots) => roots,
+        Err(error) => {
+            warnings.push(format!(
+                "warning: could not scan for workspace tools under {root}: {error}"
+            ));
+            return (outputs, warnings);
+        }
+    };
+    let canonical_root = canonical_root(root);
+    for tool_root in tool_roots {
+        let tool = match ost_plugin::Tool::load(&tool_root) {
+            Ok(tool) => tool,
+            Err(error) => {
+                warnings.push(format!(
+                    "warning: {tool_root}/{} could not be read, so this build records no \
+                     provenance for it ({error})",
+                    ost_plugin::TOOL_MANIFEST
+                ));
+                continue;
+            }
+        };
         let Ok(executables) = tool.locate_executables(&tool.root, os == Os::Windows) else {
             continue;
         };
-        let Ok(member) = tool.root.strip_prefix(root) else {
+        let Some(member) = member_relative(&canonical_root, &tool.root) else {
+            warnings.push(format!(
+                "warning: tool '{}' at {} is not below the project root {root}, so its \
+                 outputs cannot be attributed to this build",
+                tool.id(),
+                tool.root
+            ));
             continue;
         };
         for relative in executables {
             let path = tool.root.join(&relative);
-            let (sha256, size) = digest_file(&path)?;
-            outputs.push(BuildOutput {
-                path: format!("{}/{relative}", portable(member)),
-                sha256,
-                size,
-            });
+            match digest_file(&path) {
+                Ok((sha256, size)) => outputs.push(BuildOutput {
+                    path: format!("{member}/{relative}"),
+                    sha256,
+                    size,
+                }),
+                Err(error) => warnings.push(format!(
+                    "warning: could not digest tool executable {path}, so this build \
+                     records no provenance for it ({error})"
+                )),
+            }
         }
     }
-    Ok(outputs)
+    (outputs, warnings)
+}
+
+/// `path` canonicalized and stripped of a Windows `\\?\` verbatim prefix, so it
+/// compares with the canonical member roots `ost-plugin` records. Falls back to
+/// the path as given when it cannot be canonicalized.
+fn canonical_root(path: &Utf8Path) -> Utf8PathBuf {
+    let Ok(canon) = std::fs::canonicalize(path.as_std_path()) else {
+        return path.to_path_buf();
+    };
+    let Ok(utf8) = Utf8PathBuf::from_path_buf(canon) else {
+        return path.to_path_buf();
+    };
+    match utf8.as_str().strip_prefix(r"\\?\UNC\") {
+        Some(rest) => Utf8PathBuf::from(format!(r"\\{rest}")),
+        None => match utf8.as_str().strip_prefix(r"\\?\") {
+            Some(rest) => Utf8PathBuf::from(rest),
+            None => utf8,
+        },
+    }
+}
+
+/// A member root's portable path relative to the project root.
+///
+/// A member root is canonical (`Tool::load` canonicalizes it) while a project
+/// root is whatever `find_project_root` walked up to, so the two are compared
+/// canonically: an 8.3 name, a case difference, or a symlinked temp directory
+/// must not silently detach a tool from the build that produced it.
+fn member_relative(canonical_project_root: &Utf8Path, member_root: &Utf8Path) -> Option<String> {
+    let relative = match member_root.strip_prefix(canonical_project_root) {
+        Ok(relative) => relative.to_path_buf(),
+        Err(_) => canonical_root(member_root)
+            .strip_prefix(canonical_project_root)
+            .ok()?
+            .to_path_buf(),
+    };
+    Some(portable(&relative))
 }
 
 /// Workspace-built executables: immediate subdirectories and `tools/*` entries
@@ -7493,6 +7569,57 @@ mod tests {
             debug: RequiredProductDebug(None),
             dependencies: serde_json::Value::Null,
         }
+    }
+
+    /// `ost build` calls this *after* the build succeeded, only to record
+    /// evidence about it. An unreadable tool descriptor must therefore not turn
+    /// a built target into a failed command — which would also strand the target
+    /// lease as takeover evidence for a build that actually finished.
+    #[test]
+    fn an_unreadable_tool_descriptor_warns_instead_of_failing_the_build() {
+        let root = unique_tmp("tool-descriptor-warning");
+        let bad = root.join("tools").join("broken");
+        std::fs::create_dir_all(bad.as_std_path()).unwrap();
+        write_test_file(
+            &bad.join(ost_plugin::TOOL_MANIFEST),
+            "schema: openstrata.tool/v0-not-a-schema\ntool: { id: broken }\n",
+        );
+
+        let (outputs, warnings) = workspace_tool_outputs(&root, Os::Linux);
+
+        assert!(outputs.is_empty(), "a tool that cannot be read has none");
+        assert_eq!(warnings.len(), 1, "and is reported once: {warnings:?}");
+        assert!(
+            warnings[0].contains(ost_plugin::TOOL_MANIFEST) && warnings[0].contains("broken"),
+            "the warning names the descriptor: {}",
+            warnings[0]
+        );
+        let _ = std::fs::remove_dir_all(root.as_std_path());
+    }
+
+    /// A tool whose descriptor is fine but which has not been built yet is not
+    /// even a warning: `ost build` is what produces it, and a workspace may add
+    /// the descriptor before its CMake target lands.
+    #[test]
+    fn a_tool_that_is_not_built_yet_is_silent() {
+        let root = unique_tmp("tool-not-built");
+        let tool = root.join("tools").join("motion_retarget");
+        std::fs::create_dir_all(tool.as_std_path()).unwrap();
+        write_test_file(
+            &tool.join(ost_plugin::TOOL_MANIFEST),
+            "schema: openstrata.tool/v1alpha1\n\
+             tool: { id: motion_retarget, version: 0.4.0 }\n\
+             executables: [motion_retarget]\n",
+        );
+
+        let (outputs, warnings) = workspace_tool_outputs(&root, Os::Linux);
+
+        assert!(outputs.is_empty());
+        assert!(
+            warnings.is_empty(),
+            "not built is not a warning: {warnings:?}"
+        );
+        let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 
     #[test]

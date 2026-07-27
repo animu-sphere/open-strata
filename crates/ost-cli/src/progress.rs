@@ -572,8 +572,14 @@ impl Reporter {
             .stderr(Stdio::piped());
         configure_process_group(&mut cmd);
 
-        // Armed before the spawn so there is no window in which a child exists
-        // and an interrupt would not reach it.
+        // Armed before the spawn so the handler is installed by the time a child
+        // can exist. One window remains and cannot be closed without blocking
+        // signals around the spawn: between `spawn` returning and the pid being
+        // recorded, an interrupt exits without killing the child it could not
+        // name. That is the same microseconds every process-spawning tool has,
+        // and it is not the failure this exists for — an interrupt during a
+        // multi-minute configure lands in the poll loop below, where the pid is
+        // recorded.
         interrupt::arm();
         let mut child = cmd
             .spawn()

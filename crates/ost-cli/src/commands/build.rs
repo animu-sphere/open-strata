@@ -545,7 +545,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         ost_manifest::SessionOutcome::Success,
         true,
     )?;
-    write_completion(
+    let completion_warnings = write_completion(
         &root,
         &id,
         &relative_build,
@@ -553,6 +553,9 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         lease.invocation(),
         renderer_reports,
     )?;
+    for warning in &completion_warnings {
+        rep.note(warning);
+    }
 
     // The completion is published; the target is free for the next writer.
     // Handled configure/build failures also clear their record before return;
@@ -639,7 +642,7 @@ fn write_completion(
     intent: &BuildIntent,
     invocation: Option<&str>,
     renderer_reports: Vec<RendererEvidenceBinding>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let lock_path = root
         .join(STATE_DIR)
         .join("targets")
@@ -665,25 +668,27 @@ fn write_completion(
         intent.clone(),
         completed_unix,
     );
+    // A workspace-built executable is packaged from what this build produced, so
+    // the completion records its digests the way `plugin build` records a
+    // bundle's — that binding is what lets `plugin package` tell a managed tool
+    // output from one a plain CMake build overwrote. It is evidence *about* a
+    // build that already succeeded, so a tool it cannot read is a warning: the
+    // target is built either way, and the tool simply packages as `untracked`.
+    let (outputs, warnings) =
+        crate::commands::plugin::workspace_tool_outputs(root, lock.variant.os);
     // A read-only attach holds no lease and so names no owning invocation.
     let completion = match invocation {
         Some(invocation) => completion.with_invocation(invocation),
         None => completion,
     }
     .with_renderer_reports(renderer_reports)
-    // A workspace-built executable is packaged from what this build produced, so
-    // the completion records its digests the way `plugin build` records a
-    // bundle's — that binding is what lets `plugin package` tell a managed tool
-    // output from one a plain CMake build overwrote.
-    .with_outputs(crate::commands::plugin::workspace_tool_outputs(
-        root,
-        lock.variant.os,
-    )?);
+    .with_outputs(outputs);
     let body = completion
         .to_json()
         .map_err(|error| Error::parse(BUILD_COMPLETION_FILE, anyhow::Error::new(error)))?;
     let path = root.join(relative_build).join(BUILD_COMPLETION_FILE);
-    write_atomic(path.as_std_path(), format!("{body}\n").as_bytes())
+    write_atomic(path.as_std_path(), format!("{body}\n").as_bytes())?;
+    Ok(warnings)
 }
 
 /// Confirm `build/<id>` exists and is non-empty after a successful build, so a

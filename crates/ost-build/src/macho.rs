@@ -16,7 +16,7 @@
 //! works from any host — a Linux CI runner inspecting a macOS artifact gets the
 //! same answer `otool -l` would give on a Mac.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 
 use camino::Utf8Path;
 
@@ -27,6 +27,14 @@ const MACHO_MAGIC_64: u32 = 0xfeed_facf;
 
 /// Universal ("fat") binary magic, which is big-endian by definition.
 const FAT_MAGIC: u32 = 0xcafe_babe;
+
+/// Universal binary magic whose arch table carries 64-bit offsets.
+const FAT_MAGIC_64: u32 = 0xcafe_babf;
+
+/// Upper bound on the slices of one universal binary we will follow. Apple ships
+/// two; this bounds a corrupt `nfat_arch` rather than trusting a count out of an
+/// untrusted file.
+const MAX_FAT_SLICES: usize = 64;
 
 /// `LC_VERSION_MIN_MACOSX`: version + sdk, both packed `X.Y.Z`.
 const LC_VERSION_MIN_MACOSX: u32 = 0x24;
@@ -133,33 +141,77 @@ fn scan_file(path: &Utf8Path) -> io::Result<MacosFloor> {
     file.by_ref()
         .take(MAX_LOAD_COMMANDS as u64)
         .read_to_end(&mut head)?;
-    Ok(scan_image(&head))
+
+    // A universal binary's later slices start past that window — a real arm64 +
+    // x86_64 dylib puts its second slice megabytes in — so each one is read at
+    // its own offset. Scanning only what the head happened to contain would take
+    // the maximum over a subset and silently under-report the floor, which is
+    // the one direction this measurement must never fail in.
+    let Some(offsets) = fat_slice_offsets(&head) else {
+        return Ok(scan_image(&head));
+    };
+    let mut floor = MacosFloor::default();
+    for offset in offsets {
+        let mut slice = Vec::new();
+        if file.seek(SeekFrom::Start(offset)).is_err() {
+            continue;
+        }
+        file.by_ref()
+            .take(MAX_LOAD_COMMANDS as u64)
+            .read_to_end(&mut slice)?;
+        floor.absorb(scan_thin(&slice));
+    }
+    Ok(floor)
 }
 
-/// Scan a Mach-O (or universal) image prefix for its deployment floor.
-fn scan_image(bytes: &[u8]) -> MacosFloor {
-    match read_u32_be(bytes, 0) {
-        // A universal binary holds several images; each slice's own header
-        // carries the floor, and the runtime is bounded by the highest.
-        Some(FAT_MAGIC) => {
-            let mut floor = MacosFloor::default();
-            let Some(count) = read_u32_be(bytes, 4) else {
-                return floor;
-            };
-            for index in 0..count.min(64) as usize {
-                let entry = 8 + index * 20;
-                let Some(offset) = read_u32_be(bytes, entry + 8) else {
-                    break;
-                };
-                let offset = offset as usize;
-                if offset < bytes.len() {
-                    floor.absorb(scan_thin(&bytes[offset..]));
-                }
-            }
-            floor
+/// The byte offset of every slice of a universal binary, or `None` when `bytes`
+/// does not begin with a fat header.
+///
+/// Both table shapes are read: `FAT_MAGIC` carries 32-bit offsets in 20-byte
+/// entries, `FAT_MAGIC_64` carries 64-bit offsets in 32-byte entries. A
+/// truncated table simply ends the walk.
+fn fat_slice_offsets(bytes: &[u8]) -> Option<Vec<u64>> {
+    let (entry_size, wide) = match read_u32_be(bytes, 0)? {
+        FAT_MAGIC => (20usize, false),
+        FAT_MAGIC_64 => (32usize, true),
+        _ => return None,
+    };
+    let count = read_u32_be(bytes, 4)? as usize;
+    let mut offsets = Vec::new();
+    for index in 0..count.min(MAX_FAT_SLICES) {
+        let entry = 8 + index * entry_size;
+        let offset = if wide {
+            read_u64_be(bytes, entry + 8)
+        } else {
+            read_u32_be(bytes, entry + 8).map(u64::from)
+        };
+        match offset {
+            Some(offset) => offsets.push(offset),
+            None => break,
         }
-        _ => scan_thin(bytes),
     }
+    Some(offsets)
+}
+
+/// Scan an in-memory Mach-O (or universal) image for its deployment floor.
+///
+/// This is the whole answer only when the buffer holds the whole image — the
+/// non-universal case, and tests. [`scan_file`] reads each universal slice at
+/// its own offset instead, since a real one does not fit in the header window.
+fn scan_image(bytes: &[u8]) -> MacosFloor {
+    let Some(offsets) = fat_slice_offsets(bytes) else {
+        return scan_thin(bytes);
+    };
+    let mut floor = MacosFloor::default();
+    for offset in offsets {
+        let Ok(offset) = usize::try_from(offset) else {
+            continue;
+        };
+        if offset < bytes.len() {
+            floor.absorb(scan_thin(&bytes[offset..]));
+        }
+    }
+    floor
 }
 
 /// Scan one non-universal Mach-O image.
@@ -219,9 +271,15 @@ fn read_u32_be(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_be_bytes(slice.try_into().ok()?))
 }
 
+fn read_u64_be(bytes: &[u8], offset: usize) -> Option<u64> {
+    let slice = bytes.get(offset..offset + 8)?;
+    Some(u64::from_be_bytes(slice.try_into().ok()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camino::Utf8PathBuf;
 
     fn packed(major: u32, minor: u32, patch: u32) -> u32 {
         (major << 16) | (minor << 8) | patch
@@ -310,6 +368,68 @@ mod tests {
         let floor = scan_image(&fat);
         assert_eq!(floor.deployment_target.unwrap().to_string(), "14.5");
         assert_eq!(floor.sdk.unwrap().to_string(), "15.2");
+    }
+
+    /// The real shape: a universal binary's second slice starts megabytes into
+    /// the file, past the header window one read pulls in. Scanning only what
+    /// that window contained would take the maximum over a subset and report a
+    /// floor lower than the artifact's — the one direction this must never fail
+    /// in, since a too-low floor is what lets an unloadable runtime ship.
+    #[test]
+    fn a_slice_past_the_header_window_is_still_measured() {
+        let thin_a = build_version_image(packed(13, 0, 0), packed(14, 0, 0));
+        let thin_b = build_version_image(packed(14, 5, 0), packed(15, 2, 0));
+        let offset_a = 8 + 2 * 20;
+        let offset_b = 2 * MAX_LOAD_COMMANDS;
+
+        let mut fat = Vec::new();
+        fat.extend_from_slice(&FAT_MAGIC.to_be_bytes());
+        fat.extend_from_slice(&2u32.to_be_bytes());
+        for (offset, thin) in [(offset_a, &thin_a), (offset_b, &thin_b)] {
+            fat.extend_from_slice(&0x0100_000cu32.to_be_bytes()); // cputype
+            fat.extend_from_slice(&0u32.to_be_bytes()); // cpusubtype
+            fat.extend_from_slice(&(offset as u32).to_be_bytes());
+            fat.extend_from_slice(&(thin.len() as u32).to_be_bytes());
+            fat.extend_from_slice(&0u32.to_be_bytes()); // align
+        }
+        fat.resize(offset_a, 0);
+        fat.extend_from_slice(&thin_a);
+        fat.resize(offset_b, 0);
+        fat.extend_from_slice(&thin_b);
+
+        let path = Utf8PathBuf::from_path_buf(std::env::temp_dir())
+            .unwrap()
+            .join(format!("ost-macho-fat-{}", std::process::id()));
+        std::fs::write(path.as_std_path(), &fat).unwrap();
+        let floor = max_macos_floor([path.as_path()]).unwrap();
+        let _ = std::fs::remove_file(path.as_std_path());
+
+        assert_eq!(floor.deployment_target.unwrap().to_string(), "14.5");
+        assert_eq!(floor.sdk.unwrap().to_string(), "15.2");
+        // The in-memory path sees the same thing when it has the whole image.
+        assert_eq!(scan_image(&fat), floor);
+    }
+
+    /// A 64-bit fat table (8-byte offsets in 32-byte entries) reads the same.
+    #[test]
+    fn a_fat_64_table_is_read() {
+        let thin = build_version_image(packed(15, 0, 0), packed(15, 4, 0));
+        let offset = 8 + 32usize;
+
+        let mut fat = Vec::new();
+        fat.extend_from_slice(&FAT_MAGIC_64.to_be_bytes());
+        fat.extend_from_slice(&1u32.to_be_bytes());
+        fat.extend_from_slice(&0x0100_000cu32.to_be_bytes()); // cputype
+        fat.extend_from_slice(&0u32.to_be_bytes()); // cpusubtype
+        fat.extend_from_slice(&(offset as u64).to_be_bytes());
+        fat.extend_from_slice(&(thin.len() as u64).to_be_bytes());
+        fat.extend_from_slice(&0u32.to_be_bytes()); // align
+        fat.extend_from_slice(&0u32.to_be_bytes()); // reserved
+        fat.extend_from_slice(&thin);
+
+        let floor = scan_image(&fat);
+        assert_eq!(floor.deployment_target.unwrap().to_string(), "15.0");
+        assert_eq!(floor.sdk.unwrap().to_string(), "15.4");
     }
 
     #[test]

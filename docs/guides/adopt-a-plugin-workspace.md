@@ -134,10 +134,13 @@ cells:
 ```
 
 It validates the dependency graph, runs `ost build`, then runs the workspace's
-own CTest suite — the members the bundle verbs never reach. `verify: graph` is
-the cheap early PR gate: the graph alone, with nothing built and no runtime
-materialized. Source lanes only; a workspace cell names no bundle and publishes
-nothing.
+own CTest suite — the members the bundle verbs never reach. Source lanes only; a
+workspace cell names no bundle and publishes nothing.
+
+`verify: graph` is the cheap early PR gate, and it gets a job of its own
+(`pr-workspace-graph`) that stops after the checkout: the graph alone, with
+nothing built and no runtime fetched, verified, or materialized. `verify: build`
+and `verify: test` share one job, since both need the same runtime.
 
 ## 6. Keep OpenStrata and plain CMake both working
 

@@ -1707,7 +1707,9 @@ pub fn starter_matrix() -> String {
 #       verify: test        # graph | build | test (default test)
 #
 # `verify: graph` is the cheap early gate: the dependency graph alone, in
-# milliseconds, with no runtime and nothing built.
+# milliseconds. It renders as its own job that stops after the checkout, so
+# it never fetches or materializes a runtime — a graph cell still pins one
+# for the record, but its job does not pay for it.
 #
 # Self-hosted cells may omit runtime_remote and keep air-gapped local
 # import (`ost artifact import` on the runner); CI evidence records the

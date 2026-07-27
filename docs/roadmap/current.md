@@ -341,9 +341,13 @@ builds the workspace CMake tree instead of one bundle — the tree that compiles
 the plain libraries and executables the bundle verbs never reach. It renders as
 its own job (`pr-workspace` / `mainline-workspace`) sharing the runtime preamble:
 `ost plugin test --workspace --graph-only`, then `ost build`, then `ost test` for
-the workspace's own CTest suite. A `verify: graph|build|test` ladder gates the
-last two rungs, so `verify: graph` is the milliseconds-long early PR gate the
-`--graph-only` verb above exists for.
+the workspace's own CTest suite, with a `verify: graph|build|test` ladder.
+
+`verify: graph` is the milliseconds-long early PR gate the `--graph-only` verb
+above exists for, so it renders as a *separate* job (`pr-workspace-graph`) that
+stops after the checkout preamble. Gating the rungs inside one job would have
+left the cheap gate paying for `ost artifact verify` and `ost runtime pull`
+first — the cost it exists to avoid.
 
 Every bundle-only knob is refused on a workspace cell by name rather than
 ignored — `bundle`, `up_to`, `publish`, and any support lane — and `verify` is
