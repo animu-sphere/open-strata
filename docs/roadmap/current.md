@@ -3,17 +3,23 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## v0.21.0 - DCC host integration
+## v0.21.0 - host discovery and dogfooding closure
 
 **Status:** 🚧 in progress from 2026-07-23 · **Depends on:** v0.20.0
 package/product closure, renderer workflow, and Formation diagnostics.
 
-This milestone adds versioned host records, deterministic Maya and Houdini
-discovery, minimal headless host adapters, and support-matrix cells with
-pinned host evidence. Host integration consumes Formation as its environment
-and component-assembly layer and reuses the renderer identity/evidence model.
-Sessions, GPU/AI, and broader DCC matrices remain later work.
-Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md).
+This milestone ships the **discovery** half of DCC host integration — versioned
+host records and deterministic Maya and Houdini discovery — plus the corrective
+half driven by six v0.20.0 dogfooding passes. Host integration consumes Formation
+as its environment and component-assembly layer and reuses the renderer
+identity/evidence model. Direction:
+[dcc-hosts.md](../design/proposed/dcc-hosts.md).
+
+**Deferred to v0.22.0 on 2026-07-27:** working Maya and Houdini support — the
+headless host adapters and the support-matrix cells that carry pinned host
+evidence. Discovery answers *which hosts are installed*, which is useful on its
+own and is what the milestone keeps; *running* something in a host is the next
+milestone. Sessions, GPU/AI, and broader DCC matrices remain later work still.
 
 The milestone is ordered so each slice is usable on its own and no later slice
 gates the first. OpenStrata never installs, updates, licenses, or modifies a
@@ -23,6 +29,13 @@ never leaked into the core.
 A second, corrective half was added on 2026-07-27 from six v0.20.0 dogfooding
 passes. It does not displace the host slices; it is what the same downstreams
 hit while shipping real work against v0.20.0, and most of it is small.
+
+**Remaining as of 2026-07-27:** every intake slice below is implemented on the
+branch. What is left is *acceptance*, not code — one successful hdMerlin managed
+launch (OST20-RND-002/003/005, unverified downstream), and the usd-vrm-plugins
+re-run that consumes the workspace cell, the tool member, and the
+consumer-configure gate. The host discovery slice still owes its Linux and macOS
+passes, which move to v0.22.0 with the adapters.
 
 ### Dogfooding intake (2026-07-26/27)
 
@@ -101,15 +114,19 @@ Covered by unit tests plus fixture-install-tree integration tests for both
 families and a CLI suite for the command contract — all runnable on a machine
 with no DCC installed.
 
-### P1 - headless host adapters
+### Deferred to v0.22.0 - headless host adapters
 
-Not started. A host adapter boundary running minimal headless load/open/validate
-probes with preserved output and an explained SKIP for an unavailable license,
-display, or capability. The adapter's `environment` capability contributes to
-Formation resolution rather than composing paths on its own, so a host probe and
-a runtime-native app share one environment contract. Host-standard packaging
-(Maya `.mod`, Houdini package JSON) belongs to this slice; editing `Maya.env` or
-any user configuration does not.
+**Moved out of v0.21.0 on 2026-07-27.** A host adapter boundary running minimal
+headless load/open/validate probes with preserved output and an explained SKIP
+for an unavailable license, display, or capability. The adapter's `environment`
+capability contributes to Formation resolution rather than composing paths on its
+own, so a host probe and a runtime-native app share one environment contract.
+Host-standard packaging (Maya `.mod`, Houdini package JSON) belongs to this
+slice; editing `Maya.env` or any user configuration does not.
+
+The discovery foundation below it is shipped and unaffected: `ost host
+discover | list | inspect` resolves real Maya and Houdini installs today. What
+moves is everything that *runs* a host.
 
 **Acceptance exercised 2026-07-25 (Windows):** `ost host discover` resolved a
 real Autodesk Maya 2024 and SideFX Houdini 20.5.522 from their default install
@@ -122,17 +139,18 @@ instance ids carrying the `sha256:` prefix, doubled prefixes in fingerprint
 digests, and mixed path separators in recorded roots and evidence — each now
 covered by a test.
 
-Still owed: the same pass on Linux and macOS, where the install layouts (and,
-for Houdini on macOS, the framework root shape) are encoded from documentation
-rather than demonstrated.
+Still owed, and moving to v0.22.0 with the adapters: the same pass on Linux and
+macOS, where the install layouts (and, for Houdini on macOS, the framework root
+shape) are encoded from documentation rather than demonstrated.
 
-### P1 - support-matrix cells with pinned host evidence
+### Deferred to v0.22.0 - support-matrix cells with pinned host evidence
 
-Not started. Matrix cells carrying a pinned host record, stable/nightly/release/
-legacy tiers, and trusted release candidates fed in without weakening the
-artifact publisher boundary. A cell is one production-guaranteed runtime set,
-and cross-DCC data contracts are edges — the matrix is a graph, not a Cartesian
-product.
+**Moved out of v0.21.0 on 2026-07-27.** Matrix cells carrying a pinned host
+record, stable/nightly/release/legacy tiers, and trusted release candidates fed
+in without weakening the artifact publisher boundary. A cell is one
+production-guaranteed runtime set, and cross-DCC data contracts are edges — the
+matrix is a graph, not a Cartesian product. It follows the adapters: a matrix
+cell pins host evidence that only a host probe can produce.
 
 ### P0 - `--build-arg` reaches the components `runtime pull --build` decides
 
@@ -261,60 +279,105 @@ the artifact shipped (report 29 §3).
 
 ### P1 - a runtime records what a consumer needs, not only what it is
 
-Not started. From reports 30 §1 and 31 §4, the theme of this whole intake.
+From reports 30 §1 and 31 §4, the theme of this whole intake.
 
-- **macOS records no ABI floor.** Linux measures its glibc floor into the target
-  (`linux-x86_64-glibc238-py313`) and Windows carries `msvc143`; macOS gets
-  `"abi": "native"`, which asserts nothing. The 26.08 build pinned
-  `CMAKE_OSX_DEPLOYMENT_TARGET=14.5` deliberately so a 15.2-SDK build would not
-  produce a runtime unloadable on the host that built it — and a consumer cannot
-  tell that from the artifact, while `--require-target macos-arm64-py313` passes
-  regardless. Measure and record the deployment target and SDK, and reflect the
-  floor in the target string.
+**Implemented on the v0.21.0 branch**, in three parts.
+
+- **macOS now records an ABI floor.** Linux measures its glibc floor into the
+  target (`linux-x86_64-glibc238-py313`) and Windows carries `msvc143`; macOS got
+  `"abi": "native"`, which asserts nothing, so `--require-target
+  macos-arm64-py313` passed for a runtime the host could not load. `runtime
+  export` now reads the deployment target and SDK out of the artifact's own
+  Mach-O load commands — `LC_BUILD_VERSION`, or the older
+  `LC_VERSION_MIN_MACOSX` — takes the highest across every binary, and labels the
+  artifact `macos-arm64-macos145-py313`. The measurement parses the files
+  directly, so it gives the same answer from a Linux CI runner that `otool -l`
+  would give on a Mac, and `macos_floor` in the producer manifest records the
+  measured pair beside what was declared.
 - **A first-class SDK knob for `runtime pull --build`.** OpenUSD 26.08 cannot be
   compiled against the macOS 14.5 SDK at C++17 (libc++ only routes
   `allocate_shared` through the allocator under C++20 there, so
   `HD_DECLARE_DATASOURCE`'s friendship never applies); it needs the 15.2 SDK, and
   installing clang 16 does not get you one because `xcrun` selects the SDK
-  matching the running OS. Reaching `CMAKE_OSX_SYSROOT` today means smuggling it
+  matching the running OS. Reaching `CMAKE_OSX_SYSROOT` meant smuggling it
   through `--build-arg --cmake-build-args=…`, competing with the
-  `CMAKE_POLICY_VERSION_MINIMUM=3.5` the same host needs. Two full builds failed
-  at 73% before this was understood; `xcrun --show-sdk-path` before the spawn
-  turns that into one sentence.
-- **Consumption requirements belong in the record.** Either a
-  `host_requirements` list `ost` can render into CI and check at `artifact pull`,
-  or a `consumer-configure` check in `runtime validate` that runs a trivial
-  `find_package(pxr)` against the materialized runtime in a scratch directory.
-  The second is cheap and would have caught the X11 break at publish time, on the
-  producer's machine, before the digest ever reached `openstrata.ci.yaml`. The
-  `host_packages` knob above lets the contract *say* what the host needs; this is
-  the half that lets `ost` *notice*.
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` the same host needs, and two full builds
+  failed at 73% before that was understood. `--sdk 15.2` and
+  `--deployment-target 14.5` now travel as `SDKROOT` and
+  `MACOSX_DEPLOYMENT_TARGET`, which is the scope the problem has: they reach
+  every dependency `build_usd.py` builds on the way to OpenUSD, not one configure
+  line. A version is resolved through `xcrun` *before* the spawn, so an SDK that
+  is not installed is one sentence rather than a build that dies at 73%; on a
+  non-macOS host the flags are refused rather than silently dropped.
+- **`runtime validate` notices what a consumer needs.** A new
+  `consumer-configure` check configures a trivial `find_package(pxr REQUIRED)` in
+  a scratch directory against the materialized runtime, with the same Python
+  Development pins `plugin build` supplies. That is the first thing every
+  consumer does, and it is what four CI lanes died on in twenty seconds while
+  `runtime validate` passed 7/7 — now it fails on the producer's machine, before
+  the digest reaches `openstrata.ci.yaml`. `runtime export` re-runs the current
+  checks, so the gate is at publish time. Checks gained a real `skip` state: no
+  CMake on PATH, or a profile that ships no `pxrConfig.cmake`, is reported as not
+  checked rather than counted as proof.
+
+The `host_packages` knob above lets a CI contract *say* what the host needs; this
+is the half that lets `ost` *notice*. A declarative `host_requirements` list in
+the record — renderable into CI and checkable at `artifact pull` — remains the
+open half of the ask.
 
 ### P1 - a CI cell that is not a bundle
 
-Not started, and the P0 of every usd-vrm-plugins report in this intake (28 §2,
-restated in 32 §1). Cells name a `bundle:` and `ost ci generate github` renders
-one job per cell, so there is no cell shape for a plain library
-(`openstrata.library.yaml`) that no bundle requires, or for a CLI executable
-built from the workspace against the runtime. Both are legitimate workspace
-members that repository's own architecture requires: `vrmRetarget` deliberately
-has no bundle consumer, because the edge that would give it one is a documented
-contract violation. "Make a bundle depend on it" is not available.
+The P0 of every usd-vrm-plugins report in this intake (28 §2, restated in 32 §1).
+Cells named a `bundle:` and `ost ci generate github` rendered one job per cell,
+so there was no cell shape for a plain library (`openstrata.library.yaml`) that
+no bundle requires, or for a CLI executable built from the workspace against the
+runtime. Both are legitimate workspace members that repository's own architecture
+requires: `vrmRetarget` deliberately has no bundle consumer, because the edge
+that would give it one is a documented contract violation. "Make a bundle depend
+on it" is not available.
 
-The preferred shape is a cell targeting a library or the whole workspace — which
-would also give the repo its workspace graph gate in CI, an item the same cell
-shape satisfies. `--graph-only` above is the verb such a cell would call; the
-cell itself is the remaining work. Note that report 32 §5's configure gap is a
-prerequisite for the *hand-rolled* alternative, not for this: a first-class cell
-would call `ost plugin build`, which never had the problem.
+**Implemented on the v0.21.0 branch:** a cell declares `kind: workspace` and
+builds the workspace CMake tree instead of one bundle — the tree that compiles
+the plain libraries and executables the bundle verbs never reach. It renders as
+its own job (`pr-workspace` / `mainline-workspace`) sharing the runtime preamble:
+`ost plugin test --workspace --graph-only`, then `ost build`, then `ost test` for
+the workspace's own CTest suite, with a `verify: graph|build|test` ladder.
+
+`verify: graph` is the milliseconds-long early PR gate the `--graph-only` verb
+above exists for, so it renders as a *separate* job (`pr-workspace-graph`) that
+stops after the checkout preamble. Gating the rungs inside one job would have
+left the cheap gate paying for `ost artifact verify` and `ost runtime pull`
+first — the cost it exists to avoid.
+
+Every bundle-only knob is refused on a workspace cell by name rather than
+ignored — `bundle`, `up_to`, `publish`, and any support lane — and `verify` is
+refused on a bundle cell, whose ladder is `up_to`. `ci matrix --json` projects
+`kind`, and the ladder that applies, for hand-written lanes.
 
 ### P1 - a workspace-built executable can ship in a product
 
-Not started. From report 28 §3. `plugin package --workspace --product` composes
-member archives from bundles, and `motion_retarget` (and now `motion_capture`) is
-a user-facing deliverable with no member archive that can carry it. Until then a
-release either omits the tool or the repo hand-rolls a second packaging path —
-and hand-rolled packaging is what report 27 was about.
+From report 28 §3. `plugin package --workspace --product` composed member
+archives from bundles, and `motion_retarget` (and now `motion_capture`) is a
+user-facing deliverable with no member archive that could carry it. A release
+either omitted the tool or the repo hand-rolled a second packaging path — and
+hand-rolled packaging is what report 27 was about.
+
+**Implemented on the v0.21.0 branch:** an `openstrata.tool.yaml` member declares
+a workspace-built executable — identity, the executables to ship, and the
+directories the build writes them to. `plugin package --workspace` packages each
+after the bundles into the *same* dist shape a bundle package has (archive,
+producer manifest, `SHA256SUMS`, SBOM/provenance), which is what lets `--product`
+compose it with no second code path. A tool member records its own destination,
+so `product verify` checks it against the tool contract and `product install`
+puts it under `tools/<id>/` with its directories joined to the aggregate loader
+path.
+
+A tool package that lost its executable is refused at packaging *and* at
+verification: an archive with no tool in it is byte-perfect and delivers nothing.
+`ost build` now records the tool executables it produced, so `plugin package`
+reports the same `matched` / `untracked` / `mismatched` build provenance for a
+tool that it reports for a bundle, rather than laundering a plain CMake build as
+managed.
 
 ### P1 carry - renderer workflow evidence (hdMerlin report 10)
 
@@ -334,12 +397,31 @@ the report:
 
 - **Generated preset includes must be self-contained for the selected profile.**
   `renderer view --profile usd` must not fail because an unrelated core preset is
-  absent. Not started.
+  absent.
+  **Implemented on the v0.21.0 branch:** CMake resolves every `include` of a
+  presets document before it evaluates any preset, so one managed include
+  pointing at a target that no longer exists fails the preset that is present and
+  correct. `configure`/`build` now drop managed includes whose per-target presets
+  file is gone, and `presets install|diff` re-sync the same way. A dangling
+  managed include in the user's *committed* `CMakePresets.json` is reported with
+  the file named — never silently rewritten, because that file is theirs.
 - **Managed configure diagnostics** must name the active child, phase, and
   retained CMake log tail, and timeout cleanup must remove descendants and target
   leases deterministically. v0.20.0 implemented this for the *timeout* path; this
   pass says the *stall* path still reports nothing useful and left OST/cmake/ninja
-  descendants to clean up by hand. Reopened as a carry.
+  descendants to clean up by hand.
+  **Implemented on the v0.21.0 branch:** a heartbeat is chatter and is suppressed
+  under `--quiet`, which is exactly how `renderer view --json` runs its nested
+  build — so the stall reported nothing at all. A stall is now a distinct event
+  that survives quiet and the JSON stream, naming the active child (pid, command,
+  cwd), the phase, the retained log, what is left of the timeout budget, and the
+  tail of the CMake logs the configure phase registers; the timeout error carries
+  those tails too. An interrupted `ost` also no longer leaves cmake and ninja
+  running: managed children are spawned into their own process group precisely so
+  a console Ctrl-C cannot race OpenStrata to them, which left nothing listening —
+  so `ost` listens, and kills the tree it started. The target lease is
+  deliberately kept, because a configure killed mid-write is what takeover
+  evidence exists to announce.
 - OST20-RND-002/003/005 (producer-bound evidence, viewport JSON success contract,
   durable launch record) ship in v0.20.0 and were exercised locally on 2026-07-23
   against a real runtime; they stay open **as unverified downstream** until a

@@ -18,7 +18,9 @@ use camino::Utf8Path;
 use clap::{Args, Subcommand};
 use serde_json::{Map, Value};
 
-use ost_build::{ensure_includes, includes_of, managed_include, remove_managed_includes};
+use ost_build::{
+    ensure_includes, includes_of, managed_include, remove_managed_includes, retain_managed_includes,
+};
 use ost_core::fs::write_atomic;
 use ost_core::paths::STATE_DIR;
 use ost_core::{Error, Result};
@@ -88,12 +90,13 @@ fn install(root: &Utf8Path, args: InstallArgs, fmt: Format) -> Result<()> {
 
     let mut map = read_presets_object(&path)?.unwrap_or_default();
     let before = includes_of(&Value::Object(map.clone()));
-    let changed = ensure_includes(&mut map, &wants);
+    let removed = prune_missing(root, &mut map);
+    let changed = ensure_includes(&mut map, &wants) || !removed.is_empty();
     let after = includes_of(&Value::Object(map.clone()));
     let added: Vec<String> = after.into_iter().filter(|i| !before.contains(i)).collect();
 
     if args.dry_run {
-        report_changes(fmt, "install", &path, &added, &[], true);
+        report_changes(fmt, "install", &path, &added, &removed, true);
         return Ok(());
     }
     if !changed {
@@ -109,7 +112,7 @@ fn install(root: &Utf8Path, args: InstallArgs, fmt: Format) -> Result<()> {
     // file so the same preset name is never defined in both (CMake errors).
     prune_user_presets(root)?;
 
-    report_changes(fmt, "install", &path, &added, &[], false);
+    report_changes(fmt, "install", &path, &added, &removed, false);
     Ok(())
 }
 
@@ -118,12 +121,23 @@ fn diff(root: &Utf8Path, fmt: Format) -> Result<()> {
     let wants = configured_includes(root)?;
     let mut map = read_presets_object(&path)?.unwrap_or_default();
     let before = includes_of(&Value::Object(map.clone()));
+    let removed = prune_missing(root, &mut map);
     ensure_includes(&mut map, &wants);
     let after = includes_of(&Value::Object(map));
     let added: Vec<String> = after.into_iter().filter(|i| !before.contains(i)).collect();
 
-    report_changes(fmt, "diff", &path, &added, &[], true);
+    report_changes(fmt, "diff", &path, &added, &removed, true);
     Ok(())
+}
+
+/// Drop the OpenStrata-managed includes whose per-target presets file is gone.
+///
+/// `install` syncs this project's *current* targets; an include left over from a
+/// target that has been removed is not merely stale, it is fatal — CMake resolves
+/// every include before evaluating any preset, so one dangling entry breaks the
+/// presets that are still valid.
+fn prune_missing(root: &Utf8Path, map: &mut Map<String, Value>) -> Vec<String> {
+    retain_managed_includes(map, |include| root.join(include).as_std_path().is_file())
 }
 
 fn uninstall(root: &Utf8Path, args: UninstallArgs, fmt: Format) -> Result<()> {

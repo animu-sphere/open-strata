@@ -898,6 +898,7 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
             "host_packages",
             "host_python",
             "hosted",
+            "kind",
             "lane",
             "minimum_trust",
             "name",
@@ -911,6 +912,7 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
             "runtime_artifact",
             "runtime_remote",
             "up_to",
+            "verify",
         ]
     );
 
@@ -921,6 +923,11 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
     assert_eq!(pr["os"], "linux");
     assert_eq!(pr["runs_on"][0], "ubuntu-24.04");
     assert_eq!(pr["bundle"], "plugins/toy");
+    // A bundle cell carries its pyramid level and no workspace rung; the two
+    // ladders are mutually exclusive and the projection says which one applies.
+    assert_eq!(pr["kind"], "bundle");
+    assert_eq!(pr["up_to"], 4);
+    assert_eq!(pr["verify"], serde_json::Value::Null);
     assert_eq!(pr["host_python"], "3.13");
     assert_eq!(pr["host_packages"]["apt"][0], "libx11-dev");
     // The digest a hand-written lane would otherwise keep a second copy of.
@@ -947,6 +954,65 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
         .as_str()
         .unwrap()
         .contains("pull_request, main, scheduled, workflow_dispatch"));
+}
+
+/// A workspace cell is the shape a plain library or a workspace-built
+/// executable has (reports 28 §2 / 32 §1). End to end: it validates, projects
+/// as its own kind, and generates a job that runs the workspace verbs.
+#[test]
+fn a_workspace_cell_validates_projects_and_generates() {
+    let sb = Sandbox::new("workspace-cell");
+    let matrix = linux_pr_lanes_yaml().replace(
+        "  - name: linux-usd-support\n",
+        &format!(
+            "  - name: workspace-pr-linux\n\
+             \x20   kind: workspace\n\
+             \x20   lane: pull_request\n\
+             \x20   runner: linux-hosted\n\
+             \x20   runtime_artifact: sha256:{a}\n\
+             \x20   runtime_remote:\n\
+             \x20     uri: oci://ghcr.io/owner/openstrata-runtime@sha256:{o}\n\
+             \x20     expected_oci_digest: sha256:{o}\n\
+             \x20   platform: cy2026\n\
+             \x20   profile: usd\n\
+             \x20   verify: test\n\
+             \x20 - name: linux-usd-support\n",
+            a = "ab".repeat(32),
+            o = "ee".repeat(32),
+        ),
+    );
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), matrix).unwrap();
+
+    let v = stdout_json(&sb.ost(&["--json", "ci", "validate"]));
+    assert_eq!(v["ok"], true, "a workspace cell must validate: {v}");
+
+    let v = stdout_json(&sb.ost(&["--json", "ci", "matrix", "--lane", "pull_request"]));
+    let cells = v["data"]["cells"].as_array().unwrap();
+    let workspace = cells
+        .iter()
+        .find(|c| c["name"] == "workspace-pr-linux")
+        .expect("the workspace cell is projected");
+    assert_eq!(workspace["kind"], "workspace");
+    assert_eq!(workspace["verify"], "test");
+    assert_eq!(workspace["bundle"], serde_json::Value::Null);
+    assert_eq!(workspace["up_to"], serde_json::Value::Null);
+    // It still carries the pins a hand-written lane would otherwise copy.
+    assert_eq!(
+        workspace["runtime_artifact"],
+        format!("sha256:{}", "ab".repeat(32))
+    );
+
+    let out = sb.ost(&["ci", "generate", "github", "--stdout"]);
+    assert!(out.status.success(), "generate failed");
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Two workflows come out of --stdout; the source one carries both jobs.
+    assert!(
+        text.contains("pr-workspace:"),
+        "the workspace cell needs its own job:\n{text}"
+    );
+    assert!(text.contains("ost plugin test --workspace --graph-only"));
+    assert!(text.contains("ost build --target"));
+    assert!(text.contains("ost test --target"));
 }
 
 /// Report 31's step must reach the release lane too: a `publish: candidate`

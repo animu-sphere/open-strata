@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/animu-sphere/open-strata/main/schemas/tool.schema.json",
+  "title": "OpenStrata Workspace Tool Manifest",
+  "description": "The openstrata.tool.yaml descriptor for a workspace-built executable shipped as a product member. A tool is a user-facing deliverable, not an OpenUSD plugin bundle and not a library other members link: nothing in the workspace graph depends on it, which is why it needs a descriptor of its own to reach a release.",
+  "type": "object",
+  "required": ["schema", "tool", "executables"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "type": "string", "const": "openstrata.tool/v1alpha1" },
+    "tool": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)*$"
+        },
+        "license": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SPDX identifier, carried into the product's aggregate license set."
+        }
+      }
+    },
+    "executables": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Executable names as the build produces them, without a platform extension. Packaging resolves the extension for the target OS and fails when one is missing, so a release cannot ship a tool package with no tool in it.",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]*$"
+      }
+    },
+    "directories": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Directories below the member root the build writes into, searched in order and packaged when present. Defaults to [bin, lib].",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "libraries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "version"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*$" },
+              "version": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

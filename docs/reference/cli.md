@@ -1321,12 +1321,14 @@ Materialize a runtime into the local store
 | --- | --- |
 | `--build <BUILD>` | Build OpenUSD from source into the store (`build` source), via the source tree's `build_scripts/build_usd.py`. Falls back to `OST_USD_SRC` when no path is given |
 | `--build-arg <BUILD_ARGS>` | Extra argument forwarded to the builder (repeatable). With build_usd.py: e.g. `--build-arg --no-imaging`. With `--deps` (CMake): e.g. `--build-arg -DPXR_BUILD_IMAGING=OFF`. Hyphen values allowed |
+| `--deployment-target <DEPLOYMENT_TARGET>` | macOS deployment target for `--build` (`CMAKE_OSX_DEPLOYMENT_TARGET`), e.g. `14.5` — the oldest macOS the produced runtime must load on |
 | `--deps <DEPS>` | Dependency prefix for a direct CMake build of `--build` (repeatable; joined into `CMAKE_PREFIX_PATH`). When given, OpenUSD is built with CMake against these deps instead of via build_usd.py. Falls back to `OST_USD_DEPS` (path-separator list) |
 | `--force` | Re-pull even if the runtime already exists |
 | `--from-artifact <FROM_ARTIFACT>` | Materialize the runtime from a registry artifact (`artifact` source): a digest reference (`sha256:<hex>` or a unique hex prefix) of an `ost runtime export`ed artifact |
 | `--from-usd <FROM_USD>` | Adopt an existing OpenUSD install at this path instead of materializing a mock layout (`local` source). Falls back to `OST_USD_ROOT` when unset |
 | `--jobs <JOBS>` | Parallel build jobs for `--build` (passed to the builder as `-j`) |
 | `--profile <PROFILE>` | Profile to pull, e.g. `usd` or `lookdev` |
+| `--sdk <SDK>` | macOS SDK to build `--build` against: a full path, or a version like `15.2` resolved with `xcrun --sdk macosx<version> --show-sdk-path`. Sets `CMAKE_OSX_SYSROOT` for the whole build |
 
 #### `ost runtime repair`
 

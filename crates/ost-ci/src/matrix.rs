@@ -404,6 +404,63 @@ impl RuntimeRemote {
     }
 }
 
+/// What a source cell builds and verifies.
+///
+/// Until v0.21.0 every cell was a bundle cell: it named a `bundle:` and the
+/// generator rendered `ost plugin build|test|package` against it. A workspace
+/// member that no bundle requires — a plain library, or a CLI executable built
+/// from the workspace against the runtime — was therefore invisible to CI, with
+/// no cell shape able to name it (usd-vrm-plugins reports 28 §2 and 32 §1).
+/// "Make a bundle depend on it" was not available: `vrmRetarget` deliberately
+/// has no bundle consumer, because the edge that would give it one is a
+/// documented contract violation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CellKind {
+    /// One plugin bundle, built and verified through the plugin verbs.
+    #[default]
+    Bundle,
+    /// The enclosing workspace's CMake tree, built through `ost build` and
+    /// verified through its own CTest suite — which is what compiles the plain
+    /// libraries and executables the bundle verbs never see.
+    Workspace,
+}
+
+impl CellKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CellKind::Bundle => "bundle",
+            CellKind::Workspace => "workspace",
+        }
+    }
+}
+
+/// How far a [`CellKind::Workspace`] cell goes. The rungs are cumulative, the
+/// way `up_to` is for a bundle cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceVerify {
+    /// Validate the dependency graph and stop. No build, no runtime, no
+    /// packaged artifact — milliseconds, so it belongs on every PR.
+    Graph,
+    /// …then configure and build the workspace CMake tree.
+    Build,
+    /// …then run its CTest suite. The default: a cell that compiles a library
+    /// and never runs its assertions is coverage in name only.
+    #[default]
+    Test,
+}
+
+impl WorkspaceVerify {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkspaceVerify::Graph => "graph",
+            WorkspaceVerify::Build => "build",
+            WorkspaceVerify::Test => "test",
+        }
+    }
+}
+
 /// Public platform/feature support claimed by a generated CI cell. The
 /// `platform` here is the host platform id from `support/platforms.toml`, not
 /// the VFX Reference Platform calendar-year stored in [`SupportCell::platform`].
@@ -444,16 +501,25 @@ pub struct SupportCell {
     /// for support lanes; absent for source lanes (they build the bundle).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin_artifact: Option<String>,
-    /// Repo-relative bundle path a source-lane cell builds. Default `.`.
+    /// What this cell builds: one bundle (default) or the whole workspace.
+    #[serde(default)]
+    pub kind: CellKind,
+    /// Repo-relative bundle path a source-lane bundle cell builds. Default `.`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<String>,
+    /// How far a `kind: workspace` cell goes. Unset means [`WorkspaceVerify`]'s
+    /// default; declaring it on a bundle cell is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<WorkspaceVerify>,
     /// Platform calendar-year id, e.g. `cy2026`.
     pub platform: String,
     /// Profile, e.g. `usd`.
     pub profile: String,
     /// Highest verification level to run (`ost plugin test --up-to`), 0..=6.
-    #[serde(default = "default_up_to")]
-    pub up_to: u8,
+    /// Unset means [`DEFAULT_UP_TO`]; a workspace cell must leave it unset,
+    /// since it runs no bundle pyramid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_to: Option<u8>,
     /// CPython `major.minor` (e.g. `3.13`) the runtime's schema tooling
     /// (`usdGenSchema`) needs, declared when the runtime artifact does **not**
     /// bundle a runnable interpreter under `bin/`. On a GitHub-hosted source
@@ -484,8 +550,24 @@ pub struct SupportCell {
     pub host: HostSpec,
 }
 
-fn default_up_to() -> u8 {
-    5
+/// Verification level a bundle cell runs when it declares none.
+pub const DEFAULT_UP_TO: u8 = 5;
+
+impl SupportCell {
+    /// The verification level this cell's bundle pyramid runs to.
+    pub fn up_to(&self) -> u8 {
+        self.up_to.unwrap_or(DEFAULT_UP_TO)
+    }
+
+    /// How far this cell goes, for a workspace cell.
+    pub fn verify(&self) -> WorkspaceVerify {
+        self.verify.unwrap_or_default()
+    }
+
+    /// Whether this cell builds the workspace rather than one bundle.
+    pub fn is_workspace(&self) -> bool {
+        self.kind == CellKind::Workspace
+    }
 }
 
 /// Host packages a cell's runner must install before the build, keyed by the
@@ -824,10 +906,47 @@ impl SupportMatrix {
                     "cell '{name}': platform and profile must use [A-Za-z0-9._-]"
                 )));
             }
-            if cell.up_to > MAX_LEVEL {
+            if let Some(up_to) = cell.up_to {
+                if up_to > MAX_LEVEL {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': up_to {up_to} exceeds the highest verification \
+                         level {MAX_LEVEL}"
+                    )));
+                }
+            }
+            // A workspace cell builds the CMake tree the bundle verbs never
+            // reach, so every knob that addresses one bundle is a contradiction
+            // rather than an extra. Refusing them here keeps the generated job
+            // honest: it renders no step those values could reach.
+            if cell.is_workspace() {
+                if !cell.lane.is_source() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': kind 'workspace' applies only to source lanes \
+                         (a support lane re-verifies a pinned plugin artifact and builds nothing)"
+                    )));
+                }
+                if cell.bundle.is_some() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': kind 'workspace' builds every member, so it cannot \
+                         also name a bundle — drop 'bundle', or use the default kind"
+                    )));
+                }
+                if cell.up_to.is_some() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': up_to is the bundle verification pyramid and does not \
+                         apply to kind 'workspace' — use 'verify' (graph|build|test) instead"
+                    )));
+                }
+                if cell.publish != Publish::Never {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': kind 'workspace' publishes nothing — a release \
+                         candidate is a packaged bundle, so publish from a bundle cell"
+                    )));
+                }
+            } else if cell.verify.is_some() {
                 return Err(Error::InvalidManifest(format!(
-                    "cell '{name}': up_to {} exceeds the highest verification level {MAX_LEVEL}",
-                    cell.up_to
+                    "cell '{name}': verify applies only to kind 'workspace' — a bundle cell's \
+                     ladder is 'up_to'"
                 )));
             }
             if let Some(py) = &cell.host_python {
@@ -1567,6 +1686,31 @@ pub fn starter_matrix() -> String {
 #     apt: [libx11-dev, libxt-dev]     # Linux runners
 #     brew: [some-formula]             # macOS runners
 #
+# Not every workspace member is a bundle. A plain library (described by
+# openstrata.library.yaml) that no bundle requires, and a CLI executable
+# built from the workspace against the runtime, are both invisible to a
+# `bundle:` cell. Declare `kind: workspace` for a cell that builds the
+# workspace CMake tree instead: it validates the dependency graph, runs
+# `ost build`, then runs the workspace's own CTest suite. Source lanes only,
+# and it names no bundle, no up_to, and never publishes.
+#
+#   cells:
+#     - name: workspace-pr-linux
+#       kind: workspace
+#       lane: pull_request
+#       runner: linux-hosted
+#       runtime_artifact: sha256:<runtime SDK digest>
+#       runtime_remote:
+#         uri: oci://ghcr.io/<owner>/<runtime-repo>@sha256:<oci-digest>
+#       platform: cy2026
+#       profile: usd
+#       verify: test        # graph | build | test (default test)
+#
+# `verify: graph` is the cheap early gate: the dependency graph alone, in
+# milliseconds. It renders as its own job that stops after the checkout, so
+# it never fetches or materializes a runtime — a graph cell still pins one
+# for the record, but its job does not pay for it.
+#
 # Self-hosted cells may omit runtime_remote and keep air-gapped local
 # import (`ost artifact import` on the runner); CI evidence records the
 # runtime's source either way.
@@ -1656,7 +1800,7 @@ cells:
         let m = SupportMatrix::from_yaml(&valid_yaml()).unwrap();
         assert_eq!(m.cells.len(), 2);
         // up_to defaults to 5; labels default to the hosted runner.
-        assert_eq!(m.cells[1].up_to, 5);
+        assert_eq!(m.cells[1].up_to(), 5);
         assert_eq!(m.cells[1].host.runs_on(), vec!["windows-latest"]);
         assert!(m.is_hosted(&m.cells[1]));
         assert_eq!(
@@ -1865,6 +2009,89 @@ cells:
         let err = SupportMatrix::from_yaml(&under_trusted_publish)
             .expect_err("release trust floor must gate publishing targets");
         assert!(err.to_string().contains("release_min_trust"), "{err}");
+    }
+
+    /// A workspace cell: no bundle, no pyramid, and a rung of its own.
+    fn workspace_yaml() -> String {
+        format!(
+            "\
+schema: 1
+cells:
+    -
+        name: workspace-pr-linux
+        kind: workspace
+        lane: pull_request
+        runtime_artifact: sha256:{a}
+        platform: cy2026
+        profile: usd
+        verify: build
+        host:
+            os: linux
+            labels: [self-hosted, linux]
+",
+            a = "ab".repeat(32),
+        )
+    }
+
+    #[test]
+    fn a_workspace_cell_needs_no_bundle_and_carries_its_own_ladder() {
+        let m = SupportMatrix::from_yaml(&workspace_yaml()).unwrap();
+        let cell = &m.cells[0];
+        assert!(cell.is_workspace());
+        assert!(cell.bundle.is_none());
+        assert_eq!(cell.verify(), WorkspaceVerify::Build);
+        assert_eq!(m.source_cells().len(), 1);
+    }
+
+    #[test]
+    fn a_workspace_cell_verifies_through_ctest_by_default() {
+        let yaml = workspace_yaml().replace("        verify: build\n", "");
+        let m = SupportMatrix::from_yaml(&yaml).unwrap();
+        assert_eq!(m.cells[0].verify(), WorkspaceVerify::Test);
+    }
+
+    /// Every knob that addresses one bundle is a contradiction on a cell that
+    /// builds all of them; each is refused by name rather than ignored.
+    #[test]
+    fn a_workspace_cell_refuses_the_bundle_knobs() {
+        let base = workspace_yaml();
+        let cases = [
+            (
+                base.replace("        verify: build\n", "        bundle: plugins/toy\n"),
+                "cannot",
+            ),
+            (
+                base.replace("        verify: build\n", "        up_to: 4\n"),
+                "up_to",
+            ),
+            (
+                base.replace("        lane: pull_request\n", "        lane: scheduled\n"),
+                "source lanes",
+            ),
+            (
+                base.replace(
+                    "        lane: pull_request\n",
+                    "        lane: main\n        publish: candidate\n",
+                ),
+                "publishes nothing",
+            ),
+        ];
+        for (yaml, expected) in cases {
+            let err = SupportMatrix::from_yaml(&yaml)
+                .expect_err("a workspace cell must refuse bundle-only knobs");
+            assert!(
+                err.to_string().contains(expected),
+                "expected '{expected}' in: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bundle_cell_refuses_the_workspace_ladder() {
+        let yaml = valid_yaml().replace("    up_to: 4\n", "    verify: graph\n");
+        let err = SupportMatrix::from_yaml(&yaml)
+            .expect_err("verify belongs to a workspace cell, not a bundle cell");
+        assert!(err.to_string().contains("up_to"), "{err}");
     }
 
     fn lanes_yaml() -> String {

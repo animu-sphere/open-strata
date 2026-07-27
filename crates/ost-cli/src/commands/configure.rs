@@ -20,8 +20,9 @@ use clap::Args;
 use serde_json::{Map, Value};
 
 use ost_build::{
-    ensure_includes, includes_of, managed_include, render_target_presets, render_toolchain,
-    Compiler, LeaseMode, Target, TargetLease, TargetLock, TARGET_LEASE_FILE,
+    ensure_includes, includes_of, is_managed_include, managed_include, render_target_presets,
+    render_toolchain, retain_managed_includes, Compiler, LeaseMode, Target, TargetLease,
+    TargetLock, TARGET_LEASE_FILE,
 };
 use ost_core::fs::write_atomic;
 use ost_core::paths::{find_project_root, PROJECT_MANIFEST, STATE_DIR};
@@ -65,6 +66,7 @@ pub(crate) struct Generated {
     pub pulled: bool,
     pub root: Utf8PathBuf,
     pub compiler: Compiler,
+    pub presets: PresetIncludes,
 }
 
 pub fn run(args: ConfigureArgs, fmt: Format) -> Result<()> {
@@ -247,7 +249,7 @@ pub(crate) fn generate_with_generator(
     // 5. Wire the per-target presets into the tool-owned CMakeUserPresets.json
     //    so `cmake --preset <id>` works out of the box. We never touch the
     //    user's CMakePresets.json by default (see `ost presets install`).
-    refresh_user_presets(root, &id)?;
+    let presets = refresh_user_presets(root, &id)?;
 
     // 6. Refresh the project lockfile so it tracks the configured runtime.
     let lock = crate::commands::lock::build_lock(root, platform, profile)?;
@@ -259,6 +261,7 @@ pub(crate) fn generate_with_generator(
         pulled: r.pulled,
         root: root.to_path_buf(),
         compiler: compiler.clone(),
+        presets,
     })
 }
 
@@ -310,35 +313,85 @@ fn invalidate_build_tree_if_configuration_changed(
     }
 }
 
+/// What [`refresh_user_presets`] changed, beyond adding the target's include.
+#[derive(Default)]
+pub(crate) struct PresetIncludes {
+    /// Managed includes dropped from `CMakeUserPresets.json` because their
+    /// per-target presets file no longer exists.
+    pub pruned: Vec<String>,
+    /// Dangling managed includes in the user's committed `CMakePresets.json`,
+    /// which OpenStrata reports but never rewrites.
+    pub stale_root: Vec<String>,
+}
+
 /// Ensure OpenStrata's `CMakeUserPresets.json` includes target `id`'s presets.
 ///
 /// `CMakeUserPresets.json` is tool-owned and developer-local (git-ignored), so
 /// refreshing it never disturbs the user's committed `CMakePresets.json`. If the
 /// user has explicitly wired this include into their own `CMakePresets.json`
-/// (via `ost presets install`), we skip it here — CMake errors on a preset name
-/// defined twice.
-fn refresh_user_presets(root: &Utf8Path, id: &str) -> Result<()> {
+/// (via `ost presets install`), we skip adding it here — CMake errors on a
+/// preset name defined twice.
+///
+/// The file is also kept *self-contained*: CMake resolves every `include` before
+/// it evaluates any preset, so one managed include pointing at a target that has
+/// since been removed makes `cmake --preset <other-id>` fail on a preset that is
+/// present and correct. Configuring for `usd` therefore drops the includes of
+/// targets whose `.strata/targets/<id>/CMakePresets.json` is gone rather than
+/// carrying a reference the selected profile cannot satisfy.
+fn refresh_user_presets(root: &Utf8Path, id: &str) -> Result<PresetIncludes> {
     let include = managed_include(id);
+    let exists = |rel: &str| root.join(rel).as_std_path().is_file();
 
     // Parse-or-error: a malformed CMakePresets.json is never treated as empty.
     let root_presets_path = root.join(ROOT_PRESETS);
-    if let Some(map) = read_presets_object(&root_presets_path)? {
-        if includes_of(&Value::Object(map))
-            .iter()
-            .any(|i| i == &include)
-        {
-            return Ok(());
-        }
-    }
+    let root_includes = match read_presets_object(&root_presets_path)? {
+        Some(map) => includes_of(&Value::Object(map)),
+        None => Vec::new(),
+    };
+    // The user's committed file is theirs; a dangling include in it is reported,
+    // never silently rewritten.
+    let stale_root: Vec<String> = root_includes
+        .iter()
+        .filter(|i| is_managed_include(i) && !exists(i))
+        .cloned()
+        .collect();
+    let installed_in_root = root_includes.iter().any(|i| i == &include);
 
     let user_path = root.join(USER_PRESETS);
-    let mut map: Map<String, Value> = read_presets_object(&user_path)?.unwrap_or_default();
-    ensure_includes(&mut map, std::slice::from_ref(&include));
-    let body = pretty(&Value::Object(map))?;
-    write_atomic(user_path.as_std_path(), format!("{body}\n").as_bytes())?;
+    let existing = read_presets_object(&user_path)?;
+    if installed_in_root && existing.is_none() {
+        return Ok(PresetIncludes {
+            pruned: Vec::new(),
+            stale_root,
+        });
+    }
+
+    let mut map: Map<String, Value> = existing.unwrap_or_default();
+    let pruned = retain_managed_includes(&mut map, exists);
+    let mut changed = !pruned.is_empty();
+    if !installed_in_root {
+        changed |= ensure_includes(&mut map, std::slice::from_ref(&include));
+    }
+    if changed {
+        let body = pretty(&Value::Object(map))?;
+        write_atomic(user_path.as_std_path(), format!("{body}\n").as_bytes())?;
+    }
 
     ignore_user_presets(root);
-    Ok(())
+    Ok(PresetIncludes { pruned, stale_root })
+}
+
+/// The warning for a dangling OpenStrata include in the user's committed
+/// `CMakePresets.json`. CMake refuses to read the whole document, so this fails
+/// every preset in the project — including the one just generated — and only the
+/// user can decide how their own file is edited.
+pub(crate) fn stale_root_include_warning(include: &str) -> String {
+    format!(
+        "warning: {ROOT_PRESETS} includes {include}, which does not exist; \
+         CMake will refuse to read any preset until it is removed \
+         (`ost presets install` re-syncs the OpenStrata includes, \
+         `ost presets uninstall` removes them all)"
+    )
 }
 
 /// Best-effort: keep `CMakeUserPresets.json` out of git (it is developer-local).
@@ -386,6 +439,10 @@ fn report(g: &Generated, fmt: Format) {
                 "presets": format!(".strata/targets/{id}/CMakePresets.json"),
                 "user_presets": USER_PRESETS,
             },
+            "presets": {
+                "pruned_includes": g.presets.pruned,
+                "stale_root_includes": g.presets.stale_root,
+            },
         }));
         return;
     }
@@ -410,6 +467,12 @@ fn report(g: &Generated, fmt: Format) {
     );
     println!("    toolchain.cmake  env.json  target.lock.json  CMakePresets.json");
     println!("  refreshed {USER_PRESETS} (your CMakePresets.json is untouched)");
+    for dropped in &g.presets.pruned {
+        println!("    dropped stale include {dropped} (no such target)");
+    }
+    for stale in &g.presets.stale_root {
+        eprintln!("{}", stale_root_include_warning(stale));
+    }
     println!("  refreshed strata.lock");
     println!("\nNext:");
     println!("  cmake --preset {id}    (or `ost build`)");

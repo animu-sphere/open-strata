@@ -19,6 +19,10 @@ const SCHEMA_GEN_PACKAGES: &[&str] = &["jinja2", "MarkupSafe"];
 pub struct Check {
     pub name: &'static str,
     pub passed: bool,
+    /// Whether the check could not run here, as opposed to running and passing.
+    /// A skipped check never fails validation, and never claims to have proved
+    /// anything either — "not required" and "not checked" are different answers.
+    pub skipped: bool,
     /// Context shown on failure (or extra info on success).
     pub detail: Option<String>,
 }
@@ -28,6 +32,7 @@ impl Check {
         Check {
             name,
             passed: true,
+            skipped: false,
             detail: None,
         }
     }
@@ -35,7 +40,27 @@ impl Check {
         Check {
             name,
             passed: false,
+            skipped: false,
             detail: Some(detail.into()),
+        }
+    }
+
+    /// A check that could not run, with the missing precondition named.
+    pub fn skip(name: &'static str, detail: impl Into<String>) -> Check {
+        Check {
+            name,
+            passed: true,
+            skipped: true,
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// The status word for this check, for human and machine output alike.
+    pub fn status(&self) -> &'static str {
+        match (self.passed, self.skipped) {
+            (_, true) => "skip",
+            (true, false) => "pass",
+            (false, false) => "fail",
         }
     }
 }

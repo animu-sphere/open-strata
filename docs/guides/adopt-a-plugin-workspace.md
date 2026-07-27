@@ -76,6 +76,33 @@ ost plugin test    plugins/usdVrmFileFormat --from-package
 open / validate against it, catching a build-tree path baked into
 `plugInfo`/`LibraryPath` that source-tree testing cannot see.
 
+## 4b. Ship a workspace-built executable
+
+A CLI tool your workspace builds is a user-facing deliverable that no bundle
+requires, so nothing in the dependency graph reaches it. Describe it with an
+`openstrata.tool.yaml` beside its CMake project (v0.21.0):
+
+```yaml
+schema: openstrata.tool/v1alpha1
+tool:
+  id: motion_retarget
+  version: 0.4.0
+  license: Apache-2.0
+executables: [motion_retarget]   # no platform extension; packaging adds it
+directories: [bin]               # defaults to [bin, lib]
+```
+
+`ost plugin package --workspace` then packages it after the bundles, with the
+same dist shape a bundle package has (archive, `manifest.json`, `SHA256SUMS`,
+SBOM), and `--product` composes it into the aggregate as a `tool` member.
+`ost plugin product install` puts it under `tools/<id>/` and joins its
+directories to the aggregate loader path.
+
+Packaging fails if a declared executable is not there, so a release cannot ship
+a tool package with no tool in it. `ost build` records the executables it
+produced, so `plugin package` reports the same `matched` / `untracked` /
+`mismatched` provenance it reports for a bundle.
+
 ## 5. Pin a runtime and generate CI
 
 Pin the OpenUSD runtime your cells build against by digest, then generate the
@@ -89,6 +116,31 @@ ost ci generate github          # render the runtime × bundle workflow
 Pinning a `runtime_artifact` by digest keeps every cell reproducible. If a cell
 pins a runtime that lacks the evidence a generated gate demands, `ost ci
 generate` warns and `ost ci validate` fails fast (v0.18.0).
+
+Not every workspace member is a bundle. A plain library that no bundle requires,
+and a CLI executable built from the workspace, are invisible to a cell that names
+a `bundle:` — so declare `kind: workspace` for a cell that builds the workspace
+CMake tree instead (v0.21.0):
+
+```yaml
+cells:
+  - name: workspace-pr-linux
+    kind: workspace
+    lane: pull_request
+    runtime_artifact: sha256:<runtime SDK digest>
+    platform: cy2026
+    profile: usd
+    verify: test          # graph | build | test (default test)
+```
+
+It validates the dependency graph, runs `ost build`, then runs the workspace's
+own CTest suite — the members the bundle verbs never reach. Source lanes only; a
+workspace cell names no bundle and publishes nothing.
+
+`verify: graph` is the cheap early PR gate, and it gets a job of its own
+(`pr-workspace-graph`) that stops after the checkout: the graph alone, with
+nothing built and no runtime fetched, verified, or materialized. `verify: build`
+and `verify: test` share one job, since both need the same runtime.
 
 ## 6. Keep OpenStrata and plain CMake both working
 

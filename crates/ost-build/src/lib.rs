@@ -15,6 +15,7 @@ mod external;
 pub mod glibc;
 mod lease;
 mod lock;
+pub mod macho;
 pub mod msvc;
 pub mod package;
 mod presets;
@@ -38,6 +39,7 @@ pub use lease::{
     TARGET_LEASE_FILE, TARGET_LEASE_SCHEMA,
 };
 pub use lock::{LockCompiler, LockRuntime, TargetLock};
+pub use macho::{max_macos_floor, MacosFloor, MacosVersion};
 pub use package::{
     is_sdk_path, pack_dir, pack_dir_with, sdk_stage_files, source_date_epoch,
     source_date_epoch_opt, stage_files, FileEntry, PackOptions, PackProgress, PackResult,
@@ -45,7 +47,7 @@ pub use package::{
 };
 pub use presets::{
     ensure_includes, includes_of, is_managed_include, managed_include, remove_managed_includes,
-    render_target_presets,
+    render_target_presets, retain_managed_includes,
 };
 pub use python::{
     bundles_usdgenschema, module_present, provision_schema_gen_deps, relocate_baked_prefix,

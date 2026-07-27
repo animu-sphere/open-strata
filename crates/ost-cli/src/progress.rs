@@ -60,12 +60,37 @@ enum Style {
 
 /// Idle time with no child output before a heartbeat is emitted.
 const HEARTBEAT: Duration = Duration::from_secs(15);
+
+/// Idle time with no child output before the run is reported as *stalled*.
+///
+/// A heartbeat is chatter and is suppressed under `--quiet`; a stall is not. A
+/// managed configure that stops producing output — CMake's compiler-ABI
+/// try-compile is the one that does it — is a failure mode with nothing else to
+/// look at, and `renderer view --json` runs its nested build quiet, so the
+/// heartbeat is exactly the diagnostic that is missing when it is needed.
+const STALL: Duration = Duration::from_secs(120);
+
 const OUTPUT_TAIL_BYTES: usize = 4096;
+
+/// Bytes read from the end of a watched diagnostic file for its tail.
+const FILE_TAIL_BYTES: u64 = 4096;
+
+/// Lines of a watched diagnostic file reported on a stall or timeout.
+const FILE_TAIL_LINES: usize = 3;
 
 struct PhaseState {
     name: String,
     slug: String,
     started: Instant,
+}
+
+/// The child process a stall notice is about.
+struct ChildRef<'a> {
+    pid: u32,
+    /// The rendered command line, so a stalled tool can be identified (and
+    /// reproduced) without the caller having logged it.
+    command: String,
+    cwd: &'a Utf8Path,
 }
 
 /// How a phase ended, for its terminal transition line.
@@ -85,7 +110,14 @@ pub struct Reporter {
     index: usize,
     started: Instant,
     log: Option<PathBuf>,
+    /// Files worth tailing when the current phase stalls or times out — the
+    /// CMake logs of the tree being configured, for instance. A stalled child
+    /// has told us nothing on its pipe by definition, so the retained log of the
+    /// tool that stalled is the only evidence left. Cleared on every phase.
+    diagnostics: Vec<PathBuf>,
     current: Option<PhaseState>,
+    /// Silence after which a running child is reported as stalled.
+    stall_after: Duration,
     /// Fire an OS notification on completion. Already gated on the environment
     /// (false over SSH / in CI even when `--notify` was passed).
     notify: bool,
@@ -115,10 +147,20 @@ impl Reporter {
             index: 0,
             started: Instant::now(),
             log: None,
+            diagnostics: Vec::new(),
             current: None,
+            stall_after: STALL,
             notify: false,
             label: String::new(),
         }
+    }
+
+    /// Override the silence that counts as a stall. Tests use it to reach the
+    /// stall path in milliseconds instead of minutes.
+    #[cfg(test)]
+    fn stall_after(mut self, after: Duration) -> Reporter {
+        self.stall_after = after;
+        self
     }
 
     /// Enable an OS notification on completion, labelled `label` (e.g.
@@ -136,6 +178,15 @@ impl Reporter {
         self.log = Some(path.as_std_path().to_path_buf());
     }
 
+    /// Name the files to tail if the current phase stalls or times out. They do
+    /// not have to exist: a CMake log only appears once configure reaches it,
+    /// and the absence of one is itself part of the diagnostic.
+    ///
+    /// Set per phase, and cleared by the next [`phase`](Self::phase).
+    pub fn watch(&mut self, paths: Vec<PathBuf>) {
+        self.diagnostics = paths;
+    }
+
     /// Print an incidental human note (e.g. an env summary). Rendered for Human
     /// and Plain, but suppressed under `--quiet` and in Json mode so the JSON
     /// event stream on stdout stays pure.
@@ -149,6 +200,7 @@ impl Reporter {
     /// Begin a new phase, closing the previous one as completed.
     pub fn phase(&mut self, name: &str) {
         self.close_current(Outcome::Completed);
+        self.diagnostics.clear();
         self.index += 1;
         let state = PhaseState {
             name: name.to_string(),
@@ -340,6 +392,108 @@ impl Reporter {
         }
     }
 
+    /// Report that the running child has gone silent past [`STALL`].
+    ///
+    /// Unlike a heartbeat this is never suppressed: `--quiet` and `--json` are
+    /// how a *nested* managed build runs, which is precisely the case where a
+    /// stalled configure otherwise prints nothing at all. It names the active
+    /// child (pid, command, cwd), the phase, the retained log, what is left of
+    /// the timeout budget, and the tail of every watched diagnostic file — the
+    /// same evidence the timeout path reports, delivered while the tool is still
+    /// stuck rather than after the deadline.
+    fn stall(
+        &self,
+        silent: Duration,
+        child: &ChildRef<'_>,
+        tail: &str,
+        remaining: Option<Duration>,
+    ) {
+        let Some(state) = &self.current else { return };
+        let elapsed = state.started.elapsed();
+        let log = self.log.as_ref().map(|path| path.display().to_string());
+        let diagnostics = self.diagnostic_tails();
+        let budget = remaining
+            .map(|left| format!("{}s left of the timeout budget", left.as_secs()))
+            .unwrap_or_else(|| "no timeout configured".into());
+        match self.style {
+            Style::Human => {
+                eprintln!(
+                    "[{}/{}] {} STALLED — no output for {} (elapsed {}, {budget})",
+                    self.index,
+                    self.total,
+                    state.name,
+                    hms(silent),
+                    hms(elapsed)
+                );
+                eprintln!("      pid {} · {}", child.pid, child.command);
+                eprintln!("      cwd {}", child.cwd);
+                if let Some(log) = &log {
+                    eprintln!("      log: {log}");
+                }
+                if !tail.is_empty() {
+                    eprintln!("      last output: {}", one_line(tail));
+                }
+                for (path, text) in &diagnostics {
+                    eprintln!("      {path}: {}", one_line(text));
+                }
+            }
+            Style::Plain => {
+                eprintln!(
+                    "timestamp={} phase={} status=stalled pid={} silent_ms={} elapsed_ms={} \
+                     timeout_remaining_seconds={} cwd={} log={} command={} tail={}",
+                    now_unix(),
+                    state.slug,
+                    child.pid,
+                    silent.as_millis(),
+                    elapsed.as_millis(),
+                    remaining
+                        .map(|left| left.as_secs().to_string())
+                        .unwrap_or_else(|| "none".into()),
+                    child.cwd,
+                    log.as_deref().unwrap_or_default(),
+                    serde_json::to_string(&child.command).unwrap_or_else(|_| "\"\"".into()),
+                    serde_json::to_string(tail).unwrap_or_else(|_| "\"\"".into())
+                );
+                for (path, text) in &diagnostics {
+                    eprintln!(
+                        "timestamp={} phase={} status=stalled diagnostic={path} tail={}",
+                        now_unix(),
+                        state.slug,
+                        serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into())
+                    );
+                }
+            }
+            Style::Json => emit_json(serde_json::json!({
+                "event": "stalled",
+                "phase": state.slug,
+                "pid": child.pid,
+                "command": child.command,
+                "cwd": child.cwd,
+                "silent_ms": silent.as_millis() as u64,
+                "elapsed_ms": elapsed.as_millis() as u64,
+                "timeout_remaining_seconds": remaining.map(|left| left.as_secs()),
+                "log": log,
+                "last_output_tail": tail,
+                "diagnostics": diagnostics
+                    .iter()
+                    .map(|(path, text)| serde_json::json!({ "path": path, "tail": text }))
+                    .collect::<Vec<_>>(),
+                "timestamp": now_unix(),
+            })),
+        }
+    }
+
+    /// The tail of every watched diagnostic file that exists and has content.
+    fn diagnostic_tails(&self) -> Vec<(String, String)> {
+        self.diagnostics
+            .iter()
+            .filter_map(|path| {
+                let tail = file_tail(path)?;
+                Some((path.display().to_string(), tail))
+            })
+            .collect()
+    }
+
     fn child_started(
         &self,
         pid: u32,
@@ -418,10 +572,20 @@ impl Reporter {
             .stderr(Stdio::piped());
         configure_process_group(&mut cmd);
 
+        // Armed before the spawn so the handler is installed by the time a child
+        // can exist. One window remains and cannot be closed without blocking
+        // signals around the spawn: between `spawn` returning and the pid being
+        // recorded, an interrupt exits without killing the child it could not
+        // name. That is the same microseconds every process-spawning tool has,
+        // and it is not the failure this exists for — an interrupt during a
+        // multi-minute configure lands in the poll loop below, where the pid is
+        // recorded.
+        interrupt::arm();
         let mut child = cmd
             .spawn()
             .map_err(|e| Error::io(format!("run {}", program.display()), e))?;
         let pid = child.id();
+        interrupt::set_active(pid);
         self.child_started(pid, program, args, cwd, timeout);
 
         // Shared "last output" clock and an optional log sink, both updated by the
@@ -452,9 +616,16 @@ impl Reporter {
         );
 
         // Poll for completion; while the child runs, emit a heartbeat whenever it
-        // has produced no output for HEARTBEAT.
+        // has produced no output for HEARTBEAT, and a louder stall notice once
+        // the silence passes STALL.
         let mut last_beat = Instant::now();
+        let mut last_stall: Option<Instant> = None;
         let child_started = Instant::now();
+        let child_ref = ChildRef {
+            pid,
+            command: render_command(program, args),
+            cwd,
+        };
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
@@ -466,7 +637,9 @@ impl Reporter {
                             .as_ref()
                             .map(|state| state.slug.clone())
                             .unwrap_or_else(|| "external-tool".into());
+                        let diagnostics = self.diagnostic_tails();
                         let cleanup = terminate_process_tree(&mut child);
+                        interrupt::clear();
                         // Never make a timeout unbounded again by joining a
                         // reader whose pipe is still held by an escaped
                         // descendant. Dropping JoinHandle detaches the reader;
@@ -480,24 +653,47 @@ impl Reporter {
                             .as_ref()
                             .map(|path| path.display().to_string())
                             .unwrap_or_else(|| "<disabled>".into());
+                        // The child said nothing on its pipe, so the retained log
+                        // of the tool that hung is the evidence that remains.
+                        let retained = diagnostics
+                            .iter()
+                            .map(|(path, text)| format!(", {path}: {}", one_line(text)))
+                            .collect::<String>();
                         self.close_current(Outcome::Failed(None));
                         return Err(Error::external_tool(format!(
-                            "command timed out after {}s: {} (phase '{phase}', pid {pid}, cwd '{cwd}', log '{log}', cleanup: {cleanup}, last output: {})",
+                            "command timed out after {}s: {} (phase '{phase}', pid {pid}, cwd '{cwd}', log '{log}', cleanup: {cleanup}, last output: {}{retained})",
                             timeout.unwrap_or_default().as_secs(),
-                            render_command(program, args),
+                            child_ref.command,
                             if tail.is_empty() { "<none>".into() } else { one_line(&tail) }
                         ))
                         .with_phase(phase));
                     }
                     let idle = last_output.lock().map(|t| t.elapsed()).unwrap_or_default();
-                    if idle >= HEARTBEAT && last_beat.elapsed() >= HEARTBEAT {
+                    // A stall supersedes the heartbeat for this tick: they
+                    // describe the same silence, and only one of them is worth
+                    // interrupting a quiet run for.
+                    if idle >= self.stall_after
+                        && last_stall.is_none_or(|at| at.elapsed() >= self.stall_after)
+                    {
+                        let remaining =
+                            timeout.map(|limit| limit.saturating_sub(child_started.elapsed()));
+                        self.stall(idle, &child_ref, &output_tail(&tail), remaining);
+                        last_stall = Some(Instant::now());
+                        last_beat = Instant::now();
+                    } else if idle >= HEARTBEAT && last_beat.elapsed() >= HEARTBEAT {
                         self.heartbeat(idle, pid, &output_tail(&tail));
                         last_beat = Instant::now();
                     }
                 }
-                Err(e) => return Err(Error::io(format!("wait {}", program.display()), e)),
+                Err(e) => {
+                    interrupt::clear();
+                    return Err(Error::io(format!("wait {}", program.display()), e));
+                }
             }
         };
+        // The pid is free to be reused the moment the child is reaped, so stop
+        // pointing an interrupt at it.
+        interrupt::clear();
 
         let _ = out.join();
         let _ = err.join();
@@ -529,6 +725,131 @@ impl Drop for Reporter {
     fn drop(&mut self) {
         self.close_current(Outcome::Failed(None));
     }
+}
+
+/// Terminating a managed child when `ost` itself is interrupted.
+///
+/// Managed children are spawned into their own process group (so a console
+/// Ctrl-C never races OpenStrata to them, and a timeout can reap the whole
+/// tree). The cost of that isolation is that an interrupted `ost` leaves cmake,
+/// ninja and their compilers running: nothing else is listening. So `ost`
+/// listens, and kills the tree it started before it goes.
+///
+/// The target lease is deliberately *not* released here. A configure killed
+/// mid-write leaves a build tree shaped by a run that never finished, which is
+/// exactly what takeover evidence exists to announce — only a timeout OpenStrata
+/// handled to completion clears its own lease.
+mod interrupt {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Once;
+
+    /// The pid of the managed child currently running, or 0 for none. Also the
+    /// group id: children are spawned as their own group leader.
+    static ACTIVE: AtomicU32 = AtomicU32::new(0);
+    static ARMED: Once = Once::new();
+
+    /// Install the interrupt handler once per process.
+    pub(super) fn arm() {
+        ARMED.call_once(install);
+    }
+
+    /// Record the child an interrupt should terminate.
+    pub(super) fn set_active(pid: u32) {
+        ACTIVE.store(pid, Ordering::SeqCst);
+    }
+
+    /// Forget the child: it has exited (or been reaped) and its pid may be
+    /// reused by an unrelated process.
+    pub(super) fn clear() {
+        ACTIVE.store(0, Ordering::SeqCst);
+    }
+
+    fn active() -> u32 {
+        ACTIVE.load(Ordering::SeqCst)
+    }
+
+    #[cfg(unix)]
+    fn install() {
+        // SAFETY: `on_signal` is async-signal-safe — it calls only `kill`,
+        // `write` and `_exit`.
+        unsafe {
+            signal(SIGINT, on_signal);
+            signal(SIGTERM, on_signal);
+        }
+    }
+
+    #[cfg(unix)]
+    const SIGINT: std::os::raw::c_int = 2;
+    #[cfg(unix)]
+    const SIGTERM: std::os::raw::c_int = 15;
+    #[cfg(unix)]
+    const SIGKILL: std::os::raw::c_int = 9;
+
+    #[cfg(unix)]
+    unsafe extern "C" {
+        fn signal(
+            signum: std::os::raw::c_int,
+            handler: extern "C" fn(std::os::raw::c_int),
+        ) -> usize;
+        fn kill(pid: std::os::raw::c_int, sig: std::os::raw::c_int) -> std::os::raw::c_int;
+        fn write(fd: std::os::raw::c_int, buf: *const std::os::raw::c_void, count: usize) -> isize;
+        fn _exit(code: std::os::raw::c_int) -> !;
+    }
+
+    #[cfg(unix)]
+    extern "C" fn on_signal(sig: std::os::raw::c_int) {
+        const MESSAGE: &[u8] = b"\ninterrupted: terminating the managed process tree\n";
+        let pid = active();
+        if pid != 0 {
+            if let Ok(pid) = std::os::raw::c_int::try_from(pid) {
+                // SAFETY: async-signal-safe; a negative pid signals the group.
+                unsafe {
+                    write(2, MESSAGE.as_ptr().cast(), MESSAGE.len());
+                    kill(-pid, SIGKILL);
+                }
+            }
+        }
+        // SAFETY: the handler must not return — the default disposition was
+        // replaced, so returning would resume a run whose child is now dead.
+        unsafe { _exit(128 + sig) }
+    }
+
+    #[cfg(windows)]
+    fn install() {
+        // SAFETY: a plain FFI registration; the handler is a valid `extern
+        // "system"` fn for the lifetime of the process.
+        unsafe {
+            SetConsoleCtrlHandler(Some(on_console_ctrl), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    unsafe extern "system" {
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
+    }
+
+    /// Windows runs console control handlers on a dedicated thread rather than
+    /// in a signal context, so this may allocate and spawn. Returning 0 lets the
+    /// default handler terminate `ost` — after the tree is gone.
+    #[cfg(windows)]
+    unsafe extern "system" fn on_console_ctrl(_event: u32) -> i32 {
+        let pid = active();
+        if pid != 0 {
+            eprintln!("\ninterrupted: terminating the managed process tree (pid {pid})");
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        0
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn install() {}
 }
 
 /// Which standard stream a reader forwards to.
@@ -591,6 +912,36 @@ fn spawn_reader<R: Read + Send + 'static>(
             }
         }
     })
+}
+
+/// The last few non-empty lines of a file, read from its end.
+///
+/// `None` when the file is absent or has nothing to say — a CMake log that has
+/// not been created yet is not an error, it locates the stall before that log.
+fn file_tail(path: &Path) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let from = len.saturating_sub(FILE_TAIL_BYTES);
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = Vec::with_capacity(FILE_TAIL_BYTES as usize);
+    file.read_to_end(&mut buf).ok()?;
+
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text
+        .lines()
+        // A partial first line from mid-file truncation is not worth showing.
+        .skip(usize::from(from > 0))
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let start = lines.len().saturating_sub(FILE_TAIL_LINES);
+    lines.drain(..start);
+    Some(lines.join("\n"))
 }
 
 fn output_tail(tail: &Arc<Mutex<VecDeque<u8>>>) -> String {
@@ -815,6 +1166,117 @@ mod tests {
         // Requested but environment-gated: never on under SSH / CI.
         let gated = Reporter::new(ProgressMode::Auto, 1, false).with_notify(true, "ost build");
         assert_eq!(gated.notify, notify::enabled());
+    }
+
+    /// A child that produces no output at all: the stall case, in miniature.
+    fn silent_child() -> (PathBuf, Vec<String>) {
+        if cfg!(windows) {
+            (
+                PathBuf::from("cmd"),
+                vec!["/c".into(), "ping -n 4 127.0.0.1 > nul".into()],
+            )
+        } else {
+            (PathBuf::from("/bin/sleep"), vec!["3".into()])
+        }
+    }
+
+    fn temp_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "ost-progress-{tag}-{}-{}",
+            std::process::id(),
+            now_unix()
+        ))
+    }
+
+    #[test]
+    fn file_tail_reports_the_last_lines_only() {
+        let path = temp_path("tail");
+        std::fs::write(&path, "one\ntwo\nthree\nfour\nfive\n").unwrap();
+        assert_eq!(file_tail(&path).unwrap(), "three\nfour\nfive");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_tail_skips_a_line_truncated_by_the_read_window() {
+        let path = temp_path("tail-window");
+        // Longer than FILE_TAIL_BYTES, so the read starts mid-line.
+        let mut body = "x".repeat(FILE_TAIL_BYTES as usize);
+        body.push_str("\nlast line\n");
+        std::fs::write(&path, body).unwrap();
+        assert_eq!(file_tail(&path).unwrap(), "last line");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_tail_is_none_when_absent_or_empty() {
+        assert!(file_tail(&temp_path("absent")).is_none());
+        let path = temp_path("empty");
+        std::fs::write(&path, "\n\n  \n").unwrap();
+        assert!(file_tail(&path).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_new_phase_forgets_the_previous_phase_diagnostics() {
+        let mut reporter = Reporter::new(ProgressMode::Plain, 2, true);
+        reporter.phase("Configuring CMake");
+        reporter.watch(vec![PathBuf::from("CMakeFiles/CMakeError.log")]);
+        assert_eq!(reporter.diagnostics.len(), 1);
+        reporter.phase("Building targets");
+        assert!(
+            reporter.diagnostics.is_empty(),
+            "a build stall must not tail the configure logs"
+        );
+    }
+
+    /// hdMerlin report 10: a managed configure that stalls has told us nothing
+    /// on its pipe, so the retained CMake log is the evidence that remains.
+    #[test]
+    fn timeout_error_names_the_watched_diagnostic_files() {
+        let cwd = camino::Utf8PathBuf::from_path_buf(std::env::current_dir().unwrap()).unwrap();
+        let (program, args) = silent_child();
+        let cmake_log = temp_path("cmake-error-log");
+        std::fs::write(
+            &cmake_log,
+            "Detecting CXX compiler ABI info\nchecking whether the CXX compiler works\n",
+        )
+        .unwrap();
+
+        let mut reporter = Reporter::new(ProgressMode::Plain, 1, true);
+        reporter.phase("Configuring CMake");
+        reporter.watch(vec![cmake_log.clone()]);
+        let error = reporter
+            .run_status(&program, &args, &cwd, &[], Some(Duration::from_millis(100)))
+            .unwrap_err();
+
+        let message = error.to_string();
+        assert!(
+            message.contains("checking whether the CXX compiler works"),
+            "the timeout must carry the retained log tail:\n{message}"
+        );
+        assert!(
+            message.contains(&cmake_log.display().to_string()),
+            "and name the file it came from:\n{message}"
+        );
+        let _ = std::fs::remove_file(&cmake_log);
+    }
+
+    /// A silent child must be reported as stalled and still be allowed to
+    /// finish: a stall is a diagnostic, not a deadline.
+    #[test]
+    fn a_stalled_child_is_reported_and_still_completes() {
+        let cwd = camino::Utf8PathBuf::from_path_buf(std::env::current_dir().unwrap()).unwrap();
+        let (program, args) = silent_child();
+        let mut reporter =
+            Reporter::new(ProgressMode::Plain, 1, true).stall_after(Duration::from_millis(200));
+        reporter.phase("Configuring CMake");
+        let status = reporter
+            .run_status(&program, &args, &cwd, &[], None)
+            .expect("a stall must not fail the run");
+        assert!(
+            status.success(),
+            "the child should exit cleanly: {status:?}"
+        );
     }
 
     #[test]

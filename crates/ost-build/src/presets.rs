@@ -109,6 +109,24 @@ pub fn ensure_includes(root: &mut Map<String, Value>, want: &[String]) -> bool {
 ///
 /// If the `include` array becomes empty it is dropped entirely.
 pub fn remove_managed_includes(root: &mut Map<String, Value>) -> Vec<String> {
+    retain_managed_includes(root, |_| false)
+}
+
+/// Remove the OpenStrata-managed includes for which `keep` returns `false`,
+/// preserving all other fields and any non-managed includes. Returns the
+/// removed paths.
+///
+/// CMake resolves every `include` of a presets document before it evaluates any
+/// preset, and an unresolvable one is fatal to the whole file — so a managed
+/// include whose per-target presets file no longer exists takes down the
+/// *other* targets' presets with it. Callers pass an existence predicate to keep
+/// a generated presets document self-contained.
+///
+/// If the `include` array becomes empty it is dropped entirely.
+pub fn retain_managed_includes<F>(root: &mut Map<String, Value>, keep: F) -> Vec<String>
+where
+    F: Fn(&str) -> bool,
+{
     let Some(arr) = root.get("include").and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -117,7 +135,7 @@ pub fn remove_managed_includes(root: &mut Map<String, Value>) -> Vec<String> {
     let mut removed: Vec<String> = Vec::new();
     for entry in arr {
         match entry.as_str() {
-            Some(s) if is_managed_include(s) => removed.push(s.to_string()),
+            Some(s) if is_managed_include(s) && !keep(s) => removed.push(s.to_string()),
             // Preserve non-managed string entries and any non-string entries.
             _ => kept.push(entry.clone()),
         }
@@ -248,6 +266,36 @@ mod tests {
         }));
         remove_managed_includes(&mut root);
         assert!(!root.contains_key("include"));
+    }
+
+    #[test]
+    fn retain_managed_includes_drops_only_the_missing_managed_ones() {
+        let present = managed_include("cy2026-linux-x86_64-py313-usd");
+        let missing = managed_include("cy2026-linux-x86_64-py313-core");
+        let mut root = obj(json!({
+            "version": 4,
+            "include": ["vendor/Presets.json", &missing, &present],
+            "configurePresets": [{ "name": "dev" }]
+        }));
+
+        let removed = retain_managed_includes(&mut root, |p| p == present);
+
+        assert_eq!(removed, vec![missing]);
+        // The surviving target and the user's own include are both untouched.
+        assert_eq!(
+            includes_of(&Value::Object(root.clone())),
+            vec!["vendor/Presets.json".to_string(), present]
+        );
+        assert!(root.contains_key("configurePresets"));
+    }
+
+    #[test]
+    fn retain_managed_includes_is_a_no_op_when_every_target_exists() {
+        let a = managed_include("cy2026-linux-x86_64-py313-usd");
+        let mut root = obj(json!({ "version": 4, "include": [&a] }));
+
+        assert!(retain_managed_includes(&mut root, |_| true).is_empty());
+        assert_eq!(includes_of(&Value::Object(root)), vec![a]);
     }
 
     #[test]

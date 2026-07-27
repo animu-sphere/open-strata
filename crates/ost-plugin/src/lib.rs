@@ -25,6 +25,7 @@ mod plug_info;
 mod report;
 mod scaffold;
 mod session;
+mod tool;
 mod verification;
 mod version;
 mod workspace;
@@ -56,6 +57,7 @@ pub use session::{
     bundle_vars, session_env, session_env_from, session_env_from_with_library_dirs,
     session_env_with,
 };
+pub use tool::{Tool, ToolIdentity, ToolManifest, ToolRequires, TOOL_MANIFEST, TOOL_SCHEMA};
 pub use verification::{
     adjacent_golden, PluginVerification, RoundtripVerification, PLUGIN_VERIFICATION,
     PLUGIN_VERIFICATION_SCHEMA,

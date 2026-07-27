@@ -34,6 +34,10 @@ pub const PLUGIN_BUNDLE_KIND: &str = "openstrata.plugin-bundle";
 /// Producer-manifest `kind` tag for an aggregate plugin product.
 pub const PLUGIN_PRODUCT_KIND: &str = "openstrata.plugin-product";
 
+/// Producer-manifest `kind` tag for a workspace-built executable
+/// (`ost plugin package --workspace`, from an `openstrata.tool.yaml` member).
+pub const TOOL_KIND: &str = "openstrata.tool";
+
 /// Producer-manifest `kind` tag for runtime artifacts (future `runtime export`).
 pub const RUNTIME_KIND: &str = "openstrata.runtime";
 

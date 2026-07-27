@@ -350,6 +350,16 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     invalidate_completion(&build_dir)?;
     let g = generate_with_generator(&root, &platform, &profile, &compiler, &args.generator)?;
     debug_assert_eq!(g.id, id);
+    for dropped in &g.presets.pruned {
+        rep.note(&format!("dropped stale preset include {dropped}"));
+    }
+    // The configure below is `cmake --preset <id>`, which reads the committed
+    // presets file too: say so before CMake fails on someone else's include.
+    for stale in &g.presets.stale_root {
+        rep.note(&crate::commands::configure::stale_root_include_warning(
+            stale,
+        ));
+    }
     // Subprocess output from here on is teed to a per-target build log.
     let log = root
         .join(".strata")
@@ -392,6 +402,13 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     // 9. Configure, then build — each a phase whose subprocess streams through
     //    the reporter (heartbeat while quiet, log capture, failure reporting).
     rep.phase("Configuring CMake");
+    // A configure that hangs — the compiler-ABI try-compile is the classic one —
+    // stops writing to its pipe, so point the stall/timeout diagnostic at the
+    // logs CMake keeps writing instead.
+    rep.watch(vec![
+        build_dir.join("CMakeFiles").join("CMakeError.log").into(),
+        build_dir.join("CMakeFiles").join("CMakeOutput.log").into(),
+    ]);
     let configure_status = match rep.run_status(
         &cmake_prog,
         &configure_args,
@@ -528,7 +545,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         ost_manifest::SessionOutcome::Success,
         true,
     )?;
-    write_completion(
+    let completion_warnings = write_completion(
         &root,
         &id,
         &relative_build,
@@ -536,6 +553,9 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         lease.invocation(),
         renderer_reports,
     )?;
+    for warning in &completion_warnings {
+        rep.note(warning);
+    }
 
     // The completion is published; the target is free for the next writer.
     // Handled configure/build failures also clear their record before return;
@@ -622,7 +642,7 @@ fn write_completion(
     intent: &BuildIntent,
     invocation: Option<&str>,
     renderer_reports: Vec<RendererEvidenceBinding>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let lock_path = root
         .join(STATE_DIR)
         .join("targets")
@@ -648,17 +668,27 @@ fn write_completion(
         intent.clone(),
         completed_unix,
     );
+    // A workspace-built executable is packaged from what this build produced, so
+    // the completion records its digests the way `plugin build` records a
+    // bundle's — that binding is what lets `plugin package` tell a managed tool
+    // output from one a plain CMake build overwrote. It is evidence *about* a
+    // build that already succeeded, so a tool it cannot read is a warning: the
+    // target is built either way, and the tool simply packages as `untracked`.
+    let (outputs, warnings) =
+        crate::commands::plugin::workspace_tool_outputs(root, lock.variant.os);
     // A read-only attach holds no lease and so names no owning invocation.
     let completion = match invocation {
         Some(invocation) => completion.with_invocation(invocation),
         None => completion,
     }
-    .with_renderer_reports(renderer_reports);
+    .with_renderer_reports(renderer_reports)
+    .with_outputs(outputs);
     let body = completion
         .to_json()
         .map_err(|error| Error::parse(BUILD_COMPLETION_FILE, anyhow::Error::new(error)))?;
     let path = root.join(relative_build).join(BUILD_COMPLETION_FILE);
-    write_atomic(path.as_std_path(), format!("{body}\n").as_bytes())
+    write_atomic(path.as_std_path(), format!("{body}\n").as_bytes())?;
+    Ok(warnings)
 }
 
 /// Confirm `build/<id>` exists and is non-empty after a successful build, so a

@@ -28,7 +28,8 @@ Per-feature, per-platform support levels. Sourced from [`support/platforms.toml`
 | Executable permission preservation [^4] | stable | beta | beta | unsupported |
 | In-tree symlink preservation [^5] | stable | beta | beta | unsupported |
 | glibc floor validation [^6] | stable | unsupported | unsupported | unsupported |
-| DCC host integration [^7] | unsupported | unsupported | unsupported | unsupported |
+| DCC host discovery [^7] | experimental | experimental | experimental | beta |
+| DCC host adapters and matrix [^8] | unsupported | unsupported | unsupported | unsupported |
 
 [^1]: macOS source builds can need full Xcode for upstream codesign; see the runtime build notes.
 [^2]: The GHCR user/password push path has not yet been round-tripped end to end; tracked in roadmap/current.md.
@@ -36,4 +37,5 @@ Per-feature, per-platform support levels. Sourced from [`support/platforms.toml`
 [^4]: A Unix concept; Windows has no execute bit to preserve.
 [^5]: Linux SDK soname chains; not part of the Windows packaging model.
 [^6]: A Linux-only concept (ELF scan of the runtime's binaries).
-[^7]: Planned (Phase 10 / v0.21.0); not yet implemented on any platform.
+[^7]: Maya/Houdini discovery exercised against real installs on Windows; other install layouts are encoded from vendor documentation and not yet demonstrated.
+[^8]: Planned (Phase 10 second half / v0.22.0); headless probes and pinned host matrix cells are not implemented on any platform.
