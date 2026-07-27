@@ -2866,6 +2866,149 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     assert_eq!(imported["data"]["artifact"]["kind"], "product");
 }
 
+/// usd-vrm-plugins report 28 §3: a workspace-built CLI tool is a user-facing
+/// deliverable that no bundle requires, so the aggregate product had no member
+/// archive that could carry it — a release either omitted the tool or the
+/// repository hand-rolled a second packaging path.
+#[test]
+fn a_workspace_tool_ships_as_a_product_member() {
+    let sb = Sandbox::new("wstool");
+    init_and_pull(&sb);
+    let out = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "consumer",
+        "--extension",
+        "toy",
+    ]);
+    assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+    let lib = sb.work_file(&format!(
+        "consumer/lib/libConsumerFileFormat{}",
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+    std::fs::write(lib, b"test library marker").unwrap();
+
+    // A tool member: a descriptor plus what the workspace build produced.
+    let tool_root = sb.work_file("tools/motion_retarget");
+    std::fs::create_dir_all(tool_root.join("bin")).unwrap();
+    std::fs::write(
+        tool_root.join("openstrata.tool.yaml"),
+        "schema: openstrata.tool/v1alpha1\n\
+         tool:\n  id: motion_retarget\n  version: 0.4.0\n  license: Apache-2.0\n\
+         executables: [motion_retarget]\n\
+         directories: [bin]\n",
+    )
+    .unwrap();
+    let exe = if cfg!(windows) {
+        "motion_retarget.exe"
+    } else {
+        "motion_retarget"
+    };
+    std::fs::write(tool_root.join("bin").join(exe), b"tool bytes").unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "package", "--workspace", "--product"]);
+    assert!(
+        out.status.success(),
+        "workspace package failed:\n{}",
+        out_text(&out)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        value["data"]["tools"],
+        serde_json::json!(["motion_retarget"])
+    );
+    let packages = value["data"]["packages"].as_array().unwrap();
+    assert_eq!(
+        packages.len(),
+        2,
+        "the bundle and the tool are both packaged"
+    );
+    let tool_package = packages
+        .iter()
+        .find(|p| p["member"] == "tool")
+        .expect("the tool is a package of its own");
+    assert_eq!(tool_package["name"], "motion_retarget");
+    assert_eq!(tool_package["version"], "0.4.0");
+    // Never built by `ost build` here, so its origin is recorded honestly
+    // rather than claimed as managed.
+    assert_eq!(
+        tool_package["build_provenance"]["status"], "untracked",
+        "an unmanaged tool output must not be laundered as managed"
+    );
+    assert_eq!(value["data"]["product"]["members"], 2);
+    let product_digest = value["data"]["product"]["archive_digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The tool's own dist output has the same shape a bundle's does.
+    let tool_manifest =
+        find_first(&sb.work_file("tools/motion_retarget/dist"), "manifest.json").unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&tool_manifest).unwrap()).unwrap();
+    assert_eq!(manifest["kind"], "openstrata.tool");
+    assert_eq!(manifest["tool"]["id"], "motion_retarget");
+    assert_eq!(
+        manifest["tool"]["executables"],
+        serde_json::json!([format!("bin/{exe}")])
+    );
+
+    let product_dist = find_first(&sb.work_file("dist/products"), "manifest.json").unwrap();
+    let product_dist = product_dist.parent().unwrap().to_str().unwrap();
+    let verified = sb.ost(&["--json", "plugin", "product", "verify", product_dist]);
+    assert!(
+        verified.status.success(),
+        "a product with a tool member must verify:\n{}",
+        out_text(&verified)
+    );
+    let verified: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(
+        verified["data"]["members"],
+        serde_json::json!(["consumer", "motion_retarget"]),
+        "tools are composed after the bundles"
+    );
+
+    let prefix = sb.work_file("installed-product");
+    let installed = sb.ost(&[
+        "--json",
+        "plugin",
+        "product",
+        "install",
+        product_dist,
+        "--prefix",
+        prefix.to_str().unwrap(),
+        "--expect-digest",
+        &product_digest,
+    ]);
+    assert!(
+        installed.status.success(),
+        "product install failed:\n{}",
+        out_text(&installed)
+    );
+    // The deliverable is installed where a user can run it, beside the bundles.
+    assert!(
+        prefix.join("tools/motion_retarget/bin").join(exe).is_file(),
+        "the tool executable must reach the installed prefix"
+    );
+    assert!(prefix
+        .join("bundles/consumer/openstrata.plugin.yaml")
+        .is_file());
+    let activation: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prefix.join("openstrata.activation.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        activation["library_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path == "tools/motion_retarget/bin"),
+        "the tool's directories join the aggregate loader path: {activation}"
+    );
+}
+
 /// Documents that no path bakes host separators into a portable artifact.
 #[test]
 fn packaged_dependency_paths_are_forward_slashed() {

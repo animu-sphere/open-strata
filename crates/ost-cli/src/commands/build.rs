@@ -670,7 +670,15 @@ fn write_completion(
         Some(invocation) => completion.with_invocation(invocation),
         None => completion,
     }
-    .with_renderer_reports(renderer_reports);
+    .with_renderer_reports(renderer_reports)
+    // A workspace-built executable is packaged from what this build produced, so
+    // the completion records its digests the way `plugin build` records a
+    // bundle's — that binding is what lets `plugin package` tell a managed tool
+    // output from one a plain CMake build overwrote.
+    .with_outputs(crate::commands::plugin::workspace_tool_outputs(
+        root,
+        lock.variant.os,
+    )?);
     let body = completion
         .to_json()
         .map_err(|error| Error::parse(BUILD_COMPLETION_FILE, anyhow::Error::new(error)))?;

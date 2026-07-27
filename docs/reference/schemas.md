@@ -205,3 +205,17 @@ Logical renderer source composition and validation intent. Units are project-own
 | `renderer` | object | yes |  |
 | `schema` | string | yes |  |
 | `validation` | object | yes |  |
+
+## `tool.schema.json`
+
+OpenStrata Workspace Tool Manifest
+
+The openstrata.tool.yaml descriptor for a workspace-built executable shipped as a product member. A tool is a user-facing deliverable, not an OpenUSD plugin bundle and not a library other members link: nothing in the workspace graph depends on it, which is why it needs a descriptor of its own to reach a release.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `directories` | array | no | Directories below the member root the build writes into, searched in order and packaged when present. Defaults to [bin, lib]. |
+| `executables` | array | yes | Executable names as the build produces them, without a platform extension. Packaging resolves the extension for the target OS and fails when one is missing, so a release cannot ship a tool package with no tool in it. |
+| `requires` | object | no |  |
+| `schema` | string | yes |  |
+| `tool` | object | yes |  |

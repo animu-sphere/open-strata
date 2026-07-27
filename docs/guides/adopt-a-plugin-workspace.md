@@ -76,6 +76,33 @@ ost plugin test    plugins/usdVrmFileFormat --from-package
 open / validate against it, catching a build-tree path baked into
 `plugInfo`/`LibraryPath` that source-tree testing cannot see.
 
+## 4b. Ship a workspace-built executable
+
+A CLI tool your workspace builds is a user-facing deliverable that no bundle
+requires, so nothing in the dependency graph reaches it. Describe it with an
+`openstrata.tool.yaml` beside its CMake project (v0.21.0):
+
+```yaml
+schema: openstrata.tool/v1alpha1
+tool:
+  id: motion_retarget
+  version: 0.4.0
+  license: Apache-2.0
+executables: [motion_retarget]   # no platform extension; packaging adds it
+directories: [bin]               # defaults to [bin, lib]
+```
+
+`ost plugin package --workspace` then packages it after the bundles, with the
+same dist shape a bundle package has (archive, `manifest.json`, `SHA256SUMS`,
+SBOM), and `--product` composes it into the aggregate as a `tool` member.
+`ost plugin product install` puts it under `tools/<id>/` and joins its
+directories to the aggregate loader path.
+
+Packaging fails if a declared executable is not there, so a release cannot ship
+a tool package with no tool in it. `ost build` records the executables it
+produced, so `plugin package` reports the same `matched` / `untracked` /
+`mismatched` provenance it reports for a bundle.
+
 ## 5. Pin a runtime and generate CI
 
 Pin the OpenUSD runtime your cells build against by digest, then generate the

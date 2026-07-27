@@ -1691,6 +1691,9 @@ struct PackageOutcome {
     id: String,
     name: String,
     version: String,
+    /// Target OS of the variant this member was packaged for, so an aggregate
+    /// product can record one loader contract without re-resolving the target.
+    os: Os,
     archive_path: Utf8PathBuf,
     packed: ost_build::PackResult,
     debug: Option<(String, ost_build::PackResult)>,
@@ -2110,6 +2113,7 @@ fn package_bundle(
         id,
         name: name.clone(),
         version: version.clone(),
+        os: tgt.variant.os,
         archive_path,
         packed,
         debug: debug_pack,
@@ -2118,6 +2122,367 @@ fn package_bundle(
         manifest,
         stage_warnings,
     })
+}
+
+/// Package one workspace-built executable into a member archive.
+///
+/// From usd-vrm-plugins report 28 §3: a CLI tool is a user-facing deliverable
+/// with no bundle that could carry it, so a release either omitted it or the
+/// repository hand-rolled a second packaging path — and hand-rolled packaging is
+/// what report 27 was about. This produces the *same* dist shape a bundle
+/// package does (archive + `manifest.json` + `SHA256SUMS` + evidence), which is
+/// what lets the aggregate product compose it without a second code path.
+///
+/// It stages what the build produced under the member root rather than
+/// reconstructing an install view: the executables the descriptor names, plus
+/// the directories it declares, so shared libraries shipped beside a tool travel
+/// with it.
+fn package_tool(
+    tool: &ost_plugin::Tool,
+    target: Option<String>,
+    profile: Option<String>,
+    clean_stage: bool,
+    with_debug: bool,
+    allow_unmanaged_output: bool,
+) -> Result<PackageOutcome> {
+    let (platform, profile) = selection(target, profile).ok_or_else(|| {
+        Error::usage(
+            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
+        )
+    })?;
+    let (tgt, r) = build_target(&platform, &profile)?;
+    let id = tgt.id();
+    if !r.pulled {
+        return Err(Error::coded(
+            "RUNTIME_NOT_FOUND",
+            ost_core::Category::Precondition,
+            format!(
+                "runtime '{}' not pulled — run `ost runtime pull {platform} --profile {profile}` first",
+                tgt.runtime_id
+            ),
+        ));
+    }
+
+    // Resolve before staging: a tool package with no tool in it is the one
+    // outcome that must never be produced quietly.
+    let windows = tgt.variant.os == Os::Windows;
+    let executables = tool.locate_executables(&tool.root, windows)?;
+    let directories = tool.built_directories();
+
+    let preferred_stage = target_state_dir(&tool.root, &id).join("package-stage");
+    let (stage, mut stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
+    for directory in &directories {
+        copy_tree_required(&tool.root.join(directory), Utf8Path::new(directory), &stage)?;
+    }
+    // The descriptor travels with the artifact: a consumer reads the executables
+    // and layout it declares without unpacking conventions from the filename.
+    write_text(
+        &stage.join(ost_plugin::TOOL_MANIFEST),
+        &serde_yaml::to_string(&tool.manifest)
+            .map_err(|error| Error::parse(ost_plugin::TOOL_MANIFEST, anyhow::Error::new(error)))?,
+    )?;
+
+    let observed = executables
+        .iter()
+        .map(|relative| {
+            let path = stage.join(relative);
+            let (digest, size) = digest_file(&path)?;
+            Ok(BuildOutput {
+                path: relative.clone(),
+                sha256: digest,
+                size,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut build_provenance = assess_tool_build_provenance(tool, &tgt, observed)?;
+    if build_provenance.status == PluginBuildProvenanceStatus::Mismatched {
+        if allow_unmanaged_output {
+            build_provenance.accept_unmanaged_override();
+        } else {
+            return Err(Error::coded(
+                "PLUGIN_PACKAGE_OUTPUT_MISMATCH",
+                Category::Validation,
+                format!(
+                    "tool '{}' staged package output does not match its last managed build: {}",
+                    tool.id(),
+                    build_provenance.mismatch_message()
+                ),
+            )
+            .with_hint(
+                "rerun `ost build` before packaging, or pass --allow-unmanaged-output to record an explicit external/unmanaged override",
+            ));
+        }
+    }
+    if let Some(warning) = build_provenance.warning() {
+        stage_warnings.push(warning);
+    }
+
+    let staged = stage_files(&stage).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            Error::validation(e.to_string())
+        } else {
+            Error::io(stage.to_string(), e)
+        }
+    })?;
+
+    let name = tool.id().to_string();
+    let version = tool.version().to_string();
+    let archive_name = plugin_archive_name(&name, &version, &id);
+    let dist_dir = tool_dist_dir(&tool.root, &name, &version, &id);
+    let archive_path = dist_dir.join(&archive_name);
+    let pack_opts = PackOptions {
+        mtime: ost_build::source_date_epoch(),
+        ..PackOptions::default()
+    };
+
+    // Same lean-by-default contract as a bundle: symbols split into a sibling
+    // package unless the caller asked for them inline.
+    let has_debug_symbol_files = staged.iter().any(|path| is_debug_symbol_file(path));
+    let (main_files, debug_files): (Vec<_>, Vec<_>) = if with_debug {
+        (staged, Vec::new())
+    } else {
+        staged.into_iter().partition(|p| !is_debug_symbol_file(p))
+    };
+    let packed = pack_dir_with(&stage, &archive_path, &main_files, pack_opts, &mut |_| {})
+        .map_err(|e| Error::io(archive_path.to_string(), e))?;
+    let debug_name = plugin_debug_archive_name(&name, &version, &id);
+    let debug_path = dist_dir.join(&debug_name);
+    let debug_pack = if debug_files.is_empty() {
+        remove_stale_debug_archive(&debug_path)?;
+        None
+    } else {
+        let dp = pack_dir_with(&stage, &debug_path, &debug_files, pack_opts, &mut |_| {})
+            .map_err(|e| Error::io(debug_path.to_string(), e))?;
+        Some((debug_name, dp))
+    };
+    let debug_status = if with_debug && has_debug_symbol_files {
+        DebugPackageStatus::Included
+    } else if debug_pack.is_some() {
+        DebugPackageStatus::Split
+    } else {
+        DebugPackageStatus::NotProduced
+    };
+
+    let mut manifest = serde_json::json!({
+        "schema": 1,
+        "kind": ost_artifact::TOOL_KIND,
+        "tool": {
+            "id": name,
+            "version": version,
+            "license": tool.manifest.tool.license,
+            "descriptor": ost_plugin::TOOL_MANIFEST,
+            "executables": executables,
+            "directories": directories,
+        },
+        "target": id,
+        "archive": archive_name,
+        "archive_digest": packed.archive_digest,
+        "archive_size": packed.archive_size,
+        "total_size": packed.total_size,
+        "created_unix": ost_build::source_date_epoch(),
+        "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
+        "provenance": {
+            "platform": tgt.platform,
+            "profile": tgt.profile,
+            "variant": tgt.variant.slug(),
+            "runtime": {
+                "id": tgt.runtime_id,
+                "digest": tgt.runtime_digest,
+            },
+            "build_outputs": build_provenance.json(),
+        },
+        "files": packed.files.iter().map(|f| f.manifest_json()).collect::<Vec<_>>(),
+    });
+    if !tool.manifest.requires.libraries.is_empty() {
+        manifest["dependencies"] = serde_json::json!({
+            "libraries": tool.manifest.requires.libraries,
+        });
+    }
+    if let Some((debug_name, dp)) = &debug_pack {
+        manifest["debug"] = serde_json::json!({
+            "archive": debug_name,
+            "archive_digest": dp.archive_digest,
+            "archive_size": dp.archive_size,
+            "total_size": dp.total_size,
+            "files": dp.files.iter().map(|f| f.manifest_json()).collect::<Vec<_>>(),
+        });
+    }
+    manifest["debug_package"] = debug_status.json();
+    let evidence = ost_artifact::generate_evidence(&dist_dir, &mut manifest)?;
+    write_text(&dist_dir.join("manifest.json"), &pretty_json(&manifest)?)?;
+
+    let mut sha_lines = vec![format!(
+        "{}  {archive_name}",
+        bare_sha256(&packed.archive_digest)
+    )];
+    if let Some((debug_name, dp)) = &debug_pack {
+        sha_lines.push(format!("{}  {debug_name}", bare_sha256(&dp.archive_digest)));
+    }
+    for layer in &evidence {
+        sha_lines.push(format!("{}  {}", bare_sha256(&layer.digest), layer.path));
+    }
+    write_text(&dist_dir.join("SHA256SUMS"), &sha_lines.join("\n"))?;
+
+    Ok(PackageOutcome {
+        id,
+        name,
+        version,
+        os: tgt.variant.os,
+        archive_path,
+        packed,
+        debug: debug_pack,
+        debug_status,
+        build_provenance,
+        manifest,
+        stage_warnings,
+    })
+}
+
+/// Bind a staged tool's executables to the workspace build that produced them.
+///
+/// A tool is built by `ost build` at the project root, not by `ost plugin build`
+/// in a bundle, so its evidence is the project's build completion — which
+/// records the tool executables it produced for exactly this comparison.
+fn assess_tool_build_provenance(
+    tool: &ost_plugin::Tool,
+    target: &ost_build::Target,
+    observed: Vec<BuildOutput>,
+) -> Result<PluginBuildProvenance> {
+    let Some(project_root) = enclosing_project_root() else {
+        return Ok(untracked_build_provenance(
+            observed.len(),
+            "packaged outside an OpenStrata project, so no managed build evidence applies",
+        ));
+    };
+    let id = target.id();
+    let completion_path = target_build_dir(&project_root, &id).join(BUILD_COMPLETION_FILE);
+    let Ok(completion) = read_plugin_build_json::<BuildCompletion>(&completion_path) else {
+        return Ok(untracked_build_provenance(
+            observed.len(),
+            "no `ost build` completion for this target; treating the tool output as external or unmanaged",
+        ));
+    };
+    // Outputs are recorded relative to the project root; a tool's own paths are
+    // relative to its member root.
+    let Ok(member) = tool.root.strip_prefix(&project_root) else {
+        return Ok(untracked_build_provenance(
+            observed.len(),
+            "the tool is not inside the enclosing project, so its outputs cannot be attributed",
+        ));
+    };
+    let member = portable(member);
+    let expected: BTreeMap<&str, &BuildOutput> = completion
+        .outputs
+        .iter()
+        .filter_map(|output| {
+            output
+                .path
+                .strip_prefix(&format!("{member}/"))
+                .map(|relative| (relative, output))
+        })
+        .collect();
+    if expected.is_empty() {
+        return Ok(untracked_build_provenance(
+            observed.len(),
+            "the last managed build recorded no outputs for this tool; treating them as external or unmanaged",
+        ));
+    }
+
+    let mut differences = Vec::new();
+    let observed_by_path: BTreeMap<&str, &BuildOutput> = observed
+        .iter()
+        .map(|output| (output.path.as_str(), output))
+        .collect();
+    for (path, want) in &expected {
+        match observed_by_path.get(path) {
+            None => differences.push(ManagedOutputDifference {
+                path: (*path).to_string(),
+                kind: "missing",
+                expected: Some(want.sha256.clone()),
+                observed: None,
+            }),
+            Some(got) if got.sha256 != want.sha256 || got.size != want.size => {
+                differences.push(ManagedOutputDifference {
+                    path: (*path).to_string(),
+                    kind: "digest-mismatch",
+                    expected: Some(want.sha256.clone()),
+                    observed: Some(got.sha256.clone()),
+                })
+            }
+            Some(_) => {}
+        }
+    }
+    for (path, got) in &observed_by_path {
+        if !expected.contains_key(path) {
+            differences.push(ManagedOutputDifference {
+                path: (*path).to_string(),
+                kind: "untracked",
+                expected: None,
+                observed: Some(got.sha256.clone()),
+            });
+        }
+    }
+    let status = if differences.is_empty() {
+        PluginBuildProvenanceStatus::Matched
+    } else {
+        PluginBuildProvenanceStatus::Mismatched
+    };
+    Ok(PluginBuildProvenance {
+        status,
+        origin: if status == PluginBuildProvenanceStatus::Matched {
+            "ost-managed"
+        } else {
+            "ost-managed-diverged"
+        },
+        build_fingerprint: Some(completion.fingerprint()),
+        invocation: completion.invocation.clone(),
+        completed_unix: Some(completion.completed_unix),
+        expected_outputs: expected.len(),
+        observed_outputs: observed.len(),
+        detail: if status == PluginBuildProvenanceStatus::Matched {
+            format!(
+                "all {} tool executable(s) match the last managed build",
+                observed.len()
+            )
+        } else {
+            format!(
+                "{} tool executable difference(s) from the last managed build",
+                differences.len()
+            )
+        },
+        differences,
+        override_accepted: false,
+    })
+}
+
+fn untracked_build_provenance(observed: usize, detail: &str) -> PluginBuildProvenance {
+    PluginBuildProvenance {
+        status: PluginBuildProvenanceStatus::Untracked,
+        origin: "external-or-unmanaged",
+        build_fingerprint: None,
+        invocation: None,
+        completed_unix: None,
+        expected_outputs: 0,
+        observed_outputs: observed,
+        differences: Vec::new(),
+        detail: detail.to_string(),
+        override_accepted: false,
+    }
+}
+
+/// The enclosing OpenStrata project root, if the caller is inside one.
+fn enclosing_project_root() -> Option<Utf8PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let root = find_project_root(&cwd)?;
+    Utf8PathBuf::from_path_buf(root).ok()
+}
+
+fn tool_dist_dir(root: &Utf8Path, id: &str, version: &str, target: &str) -> Utf8PathBuf {
+    root.join("dist")
+        .join("tools")
+        .join(id)
+        .join(version)
+        .join(target)
 }
 
 /// `ost plugin package --workspace` — package every discovered bundle, in the
@@ -2234,31 +2599,80 @@ fn package_workspace(
         outcomes.push(outcome);
     }
 
+    // Tools come last: nothing in the graph depends on an executable, and a tool
+    // may load the libraries the bundles just staged.
+    let tools = discover_workspace_tools(Utf8Path::new("."))?
+        .iter()
+        .map(|root| ost_plugin::Tool::load(root))
+        .collect::<Result<Vec<_>>>()?;
+    let mut tool_outcomes = Vec::new();
+    for tool in &tools {
+        let outcome = package_tool(
+            tool,
+            target.clone(),
+            profile.clone(),
+            clean_stage,
+            with_debug,
+            allow_unmanaged_output,
+        )?;
+        if !fmt.is_json() {
+            println!(
+                "== {} {} (tool) ==\n  {}",
+                outcome.name, outcome.version, outcome.archive_path
+            );
+            println!(
+                "  build: {} ({})",
+                outcome.build_provenance.status.as_str(),
+                outcome.build_provenance.origin
+            );
+        }
+        tool_outcomes.push(outcome);
+    }
+
+    let members: Vec<ProductMember<'_>> = order
+        .iter()
+        .zip(outcomes.iter())
+        .map(|(id, outcome)| ProductMember::bundle(id.clone(), outcome))
+        .chain(
+            tools
+                .iter()
+                .zip(tool_outcomes.iter())
+                .map(|(tool, outcome)| ProductMember::tool(tool, outcome)),
+        )
+        .collect();
     let product_outcome = if product {
-        Some(package_workspace_product(&order, &outcomes, clean_stage)?)
+        Some(package_workspace_product(&members, clean_stage)?)
     } else {
         None
     };
 
     if fmt.is_json() {
+        let package_json = |outcome: &PackageOutcome, kind: &str| {
+            serde_json::json!({
+                "name": outcome.name,
+                "version": outcome.version,
+                "member": kind,
+                "target": outcome.id,
+                "archive": portable(&outcome.archive_path),
+                "archive_digest": outcome.packed.archive_digest,
+                "archive_size": outcome.packed.archive_size,
+                "debug_archive": outcome.debug.as_ref().map(|(name, _)| name.clone()),
+                "debug_package": outcome.debug_status.json(),
+                "build_provenance": outcome.build_provenance.json(),
+            })
+        };
         let packages: Vec<serde_json::Value> = outcomes
             .iter()
-            .map(|outcome| {
-                serde_json::json!({
-                    "name": outcome.name,
-                    "version": outcome.version,
-                    "target": outcome.id,
-                    "archive": portable(&outcome.archive_path),
-                    "archive_digest": outcome.packed.archive_digest,
-                    "archive_size": outcome.packed.archive_size,
-                    "debug_archive": outcome.debug.as_ref().map(|(name, _)| name.clone()),
-                    "debug_package": outcome.debug_status.json(),
-                    "build_provenance": outcome.build_provenance.json(),
-                })
-            })
+            .map(|outcome| package_json(outcome, "bundle"))
+            .chain(
+                tool_outcomes
+                    .iter()
+                    .map(|outcome| package_json(outcome, "tool")),
+            )
             .collect();
         let warnings: Vec<serde_json::Value> = outcomes
             .iter()
+            .chain(tool_outcomes.iter())
             .flat_map(|outcome| outcome.stage_warnings.clone())
             .chain(
                 product_outcome
@@ -2282,6 +2696,7 @@ fn package_workspace(
             &serde_json::json!({
                 "workspace": true,
                 "order": order,
+                "tools": tool_outcomes.iter().map(|o| o.name.clone()).collect::<Vec<_>>(),
                 "packages": packages,
                 "product": product_json,
                 "warnings": warnings,
@@ -2290,6 +2705,7 @@ fn package_workspace(
     } else {
         for warning in outcomes
             .iter()
+            .chain(tool_outcomes.iter())
             .flat_map(|outcome| outcome.stage_warnings.iter())
             .chain(
                 product_outcome
@@ -2302,8 +2718,13 @@ fn package_workspace(
             }
         }
         println!(
-            "\nWorkspace: {} package(s), in dependency order",
-            order.len()
+            "\nWorkspace: {} package(s), in dependency order{}",
+            order.len(),
+            if tool_outcomes.is_empty() {
+                String::new()
+            } else {
+                format!(", plus {} tool package(s)", tool_outcomes.len())
+            }
         );
         if let Some(product) = &product_outcome {
             println!("Product:   {}", product.archive_path);
@@ -2314,6 +2735,76 @@ fn package_workspace(
     Ok(())
 }
 
+/// One member of an aggregate product: a packaged bundle, or a packaged
+/// workspace-built executable.
+///
+/// The two differ in where they install and which producer manifest verifies
+/// them, and in nothing else — which is the point. A tool reaching the product
+/// through the same member archive shape is what keeps a release from needing a
+/// second packaging path for its CLI deliverables (report 28 §3).
+struct ProductMember<'a> {
+    id: String,
+    /// `bundle` or `tool`.
+    kind: &'static str,
+    /// Directories a tool contributes to the installed loader path, relative to
+    /// its member root. Empty for a bundle, which carries its own activation
+    /// contract instead.
+    paths: Vec<String>,
+    outcome: &'a PackageOutcome,
+}
+
+impl<'a> ProductMember<'a> {
+    fn bundle(id: String, outcome: &'a PackageOutcome) -> Self {
+        Self {
+            id,
+            kind: "bundle",
+            paths: Vec::new(),
+            outcome,
+        }
+    }
+
+    fn tool(tool: &ost_plugin::Tool, outcome: &'a PackageOutcome) -> Self {
+        Self {
+            id: tool.id().to_string(),
+            kind: "tool",
+            paths: tool.built_directories(),
+            outcome,
+        }
+    }
+
+    fn is_tool(&self) -> bool {
+        self.kind == "tool"
+    }
+
+    /// Where this member installs below the product prefix.
+    fn destination(&self) -> String {
+        let root = if self.is_tool() { "tools" } else { "bundles" };
+        format!("{root}/{}", self.id)
+    }
+
+    fn license_pointer(&self) -> &'static str {
+        if self.is_tool() {
+            "/tool/license"
+        } else {
+            "/plugin/license"
+        }
+    }
+
+    /// The member's `kind` field: a plugin kind for a bundle, and the artifact
+    /// kind for a tool, which has no plugin kind to report.
+    fn artifact_kind(&self, outcome: &PackageOutcome) -> serde_json::Value {
+        if self.is_tool() {
+            serde_json::Value::String("tool".into())
+        } else {
+            outcome
+                .manifest
+                .pointer("/plugin/kind")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        }
+    }
+}
+
 /// Build one aggregate artifact from the exact per-bundle package outputs.
 ///
 /// The product deliberately contains member archives rather than recreating
@@ -2321,25 +2812,24 @@ fn package_workspace(
 /// checksums, SBOM and optional provenance therefore remain independently
 /// verifiable after the one product download is extracted.
 fn package_workspace_product(
-    order: &[String],
-    outcomes: &[PackageOutcome],
+    members_in: &[ProductMember<'_>],
     clean_stage: bool,
 ) -> Result<ProductOutcome> {
-    let first = outcomes.first().ok_or_else(|| {
-        Error::precondition("cannot create a plugin product from an empty workspace")
-    })?;
-    if order.len() != outcomes.len() {
-        return Err(Error::validation(format!(
-            "workspace product order has {} member(s), but packaging produced {}",
-            order.len(),
-            outcomes.len()
-        )));
-    }
-    if outcomes.iter().any(|outcome| outcome.id != first.id) {
+    let first = members_in
+        .first()
+        .ok_or_else(|| {
+            Error::precondition("cannot create a plugin product from an empty workspace")
+        })?
+        .outcome;
+    if members_in
+        .iter()
+        .any(|member| member.outcome.id != first.id)
+    {
         return Err(Error::validation(
             "all aggregate product members must target the same platform/profile variant",
         ));
     }
+    let order: Vec<String> = members_in.iter().map(|member| member.id.clone()).collect();
 
     let cwd = std::env::current_dir().map_err(|e| Error::io("current directory", e))?;
     let project_root = find_project_root(&cwd).ok_or_else(|| {
@@ -2366,13 +2856,9 @@ fn package_workspace_product(
 
     let mut members = Vec::new();
     let mut licenses = Vec::new();
-    for (position, (id, outcome)) in order.iter().zip(outcomes.iter()).enumerate() {
-        if id != &outcome.name {
-            return Err(Error::validation(format!(
-                "workspace product order names '{id}', but packaged member is '{}'",
-                outcome.name
-            )));
-        }
+    for (position, member) in members_in.iter().enumerate() {
+        let id = &member.id;
+        let outcome = member.outcome;
         let member_root = Utf8Path::new("members").join(id);
         let archive_name = outcome.archive_path.file_name().ok_or_else(|| {
             Error::config(format!(
@@ -2435,7 +2921,7 @@ fn package_workspace_product(
 
         if let Some(license) = outcome
             .manifest
-            .pointer("/plugin/license")
+            .pointer(member.license_pointer())
             .and_then(|value| value.as_str())
         {
             if !licenses.iter().any(|existing| existing == license) {
@@ -2453,9 +2939,15 @@ fn package_workspace_product(
         members.push(serde_json::json!({
             "id": id,
             "position": position,
+            // Which member shape this is, and so which tree it installs into and
+            // which producer manifest verification expects. Absent in products
+            // produced before v0.21.0, where every member was a bundle.
+            "member": member.kind,
+            "destination": member.destination(),
+            "paths": member.paths,
             "name": outcome.name,
             "version": outcome.version,
-            "kind": outcome.manifest.pointer("/plugin/kind"),
+            "kind": member.artifact_kind(outcome),
             "archive": format!("{}/{archive_name}", portable(&member_root)),
             "archive_digest": outcome.packed.archive_digest,
             "archive_size": outcome.packed.archive_size,
@@ -2473,8 +2965,11 @@ fn package_workspace_product(
         "version": version,
         "target": target,
         "install": {
-            "layout": "members/<bundle-id>/",
+            "layout": "members/<member-id>/",
+            // The default for a bundle member; each member carries the exact
+            // destination its kind installs into (`tools/<id>/` for a tool).
             "destination": "bundles/<bundle-id>/",
+            "os": first.os.as_str(),
             "order": order,
             "activation": "openstrata.activation.json",
             "contract": "run `ost plugin product verify`, then `ost plugin product install --prefix <dir>`; members are verified and installed in dependency order",
@@ -2517,7 +3012,7 @@ fn package_workspace_product(
     provenance["validation"] = serde_json::json!({
         "passed": true,
         "product": "openstrata.product.json",
-        "members": outcomes.len(),
+        "members": members_in.len(),
     });
     let mut manifest = serde_json::json!({
         "schema": 1,
@@ -2555,7 +3050,7 @@ fn package_workspace_product(
         target,
         archive_path,
         packed,
-        members: outcomes.len(),
+        members: members_in.len(),
         stage_warnings,
     })
 }
@@ -2577,6 +3072,11 @@ struct PluginProductInstall {
     layout: String,
     order: Vec<String>,
     contract: String,
+    /// Target OS of every member, recorded so a product whose members are all
+    /// tools — none of which carries an activation contract — can still write
+    /// the aggregate loader variable. Absent before v0.21.0.
+    #[serde(default)]
+    os: Option<String>,
     #[serde(default = "default_product_destination")]
     destination: String,
     #[serde(default = "default_product_activation")]
@@ -2588,6 +3088,17 @@ struct PluginProductInstall {
 struct PluginProductMember {
     id: String,
     position: usize,
+    /// Which member shape this is. Products produced before v0.21.0 carried
+    /// only bundles and no discriminator, so an absent field means `bundle`.
+    #[serde(default)]
+    member: ProductMemberKind,
+    /// Where this member installs, relative to the product prefix. Absent in
+    /// pre-v0.21.0 products, which installed every member under `bundles/`.
+    #[serde(default)]
+    destination: Option<String>,
+    /// Loader directories a tool member contributes, relative to its own root.
+    #[serde(default)]
+    paths: Vec<String>,
     name: String,
     version: String,
     kind: String,
@@ -2600,6 +3111,29 @@ struct PluginProductMember {
     debug: RequiredProductDebug,
     #[serde(rename = "dependencies")]
     dependencies: serde_json::Value,
+}
+
+/// The member shapes an aggregate product can carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ProductMemberKind {
+    #[default]
+    Bundle,
+    Tool,
+}
+
+impl PluginProductMember {
+    fn is_tool(&self) -> bool {
+        self.member == ProductMemberKind::Tool
+    }
+
+    /// Where this member installs below the product prefix, defaulting to the
+    /// pre-v0.21.0 bundle layout when the product does not say.
+    fn destination(&self) -> String {
+        self.destination
+            .clone()
+            .unwrap_or_else(|| format!("bundles/{}", self.id))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2880,7 +3414,12 @@ fn validate_product_contract(contract: &PluginProductContract) -> Result<()> {
             )));
         }
     }
-    if contract.install.layout != "members/<bundle-id>/" {
+    // `<bundle-id>` is the pre-v0.21.0 spelling of the same layout, kept
+    // readable so a product produced before tool members verifies unchanged.
+    if !matches!(
+        contract.install.layout.as_str(),
+        "members/<member-id>/" | "members/<bundle-id>/"
+    ) {
         return Err(Error::validation(format!(
             "unsupported product archive layout '{}'",
             contract.install.layout
@@ -2967,6 +3506,29 @@ fn validate_product_member_identity(member: &PluginProductMember) -> Result<()> 
                 member.id
             )));
         }
+    }
+    // The destination is product-authored and is joined onto the caller's
+    // install prefix, so it is checked here — at verification, before install
+    // has a chance to act on it — and must stay inside its own member root.
+    let destination = member.destination();
+    safe_product_join(
+        Utf8Path::new("."),
+        &destination,
+        &format!("product member '{}' destination", member.id),
+    )?;
+    let expected_root = if member.is_tool() { "tools" } else { "bundles" };
+    if destination != format!("{expected_root}/{}", member.id) {
+        return Err(Error::validation(format!(
+            "product member '{}' destination '{destination}' is not '{expected_root}/{}'",
+            member.id, member.id
+        )));
+    }
+    if !member.paths.is_empty() && !member.is_tool() {
+        return Err(Error::validation(format!(
+            "product member '{}' declares loader paths, which only a tool member does \
+             (a bundle carries its own activation contract)",
+            member.id
+        )));
     }
     validate_sha256_digest(
         &member.archive_digest,
@@ -3081,12 +3643,33 @@ fn verify_product_member(
     let expanded = root.join("expanded").join(&member.id);
     ost_artifact::extract_archive(&archive, &member.archive_digest, &expanded)?;
     verify_member_manifest_files(&expanded, &manifest)?;
-    Bundle::load(&expanded).map_err(|error| {
-        Error::validation(format!(
-            "installed product member '{}' is not a valid plugin bundle: {error}",
-            member.id
-        ))
-    })?;
+    // Each member shape is loaded by its own model, so the extracted tree is
+    // checked against the contract it actually claims rather than only unpacking
+    // cleanly. A tool additionally has to still contain its executables: an
+    // archive that lost them verifies byte-perfectly and delivers nothing.
+    if member.is_tool() {
+        let tool = ost_plugin::Tool::load(&expanded).map_err(|error| {
+            Error::validation(format!(
+                "installed product member '{}' is not a valid workspace tool: {error}",
+                member.id
+            ))
+        })?;
+        let windows = product_target.contains("-windows-");
+        tool.locate_executables(&expanded, windows)
+            .map_err(|error| {
+                Error::validation(format!(
+                    "installed product member '{}' is missing a declared executable: {error}",
+                    member.id
+                ))
+            })?;
+    } else {
+        Bundle::load(&expanded).map_err(|error| {
+            Error::validation(format!(
+                "installed product member '{}' is not a valid plugin bundle: {error}",
+                member.id
+            ))
+        })?;
+    }
     Ok(())
 }
 
@@ -3098,31 +3681,47 @@ fn verify_product_member_manifest(
     let expected_archive = Utf8Path::new(&member.archive)
         .file_name()
         .unwrap_or_default();
+    // A tool member is verified against the tool producer manifest, which has a
+    // `tool` identity and no plugin kind. Everything below it — archive digest,
+    // checksums, evidence, file inventory — is identical for both shapes.
+    let (identity, artifact_kind) = if member.is_tool() {
+        ("/tool", ost_artifact::TOOL_KIND)
+    } else {
+        ("/plugin", ost_artifact::PLUGIN_BUNDLE_KIND)
+    };
+    let name_field = if member.is_tool() {
+        "tool.id"
+    } else {
+        "plugin.name"
+    };
+    let name_pointer = if member.is_tool() {
+        "/tool/id"
+    } else {
+        "/plugin/name"
+    };
     let checks = [
+        ("kind", manifest["kind"].as_str(), Some(artifact_kind)),
         (
-            "kind",
-            manifest["kind"].as_str(),
-            Some(ost_artifact::PLUGIN_BUNDLE_KIND),
-        ),
-        (
-            "plugin.name",
-            manifest
-                .pointer("/plugin/name")
-                .and_then(|value| value.as_str()),
+            name_field,
+            manifest.pointer(name_pointer).and_then(|v| v.as_str()),
             Some(member.name.as_str()),
         ),
         (
-            "plugin.version",
+            "version",
             manifest
-                .pointer("/plugin/version")
+                .pointer(&format!("{identity}/version"))
                 .and_then(|value| value.as_str()),
             Some(member.version.as_str()),
         ),
         (
-            "plugin.kind",
-            manifest
-                .pointer("/plugin/kind")
-                .and_then(|value| value.as_str()),
+            "kind detail",
+            if member.is_tool() {
+                Some("tool")
+            } else {
+                manifest
+                    .pointer("/plugin/kind")
+                    .and_then(|value| value.as_str())
+            },
             Some(member.kind.as_str()),
         ),
         ("target", manifest["target"].as_str(), Some(product_target)),
@@ -3300,8 +3899,11 @@ fn install_plugin_product(
 
     for member in &verified.contract.members {
         let expanded = verified.tree.path.join("expanded").join(&member.id);
-        let destination = Utf8Path::new("bundles").join(&member.id);
-        copy_tree_required(&expanded, &destination, &staging.path)?;
+        let relative = member.destination();
+        // The destination is product-authored data: validate it before it is
+        // joined onto the caller's prefix.
+        safe_product_join(Utf8Path::new("."), &relative, "product member destination")?;
+        copy_tree_required(&expanded, Utf8Path::new(&relative), &staging.path)?;
     }
     write_product_activation(&staging.path, &verified.contract)?;
     let receipt = serde_json::json!({
@@ -3360,7 +3962,22 @@ fn write_product_activation(root: &Utf8Path, contract: &PluginProductContract) -
     let mut library_paths = Vec::new();
     let mut python_paths = Vec::new();
     for member in &contract.members {
-        let member_root = root.join("bundles").join(&member.id);
+        // A tool has no activation contract of its own — it is an executable,
+        // not a plugin USD registers. Its declared directories still join the
+        // aggregate loader path so the shared libraries shipped beside it
+        // resolve where it was installed.
+        if member.is_tool() {
+            let destination = member.destination();
+            for relative in &member.paths {
+                safe_product_join(Utf8Path::new("."), relative, "tool loader path")?;
+                let aggregate = format!("{destination}/{relative}");
+                if !library_paths.contains(&aggregate) {
+                    library_paths.push(aggregate);
+                }
+            }
+            continue;
+        }
+        let member_root = root.join(member.destination());
         let path = member_root.join("openstrata.activation.json");
         let source = std::fs::read_to_string(path.as_std_path())
             .map_err(|error| Error::io(path.to_string(), error))?;
@@ -3386,10 +4003,23 @@ fn write_product_activation(root: &Utf8Path, contract: &PluginProductContract) -
             &activation.entrypoints,
             &activation.python_dll_search,
         );
-        extend_product_activation_paths(&mut plugin_paths, &member.id, &activation.plugin_paths)?;
-        extend_product_activation_paths(&mut library_paths, &member.id, &activation.library_paths)?;
-        extend_product_activation_paths(&mut python_paths, &member.id, &activation.python_paths)?;
+        let destination = member.destination();
+        extend_product_activation_paths(&mut plugin_paths, &destination, &activation.plugin_paths)?;
+        extend_product_activation_paths(
+            &mut library_paths,
+            &destination,
+            &activation.library_paths,
+        )?;
+        extend_product_activation_paths(&mut python_paths, &destination, &activation.python_paths)?;
     }
+    // A product whose only members are tools has no member activation contract
+    // to read the OS from, so the product records it directly. Older products
+    // carry no such field and always have a bundle member that does.
+    let target_os = match (target_os, contract.install.os.as_deref()) {
+        (Some(os), _) => Some(os),
+        (None, Some(declared)) => Some(parse_product_os(declared)?),
+        (None, None) => None,
+    };
     let target_os = target_os
         .ok_or_else(|| Error::validation("cannot write activation for an empty plugin product"))?;
     let loader_env = activation_loader_key(target_os);
@@ -3438,16 +4068,20 @@ fn write_product_activation(root: &Utf8Path, contract: &PluginProductContract) -
     )
 }
 
+/// Prefix a member's own activation paths with where that member installs.
+///
+/// `destination` is the member's installed root (`bundles/<id>`, or
+/// `tools/<id>`), already validated by the caller.
 fn extend_product_activation_paths(
     output: &mut Vec<String>,
-    member: &str,
+    destination: &str,
     relative_paths: &[String],
 ) -> Result<()> {
     for relative in relative_paths {
         // Validate the member-authored relative path independently before
         // prefixing it into the aggregate installation layout.
         safe_product_join(Utf8Path::new("."), relative, "member activation path")?;
-        let aggregate = format!("bundles/{member}/{relative}");
+        let aggregate = format!("{destination}/{relative}");
         if !output.contains(&aggregate) {
             output.push(aggregate);
         }
@@ -4577,6 +5211,63 @@ fn discover_workspace_bundles(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
     scan(root, &mut found)?;
     scan(&root.join("plugins"), &mut found)?;
     found.sort();
+    Ok(found)
+}
+
+/// The executables every workspace tool declares, as managed build outputs
+/// relative to the project root, for `ost build` to record in its completion.
+///
+/// A tool that has not been built yet contributes nothing rather than failing
+/// the build: `ost build` is what produces it, and a workspace may add a tool
+/// descriptor before its CMake target lands.
+pub(crate) fn workspace_tool_outputs(root: &Utf8Path, os: Os) -> Result<Vec<BuildOutput>> {
+    let mut outputs = Vec::new();
+    for tool_root in discover_workspace_tools(root)? {
+        let tool = ost_plugin::Tool::load(&tool_root)?;
+        let Ok(executables) = tool.locate_executables(&tool.root, os == Os::Windows) else {
+            continue;
+        };
+        let Ok(member) = tool.root.strip_prefix(root) else {
+            continue;
+        };
+        for relative in executables {
+            let path = tool.root.join(&relative);
+            let (sha256, size) = digest_file(&path)?;
+            outputs.push(BuildOutput {
+                path: format!("{}/{relative}", portable(member)),
+                sha256,
+                size,
+            });
+        }
+    }
+    Ok(outputs)
+}
+
+/// Workspace-built executables: immediate subdirectories and `tools/*` entries
+/// holding `openstrata.tool.yaml`, in deterministic order.
+///
+/// Tools sit outside the dependency graph — nothing in a workspace requires an
+/// executable — so they are discovered, not resolved, and always packaged after
+/// the bundles whose libraries they may load.
+fn discover_workspace_tools(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
+    let mut found = Vec::new();
+    let scan = |directory: &Utf8Path, found: &mut Vec<Utf8PathBuf>| {
+        let Ok(entries) = std::fs::read_dir(directory.as_std_path()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
+                continue;
+            };
+            if path.is_dir() && path.join(ost_plugin::TOOL_MANIFEST).is_file() {
+                found.push(path);
+            }
+        }
+    };
+    scan(root, &mut found);
+    scan(&root.join("tools"), &mut found);
+    found.sort();
+    found.dedup();
     Ok(found)
 }
 
@@ -6787,6 +7478,9 @@ mod tests {
         PluginProductMember {
             id: "toy".into(),
             position: 0,
+            member: ProductMemberKind::Bundle,
+            destination: None,
+            paths: Vec::new(),
             name: "toy".into(),
             version: "0.1.0".into(),
             kind: "usd-fileformat".into(),

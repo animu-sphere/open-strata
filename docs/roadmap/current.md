@@ -328,11 +328,28 @@ refused on a bundle cell, whose ladder is `up_to`. `ci matrix --json` projects
 
 ### P1 - a workspace-built executable can ship in a product
 
-Not started. From report 28 §3. `plugin package --workspace --product` composes
-member archives from bundles, and `motion_retarget` (and now `motion_capture`) is
-a user-facing deliverable with no member archive that can carry it. Until then a
-release either omits the tool or the repo hand-rolls a second packaging path —
-and hand-rolled packaging is what report 27 was about.
+From report 28 §3. `plugin package --workspace --product` composed member
+archives from bundles, and `motion_retarget` (and now `motion_capture`) is a
+user-facing deliverable with no member archive that could carry it. A release
+either omitted the tool or the repo hand-rolled a second packaging path — and
+hand-rolled packaging is what report 27 was about.
+
+**Implemented on the v0.21.0 branch:** an `openstrata.tool.yaml` member declares
+a workspace-built executable — identity, the executables to ship, and the
+directories the build writes them to. `plugin package --workspace` packages each
+after the bundles into the *same* dist shape a bundle package has (archive,
+producer manifest, `SHA256SUMS`, SBOM/provenance), which is what lets `--product`
+compose it with no second code path. A tool member records its own destination,
+so `product verify` checks it against the tool contract and `product install`
+puts it under `tools/<id>/` with its directories joined to the aggregate loader
+path.
+
+A tool package that lost its executable is refused at packaging *and* at
+verification: an archive with no tool in it is byte-perfect and delivers nothing.
+`ost build` now records the tool executables it produced, so `plugin package`
+reports the same `matched` / `untracked` / `mismatched` build provenance for a
+tool that it reports for a bundle, rather than laundering a plain CMake build as
+managed.
 
 ### P1 carry - renderer workflow evidence (hdMerlin report 10)
 
