@@ -227,6 +227,103 @@ fn configure_preserves_a_hand_authored_cmakepresets() {
     );
 }
 
+/// hdMerlin report 10: `renderer view --profile usd` failed because the
+/// generated `CMakeUserPresets.json` still included a *core* target that no
+/// longer existed. CMake resolves every include before it evaluates any preset,
+/// so the absent one fails the preset that is present and correct — the
+/// generated includes must be self-contained for the selected profile.
+#[test]
+fn configure_drops_preset_includes_for_targets_that_no_longer_exist() {
+    let sb = Sandbox::new("stale-preset-include");
+    init_and_pull(&sb);
+
+    let cfg = sb.ost(&["configure"]);
+    assert!(
+        cfg.status.success(),
+        "configure failed:\n{}",
+        out_text(&cfg)
+    );
+    let live = format!(
+        ".strata/targets/{}/CMakePresets.json",
+        single_target_dir(&sb.work)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+    );
+
+    // Leave behind exactly what a removed target leaves: an include with no file.
+    let user = sb.work_file("CMakeUserPresets.json");
+    let stale = ".strata/targets/cy2026-windows-x86_64-py313-core/CMakePresets.json";
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&user).unwrap()).unwrap();
+    doc["include"]
+        .as_array_mut()
+        .expect("generated include array")
+        .push(serde_json::json!(stale));
+    std::fs::write(&user, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+
+    let again = sb.ost(&["configure", "--json"]);
+    assert!(
+        again.status.success(),
+        "reconfigure failed:\n{}",
+        out_text(&again)
+    );
+
+    let body = std::fs::read_to_string(&user).unwrap();
+    assert!(
+        !body.contains("core/CMakePresets.json"),
+        "the include of a target that no longer exists must be dropped:\n{body}"
+    );
+    assert!(
+        body.contains(&live),
+        "the selected target's include must survive:\n{body}"
+    );
+    let text = out_text(&again);
+    assert!(
+        text.contains(stale),
+        "the dropped include should be reported:\n{text}"
+    );
+}
+
+/// The same dangling include in the user's *committed* file is theirs to fix:
+/// warn (it breaks every preset), never rewrite it.
+#[test]
+fn configure_warns_about_a_dangling_managed_include_in_the_committed_presets() {
+    let sb = Sandbox::new("stale-root-include");
+    init_and_pull(&sb);
+
+    let stale = ".strata/targets/cy2026-windows-x86_64-py313-core/CMakePresets.json";
+    let presets = sb.work_file("CMakePresets.json");
+    std::fs::write(
+        &presets,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "version": 6,
+            "include": [stale],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = std::fs::read(&presets).unwrap();
+
+    let cfg = sb.ost(&["configure"]);
+    assert!(
+        cfg.status.success(),
+        "configure failed:\n{}",
+        out_text(&cfg)
+    );
+
+    let text = out_text(&cfg);
+    assert!(
+        text.contains(stale) && text.contains("does not exist"),
+        "should name the dangling include in the committed file:\n{text}"
+    );
+    assert_eq!(
+        std::fs::read(&presets).unwrap(),
+        before,
+        "the user's committed CMakePresets.json must not be rewritten"
+    );
+}
+
 #[test]
 fn configure_rejects_malformed_cmakepresets_without_clobbering() {
     let sb = Sandbox::new("malformed-presets");

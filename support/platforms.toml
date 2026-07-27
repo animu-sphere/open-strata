@@ -111,7 +111,13 @@ note = "A Linux-only concept (ELF scan of the runtime's binaries)."
 support = { linux_x86_64 = "stable", macos_arm64 = "unsupported", macos_x86_64 = "unsupported", windows_x86_64 = "unsupported" }
 
 [[features]]
+id = "dcc_host_discovery"
+label = "DCC host discovery"
+note = "Maya/Houdini discovery exercised against real installs on Windows; other install layouts are encoded from vendor documentation and not yet demonstrated."
+support = { linux_x86_64 = "experimental", macos_arm64 = "experimental", macos_x86_64 = "experimental", windows_x86_64 = "beta" }
+
+[[features]]
 id = "dcc_integration"
-label = "DCC host integration"
-note = "Planned (Phase 10 / v0.21.0); not yet implemented on any platform."
+label = "DCC host adapters and matrix"
+note = "Planned (Phase 10 second half / v0.22.0); headless probes and pinned host matrix cells are not implemented on any platform."
 support = { linux_x86_64 = "unsupported", macos_arm64 = "unsupported", macos_x86_64 = "unsupported", windows_x86_64 = "unsupported" }

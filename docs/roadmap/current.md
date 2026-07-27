@@ -3,17 +3,23 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## v0.21.0 - DCC host integration
+## v0.21.0 - host discovery and dogfooding closure
 
 **Status:** 🚧 in progress from 2026-07-23 · **Depends on:** v0.20.0
 package/product closure, renderer workflow, and Formation diagnostics.
 
-This milestone adds versioned host records, deterministic Maya and Houdini
-discovery, minimal headless host adapters, and support-matrix cells with
-pinned host evidence. Host integration consumes Formation as its environment
-and component-assembly layer and reuses the renderer identity/evidence model.
-Sessions, GPU/AI, and broader DCC matrices remain later work.
-Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md).
+This milestone ships the **discovery** half of DCC host integration — versioned
+host records and deterministic Maya and Houdini discovery — plus the corrective
+half driven by six v0.20.0 dogfooding passes. Host integration consumes Formation
+as its environment and component-assembly layer and reuses the renderer
+identity/evidence model. Direction:
+[dcc-hosts.md](../design/proposed/dcc-hosts.md).
+
+**Deferred to v0.22.0 on 2026-07-27:** working Maya and Houdini support — the
+headless host adapters and the support-matrix cells that carry pinned host
+evidence. Discovery answers *which hosts are installed*, which is useful on its
+own and is what the milestone keeps; *running* something in a host is the next
+milestone. Sessions, GPU/AI, and broader DCC matrices remain later work still.
 
 The milestone is ordered so each slice is usable on its own and no later slice
 gates the first. OpenStrata never installs, updates, licenses, or modifies a
@@ -101,15 +107,19 @@ Covered by unit tests plus fixture-install-tree integration tests for both
 families and a CLI suite for the command contract — all runnable on a machine
 with no DCC installed.
 
-### P1 - headless host adapters
+### Deferred to v0.22.0 - headless host adapters
 
-Not started. A host adapter boundary running minimal headless load/open/validate
-probes with preserved output and an explained SKIP for an unavailable license,
-display, or capability. The adapter's `environment` capability contributes to
-Formation resolution rather than composing paths on its own, so a host probe and
-a runtime-native app share one environment contract. Host-standard packaging
-(Maya `.mod`, Houdini package JSON) belongs to this slice; editing `Maya.env` or
-any user configuration does not.
+**Moved out of v0.21.0 on 2026-07-27.** A host adapter boundary running minimal
+headless load/open/validate probes with preserved output and an explained SKIP
+for an unavailable license, display, or capability. The adapter's `environment`
+capability contributes to Formation resolution rather than composing paths on its
+own, so a host probe and a runtime-native app share one environment contract.
+Host-standard packaging (Maya `.mod`, Houdini package JSON) belongs to this
+slice; editing `Maya.env` or any user configuration does not.
+
+The discovery foundation below it is shipped and unaffected: `ost host
+discover | list | inspect` resolves real Maya and Houdini installs today. What
+moves is everything that *runs* a host.
 
 **Acceptance exercised 2026-07-25 (Windows):** `ost host discover` resolved a
 real Autodesk Maya 2024 and SideFX Houdini 20.5.522 from their default install
@@ -122,17 +132,18 @@ instance ids carrying the `sha256:` prefix, doubled prefixes in fingerprint
 digests, and mixed path separators in recorded roots and evidence — each now
 covered by a test.
 
-Still owed: the same pass on Linux and macOS, where the install layouts (and,
-for Houdini on macOS, the framework root shape) are encoded from documentation
-rather than demonstrated.
+Still owed, and moving to v0.22.0 with the adapters: the same pass on Linux and
+macOS, where the install layouts (and, for Houdini on macOS, the framework root
+shape) are encoded from documentation rather than demonstrated.
 
-### P1 - support-matrix cells with pinned host evidence
+### Deferred to v0.22.0 - support-matrix cells with pinned host evidence
 
-Not started. Matrix cells carrying a pinned host record, stable/nightly/release/
-legacy tiers, and trusted release candidates fed in without weakening the
-artifact publisher boundary. A cell is one production-guaranteed runtime set,
-and cross-DCC data contracts are edges — the matrix is a graph, not a Cartesian
-product.
+**Moved out of v0.21.0 on 2026-07-27.** Matrix cells carrying a pinned host
+record, stable/nightly/release/legacy tiers, and trusted release candidates fed
+in without weakening the artifact publisher boundary. A cell is one
+production-guaranteed runtime set, and cross-DCC data contracts are edges — the
+matrix is a graph, not a Cartesian product. It follows the adapters: a matrix
+cell pins host evidence that only a host probe can produce.
 
 ### P0 - `--build-arg` reaches the components `runtime pull --build` decides
 

@@ -45,7 +45,7 @@ pub use package::{
 };
 pub use presets::{
     ensure_includes, includes_of, is_managed_include, managed_include, remove_managed_includes,
-    render_target_presets,
+    render_target_presets, retain_managed_includes,
 };
 pub use python::{
     bundles_usdgenschema, module_present, provision_schema_gen_deps, relocate_baked_prefix,
