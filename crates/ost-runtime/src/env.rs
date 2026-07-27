@@ -12,14 +12,66 @@ use ost_core::host::Os;
 
 /// Locate the directory holding an adopted USD install's `pxr` Python package.
 ///
-/// USD builds vary: official/`build_usd.py` installs use `lib/python`, while
-/// some Windows builds use `lib/site-packages`. Probe for the one that actually
-/// contains `pxr`; fall back to `lib/python` when neither is present so the
-/// emitted env is still well-formed.
+/// USD builds vary, and OpenUSD 26.08 changed the default: builds up to 26.05
+/// (and any build passing `--python-install-dir=lib/python`) use `lib/python`,
+/// while 26.08+ installs to `lib/python<major>.<minor>/site-packages` on
+/// Linux/macOS and `Lib/site-packages` on Windows. All four are supported, so a
+/// publisher does not have to know a changelog entry to produce a consumable
+/// runtime (report 29 §3).
+///
+/// Probe for the layout that actually contains `pxr`; fall back to `lib/python`
+/// when none is present so the emitted env is still well-formed.
+///
+/// Equivalent to [`usd_python_dir_for`] with no known interpreter version. Use
+/// that one wherever the target's version is in hand — see its note on why the
+/// version matters when several ABIs coexist.
 pub fn usd_python_dir(root: &Utf8Path) -> Utf8PathBuf {
-    for candidate in ["lib/python", "lib/site-packages"] {
+    usd_python_dir_for(root, None)
+}
+
+/// [`usd_python_dir`], preferring the ABI of a known interpreter version
+/// (`"3.13"`) when the install carries more than one.
+///
+/// Only the versioned 26.08 layout can be ambiguous, and there the directory
+/// name *is* the ABI: `lib/python3.13/site-packages`. Picking by sort order
+/// there is not a tiebreak but a coin flip — `python3.10` sorts before
+/// `python3.9` — and choosing wrong sends `PYTHONPATH`, and the schema-gen `pip
+/// install --target`, into an ABI the runtime does not run. When the caller
+/// knows the version, match it exactly; otherwise keep the sorted pick, which is
+/// at least deterministic.
+pub fn usd_python_dir_for(root: &Utf8Path, version: Option<&str>) -> Utf8PathBuf {
+    // Fixed candidates first: `lib/python` is what every runtime this project
+    // has published so far uses, and on Windows `lib/site-packages` also matches
+    // 26.08's `Lib/site-packages` (the filesystem is case-insensitive there).
+    for candidate in ["lib/python", "lib/site-packages", "Lib/site-packages"] {
         let dir = root.join(candidate);
         if dir.join("pxr").as_std_path().is_dir() {
+            return dir;
+        }
+    }
+    // 26.08's versioned default on Linux/macOS: `lib/python3.13/site-packages`.
+    if let Ok(entries) = std::fs::read_dir(root.join("lib").as_std_path()) {
+        let mut versioned: Vec<Utf8PathBuf> = entries
+            .flatten()
+            .filter_map(|e| Utf8PathBuf::from_path_buf(e.path()).ok())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.starts_with("python") && n.len() > "python".len())
+            })
+            .map(|p| p.join("site-packages"))
+            .filter(|p| p.join("pxr").as_std_path().is_dir())
+            .collect();
+        versioned.sort();
+        if let Some(want) = version {
+            let wanted = format!("python{want}");
+            if let Some(dir) = versioned
+                .iter()
+                .find(|p| p.parent().and_then(|d| d.file_name()) == Some(wanted.as_str()))
+            {
+                return dir.clone();
+            }
+        }
+        if let Some(dir) = versioned.into_iter().next() {
             return dir;
         }
     }
@@ -429,5 +481,58 @@ mod tests {
         // No dedicated lib var on Windows; both bin and lib land on PATH.
         let path_entries = set.vars.iter().filter(|v| v.key == "PATH").count();
         assert_eq!(path_entries, 2);
+    }
+
+    /// The four `pxr` layouts a publisher can produce, and which one wins.
+    #[test]
+    fn usd_python_dir_probes_every_supported_layout() {
+        let base = std::env::temp_dir().join(format!(
+            "ost-pydir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let root = Utf8PathBuf::from_path_buf(base.clone()).unwrap();
+        let make = |rel: &str| {
+            std::fs::create_dir_all(root.join(rel).join("pxr").as_std_path()).unwrap();
+        };
+
+        // Nothing present: the fallback keeps the emitted env well-formed.
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        assert_eq!(usd_python_dir(&root), root.join("lib").join("python"));
+
+        // 26.08's versioned default, discovered without knowing the version.
+        make("lib/python3.13/site-packages");
+        assert_eq!(
+            usd_python_dir(&root),
+            root.join("lib/python3.13/site-packages")
+        );
+
+        // Two ABIs coexist: sort order is a coin flip ("python3.10" precedes
+        // "python3.9"), so a caller that knows the version must be able to say so.
+        make("lib/python3.9/site-packages");
+        assert_eq!(
+            usd_python_dir_for(&root, Some("3.9")),
+            root.join("lib/python3.9/site-packages")
+        );
+        assert_eq!(
+            usd_python_dir_for(&root, Some("3.13")),
+            root.join("lib/python3.13/site-packages")
+        );
+        // An unknown version falls back to the deterministic sorted pick rather
+        // than inventing a directory that does not exist.
+        assert_eq!(
+            usd_python_dir_for(&root, Some("3.11")),
+            usd_python_dir(&root)
+        );
+
+        // The pre-26.08 layout still wins when present: it is what every runtime
+        // this project has published so far uses.
+        make("lib/python");
+        assert_eq!(usd_python_dir(&root), root.join("lib").join("python"));
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

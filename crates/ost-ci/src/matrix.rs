@@ -108,6 +108,28 @@ impl Lane {
         }
     }
 
+    /// The lane a wire name denotes, `None` for anything else. The inverse of
+    /// [`Lane::as_str`], kept beside it so a CLI accepting `--lane` cannot drift
+    /// from the names the matrix file and the generated workflows use.
+    pub fn parse(value: &str) -> Option<Lane> {
+        Some(match value {
+            "pull_request" => Lane::PullRequest,
+            "main" => Lane::Main,
+            "scheduled" => Lane::Scheduled,
+            "workflow_dispatch" => Lane::WorkflowDispatch,
+            _ => return None,
+        })
+    }
+
+    /// Every lane name, in declaration order — for naming the accepted set in a
+    /// usage error.
+    pub const ALL: &'static [Lane] = &[
+        Lane::PullRequest,
+        Lane::Main,
+        Lane::Scheduled,
+        Lane::WorkflowDispatch,
+    ];
+
     /// Whether the cell builds from checked-out source (vs pinned artifacts).
     pub fn is_source(self) -> bool {
         matches!(self, Lane::PullRequest | Lane::Main)
@@ -443,6 +465,10 @@ pub struct SupportCell {
     /// Python, so the step is gated on `matrix.hosted`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_python: Option<String>,
+    /// Host packages this cell's runner must install before the build, keyed by
+    /// the runner's native installer. See [`HostPackages`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_packages: Option<HostPackages>,
     /// Publication policy (default `never`).
     #[serde(default)]
     pub publish: Publish,
@@ -460,6 +486,63 @@ pub struct SupportCell {
 
 fn default_up_to() -> u8 {
     5
+}
+
+/// Host packages a cell's runner must install before the build, keyed by the
+/// runner's native installer.
+///
+/// A runtime artifact is not self-contained: **consuming** it can require host
+/// state the artifact cannot carry. OpenUSD 26.08 bundles MaterialX 1.39.5,
+/// whose exported `MaterialXConfig.cmake` gained an unconditional
+/// `find_dependency(X11 REQUIRED COMPONENTS Xt)` on non-Apple UNIX — and
+/// `pxrConfig.cmake` chains into it, so every Linux consumer needs X11
+/// development headers merely to *configure*. `host_python` already existed for
+/// exactly this shape of problem one package manager over (report 14); this is
+/// the general form.
+///
+/// Declaring it here rather than hand-editing the rendered workflow is what
+/// keeps regeneration lossless: `ost ci generate github --force` re-renders the
+/// step instead of silently deleting it and turning four cells red (report 31
+/// §3), the same guarantee [`SourceCheck`] gives post-build steps.
+///
+/// Windows has no assumed installer: a cell whose runner is Windows must not
+/// declare one, and the rendered step fails loudly if a declared cell lands on a
+/// Windows runner anyway.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostPackages {
+    /// Debian/Ubuntu packages, installed with `apt-get` on a Linux runner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apt: Vec<String>,
+    /// Homebrew formulae, installed with `brew` on a macOS runner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub brew: Vec<String>,
+}
+
+impl HostPackages {
+    /// Whether anything is declared at all.
+    pub fn is_empty(&self) -> bool {
+        self.apt.is_empty() && self.brew.is_empty()
+    }
+
+    /// Every declared package name, for validation.
+    fn all(&self) -> impl Iterator<Item = &String> {
+        self.apt.iter().chain(self.brew.iter())
+    }
+}
+
+/// Whether `name` is safe to interpolate into a generated shell command
+/// unquoted: a package name, not an argument, a flag, or a shell escape.
+///
+/// The rendered step word-splits the list on purpose (that is how a package
+/// manager takes several packages), so anything that could carry a metacharacter
+/// or a leading `-` is refused at parse time rather than smuggled into CI.
+fn is_package_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
 }
 
 /// A repo-specific extra step spliced into the **source-CI** job after the
@@ -761,6 +844,54 @@ impl SupportMatrix {
                     )));
                 }
             }
+            if let Some(pkgs) = &cell.host_packages {
+                if pkgs.is_empty() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': host_packages declares no packages — remove the key \
+                         or name at least one under 'apt' or 'brew'"
+                    )));
+                }
+                if let Some(bad) = pkgs.all().find(|p| !is_package_name(p)) {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': host_packages entry '{bad}' is not a package name \
+                         (use [A-Za-z0-9._+-], no flags and no shell metacharacters)"
+                    )));
+                }
+                if !cell.lane.is_source() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': host_packages applies only to source lanes \
+                         (a support lane re-verifies a pinned plugin and never configures)"
+                    )));
+                }
+                // When the matrix says enough to know the runner's OS, the list
+                // that OS's installer reads must be the one that has packages in
+                // it. Declaring `apt` on a macOS cell is not a harmless extra
+                // key: the rendered step fires (the gate tests either list) and
+                // finds nothing to install, which is the silent skip this whole
+                // declaration exists to replace. `None` — an opaque self-hosted
+                // label — defers to the step, which fails loudly there instead.
+                match self.resolved_os(cell) {
+                    Some(HostOs::Windows) => {
+                        return Err(Error::InvalidManifest(format!(
+                            "cell '{name}': host_packages has no installer for a Windows runner — \
+                             provision the dependency on the runner image instead"
+                        )))
+                    }
+                    Some(HostOs::Linux) if pkgs.apt.is_empty() => {
+                        return Err(Error::InvalidManifest(format!(
+                            "cell '{name}': host_packages names nothing under 'apt', but this \
+                             cell's runner resolves to Linux — a Linux runner installs from 'apt'"
+                        )))
+                    }
+                    Some(HostOs::Macos) if pkgs.brew.is_empty() => {
+                        return Err(Error::InvalidManifest(format!(
+                            "cell '{name}': host_packages names nothing under 'brew', but this \
+                             cell's runner resolves to macOS — a macOS runner installs from 'brew'"
+                        )))
+                    }
+                    _ => {}
+                }
+            }
 
             if let Some(remote) = &cell.runtime_remote {
                 validate_runtime_remote(name, remote)?;
@@ -877,6 +1008,36 @@ impl SupportMatrix {
             .unwrap_or_else(|| cell.host.runs_on())
     }
 
+    /// The runner OS a cell resolves to, when the matrix says enough to know.
+    ///
+    /// A `runner:` profile names a hosted image (`windows-2022`) or operator
+    /// labels; a legacy `host:` block names the OS outright. Returns `None` for
+    /// opaque self-hosted labels — the caller then defers to the rendered step,
+    /// which dispatches on `$RUNNER_OS` at execution time.
+    pub fn resolved_os(&self, cell: &SupportCell) -> Option<HostOs> {
+        let from_tokens = |tokens: &[String]| -> Option<HostOs> {
+            tokens.iter().find_map(|t| {
+                let t = t.to_ascii_lowercase();
+                if t.starts_with("windows") {
+                    Some(HostOs::Windows)
+                } else if t.starts_with("macos") || t.starts_with("mac-") {
+                    Some(HostOs::Macos)
+                } else if t.starts_with("ubuntu") || t.starts_with("linux") {
+                    Some(HostOs::Linux)
+                } else {
+                    None
+                }
+            })
+        };
+        match cell.runner.as_deref().and_then(|n| self.runners.get(n)) {
+            Some(profile) => from_tokens(&profile.runs_on()),
+            // No profile: explicit labels are a hint, the `host.os` field is a
+            // declaration — and it is only meaningful when the cell wrote one.
+            None if cell.host.labels.is_empty() => Some(cell.host.os),
+            None => from_tokens(&cell.host.labels).or(Some(cell.host.os)),
+        }
+    }
+
     /// Whether a cell resolves to GitHub-hosted infrastructure.
     pub fn is_hosted(&self, cell: &SupportCell) -> bool {
         match cell.runner.as_deref() {
@@ -935,6 +1096,16 @@ impl SupportMatrix {
     /// so a cell that ships its own interpreter renders it as a skip.)
     pub fn needs_host_python(&self) -> bool {
         self.source_cells().iter().any(|c| c.host_python.is_some())
+    }
+
+    /// Whether any source cell declares `host_packages` — the signal for the
+    /// generator to render the provisioning step at all. The step itself is
+    /// per-cell gated on the rendered package lists being non-empty, so a matrix
+    /// where only one cell needs X11 headers does not touch the others.
+    pub fn needs_host_packages(&self) -> bool {
+        self.source_cells()
+            .iter()
+            .any(|c| c.host_packages.as_ref().is_some_and(|p| !p.is_empty()))
     }
 
     /// Hosted runner profiles referenced by at least one cell without a
@@ -1382,6 +1553,19 @@ pub fn starter_matrix() -> String {
 # depends on an accidental host interpreter. Omit it when the runtime ships
 # its own interpreter; self-hosted runners keep their operator-provisioned
 # Python regardless.
+#
+# A runtime artifact is not always self-contained: CONSUMING it can need
+# host packages the artifact cannot carry (OpenUSD 26.08's MaterialX
+# hard-requires X11 development headers to `find_package(pxr)` on Linux).
+# Declare them per source cell with `host_packages`, keyed by the runner's
+# native installer, and the generator renders the provisioning step before
+# the build -- so regeneration re-renders it instead of silently dropping a
+# hand-added step. Windows has no assumed installer; provision the
+# dependency on the runner image there.
+#
+#   host_packages:
+#     apt: [libx11-dev, libxt-dev]     # Linux runners
+#     brew: [some-formula]             # macOS runners
 #
 # Self-hosted cells may omit runtime_remote and keep air-gapped local
 # import (`ost artifact import` on the runner); CI evidence records the
@@ -2031,6 +2215,92 @@ cells:
         );
         let err = SupportMatrix::from_yaml(&support).expect_err("host_python on support lane");
         assert!(err.to_string().contains("source lanes"), "{err}");
+    }
+
+    /// The MaterialX/X11 case from report 31: a Linux source cell declares the
+    /// host packages its pinned runtime needs to be *consumed*.
+    #[test]
+    fn host_packages_parse_on_a_linux_source_cell() {
+        let src = valid_yaml().replace(
+            "  - name: linux-usd-toy\n    runtime_artifact",
+            "  - name: linux-usd-toy\n    lane: pull_request\n    host_packages:\n      apt: [libx11-dev, libxt-dev]\n    runtime_artifact",
+        );
+        let m = SupportMatrix::from_yaml(&src).unwrap();
+        assert_eq!(
+            m.cells[0].host_packages.as_ref().unwrap().apt,
+            vec!["libx11-dev".to_string(), "libxt-dev".to_string()]
+        );
+        assert!(m.needs_host_packages());
+    }
+
+    /// The list is word-split into the installer's argv, so anything that could
+    /// carry a flag or a shell metacharacter is refused at parse time.
+    #[test]
+    fn host_packages_reject_non_package_names() {
+        assert!(is_package_name("libx11-dev"));
+        assert!(is_package_name("g++"));
+        assert!(is_package_name("python3.13"));
+        assert!(!is_package_name("--allow-downgrades"));
+        assert!(!is_package_name("libx11-dev; rm -rf /"));
+        assert!(!is_package_name("$(id)"));
+        assert!(!is_package_name(""));
+
+        let bad = valid_yaml().replace(
+            "  - name: linux-usd-toy\n    runtime_artifact",
+            "  - name: linux-usd-toy\n    lane: pull_request\n    host_packages:\n      apt: [\"libx11-dev; id\"]\n    runtime_artifact",
+        );
+        let err = SupportMatrix::from_yaml(&bad).expect_err("shell metacharacter");
+        assert!(err.to_string().contains("not a package name"), "{err}");
+    }
+
+    /// A support lane never configures, and Windows has no assumed installer.
+    #[test]
+    fn host_packages_are_refused_where_no_step_could_run() {
+        let support = valid_yaml().replace(
+            "  - name: linux-usd-toy\n    runtime_artifact",
+            "  - name: linux-usd-toy\n    host_packages:\n      apt: [libx11-dev]\n    runtime_artifact",
+        );
+        let err = SupportMatrix::from_yaml(&support).expect_err("support lane");
+        assert!(err.to_string().contains("source lanes"), "{err}");
+
+        // The second fixture cell already resolves to a Windows runner.
+        let windows = valid_yaml().replace(
+            "  - name: windows-usd-toy\n    runtime_artifact",
+            "  - name: windows-usd-toy\n    lane: pull_request\n    host_packages:\n      apt: [libx11-dev]\n    runtime_artifact",
+        );
+        let err = SupportMatrix::from_yaml(&windows).expect_err("windows runner");
+        assert!(err.to_string().contains("no installer"), "{err}");
+    }
+
+    /// Declaring the wrong installer's list for the runner the cell resolves to
+    /// is refused too: the rendered step would fire and find nothing to install,
+    /// which is the silent skip the declaration exists to replace.
+    #[test]
+    fn host_packages_must_name_the_resolved_runner_s_installer() {
+        // Linux cell, brew-only.
+        let linux = valid_yaml().replace(
+            "  - name: linux-usd-toy\n    runtime_artifact",
+            "  - name: linux-usd-toy\n    lane: pull_request\n    host_packages:\n      brew: [some-formula]\n    runtime_artifact",
+        );
+        let err = SupportMatrix::from_yaml(&linux).expect_err("brew on linux");
+        assert!(err.to_string().contains("nothing under 'apt'"), "{err}");
+
+        // The same cell as macOS, apt-only.
+        let macos = valid_yaml()
+            .replace(
+                "  - name: linux-usd-toy\n    runtime_artifact",
+                "  - name: linux-usd-toy\n    lane: pull_request\n    host_packages:\n      apt: [libx11-dev]\n    runtime_artifact",
+            )
+            .replace("      os: linux\n      labels: [self-hosted, linux]\n", "      os: macos\n");
+        let err = SupportMatrix::from_yaml(&macos).expect_err("apt on macos");
+        assert!(err.to_string().contains("nothing under 'brew'"), "{err}");
+
+        // Declaring both is how one cell definition serves either runner.
+        let both = valid_yaml().replace(
+            "  - name: linux-usd-toy\n    runtime_artifact",
+            "  - name: linux-usd-toy\n    lane: pull_request\n    host_packages:\n      apt: [libx11-dev]\n      brew: [some-formula]\n    runtime_artifact",
+        );
+        SupportMatrix::from_yaml(&both).expect("both installers named");
     }
 
     /// `lanes_yaml()` with a minimal valid draft release contract: a policy,

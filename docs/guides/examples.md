@@ -673,6 +673,59 @@ Self-hosted runners keep their operator-provisioned Python, so the `setup-python
 step is gated on `matrix.hosted` and skips there. Omit `host_python` entirely
 when the runtime ships its own interpreter.
 
+3. **Host packages the runtime needs to be *consumed*.** A runtime artifact is
+   not always self-contained. OpenUSD 26.08 bundles MaterialX 1.39.5, whose
+   `MaterialXConfig.cmake` gained an unconditional
+   `find_dependency(X11 REQUIRED COMPONENTS Xt)` on non-Apple UNIX — and
+   `pxrConfig.cmake` chains into it, so every Linux consumer needs X11
+   development headers merely to *configure*. Declare them per source cell with
+   `host_packages`, keyed by the runner's native installer:
+
+```yaml
+cells:
+  - name: linux-usd-pr
+    lane: pull_request
+    runner: linux-hosted
+    host_python: "3.13"
+    host_packages:
+      apt: [libx11-dev, libxt-dev]   # Linux runners
+      # brew: [some-formula]         # macOS runners
+    bundle: plugins/usdVrm
+    runtime_artifact: sha256:<runtime SDK digest>
+    platform: cy2026
+    profile: usd
+```
+
+The generator renders one provisioning step before the build, per-cell gated and
+dispatched on `$RUNNER_OS`. It reaches both jobs that build from source: the
+source-CI lanes and the tag-triggered release candidate. Declaring it in the
+matrix — rather than hand-editing the rendered workflow — is what keeps
+`ost ci generate github --force` lossless.
+
+The list a runner reads must be the one that has packages in it. `ost ci validate`
+refuses a `host_packages` block on a Windows cell (no assumed installer —
+provision the dependency on the runner image instead), and refuses a cell that
+names only `brew` on a Linux runner or only `apt` on a macOS one. A cell serving
+both declares both. Where the runner's OS cannot be resolved at generation time —
+an opaque self-hosted label — the rendered step decides at run time and fails
+loudly rather than skipping a dependency the configure step needs.
+
+### Reading the matrix from a lane `ci generate` cannot express
+
+Some workspace members have no bundle cell — a plain library with no bundle
+consumer, or a CLI executable. A repository covering those writes its own
+workflow, and it must not re-pin the runtime digests by hand: two places that
+have to be updated together on every republish will drift, and a lane silently
+left on an older OpenUSD looks like coverage while proving nothing.
+
+```bash
+ost ci matrix --json --lane pull_request   # resolved cells + the bootstrap pin
+```
+
+Each cell carries its name, lane, resolved `runs_on`, hosted flag, platform,
+profile, bundle, `up_to`, `runtime_artifact`, `runtime_remote`, host Python and
+host packages — so a hand-written lane consumes the matrix instead of copying it.
+
 ## lock — reproducibility
 
 ```bash

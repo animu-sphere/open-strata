@@ -50,6 +50,17 @@ pub enum CiCmd {
         #[arg(long)]
         matrix: Option<String>,
     },
+    /// Emit the resolved cells so a workflow `ost ci generate` cannot express
+    /// can consume the same pins instead of copying them.
+    Matrix {
+        /// Path to the matrix file. Defaults to ./openstrata.ci.yaml.
+        #[arg(long)]
+        matrix: Option<String>,
+        /// Only cells in this lane (pull_request | main | scheduled |
+        /// workflow_dispatch). All lanes when omitted.
+        #[arg(long)]
+        lane: Option<String>,
+    },
     /// Generate CI configuration from the support matrix.
     #[command(subcommand)]
     Generate(GenerateCmd),
@@ -90,6 +101,7 @@ pub fn run(cmd: CiCmd, fmt: Format) -> Result<()> {
             support,
         } => validate(matrix.as_deref(), resolve, support.as_deref(), fmt),
         CiCmd::Plan { matrix } => plan(matrix.as_deref(), fmt),
+        CiCmd::Matrix { matrix, lane } => resolved_matrix(matrix.as_deref(), lane.as_deref(), fmt),
         CiCmd::Generate(GenerateCmd::Github {
             matrix,
             out,
@@ -597,6 +609,121 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
             hosted_unacknowledged.join(", ")
         );
         println!("        set runners.<name>.billing.acknowledgement: required");
+    }
+    Ok(())
+}
+
+/// Parse a `--lane` value into a [`Lane`], naming the accepted set on a typo
+/// rather than silently matching nothing. The mapping itself lives beside
+/// `Lane::as_str` so the two cannot disagree.
+fn parse_lane(value: &str) -> Result<Lane> {
+    Lane::parse(value).ok_or_else(|| {
+        let accepted = Lane::ALL
+            .iter()
+            .map(|lane| lane.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Error::usage(format!(
+            "unknown lane '{value}' — expected one of: {accepted}"
+        ))
+    })
+}
+
+/// `ost ci matrix` — emit the resolved cells as data.
+///
+/// `ci generate` cannot express every lane a repository needs: a workspace with
+/// plain libraries and CLI executables has members no bundle cell reaches, so
+/// the repo hand-writes a workflow. Today that workflow has to *copy* the
+/// runtime digest pins out of `openstrata.ci.yaml`, which means two places must
+/// be re-pinned together on every runtime republish — and a hand-written lane
+/// silently left on an older OpenUSD looks like coverage while proving nothing
+/// (report 32 §2).
+///
+/// This is read-only projection: the matrix stays the single source of truth and
+/// a hand-written lane consumes it instead of duplicating it.
+fn resolved_matrix(matrix_flag: Option<&str>, lane_flag: Option<&str>, fmt: Format) -> Result<()> {
+    let (path, matrix) = load_matrix(matrix_flag)?;
+    let lane = lane_flag.map(parse_lane).transpose()?;
+    let cells: Vec<&ost_ci::SupportCell> = matrix
+        .cells
+        .iter()
+        .filter(|c| lane.is_none_or(|l| c.lane == l))
+        .collect();
+
+    if fmt.is_json() {
+        let rendered: Vec<serde_json::Value> = cells
+            .iter()
+            .map(|cell| {
+                serde_json::json!({
+                    "name": cell.name,
+                    "lane": cell.lane.as_str(),
+                    "runner": cell.runner,
+                    "runs_on": matrix.runs_on(cell),
+                    "hosted": matrix.is_hosted(cell),
+                    "os": matrix.resolved_os(cell).map(|os| os.as_str()),
+                    "platform": cell.platform,
+                    "profile": cell.profile,
+                    "bundle": cell.bundle.as_deref().unwrap_or("."),
+                    "up_to": cell.up_to,
+                    "runtime_artifact": cell.runtime_artifact,
+                    "runtime_remote": cell.runtime_remote.as_ref().map(|r| r.uri.as_str()),
+                    "expected_oci_digest": cell
+                        .runtime_remote
+                        .as_ref()
+                        .and_then(|r| r.pinned_oci_digest()),
+                    "plugin_artifact": cell.plugin_artifact,
+                    "host_python": cell.host_python,
+                    "host_packages": cell.host_packages,
+                    "minimum_trust": matrix.minimum_trust(cell),
+                    "require_evidence": matrix.require_evidence(cell).as_str(),
+                })
+            })
+            .collect();
+        // The bootstrap pin travels with the cells: a hand-written lane needs
+        // the same checksum-verified `ost` the generated one installs, and that
+        // was the largest copied block of all (report 32 §2, ~40 lines).
+        let bootstrap = matrix.bootstrap.as_ref().map(|b| {
+            serde_json::json!({
+                "version": b.ost.version,
+                "repository": b.ost.repository,
+                "sha256": b.ost.sha256,
+            })
+        });
+        output::report(
+            true,
+            &serde_json::json!({
+                "schema": ost_ci::MATRIX_SCHEMA,
+                "matrix": path.to_string(),
+                "lane": lane.map(|l| l.as_str()),
+                "bootstrap": bootstrap,
+                "cells": rendered,
+            }),
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Matrix {path}: {} cell(s){}",
+        cells.len(),
+        lane.map(|l| format!(" in lane {}", l.as_str()))
+            .unwrap_or_default()
+    );
+    for cell in &cells {
+        println!(
+            "  {} [{}] {}/{} on {} — runtime {}",
+            cell.name,
+            cell.lane.as_str(),
+            cell.platform,
+            cell.profile,
+            matrix.runs_on(cell).join(", "),
+            cell.runtime_artifact
+        );
+        if let Some(remote) = &cell.runtime_remote {
+            println!("      remote: {}", remote.uri);
+        }
+    }
+    if cells.is_empty() {
+        println!("  (no cell matches; `ost ci plan` lists the lanes that exist)");
     }
     Ok(())
 }
