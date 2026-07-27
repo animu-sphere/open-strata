@@ -53,22 +53,42 @@ const SETUP_PYTHON: &str = "actions/setup-python@ece7cb06caefa5fff74198d8649806c
 /// declares one). Package names are validated as bare names at parse time, so
 /// word-splitting them into the installer's argument list is safe and is how a
 /// package manager takes several packages.
+///
+/// The lists cross into the script through `env:` rather than by expanding
+/// `${{ matrix.* }}` inside `run:`. Parse-time validation already refuses
+/// anything but a bare package name, so this changes no behaviour — it keeps the
+/// guarantee from resting on that validation alone, for a generated file that is
+/// committed and could be reached by a matrix edited around `ci validate`.
+///
+/// Every arm ends in an install or an error. An empty list on the arm the runner
+/// took means the cell declared packages for an installer it never reaches, and
+/// that is the failure this whole step exists to stop being silent — so it fails
+/// loudly rather than skipping the dependency the configure step needs.
 const HOST_PACKAGES_STEP: &str = "\
 \x20     - name: Install the host packages this runtime needs to be consumed
         if: ${{ matrix.host_packages_apt != '' || matrix.host_packages_brew != '' }}
         shell: bash
+        env:
+          HOST_PACKAGES_APT: ${{ matrix.host_packages_apt }}
+          HOST_PACKAGES_BREW: ${{ matrix.host_packages_brew }}
         run: |
           set -euo pipefail
           case \"$RUNNER_OS\" in
             Linux)
-              packages=\"${{ matrix.host_packages_apt }}\"
-              [ -n \"$packages\" ] || exit 0
+              packages=\"$HOST_PACKAGES_APT\"
+              if [ -z \"$packages\" ]; then
+                echo \"error: this cell declares host_packages but nothing under 'apt'; a Linux runner installs from the 'apt' list\" >&2
+                exit 1
+              fi
               sudo apt-get update
               sudo apt-get install -y --no-install-recommends $packages
               ;;
             macOS)
-              packages=\"${{ matrix.host_packages_brew }}\"
-              [ -n \"$packages\" ] || exit 0
+              packages=\"$HOST_PACKAGES_BREW\"
+              if [ -z \"$packages\" ]; then
+                echo \"error: this cell declares host_packages but nothing under 'brew'; a macOS runner installs from the 'brew' list\" >&2
+                exit 1
+              fi
               brew install $packages
               ;;
             *)
@@ -647,38 +667,48 @@ fn source_steps(matrix: &SupportMatrix) -> String {
     )
 }
 
-/// A cell's `(apt, brew)` package lists as space-joined matrix values. Empty
-/// strings are what the rendered step's per-cell gate tests, so a cell that
-/// declares nothing costs nothing.
-fn host_package_lists(cell: &SupportCell) -> (String, String) {
-    match &cell.host_packages {
+/// The include keys every job that builds a bundle **from source** needs: the
+/// source-CI jobs and the release-candidate job.
+///
+/// Both run `ost plugin build` behind [`prebuild_steps`], so both need the same
+/// per-cell inputs its steps are gated on. Keeping the two key sets in one place
+/// is not tidiness: when only `source_job` grew `host_packages_*`, the release
+/// job still rendered the provisioning step — gated on keys its own matrix never
+/// defined, which GitHub evaluates as empty — so the step was present, always
+/// skipped, and the tag-time candidate build hit the very X11 configure failure
+/// the declaration exists to prevent.
+///
+/// Package lists are space-joined; empty strings are what the rendered step's
+/// per-cell gate tests, so a cell that declares nothing costs nothing.
+fn source_build_include_keys(cell: &SupportCell) -> String {
+    let bundle = cell.bundle.as_deref().unwrap_or(".");
+    let remote = cell
+        .runtime_remote
+        .as_ref()
+        .map(|r| r.uri.as_str())
+        .unwrap_or("");
+    let host_python = cell.host_python.as_deref().unwrap_or("");
+    let (apt, brew) = match &cell.host_packages {
         Some(p) => (p.apt.join(" "), p.brew.join(" ")),
         None => (String::new(), String::new()),
-    }
+    };
+    format!(
+        "            bundle: {bundle}\n\
+         \x20           runtime_remote: \"{remote}\"\n\
+         \x20           host_python: \"{host_python}\"\n\
+         \x20           host_packages_apt: \"{apt}\"\n\
+         \x20           host_packages_brew: \"{brew}\"\n"
+    )
 }
 
 /// One source-CI job (`pr` or `mainline`) over the given cells.
 fn source_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportCell]) -> String {
     let mut include = String::new();
     for cell in cells {
-        let bundle = cell.bundle.as_deref().unwrap_or(".");
-        let remote = cell
-            .runtime_remote
-            .as_ref()
-            .map(|r| r.uri.as_str())
-            .unwrap_or("");
-        let host_python = cell.host_python.as_deref().unwrap_or("");
-        let (apt, brew) = host_package_lists(cell);
         include.push_str(&include_entry(
             matrix,
             cell,
-            &format!(
-                "            bundle: {bundle}\n\
-                 \x20           runtime_remote: \"{remote}\"\n\
-                 \x20           host_python: \"{host_python}\"\n\
-                 \x20           host_packages_apt: \"{apt}\"\n\
-                 \x20           host_packages_brew: \"{brew}\"\n"
-            ),
+            &source_build_include_keys(cell),
         ));
     }
     // Hosted cells get a workspace-local OST_HOME so the registry the cache
@@ -883,21 +913,13 @@ fn release_candidate_steps(matrix: &SupportMatrix) -> String {
 fn release_candidate_job(matrix: &SupportMatrix, cells: &[&SupportCell]) -> String {
     let mut include = String::new();
     for cell in cells {
-        let bundle = cell.bundle.as_deref().unwrap_or(".");
-        let remote = cell
-            .runtime_remote
-            .as_ref()
-            .map(|reference| reference.uri.as_str())
-            .unwrap_or("");
-        let host_python = cell.host_python.as_deref().unwrap_or("");
+        // The same keys the source jobs emit: a candidate cell is a source cell
+        // (`publish: candidate` sits on a `main` lane) and this job builds it
+        // from source through the same prebuild steps.
         include.push_str(&include_entry(
             matrix,
             cell,
-            &format!(
-                "            bundle: {bundle}\n\
-                 \x20           runtime_remote: \"{remote}\"\n\
-                 \x20           host_python: \"{host_python}\"\n"
-            ),
+            &source_build_include_keys(cell),
         ));
     }
     let ost_home = if matrix.bootstrap.is_some() {
@@ -1673,6 +1695,24 @@ mod tests {
         // Windows reaches the fallback arm and fails loudly rather than silently
         // skipping a dependency the configure step needs.
         assert!(run.contains("no installer for $RUNNER_OS"));
+        // So does an arm whose own list is empty: the cell declared packages for
+        // an installer this runner never reaches.
+        assert!(run.contains("nothing under 'apt'"));
+        assert!(run.contains("nothing under 'brew'"));
+        // The lists cross into the script through `env:`, never by expanding a
+        // matrix value inside the shell body.
+        assert!(
+            !run.contains("${{"),
+            "no expression interpolation in run: {run}"
+        );
+        assert_eq!(
+            step["env"]["HOST_PACKAGES_APT"],
+            "${{ matrix.host_packages_apt }}"
+        );
+        assert_eq!(
+            step["env"]["HOST_PACKAGES_BREW"],
+            "${{ matrix.host_packages_brew }}"
+        );
 
         let entries = doc["jobs"]["pr"]["strategy"]["matrix"]["include"]
             .as_sequence()
@@ -1680,6 +1720,37 @@ mod tests {
         assert_eq!(entries[0]["host_packages_apt"], "libx11-dev libxt-dev");
         assert_eq!(entries[0]["host_packages_brew"], "");
         assert!(!a.contains("secrets."), "source CI uses no secrets");
+    }
+
+    /// The release-candidate job builds from source too, so it must carry the
+    /// keys the provisioning step is gated on. Rendering the step into a job
+    /// whose matrix never defines them makes it *look* covered while GitHub
+    /// evaluates the gate as empty and skips it on every candidate build.
+    #[test]
+    fn release_candidates_carry_the_host_packages_gate_keys() {
+        let mut m = release_matrix();
+        m.cells[0].host_packages = Some(ost_ci_host_packages(&["libx11-dev", "libxt-dev"]));
+        let a = generate_release(&m).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&a).unwrap();
+
+        let entry = &doc["jobs"]["candidates"]["strategy"]["matrix"]["include"][0];
+        assert_eq!(entry["host_packages_apt"], "libx11-dev libxt-dev");
+        assert_eq!(entry["host_packages_brew"], "");
+
+        let steps = doc["jobs"]["candidates"]["steps"].as_sequence().unwrap();
+        let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+        let install = names
+            .iter()
+            .position(|n| n.contains("host packages"))
+            .expect("host-packages step");
+        let build = names
+            .iter()
+            .position(|n| n.contains("Build the release candidate"))
+            .unwrap();
+        assert!(
+            install < build,
+            "provisioning precedes the build: {names:?}"
+        );
     }
 
     /// A matrix declaring no host packages renders no provisioning step. The

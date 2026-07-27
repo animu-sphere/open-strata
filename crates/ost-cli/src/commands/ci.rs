@@ -614,18 +614,19 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
 }
 
 /// Parse a `--lane` value into a [`Lane`], naming the accepted set on a typo
-/// rather than silently matching nothing.
+/// rather than silently matching nothing. The mapping itself lives beside
+/// `Lane::as_str` so the two cannot disagree.
 fn parse_lane(value: &str) -> Result<Lane> {
-    match value {
-        "pull_request" => Ok(Lane::PullRequest),
-        "main" => Ok(Lane::Main),
-        "scheduled" => Ok(Lane::Scheduled),
-        "workflow_dispatch" => Ok(Lane::WorkflowDispatch),
-        other => Err(Error::usage(format!(
-            "unknown lane '{other}' — expected pull_request, main, scheduled, \
-             or workflow_dispatch"
-        ))),
-    }
+    Lane::parse(value).ok_or_else(|| {
+        let accepted = Lane::ALL
+            .iter()
+            .map(|lane| lane.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Error::usage(format!(
+            "unknown lane '{value}' — expected one of: {accepted}"
+        ))
+    })
 }
 
 /// `ost ci matrix` — emit the resolved cells as data.

@@ -424,6 +424,19 @@ fn adopt_local(
     // above, sometimes required) path, and it should not silently ship a
     // usdGenSchema that dies on `ModuleNotFoundError: jinja2` in the consumer's
     // schema-generate phase (reports 29 §5, 30 §4).
+    //
+    // This is the one write `--from-usd` makes into the tree it adopts, and that
+    // tree is the caller's — possibly a shared or system install. Say so before
+    // writing rather than reporting it afterwards. The provisioning itself is
+    // idempotent: an install that already imports the deps is left untouched.
+    if ost_build::bundles_usdgenschema(&root) {
+        println!(
+            "==> {root} bundles usdGenSchema; ensuring its schema-gen deps ({}) are present \
+             in {} — the adopted tree is written to only if they are missing",
+            ost_build::SCHEMA_GEN_PACKAGES.join(" "),
+            ost_runtime::usd_python_dir_for(&root, Some(&r.python_version))
+        );
+    }
     provision_schema_gen_deps(&root, &r.python_version);
 
     // The store dir holds only the manifest (a pointer to the external root).
@@ -824,7 +837,10 @@ fn provision_schema_gen_deps(prefix: &Utf8Path, python_version: &str) {
     if !ost_build::bundles_usdgenschema(prefix) {
         return;
     }
-    let python_lib_dir = ost_runtime::usd_python_dir(prefix);
+    // Version-aware: this is a `pip install --target`, and a 26.08 tree carrying
+    // more than one `lib/python<X.Y>/site-packages` would otherwise be picked by
+    // sort order — installing the deps into an ABI the runtime never loads.
+    let python_lib_dir = ost_runtime::usd_python_dir_for(prefix, Some(python_version));
     let manual_fix = |argv: &str| {
         format!(
             "provision them manually with: {argv} -m pip install --target {python_lib_dir} {}",

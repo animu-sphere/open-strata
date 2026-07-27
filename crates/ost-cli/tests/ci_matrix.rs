@@ -845,3 +845,157 @@ fn evidence_gate_gap_warns_on_generate_and_fails_validate() {
         .iter()
         .all(|g| g.as_str().unwrap().contains("has no SBOM ")));
 }
+
+/// [`lanes_yaml`] with its hosted PR cell moved to a Linux runner. `apt`
+/// packages only validate on a cell whose runner resolves to Linux, and the
+/// default fixture's hosted runner is Windows.
+fn linux_pr_lanes_yaml() -> String {
+    lanes_yaml()
+        .replace("windows-hosted", "linux-hosted")
+        .replace("image: windows-2022", "image: ubuntu-24.04")
+        .replace("plugin-pr-windows", "plugin-pr-linux")
+}
+
+/// `ost ci matrix --json` is a *consumed* contract: a workflow `ci generate`
+/// cannot express reads these keys instead of re-pinning the runtime digests by
+/// hand. Dropping or renaming one silently breaks that lane, so the key set is
+/// pinned here rather than left to whatever the projection happens to emit.
+#[test]
+fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
+    let sb = Sandbox::new("matrix-projection");
+    // A Linux PR cell, so the `apt` declaration matches the runner it resolves
+    // to (the fixture's default hosted runner is Windows, which has no
+    // installer).
+    let matrix = linux_pr_lanes_yaml().replace(
+        "    up_to: 4\n",
+        "    up_to: 4\n    host_python: \"3.13\"\n    host_packages:\n      apt: [libx11-dev, libxt-dev]\n",
+    );
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), matrix).unwrap();
+
+    let v = stdout_json(&sb.ost(&["--json", "ci", "matrix"]));
+    assert_eq!(v["data"]["schema"], 1);
+    assert_eq!(v["data"]["matrix"], "openstrata.ci.yaml");
+    assert_eq!(v["data"]["lane"], serde_json::Value::Null);
+
+    // The bootstrap pin travels with the cells: it was the largest block a
+    // hand-written lane used to copy.
+    assert_eq!(v["data"]["bootstrap"]["version"], "0.9.0");
+
+    let cells = v["data"]["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 2);
+    let mut keys: Vec<&str> = cells[0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "bundle",
+            "expected_oci_digest",
+            "host_packages",
+            "host_python",
+            "hosted",
+            "lane",
+            "minimum_trust",
+            "name",
+            "os",
+            "platform",
+            "plugin_artifact",
+            "profile",
+            "require_evidence",
+            "runner",
+            "runs_on",
+            "runtime_artifact",
+            "runtime_remote",
+            "up_to",
+        ]
+    );
+
+    let pr = &cells[0];
+    assert_eq!(pr["name"], "plugin-pr-linux");
+    assert_eq!(pr["lane"], "pull_request");
+    assert_eq!(pr["hosted"], true);
+    assert_eq!(pr["os"], "linux");
+    assert_eq!(pr["runs_on"][0], "ubuntu-24.04");
+    assert_eq!(pr["bundle"], "plugins/toy");
+    assert_eq!(pr["host_python"], "3.13");
+    assert_eq!(pr["host_packages"]["apt"][0], "libx11-dev");
+    // The digest a hand-written lane would otherwise keep a second copy of.
+    assert_eq!(
+        pr["expected_oci_digest"],
+        format!("sha256:{}", "ee".repeat(32))
+    );
+
+    // A self-hosted support cell resolves its OS from the profile's labels.
+    assert_eq!(cells[1]["lane"], "scheduled");
+    assert_eq!(cells[1]["hosted"], false);
+    assert_eq!(cells[1]["os"], "linux");
+
+    // --lane filters, and names the accepted set on a typo instead of quietly
+    // matching nothing.
+    let v = stdout_json(&sb.ost(&["--json", "ci", "matrix", "--lane", "pull_request"]));
+    assert_eq!(v["data"]["lane"], "pull_request");
+    assert_eq!(v["data"]["cells"].as_array().unwrap().len(), 1);
+
+    let out = sb.ost(&["--json", "ci", "matrix", "--lane", "prs"]);
+    assert_eq!(out.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("pull_request, main, scheduled, workflow_dispatch"));
+}
+
+/// Report 31's step must reach the release lane too: a `publish: candidate`
+/// cell is a source cell, and the candidate job builds it from source.
+#[test]
+fn host_packages_reach_the_release_candidate_job() {
+    let sb = Sandbox::new("host-packages-release");
+    let matrix = linux_pr_lanes_yaml()
+        .replace(
+            "schema: 1\n",
+            "schema: 1\ntrust:\n  policy: openstrata-artifact-policy.toml\n  main_min_trust: verified\n  release_min_trust: trusted\nrelease:\n  version: 1.2.3\n  mode: draft\n",
+        )
+        .replace(
+            "    version: \"0.9.0\"\n",
+            &format!(
+                "    version: \"0.9.0\"\n    sha256:\n      x86_64-unknown-linux-gnu: {}\n",
+                "ef".repeat(32)
+            ),
+        )
+        .replace(
+            "    image: ubuntu-24.04\n",
+            "    image: ubuntu-24.04\n    billing:\n      acknowledgement: required\n",
+        )
+        .replace(
+            "    lane: pull_request\n",
+            "    lane: main\n    publish: candidate\n    trust: trusted\n    host_packages:\n      apt: [libx11-dev, libxt-dev]\n",
+        );
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), matrix).unwrap();
+
+    stdout_json(&sb.ost(&["--json", "ci", "generate", "github"]));
+    let text = std::fs::read_to_string(sb.base.join(".github/workflows/ost-release.yml")).unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+
+    let entry = &doc["jobs"]["candidates"]["strategy"]["matrix"]["include"][0];
+    assert_eq!(entry["host_packages_apt"], "libx11-dev libxt-dev");
+    assert_eq!(entry["host_packages_brew"], "");
+
+    let steps = doc["jobs"]["candidates"]["steps"].as_sequence().unwrap();
+    let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    let install = names
+        .iter()
+        .position(|n| n.contains("host packages"))
+        .expect("host-packages step in the candidate job");
+    let build = names
+        .iter()
+        .position(|n| n.contains("Build the release candidate"))
+        .unwrap();
+    assert!(
+        install < build,
+        "provisioning precedes the build: {names:?}"
+    );
+}

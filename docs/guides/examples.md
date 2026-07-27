@@ -697,10 +697,18 @@ cells:
 ```
 
 The generator renders one provisioning step before the build, per-cell gated and
-dispatched on `$RUNNER_OS`. Declaring it in the matrix — rather than hand-editing
-the rendered workflow — is what keeps `ost ci generate github --force` lossless.
-Windows has no assumed installer: provision the dependency on the runner image
-instead, and `ost ci validate` refuses a `host_packages` block on a Windows cell.
+dispatched on `$RUNNER_OS`. It reaches both jobs that build from source: the
+source-CI lanes and the tag-triggered release candidate. Declaring it in the
+matrix — rather than hand-editing the rendered workflow — is what keeps
+`ost ci generate github --force` lossless.
+
+The list a runner reads must be the one that has packages in it. `ost ci validate`
+refuses a `host_packages` block on a Windows cell (no assumed installer —
+provision the dependency on the runner image instead), and refuses a cell that
+names only `brew` on a Linux runner or only `apt` on a macOS one. A cell serving
+both declares both. Where the runner's OS cannot be resolved at generation time —
+an opaque self-hosted label — the rendered step decides at run time and fails
+loudly rather than skipping a dependency the configure step needs.
 
 ### Reading the matrix from a lane `ci generate` cannot express
 

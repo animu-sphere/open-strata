@@ -235,7 +235,15 @@ pub enum PluginCmd {
         /// Validate the workspace dependency graph and stop, exiting on that
         /// result alone. Needs no build, no runtime, and no packaged artifact,
         /// so it runs as an early PR gate in milliseconds. Requires --workspace.
-        #[arg(long, requires = "workspace", conflicts_with = "from_package")]
+        ///
+        /// The flags that select or extend what gets *tested* have nothing to
+        /// act on here, so naming one is a usage error rather than a silent
+        /// no-op.
+        #[arg(
+            long,
+            requires = "workspace",
+            conflicts_with_all = ["from_package", "with", "target", "profile", "up_to"]
+        )]
         graph_only: bool,
     },
     /// Open a fixture in usdview inside the plugin's runtime session (Level 6).
@@ -3804,9 +3812,20 @@ fn session_toolchain_file(bundle: &Bundle, platform: &str, profile: &str) -> Opt
     // first plain-CMake configure in a fresh checkout works too.
     let compiler = resolve_plugin_compiler(&bundle.root, &CompilerOpts::default()).ok()?;
     let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &tgt.python_version);
+    // Heal the runtime the same way `plugin build` does before rendering against
+    // it. Relocation runs at build/configure time, never at `runtime pull`, so on
+    // the fresh checkout this branch exists for, a just-pulled adopted runtime
+    // still carries the export machine's baked paths in its own CMake files —
+    // and pinning Python in the toolchain does not undo that.
+    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
     let text = ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref());
     std::fs::create_dir_all(target_dir.as_std_path()).ok()?;
-    std::fs::write(toolchain.as_std_path(), format!("{text}\n")).ok()?;
+    // Write through a temp file: `plugin build` serializes its writes to this
+    // directory with a lease that a session deliberately does not take, so a
+    // concurrent build must never observe a half-written toolchain.
+    let staged = target_dir.join("toolchain.cmake.session");
+    std::fs::write(staged.as_std_path(), format!("{text}\n")).ok()?;
+    std::fs::rename(staged.as_std_path(), toolchain.as_std_path()).ok()?;
     Some(toolchain)
 }
 
