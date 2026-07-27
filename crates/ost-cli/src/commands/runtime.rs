@@ -93,9 +93,9 @@ pub enum RuntimeCmd {
         #[arg(long)]
         dist: Option<String>,
         /// Export only the SDK layout (include, lib, bin, plugin, cmake,
-        /// libraries, resources, and CMake config), dropping the source/build
-        /// tree of a runtime adopted from a full USD build. Much smaller archive
-        /// and faster per-PR pull.
+        /// libraries, resources, share, and CMake config), dropping the
+        /// source/build tree of a runtime adopted from a full USD build. Much
+        /// smaller archive and faster per-PR pull.
         #[arg(long)]
         slim: bool,
         /// zstd compression level (1–22). Lower is faster; the default (19)
@@ -418,6 +418,14 @@ fn adopt_local(
     // fail — the gate ends up enforcing nothing.
     stamp_openusd_version(&mut extensions, &root, "adopted");
 
+    // An adopted tree bundling `usdGenSchema` needs the same schema-gen Python
+    // deps a `--build` pull provisions. Publishing a runtime built by driving
+    // `build_usd.py` directly is a supported (and, until the component-flag fix
+    // above, sometimes required) path, and it should not silently ship a
+    // usdGenSchema that dies on `ModuleNotFoundError: jinja2` in the consumer's
+    // schema-generate phase (reports 29 §5, 30 §4).
+    provision_schema_gen_deps(&root, &r.python_version);
+
     // The store dir holds only the manifest (a pointer to the external root).
     std::fs::create_dir_all(r.prefix.as_std_path())
         .map_err(|e| Error::io(r.prefix.to_string(), e))?;
@@ -533,21 +541,27 @@ pub(crate) fn openusd_version_drift(
     (!same_openusd_release(&real, &recorded)).then_some((recorded, real))
 }
 
-/// The USD-install subdirectories present under `root`. The `pxr` Python package
-/// may live under `lib/python` or `lib/site-packages` depending on the build.
+/// The USD-install subdirectories present under `root`.
+///
+/// The `pxr` Python package location is build-dependent — `lib/python` up to
+/// OpenUSD 26.05, `lib/python<X.Y>/site-packages` or `Lib/site-packages` from
+/// 26.08 — so the resolved directory is appended from
+/// [`ost_runtime::usd_python_dir`] rather than enumerated here. Recording the
+/// concrete layout is what lets a consumer tell which convention this artifact
+/// shipped (report 29 §3).
 fn probe_usd_layout(root: &Utf8Path) -> Vec<String> {
-    [
-        "bin",
-        "lib",
-        "lib/python",
-        "lib/site-packages",
-        "plugin/usd",
-        "include",
-    ]
-    .iter()
-    .filter(|s| root.join(s).as_std_path().is_dir())
-    .map(|s| s.to_string())
-    .collect()
+    let mut layout: Vec<String> = ["bin", "lib", "plugin/usd", "include"]
+        .iter()
+        .filter(|s| root.join(s).as_std_path().is_dir())
+        .map(|s| s.to_string())
+        .collect();
+    let python_dir = ost_runtime::usd_python_dir(root);
+    if python_dir.join("pxr").as_std_path().is_dir() {
+        if let Ok(rel) = python_dir.strip_prefix(root) {
+            layout.push(rel.to_string().replace('\\', "/"));
+        }
+    }
+    layout
 }
 
 /// Whether `root` looks like an OpenUSD install (a strong marker is present).
@@ -559,9 +573,59 @@ fn looks_like_usd(root: &Utf8Path) -> bool {
             .is_dir()
 }
 
-/// The arguments to pass to `python` to run build_usd.py: the script, default
-/// trims (kept lean; the user can re-enable via `--build-arg`), optional `-j`,
-/// any forwarded args, then the install directory (build_usd.py's positional).
+/// The `build_usd.py` components OpenStrata turns off by default, to keep a
+/// published runtime lean.
+///
+/// Each is one half of an `argparse` mutually exclusive group, so these are
+/// **defaults, not constraints**: a caller who names either half through
+/// `--build-arg` owns the decision and ost's half is dropped. Appending them
+/// unconditionally produced `--no-examples --examples`, which `argparse` rejects
+/// as a pair rather than letting the later flag win — and `--examples` is where
+/// OpenUSD 26.08 ships its OpenExec/ExecIr reference material, so the forced-off
+/// set was blocking the exact build three platforms needed (dogfooding reports
+/// 29 §1, 30 §2).
+const DEFAULT_COMPONENT_TRIMS: &[&str] = &["examples", "tutorials", "docs", "tests"];
+
+/// The option name in `arg`, stripped of `--` and of any `=value` suffix
+/// `argparse` also accepts. `None` for a positional or a short flag.
+fn option_name(arg: &str) -> Option<&str> {
+    arg.strip_prefix("--")
+        .map(|rest| rest.split('=').next().unwrap_or(rest))
+}
+
+/// Whether `arg` names `component` in either half of a `--x` / `--no-x` pair.
+fn names_component(arg: &str, component: &str) -> bool {
+    option_name(arg).is_some_and(|n| n.strip_prefix("no-").unwrap_or(n) == component)
+}
+
+/// The `--x` / `--no-x` pairs where the argv names **both** halves.
+///
+/// `build_usd.py` puts its component toggles in `argparse` mutually exclusive
+/// groups, which error on the pair. The check is structural rather than a
+/// hardcoded catalog of build_usd.py flags, so it stays correct as upstream adds
+/// components — and it lets ost refuse in one sentence instead of spending a
+/// process spawn to surface a two-line usage dump (report 29 §1, secondary ask).
+fn conflicting_component_flags(args: &[String]) -> Vec<String> {
+    let mut conflicts: Vec<String> = Vec::new();
+    for arg in args {
+        let Some(component) = option_name(arg).and_then(|n| n.strip_prefix("no-")) else {
+            continue;
+        };
+        if args.iter().any(|a| option_name(a) == Some(component))
+            && !conflicts.iter().any(|c| c == component)
+        {
+            conflicts.push(component.to_string());
+        }
+    }
+    conflicts
+}
+
+/// The arguments to pass to `python` to run build_usd.py: the script, the
+/// component defaults the caller did not override, optional `-j`, any forwarded
+/// args, then the install directory (build_usd.py's positional).
+///
+/// See [`DEFAULT_COMPONENT_TRIMS`] for why a forwarded `--examples` suppresses
+/// ost's `--no-examples` instead of colliding with it.
 fn build_usd_args(
     script: &Utf8Path,
     install_dir: &Utf8Path,
@@ -569,8 +633,11 @@ fn build_usd_args(
     extra: &[String],
 ) -> Vec<String> {
     let mut args = vec![script.to_string()];
-    for trim in ["--no-examples", "--no-tutorials", "--no-docs", "--no-tests"] {
-        args.push(trim.to_string());
+    for component in DEFAULT_COMPONENT_TRIMS {
+        if extra.iter().any(|a| names_component(a, component)) {
+            continue;
+        }
+        args.push(format!("--no-{component}"));
     }
     if let Some(j) = jobs {
         args.push("-j".to_string());
@@ -725,7 +792,7 @@ fn build_from_source(
     // them only on the build host and never installs them into the tree, so a
     // published image would otherwise die with a bare `ModuleNotFoundError` in
     // `ost plugin build`'s schema-generate phase (report Finding D).
-    provision_schema_gen_deps(r);
+    provision_schema_gen_deps(&r.prefix, &r.python_version);
     let mut manifest = RuntimeManifest::build(
         &r.runtime,
         &r.python_version,
@@ -742,23 +809,29 @@ fn build_from_source(
     Ok(manifest)
 }
 
-/// Provision the schema-gen Python deps into a freshly built runtime that
-/// bundles `usdGenSchema` (report Finding D). Resolves an interpreter to run
-/// `pip` and installs into the exact `lib/python` dir `ost` puts on
-/// `PYTHONPATH`. Best-effort: a failure warns with the one-line manual fix
-/// rather than discarding an otherwise-good (and expensive) build.
-fn provision_schema_gen_deps(r: &crate::commands::Resolved) {
-    if !ost_build::bundles_usdgenschema(&r.prefix) {
+/// Provision the schema-gen Python deps into a runtime that bundles
+/// `usdGenSchema` (report Finding D). Resolves an interpreter to run `pip` and
+/// installs into the exact Python directory `ost` puts on `PYTHONPATH`.
+/// Best-effort: a failure warns with the one-line manual fix rather than
+/// discarding an otherwise-good (and expensive) build.
+///
+/// `prefix` is the install being provisioned, which is the store prefix for a
+/// `--build` pull and the external USD root for a `--from-usd` adopt. The adopt
+/// path used to skip this entirely, so every runtime published by driving
+/// `build_usd.py` directly still needed a manual `pip install jinja2` — three
+/// times across three platforms (reports 29 §5, 30 §4).
+fn provision_schema_gen_deps(prefix: &Utf8Path, python_version: &str) {
+    if !ost_build::bundles_usdgenschema(prefix) {
         return;
     }
-    let python_lib_dir = ost_runtime::usd_python_dir(&r.prefix);
+    let python_lib_dir = ost_runtime::usd_python_dir(prefix);
     let manual_fix = |argv: &str| {
         format!(
             "provision them manually with: {argv} -m pip install --target {python_lib_dir} {}",
             ost_build::SCHEMA_GEN_PACKAGES.join(" ")
         )
     };
-    let Some(argv) = ost_build::resolve_run_python(&r.prefix, &r.python_version) else {
+    let Some(argv) = ost_build::resolve_run_python(prefix, python_version) else {
         eprintln!(
             "warning: this runtime bundles usdGenSchema but no Python interpreter was found to \
              provision its schema-gen deps ({}); {}",
@@ -767,7 +840,7 @@ fn provision_schema_gen_deps(r: &crate::commands::Resolved) {
         );
         return;
     };
-    match ost_build::provision_schema_gen_deps(&r.prefix, &python_lib_dir, &argv) {
+    match ost_build::provision_schema_gen_deps(prefix, &python_lib_dir, &argv) {
         Ok(ost_build::SchemaDepsOutcome::Installed(pkgs)) => {
             println!(
                 "==> provisioned schema-gen deps into {python_lib_dir}: {}",
@@ -1658,6 +1731,22 @@ fn build_with_script(
     })?;
 
     let args = build_usd_args(&script, &r.prefix, opts.jobs, &opts.extra);
+    // build_usd.py's component toggles are argparse mutually exclusive groups:
+    // naming both halves is a hard error there. ost knows the exact argv it is
+    // about to run, so refuse now rather than pay a process spawn to surface a
+    // two-line usage dump (report 29 §1).
+    let conflicts = conflicting_component_flags(&args);
+    if !conflicts.is_empty() {
+        let pairs = conflicts
+            .iter()
+            .map(|c| format!("`--{c}` and `--no-{c}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(Error::usage(format!(
+            "build_usd.py refuses both halves of a component toggle: {pairs}"
+        ))
+        .with_hint("pass only the half you want through `--build-arg`"));
+    }
     println!(
         "==> building OpenUSD (build_usd.py) into {} (one-time, heavy)",
         r.prefix
@@ -2702,6 +2791,77 @@ mod tests {
         assert!(args.iter().any(|a| a == "--no-tests"));
         assert!(args.windows(2).any(|w| w == ["-j", "8"]));
         assert!(args.iter().any(|a| a == "--no-imaging"));
+    }
+
+    /// The forced-off components are defaults, not constraints: forwarding the
+    /// positive half must *replace* ost's negative half, because build_usd.py
+    /// rejects the pair rather than letting the later flag win (report 29 §1).
+    #[test]
+    fn forwarded_component_flag_replaces_the_default_trim() {
+        let args = build_usd_args(
+            Utf8Path::new("/src/build_scripts/build_usd.py"),
+            Utf8Path::new("/store/rt"),
+            None,
+            &["--examples".to_string()],
+        );
+        assert!(args.iter().any(|a| a == "--examples"));
+        assert!(!args.iter().any(|a| a == "--no-examples"));
+        // The components the caller said nothing about keep their default.
+        for untouched in ["--no-tutorials", "--no-docs", "--no-tests"] {
+            assert!(args.iter().any(|a| a == untouched), "missing {untouched}");
+        }
+        assert!(conflicting_component_flags(&args).is_empty());
+    }
+
+    /// Re-passing the negative half is a no-op, not a duplicate.
+    #[test]
+    fn forwarded_negative_half_is_not_duplicated() {
+        let args = build_usd_args(
+            Utf8Path::new("/src/build_scripts/build_usd.py"),
+            Utf8Path::new("/store/rt"),
+            None,
+            &["--no-docs".to_string()],
+        );
+        assert_eq!(args.iter().filter(|a| *a == "--no-docs").count(), 1);
+    }
+
+    /// `--x=value` is the other spelling argparse accepts for the same option.
+    #[test]
+    fn valued_forwarded_flag_still_suppresses_the_default() {
+        let args = build_usd_args(
+            Utf8Path::new("/src/build_scripts/build_usd.py"),
+            Utf8Path::new("/store/rt"),
+            None,
+            &["--tests=all".to_string()],
+        );
+        assert!(!args.iter().any(|a| a == "--no-tests"));
+    }
+
+    /// A caller who names both halves themselves is caught before the spawn.
+    #[test]
+    fn both_halves_from_the_caller_are_reported_as_a_conflict() {
+        let args = build_usd_args(
+            Utf8Path::new("/src/build_scripts/build_usd.py"),
+            Utf8Path::new("/store/rt"),
+            None,
+            &["--tools".to_string(), "--no-tools".to_string()],
+        );
+        assert_eq!(
+            conflicting_component_flags(&args),
+            vec!["tools".to_string()]
+        );
+    }
+
+    /// The default argv must never trip its own conflict check.
+    #[test]
+    fn default_component_argv_has_no_conflicts() {
+        let args = build_usd_args(
+            Utf8Path::new("/src/build_scripts/build_usd.py"),
+            Utf8Path::new("/store/rt"),
+            Some(4),
+            &[],
+        );
+        assert!(conflicting_component_flags(&args).is_empty());
     }
 
     #[test]

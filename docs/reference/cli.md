@@ -263,6 +263,7 @@ Manage the CI support matrix and generate CI configuration
 
 - [`ost ci generate`](#ost-ci-generate) — Generate CI configuration from the support matrix
 - [`ost ci init`](#ost-ci-init) — Write a starter openstrata.ci.yaml support matrix
+- [`ost ci matrix`](#ost-ci-matrix) — Emit the resolved cells so a workflow `ost ci generate` cannot express can consume the same pins instead of copying them
 - [`ost ci plan`](#ost-ci-plan) — Report preflight execution facts (lanes, runners, billing)
 - [`ost ci validate`](#ost-ci-validate) — Validate the support matrix
 
@@ -304,6 +305,19 @@ Write a starter openstrata.ci.yaml support matrix
 | Option | Description |
 | --- | --- |
 | `--dir <DIR>` | Directory to write into. Defaults to the current directory |
+
+#### `ost ci matrix`
+
+Emit the resolved cells so a workflow `ost ci generate` cannot express can consume the same pins instead of copying them
+
+**Usage:** `ost ci matrix [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--lane <LANE>` | Only cells in this lane (pull_request \| main \| scheduled \| workflow_dispatch). All lanes when omitted |
+| `--matrix <MATRIX>` | Path to the matrix file. Defaults to ./openstrata.ci.yaml |
 
 #### `ost ci plan`
 
@@ -1008,6 +1022,7 @@ Orchestrate the verification pyramid (L0..L6) and write a report
 | Option | Description |
 | --- | --- |
 | `--from-package` | Test the *packaged* artifact, not the build tree: extract the already-built `ost plugin package` output to a clean directory and run discovery / open / validate against it. Catches a build-tree path baked into `plugInfo`/`LibraryPath` that source-tree discovery cannot see. Requires a prior `ost plugin package`. Composes with `--workspace`, which extracts every bundle and tests each against its dependencies' *extracted* trees rather than their source directories |
+| `--graph-only` | Validate the workspace dependency graph and stop, exiting on that result alone. Needs no build, no runtime, and no packaged artifact, so it runs as an early PR gate in milliseconds. Requires --workspace |
 | `--profile <PROFILE>` | Profile to test against. Defaults to the enclosing project's |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 | `--up-to <UP_TO>` | Highest verification level to run (0..=6). Default 5; 6 adds usdview |
@@ -1280,7 +1295,7 @@ Export a pulled real runtime into the local artifact registry
 | `--jobs <JOBS>` | zstd worker threads for compression. Defaults to the host's available parallelism, or the byte-stable single-threaded encoder when SOURCE_DATE_EPOCH is set; `--jobs 0` also forces it explicitly |
 | `--level <LEVEL>` | zstd compression level (1–22). Lower is faster; the default (19) favors a small artifact, packed once and pulled many times |
 | `--profile <PROFILE>` | Profile, e.g. `usd` |
-| `--slim` | Export only the SDK layout (include, lib, bin, plugin, cmake, libraries, resources, and CMake config), dropping the source/build tree of a runtime adopted from a full USD build. Much smaller archive and faster per-PR pull |
+| `--slim` | Export only the SDK layout (include, lib, bin, plugin, cmake, libraries, resources, share, and CMake config), dropping the source/build tree of a runtime adopted from a full USD build. Much smaller archive and faster per-PR pull |
 
 #### `ost runtime list`
 

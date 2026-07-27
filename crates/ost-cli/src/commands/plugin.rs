@@ -232,6 +232,11 @@ pub enum PluginCmd {
         /// dependencies' *extracted* trees rather than their source directories.
         #[arg(long)]
         from_package: bool,
+        /// Validate the workspace dependency graph and stop, exiting on that
+        /// result alone. Needs no build, no runtime, and no packaged artifact,
+        /// so it runs as an early PR gate in milliseconds. Requires --workspace.
+        #[arg(long, requires = "workspace", conflicts_with = "from_package")]
+        graph_only: bool,
     },
     /// Open a fixture in usdview inside the plugin's runtime session (Level 6).
     View {
@@ -405,10 +410,12 @@ pub fn run(cmd: PluginCmd, fmt: Format) -> Result<()> {
             profile,
             up_to,
             from_package,
+            graph_only,
         } => match (workspace, bundle) {
             (true, Some(_)) => Err(Error::usage(
                 "--workspace discovers bundles itself — drop the bundle path",
             )),
+            (true, None) if graph_only => validate_workspace_graph(fmt),
             (true, None) if from_package => {
                 test_workspace_from_package(&with, target, profile, up_to, fmt)
             }
@@ -3719,7 +3726,7 @@ fn run_session(
     let host = Host::detect();
     let (platform, profile) =
         selection_for_capabilities(target, profile, &bundle.manifest.requires.capabilities)?;
-    let r = require_real_runtime(Some(platform), Some(profile))?;
+    let r = require_real_runtime(Some(platform.clone()), Some(profile.clone()))?;
     let library_dirs = if no_inject {
         Vec::new()
     } else {
@@ -3749,6 +3756,9 @@ fn run_session(
     let mut cmd = Command::new(&program);
     cmd.args(&args);
     session.apply(&mut cmd); // overlay the resolved session env, no global mutation
+    if let Some(toolchain) = session_toolchain_file(&bundle, &platform, &profile) {
+        cmd.env("CMAKE_TOOLCHAIN_FILE", toolchain.as_str());
+    }
     let status = cmd
         .status()
         .map_err(|e| Error::io(format!("run {program}"), e))?;
@@ -3757,6 +3767,47 @@ fn run_session(
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+/// The `toolchain.cmake` a session exports as `CMAKE_TOOLCHAIN_FILE`, so a bare
+/// `cmake` inside `ost plugin run` configures the way `ost plugin build` does.
+///
+/// `CMAKE_PREFIX_PATH` alone is enough to *find* the runtime and not enough to
+/// configure against it: `pxrConfig.cmake` does
+/// `find_dependency(Python3 COMPONENTS Development Development.Module
+/// Development.Embed)`, and an adopted runtime baked the interpreter paths of
+/// the machine that built it — a deadsnakes 3.13 in a build container, absent on
+/// every runner. `ost plugin build` resolves a host interpreter and pins all
+/// three Development variables in this file; nothing exposed that, so a repo
+/// writing its own workspace lane could not reproduce by hand what `ost` does
+/// internally, and the lane shipped disabled (report 32 §5).
+///
+/// CMake ≥ 3.21 reads `CMAKE_TOOLCHAIN_FILE` from the environment, so exporting
+/// it needs no change on the caller's command line. An explicit toolchain the
+/// caller already set wins — this is a default, not an override. Returns `None`
+/// when the target cannot be resolved or the file cannot be written; the session
+/// still runs, exactly as before.
+fn session_toolchain_file(bundle: &Bundle, platform: &str, profile: &str) -> Option<Utf8PathBuf> {
+    if std::env::var_os("CMAKE_TOOLCHAIN_FILE").is_some() {
+        return None;
+    }
+    let (tgt, r) = build_target(platform, profile).ok()?;
+    let target_dir = target_state_dir(&bundle.root, &tgt.id());
+    let toolchain = target_dir.join("toolchain.cmake");
+    // A configured bundle already has one, written with its resolved compiler
+    // policy and any workspace-prefix additions. Reuse it rather than rendering
+    // a weaker version over the top.
+    if toolchain.as_std_path().is_file() {
+        return Some(toolchain);
+    }
+    // Not configured yet: render the same contract `plugin build` would, so the
+    // first plain-CMake configure in a fresh checkout works too.
+    let compiler = resolve_plugin_compiler(&bundle.root, &CompilerOpts::default()).ok()?;
+    let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &tgt.python_version);
+    let text = ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref());
+    std::fs::create_dir_all(target_dir.as_std_path()).ok()?;
+    std::fs::write(toolchain.as_std_path(), format!("{text}\n")).ok()?;
+    Some(toolchain)
 }
 
 fn same_plugin_identity(left: &Bundle, right: &Bundle) -> bool {
@@ -3996,24 +4047,7 @@ fn test_workspace_from_package(
     up_to: u8,
     fmt: Format,
 ) -> Result<()> {
-    let roots = discover_workspace_bundles(Utf8Path::new("."))?;
-    if roots.is_empty() {
-        return Err(Error::precondition(
-            "no plugin bundles found in immediate subdirectories or plugins/*",
-        )
-        .with_hint("run from the workspace root, or pass a bundle path instead of --workspace"));
-    }
-    let bundles = roots
-        .iter()
-        .map(|root| Bundle::load(root))
-        .collect::<Result<Vec<_>>>()?;
-    let library_roots = discover_workspace_libraries(Utf8Path::new("."))?;
-    let libraries = library_roots
-        .iter()
-        .map(|root| Library::load(root))
-        .collect::<Result<Vec<_>>>()?;
-
-    let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
+    let (bundles, _libraries, graph) = load_workspace_graph()?;
     if !graph.passed {
         if fmt.is_json() {
             output::report(
@@ -4021,6 +4055,7 @@ fn test_workspace_from_package(
                 &serde_json::json!({ "workspace": true, "from_package": true, "graph": graph }),
             );
         } else {
+            print_graph_summary(&graph);
             for issue in &graph.issues {
                 println!("  FAIL [{}] {}", issue.code, issue.message);
             }
@@ -4266,13 +4301,45 @@ fn test_bundle(
 /// `ost plugin test --workspace` — discover the workspace's bundles and run
 /// the verification pyramid on each, mirroring the `usd-plugin-workspace`
 /// CMake discovery (immediate subdirectories and `plugins/*`).
-fn test_workspace(
-    with_paths: &[String],
-    target: Option<String>,
-    profile: Option<String>,
-    up_to: u8,
-    fmt: Format,
-) -> Result<()> {
+/// `ost plugin test --workspace --graph-only` — validate the dependency graph
+/// and exit on that result alone.
+///
+/// The graph check and the per-bundle pyramid are separable: the first is
+/// whole-workspace and costs milliseconds, the second is what each generated
+/// bundle cell already runs. Welded together they could not be asked for
+/// independently — on a fresh checkout the verb validated the graph, reported it
+/// valid, then failed because nothing had been built yet, so a repo wanting the
+/// graph as a cheap early PR gate had to either build everything or parse
+/// `--json` (report 32 §4). This is the direct form: no build, no runtime, no
+/// packaged artifact.
+fn validate_workspace_graph(fmt: Format) -> Result<()> {
+    let (bundles, _libraries, graph) = load_workspace_graph()?;
+    if fmt.is_json() {
+        output::report(
+            graph.passed,
+            &serde_json::json!({
+                "workspace": true,
+                "graph_only": true,
+                "graph": graph,
+                "total": bundles.len(),
+            }),
+        );
+    } else {
+        print_graph_summary(&graph);
+        for issue in &graph.issues {
+            println!("  FAIL [{}] {}", issue.code, issue.message);
+        }
+    }
+    if !graph.passed {
+        std::process::exit(ost_core::Category::Validation.exit_code() as i32);
+    }
+    Ok(())
+}
+
+/// Discover the workspace's bundles and libraries and validate their dependency
+/// graph. Shared by every `--workspace` entry point so one discovery rule and
+/// one graph computation serve them all.
+fn load_workspace_graph() -> Result<(Vec<Bundle>, Vec<Library>, ost_plugin::WorkspaceValidation)> {
     let roots = discover_workspace_bundles(Utf8Path::new("."))?;
     if roots.is_empty() {
         return Err(Error::precondition(
@@ -4284,12 +4351,44 @@ fn test_workspace(
         .iter()
         .map(|root| Bundle::load(root))
         .collect::<Result<Vec<_>>>()?;
-    let library_roots = discover_workspace_libraries(Utf8Path::new("."))?;
-    let libraries = library_roots
+    let libraries = discover_workspace_libraries(Utf8Path::new("."))?
         .iter()
         .map(|root| Library::load(root))
         .collect::<Result<Vec<_>>>()?;
     let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
+    Ok((bundles, libraries, graph))
+}
+
+/// The one-line graph shape, in the same wording whether it passed or failed.
+fn print_graph_summary(graph: &ost_plugin::WorkspaceValidation) {
+    let plural = if graph.libraries.len() == 1 {
+        "y"
+    } else {
+        "ies"
+    };
+    let verdict = if graph.passed {
+        "valid".to_string()
+    } else {
+        format!("{} issue(s)", graph.issues.len())
+    };
+    println!(
+        "Workspace dependency graph: {} bundle(s), {} bundle edge(s), {} librar{plural}, \
+         {} library edge(s), {verdict}",
+        graph.nodes.len(),
+        graph.edges.len(),
+        graph.libraries.len(),
+        graph.library_edges.len()
+    );
+}
+
+fn test_workspace(
+    with_paths: &[String],
+    target: Option<String>,
+    profile: Option<String>,
+    up_to: u8,
+    fmt: Format,
+) -> Result<()> {
+    let (bundles, libraries, graph) = load_workspace_graph()?;
     if !graph.passed {
         if fmt.is_json() {
             output::report(
@@ -4302,32 +4401,20 @@ fn test_workspace(
                 }),
             );
         } else {
-            println!(
-                "Workspace dependency graph: {} bundle(s), {} librar{}, {} issue(s)",
-                graph.nodes.len(),
-                graph.libraries.len(),
-                if graph.libraries.len() == 1 {
-                    "y"
-                } else {
-                    "ies"
-                },
-                graph.issues.len()
-            );
+            print_graph_summary(&graph);
             for issue in &graph.issues {
                 println!("  FAIL [{}] {}", issue.code, issue.message);
             }
+            println!(
+                "  hint: `ost plugin test --workspace --graph-only` runs this check alone, \
+                 with nothing built"
+            );
         }
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
     if !fmt.is_json() {
-        println!(
-            "Workspace dependency graph: {} bundle(s), {} bundle edge(s), {} librar{}, {} library edge(s), valid\n",
-            graph.nodes.len(),
-            graph.edges.len(),
-            graph.libraries.len(),
-            if graph.libraries.len() == 1 { "y" } else { "ies" },
-            graph.library_edges.len()
-        );
+        print_graph_summary(&graph);
+        println!();
     }
 
     let explicit_bundles = load_with_bundles(with_paths)?;
@@ -4352,7 +4439,8 @@ fn test_workspace(
         graph: graph.clone(),
     };
     let mut results: Vec<(Bundle, DoctorReport, Utf8PathBuf, Vec<serde_json::Value>)> = Vec::new();
-    for (root, bundle) in roots.iter().zip(bundles) {
+    for bundle in bundles {
+        let root = bundle.root.clone();
         let dependencies = graph
             .dependency_order(bundle.manifest.name())
             .expect("the workspace graph passed and contains every loaded bundle")

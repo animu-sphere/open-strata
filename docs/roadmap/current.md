@@ -20,6 +20,58 @@ gates the first. OpenStrata never installs, updates, licenses, or modifies a
 host, and no DCC API is abstracted: differences are pushed into host adapters,
 never leaked into the core.
 
+A second, corrective half was added on 2026-07-27 from six v0.20.0 dogfooding
+passes. It does not displace the host slices; it is what the same downstreams
+hit while shipping real work against v0.20.0, and most of it is small.
+
+### Dogfooding intake (2026-07-26/27)
+
+- usd-vrm-plugins, reports
+  [28](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/28-2026-07-26-v0.20.0-motion-layer-ci-gap.md),
+  [29](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/29-2026-07-26-v0.20.0-openusd-2608-runtime-publish.md),
+  [30](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/30-2026-07-26-v0.20.0-macos-2608-runtime-publish.md),
+  [31](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/31-2026-07-26-v0.20.0-materialx-x11-ci-host-deps.md),
+  [32](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/32-2026-07-26-v0.20.0-motion-layer-ci-workaround.md)
+  — publishing all three OpenUSD 26.08 runtimes, re-pinning every lane to them,
+  and covering a new motion layer whose members are plain libraries and a CLI
+  tool. Report 32 carries the live ask list.
+- hdMerlin, report
+  [10](https://github.com/animu-sphere/hydra-merlin/blob/main/docs/reports/ost/10-2026-07-24-v0.20.0-recheck-v0.21.0-asks.md)
+  — a v0.20.0 recheck of the v0.20.0 renderer asks (report
+  [09](https://github.com/animu-sphere/hydra-merlin/blob/main/docs/reports/ost/09-2026-07-23-v0.20.0-asks.md)),
+  against a repository still carrying its v0.19.0 integration.
+
+Two themes run through the set, and they are the same theme at two distances.
+
+**OpenStrata measures what a runtime *is* far more carefully than what a runtime
+*needs*.** A published 26.08 Linux runtime passes `runtime validate` 7/7 on a
+machine where consuming it is impossible: it carries a `MaterialXConfig.cmake`
+that hard-requires X11 development headers, so `find_package(pxr)` fails at
+configure on a stock `ubuntu-24.04` and four lanes went red in under 20 seconds.
+A macOS runtime is stamped `macos-arm64-py313` and records no compiler, SDK, or
+deployment target, while Linux gets its glibc floor measured into the target
+string. And a runtime whose `pxrConfig.cmake` `find_dependency`s Python
+Development components at paths that existed only in its build container is not
+relocatable in the way its distribution implies.
+
+**The generated CI contract is narrower than the workspaces it now serves.**
+Cells name a `bundle:`, so a plain library and a CLI executable are invisible to
+CI — v0.4.0 shipped two libraries and one tool with 20 CTest assertions and no
+lane compiling any of it. The repository's attempt to cover them by hand cost
+~210 lines of workflow YAML, ~120 of them a verbatim copy of generated logic
+including the runtime digest pins, and then stopped anyway on the configure gap
+above. That is the strongest argument in the set: a repo could not reproduce by
+hand what `ost plugin build` does, because the part that mattered was not
+exposed.
+
+Recorded as delivered, not asked: `runtime export --build-metadata` produced the
+first artifacts this ecosystem has published that were **built and attested
+entirely off CI**, `artifact import` names the evidence it attached, and
+`artifact push` prints the OCI-digest-churn warning — the three v0.17.0-era asks
+that made the 26.05 publish painful. Report 28 also records the workspace graph
+gate catching a real `requires` range mismatch across two libraries, the first
+time a tool caught that trap on that repo instead of a human.
+
 ### P0 - discovery foundation and versioned host records
 
 **Implemented on the v0.21.0 branch:** the isolated `ost-host` crate owns the
@@ -81,6 +133,226 @@ legacy tiers, and trusted release candidates fed in without weakening the
 artifact publisher boundary. A cell is one production-guaranteed runtime set,
 and cross-DCC data contracts are edges — the matrix is a graph, not a Cartesian
 product.
+
+### P0 - `--build-arg` reaches the components `runtime pull --build` decides
+
+From reports 29 §1 and 30 §2 — three platforms, three times, one defect.
+`runtime pull --build` appended `--no-examples --no-tutorials --no-docs
+--no-tests` and then appended `--build-arg` values *after* them, so
+`--build-arg --examples` produced `--no-examples --examples` and `build_usd.py`
+rejected the pair outright: its component toggles are `argparse` mutually
+exclusive groups, which error rather than letting the later flag win. Every
+component OpenStrata decided was therefore a hard constraint, not a default —
+and the one it forced off is where OpenUSD 26.08 ships its OpenExec/ExecIr
+reference material. All three 26.08 runtimes were consequently built by driving
+`build_usd.py` directly and adopting with `--from-usd`, trading away the `build`
+provenance to turn on a build flag.
+
+**Implemented on the v0.21.0 branch:** the forced-off set is applied only when
+the caller named neither half of the pair, matching the bare flag and the
+`--x=value` form; re-passing the negative half is a no-op rather than a
+duplicate. A caller who names both halves themselves is refused before the spawn
+with the two flags named, instead of paying a process launch to surface an
+`argparse` usage dump. The conflict check is structural (`--x` against
+`--no-x`), so it stays correct as upstream adds components.
+
+Adopting a tree built outside `ost` now also provisions the schema-gen Python
+deps (`jinja2` + `MarkupSafe`) the way a `--build` pull already did — the
+`--from-usd` path skipped it entirely, which is why every 26.08 publish still
+needed a manual `pip install` (reports 29 §5, 30 §4, carried from report 12).
+
+### P0 - the CI contract can name a host package
+
+From report 31 §3. `openstrata.ci.yaml` had exactly one host-provisioning knob,
+`host_python`, added because a runtime turned out to need something from the host
+the artifact could not carry. 26.08's MaterialX is the same shape one package
+manager over, and the fix — one `apt-get install libx11-dev libxt-dev` — had to
+be hand-written into generated output, which `ci generate github --force` then
+deletes without a word.
+
+**Implemented on the v0.21.0 branch:** a source cell declares `host_packages`
+keyed by the runner's native installer (`apt`, `brew`), and the generator renders
+one provisioning step before the build, per-cell gated and dispatched on
+`$RUNNER_OS`. Package names are validated as bare names at parse time, since the
+list is word-split into the installer's argv. A support lane never configures and
+Windows has no assumed installer, so both are refused at `ci validate` with the
+reason; a Windows runner reached anyway fails the step loudly rather than
+skipping a dependency the configure step needs.
+
+### P0-adjacent - the configure contract is reachable outside `ost plugin build`
+
+From report 32 §5, the finding that stopped the hand-rolled lane. `ost plugin
+run` exported `CMAKE_PREFIX_PATH`, which is enough to *find* a runtime and not
+enough to configure against it: `pxrConfig.cmake` does `find_dependency(Python3
+COMPONENTS Development Development.Module Development.Embed)`, and an adopted
+runtime baked the interpreter paths of the machine that built it — a deadsnakes
+3.13 in `ubuntu:24.04`, present on no runner. `ost plugin build` resolves a host
+interpreter and pins all three Development variables in its generated
+`toolchain.cmake`; nothing exposed that, so `setup-python`, `Python3_ROOT_DIR`,
+and `Python3_FIND_STRATEGY=LOCATION` all failed to help and the lane shipped
+disabled rather than pretending.
+
+**Implemented on the v0.21.0 branch:** a `plugin run` session exports
+`CMAKE_TOOLCHAIN_FILE` pointing at the same `toolchain.cmake` `plugin build`
+uses, rendering it on demand when the bundle has not been configured yet. CMake
+≥ 3.21 reads that variable from the environment, so
+`ost plugin run <bundle> -- cmake -S . -B build` configures correctly with no
+change to the caller's command line. A toolchain the caller set explicitly wins —
+this is a default, not an override.
+
+The deeper half of the ask stands: a published runtime that `find_dependency`s
+host Python development components is not relocatable in the way its
+distribution implies, and that is tracked with the consumer-side host
+requirements below.
+
+### P1 - a hand-written lane can read the resolved matrix
+
+From report 32 §2. Until a non-bundle cell shape exists, a repository covering
+its plain libraries writes its own workflow — and today that means a **second**
+copy of the runtime digest pins, which must be re-pinned together on every
+republish. A motion lane silently left on an older OpenUSD than the bundle cells
+would be worse than no lane: it would look like coverage.
+
+**Implemented on the v0.21.0 branch:** `ost ci matrix [--lane <lane>] [--json]`
+emits the resolved cells — name, lane, runner, resolved `runs_on`, hosted flag,
+platform/profile/bundle, `up_to`, runtime artifact and remote reference, pinned
+OCI digest, host Python and host packages — plus the `ost` bootstrap pin, which
+was the single largest copied block. Read-only projection: the matrix stays the
+one source of truth and a hand-written lane consumes it instead of duplicating
+it.
+
+### P1 - the workspace graph gate can be asked for on its own
+
+From report 32 §4. `ost plugin test --workspace` did two separable things —
+validate the dependency graph, then test every discovered bundle — and they were
+welded together. On a fresh checkout the verb validated the graph, reported it
+valid, and then failed because nothing had been built yet; `--up-to 0` only
+changed which per-bundle check failed first. A repo wanting the graph as a cheap
+early PR gate had to build all four bundles in a lane whose purpose was to cover
+what those bundles' own cells do not, or parse `data.graph` out of `--json`.
+
+**Implemented on the v0.21.0 branch:** `ost plugin test --workspace
+--graph-only` runs the dependency-graph checks and exits on their result. No
+build, no resolved runtime, no packaged artifact. The three workspace entry
+points now share one discovery-and-graph helper and one summary line, so a
+failing graph reports the same shape wherever it is reached, and the failure path
+names `--graph-only` as the cheaper way to ask.
+
+### P1 - `--slim` stops discarding what the build produced
+
+From reports 29 §2 and 30 §3. OpenUSD 26.08 installs everything built by
+`--examples` under `share/` — `share/usd/examples/plugin/*`,
+`share/exec/examples/*`, and the ExecIr reference material an audit needs — and
+`share/` was not in the slim SDK layout. A slim 26.08 export therefore shipped a
+runtime whose examples were built and then silently dropped. This is the
+MaterialX `resources/` defect one directory over.
+
+**Implemented on the v0.21.0 branch:** `share` joins the SDK layout, so a slim
+export keeps it. The reporting half the ask also raised was already present:
+`--slim` prints the top-level trees it drops and records them as
+`excluded_top_level` in `--json`.
+
+`ost` also now supports OpenUSD 26.08's relocated Python bindings rather than
+requiring a publisher to know a changelog entry: `lib/python` (the pre-26.08
+default), `lib/site-packages`, `Lib/site-packages`, and the versioned
+`lib/python<X.Y>/site-packages` are all discovered, and the concrete directory
+found is recorded in the runtime's layout so a consumer can tell which convention
+the artifact shipped (report 29 §3).
+
+### P1 - a runtime records what a consumer needs, not only what it is
+
+Not started. From reports 30 §1 and 31 §4, the theme of this whole intake.
+
+- **macOS records no ABI floor.** Linux measures its glibc floor into the target
+  (`linux-x86_64-glibc238-py313`) and Windows carries `msvc143`; macOS gets
+  `"abi": "native"`, which asserts nothing. The 26.08 build pinned
+  `CMAKE_OSX_DEPLOYMENT_TARGET=14.5` deliberately so a 15.2-SDK build would not
+  produce a runtime unloadable on the host that built it — and a consumer cannot
+  tell that from the artifact, while `--require-target macos-arm64-py313` passes
+  regardless. Measure and record the deployment target and SDK, and reflect the
+  floor in the target string.
+- **A first-class SDK knob for `runtime pull --build`.** OpenUSD 26.08 cannot be
+  compiled against the macOS 14.5 SDK at C++17 (libc++ only routes
+  `allocate_shared` through the allocator under C++20 there, so
+  `HD_DECLARE_DATASOURCE`'s friendship never applies); it needs the 15.2 SDK, and
+  installing clang 16 does not get you one because `xcrun` selects the SDK
+  matching the running OS. Reaching `CMAKE_OSX_SYSROOT` today means smuggling it
+  through `--build-arg --cmake-build-args=…`, competing with the
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` the same host needs. Two full builds failed
+  at 73% before this was understood; `xcrun --show-sdk-path` before the spawn
+  turns that into one sentence.
+- **Consumption requirements belong in the record.** Either a
+  `host_requirements` list `ost` can render into CI and check at `artifact pull`,
+  or a `consumer-configure` check in `runtime validate` that runs a trivial
+  `find_package(pxr)` against the materialized runtime in a scratch directory.
+  The second is cheap and would have caught the X11 break at publish time, on the
+  producer's machine, before the digest ever reached `openstrata.ci.yaml`. The
+  `host_packages` knob above lets the contract *say* what the host needs; this is
+  the half that lets `ost` *notice*.
+
+### P1 - a CI cell that is not a bundle
+
+Not started, and the P0 of every usd-vrm-plugins report in this intake (28 §2,
+restated in 32 §1). Cells name a `bundle:` and `ost ci generate github` renders
+one job per cell, so there is no cell shape for a plain library
+(`openstrata.library.yaml`) that no bundle requires, or for a CLI executable
+built from the workspace against the runtime. Both are legitimate workspace
+members that repository's own architecture requires: `vrmRetarget` deliberately
+has no bundle consumer, because the edge that would give it one is a documented
+contract violation. "Make a bundle depend on it" is not available.
+
+The preferred shape is a cell targeting a library or the whole workspace — which
+would also give the repo its workspace graph gate in CI, an item the same cell
+shape satisfies. `--graph-only` above is the verb such a cell would call; the
+cell itself is the remaining work. Note that report 32 §5's configure gap is a
+prerequisite for the *hand-rolled* alternative, not for this: a first-class cell
+would call `ost plugin build`, which never had the problem.
+
+### P1 - a workspace-built executable can ship in a product
+
+Not started. From report 28 §3. `plugin package --workspace --product` composes
+member archives from bundles, and `motion_retarget` (and now `motion_capture`) is
+a user-facing deliverable with no member archive that can carry it. Until then a
+release either omits the tool or the repo hand-rolls a second packaging path —
+and hand-rolled packaging is what report 27 was about.
+
+### P1 carry - renderer workflow evidence (hdMerlin report 10)
+
+Report 10 rechecks the v0.20.0 renderer asks against `ost 0.20.0` on a repository
+still carrying its v0.19.0 integration. The preflight half is confirmed resolved:
+`viewport-usd` resolves, scene-aware preflight passes with `usd-stage-read`
+requested and applied and nothing skipped (OST20-RND-004/006), `build --check`
+and redacted dry-run output are clean. The launch half is **not disproved and not
+demonstrated** — no managed build completed, so no durable launch record, JSON
+success envelope, or producer-bound completion could be produced.
+
+The blocker is environmental but not entirely: the first `renderer view` attempt
+failed because the generated `CMakeUserPresets.json` included a **core preset
+that did not exist**, and the managed configure then stalled in the MSVC ABI
+try-compile. That first failure is a real, concrete defect and the one new ask in
+the report:
+
+- **Generated preset includes must be self-contained for the selected profile.**
+  `renderer view --profile usd` must not fail because an unrelated core preset is
+  absent. Not started.
+- **Managed configure diagnostics** must name the active child, phase, and
+  retained CMake log tail, and timeout cleanup must remove descendants and target
+  leases deterministically. v0.20.0 implemented this for the *timeout* path; this
+  pass says the *stall* path still reports nothing useful and left OST/cmake/ninja
+  descendants to clean up by hand. Reopened as a carry.
+- OST20-RND-002/003/005 (producer-bound evidence, viewport JSON success contract,
+  durable launch record) ship in v0.20.0 and were exercised locally on 2026-07-23
+  against a real runtime; they stay open **as unverified downstream** until a
+  managed build completes in that repository. The v0.21.0 acceptance task is one
+  successful hdMerlin managed launch, not a reimplementation.
+
+### P2 - carried
+
+- **Ship `jinja2` + `MarkupSafe` when the runtime bundles `usdGenSchema`**
+  (report 29 §5, carried from report 12 §Finding D). The `--build` path already
+  provisioned them and the `--from-usd` adopt path did not; that gap is closed
+  above. `runtime validate`'s `schema-gen-deps` check keeps the blast radius on
+  the producer's machine either way.
 
 ## Shipped: v0.20.0 - dogfood closure and renderer workflow
 

@@ -7,6 +7,19 @@ graph, and only then resolves a runtime or runs per-bundle verification. The
 validated graph supplies each bundle's transitive runtime/test closure and
 deterministic bundle and library build order.
 
+The graph check is separately askable:
+
+```bash
+ost plugin test --workspace --graph-only     # graph only; exits on its result
+```
+
+`--graph-only` runs the dependency-graph checks and stops. It needs no build, no
+resolved runtime, and no packaged artifact, so it belongs at the front of a PR
+lane rather than behind everything the per-bundle pyramid requires. Without it
+the two were welded together: on a fresh checkout the verb validated the graph,
+reported it valid, and then failed because nothing had been built yet, leaving a
+repository to either build every bundle or parse the graph out of `--json`.
+
 ## Versioned manifest extension
 
 Legacy manifests without composition fields remain valid. A manifest that

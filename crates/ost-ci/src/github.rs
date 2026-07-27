@@ -49,6 +49,35 @@ const CACHE: &str = "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
 /// interpreter (v0.12.0 macOS dogfood).
 const SETUP_PYTHON: &str = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0";
 
+/// The `host_packages` provisioning step (rendered only when a source cell
+/// declares one). Package names are validated as bare names at parse time, so
+/// word-splitting them into the installer's argument list is safe and is how a
+/// package manager takes several packages.
+const HOST_PACKAGES_STEP: &str = "\
+\x20     - name: Install the host packages this runtime needs to be consumed
+        if: ${{ matrix.host_packages_apt != '' || matrix.host_packages_brew != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case \"$RUNNER_OS\" in
+            Linux)
+              packages=\"${{ matrix.host_packages_apt }}\"
+              [ -n \"$packages\" ] || exit 0
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends $packages
+              ;;
+            macOS)
+              packages=\"${{ matrix.host_packages_brew }}\"
+              [ -n \"$packages\" ] || exit 0
+              brew install $packages
+              ;;
+            *)
+              echo \"error: host_packages has no installer for $RUNNER_OS; provision the dependency on the runner image instead\" >&2
+              exit 1
+              ;;
+          esac
+";
+
 /// The hosted-runner billing notice step, gated per include entry so
 /// self-hosted cells in the same job stay quiet.
 const BILLING_NOTICE: &str = "\
@@ -501,11 +530,27 @@ fn source_check_steps(checks: &[SourceCheck]) -> String {
 ///   relies on an accidental host interpreter. The step is per-cell gated on
 ///   `matrix.hosted && matrix.host_python`, and every cell records the resolved
 ///   Python source as CI evidence.
+/// - **Host packages for consuming the runtime** (when a source cell declares
+///   `host_packages`): the runner's native installer provisions what the pinned
+///   runtime needs to be *consumed*, which is not always what it needs to run.
+///   The 26.08 runtime carries a `MaterialXConfig.cmake` that hard-requires X11
+///   development headers on Linux, so `find_package(pxr)` fails at configure on
+///   a stock `ubuntu-24.04` (report 31). Rendering it from the matrix is what
+///   makes `--force` regeneration lossless.
 ///
 /// No arbitrary pre-build shell hook is offered: prerequisites are modeled, not
 /// scripted (roadmap v0.12.0 P1).
 fn prebuild_steps(matrix: &SupportMatrix) -> String {
-    let mut out = String::from(
+    let mut out = String::new();
+    if matrix.needs_host_packages() {
+        // Dispatch on $RUNNER_OS rather than on a generation-time OS guess, so a
+        // self-hosted cell whose labels say nothing about its OS still resolves
+        // correctly. Windows reaches the fallback arm and fails loudly: there is
+        // no assumed installer there, and silently skipping would hand the
+        // configure step the same unexplained failure this modeled away.
+        out.push_str(HOST_PACKAGES_STEP);
+    }
+    out.push_str(
         "\
 \x20     - name: Validate the materialized runtime (runnable tools)
         shell: bash
@@ -602,6 +647,16 @@ fn source_steps(matrix: &SupportMatrix) -> String {
     )
 }
 
+/// A cell's `(apt, brew)` package lists as space-joined matrix values. Empty
+/// strings are what the rendered step's per-cell gate tests, so a cell that
+/// declares nothing costs nothing.
+fn host_package_lists(cell: &SupportCell) -> (String, String) {
+    match &cell.host_packages {
+        Some(p) => (p.apt.join(" "), p.brew.join(" ")),
+        None => (String::new(), String::new()),
+    }
+}
+
 /// One source-CI job (`pr` or `mainline`) over the given cells.
 fn source_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportCell]) -> String {
     let mut include = String::new();
@@ -613,13 +668,16 @@ fn source_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportCe
             .map(|r| r.uri.as_str())
             .unwrap_or("");
         let host_python = cell.host_python.as_deref().unwrap_or("");
+        let (apt, brew) = host_package_lists(cell);
         include.push_str(&include_entry(
             matrix,
             cell,
             &format!(
                 "            bundle: {bundle}\n\
                  \x20           runtime_remote: \"{remote}\"\n\
-                 \x20           host_python: \"{host_python}\"\n"
+                 \x20           host_python: \"{host_python}\"\n\
+                 \x20           host_packages_apt: \"{apt}\"\n\
+                 \x20           host_packages_brew: \"{brew}\"\n"
             ),
         ));
     }
@@ -1039,6 +1097,7 @@ mod tests {
             profile: "usd".into(),
             up_to: 5,
             host_python: None,
+            host_packages: None,
             publish: Publish::default(),
             trust: Default::default(),
             host: HostSpec::default(),
@@ -1574,6 +1633,70 @@ mod tests {
 
         // Still fork-PR safe.
         assert!(!a.contains("secrets."), "source CI uses no secrets");
+    }
+
+    /// Report 31: the MaterialX/X11 step must come from the matrix, so `ci
+    /// generate --force` re-renders it instead of deleting a hand-added one.
+    #[test]
+    fn host_packages_render_a_provisioning_step_before_the_build() {
+        let mut m = lanes_matrix();
+        m.cells[0].host_packages = Some(ost_ci_host_packages(&["libx11-dev", "libxt-dev"]));
+        let a = generate_source(&m).unwrap();
+        assert_eq!(a, generate_source(&m).unwrap(), "deterministic");
+        let doc: serde_yaml::Value = serde_yaml::from_str(&a).unwrap();
+        let steps = doc["jobs"]["pr"]["steps"].as_sequence().unwrap();
+        let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+
+        let install = names
+            .iter()
+            .position(|n| n.contains("host packages"))
+            .expect("host-packages step");
+        let build = names
+            .iter()
+            .position(|n| n.contains("Build the plugin"))
+            .unwrap();
+        assert!(
+            install < build,
+            "provisioning precedes the build: {names:?}"
+        );
+
+        // Per-cell gated, so a matrix where one cell needs X11 leaves the rest
+        // untouched; and dispatch happens on the runner, not at generation.
+        let step = &steps[install];
+        assert_eq!(
+            step["if"],
+            "${{ matrix.host_packages_apt != '' || matrix.host_packages_brew != '' }}"
+        );
+        let run = step["run"].as_str().unwrap();
+        assert!(run.contains("apt-get install -y --no-install-recommends $packages"));
+        assert!(run.contains("brew install $packages"));
+        // Windows reaches the fallback arm and fails loudly rather than silently
+        // skipping a dependency the configure step needs.
+        assert!(run.contains("no installer for $RUNNER_OS"));
+
+        let entries = doc["jobs"]["pr"]["strategy"]["matrix"]["include"]
+            .as_sequence()
+            .unwrap();
+        assert_eq!(entries[0]["host_packages_apt"], "libx11-dev libxt-dev");
+        assert_eq!(entries[0]["host_packages_brew"], "");
+        assert!(!a.contains("secrets."), "source CI uses no secrets");
+    }
+
+    /// A matrix declaring no host packages renders no provisioning step. The
+    /// include keys stay present and empty (as `host_python` does), so every
+    /// entry in a job's matrix has the same shape.
+    #[test]
+    fn no_host_packages_renders_no_step() {
+        let a = generate_source(&lanes_matrix()).unwrap();
+        assert!(!a.contains("Install the host packages"));
+        assert!(a.contains("host_packages_apt: \"\""));
+    }
+
+    fn ost_ci_host_packages(apt: &[&str]) -> crate::matrix::HostPackages {
+        crate::matrix::HostPackages {
+            apt: apt.iter().map(|s| s.to_string()).collect(),
+            brew: Vec::new(),
+        }
     }
 
     #[test]

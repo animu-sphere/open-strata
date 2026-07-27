@@ -12,14 +12,41 @@ use ost_core::host::Os;
 
 /// Locate the directory holding an adopted USD install's `pxr` Python package.
 ///
-/// USD builds vary: official/`build_usd.py` installs use `lib/python`, while
-/// some Windows builds use `lib/site-packages`. Probe for the one that actually
-/// contains `pxr`; fall back to `lib/python` when neither is present so the
-/// emitted env is still well-formed.
+/// USD builds vary, and OpenUSD 26.08 changed the default: builds up to 26.05
+/// (and any build passing `--python-install-dir=lib/python`) use `lib/python`,
+/// while 26.08+ installs to `lib/python<major>.<minor>/site-packages` on
+/// Linux/macOS and `Lib/site-packages` on Windows. All four are supported, so a
+/// publisher does not have to know a changelog entry to produce a consumable
+/// runtime (report 29 §3).
+///
+/// Probe for the layout that actually contains `pxr`; fall back to `lib/python`
+/// when none is present so the emitted env is still well-formed.
 pub fn usd_python_dir(root: &Utf8Path) -> Utf8PathBuf {
-    for candidate in ["lib/python", "lib/site-packages"] {
+    // Fixed candidates first: `lib/python` is what every runtime this project
+    // has published so far uses, and on Windows `lib/site-packages` also matches
+    // 26.08's `Lib/site-packages` (the filesystem is case-insensitive there).
+    for candidate in ["lib/python", "lib/site-packages", "Lib/site-packages"] {
         let dir = root.join(candidate);
         if dir.join("pxr").as_std_path().is_dir() {
+            return dir;
+        }
+    }
+    // 26.08's versioned default on Linux/macOS: `lib/python3.13/site-packages`.
+    // The interpreter version is not known here, so scan `lib/python*` rather
+    // than guessing one. Sorted for determinism when several ABIs coexist.
+    if let Ok(entries) = std::fs::read_dir(root.join("lib").as_std_path()) {
+        let mut versioned: Vec<Utf8PathBuf> = entries
+            .flatten()
+            .filter_map(|e| Utf8PathBuf::from_path_buf(e.path()).ok())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.starts_with("python") && n.len() > "python".len())
+            })
+            .map(|p| p.join("site-packages"))
+            .filter(|p| p.join("pxr").as_std_path().is_dir())
+            .collect();
+        versioned.sort();
+        if let Some(dir) = versioned.into_iter().next() {
             return dir;
         }
     }

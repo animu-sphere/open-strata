@@ -333,6 +333,12 @@ pub fn stage_files(stage: &Utf8Path) -> io::Result<Vec<Utf8PathBuf>> {
 ///   unconsumable by any plugin that does `find_package(pxr)` (report Finding E).
 ///   The check only fires for a MaterialX-enabled runtime; a runtime without a
 ///   `resources/` tree keeps this a no-op.
+/// - `share` — where OpenUSD 26.08 installs everything built by `--examples`
+///   (`share/usd/examples/plugin/*`, `share/exec/examples/*`, and the ExecIr
+///   reference material a consumer audits against). A caller who paid to build
+///   those must not have them silently discarded at export (report 29 §2,
+///   confirmed on macOS in report 30 §3); dropping a tree the build produced is
+///   the same defect as the MaterialX `resources/` case, one directory over.
 const SDK_DIRS: &[&str] = &[
     "include",
     "lib",
@@ -341,6 +347,7 @@ const SDK_DIRS: &[&str] = &[
     "cmake",
     "libraries",
     "resources",
+    "share",
 ];
 
 /// Whether `rel` (a path relative to the runtime prefix, forward- or
