@@ -30,6 +30,13 @@ A second, corrective half was added on 2026-07-27 from six v0.20.0 dogfooding
 passes. It does not displace the host slices; it is what the same downstreams
 hit while shipping real work against v0.20.0, and most of it is small.
 
+**Remaining as of 2026-07-27:** every intake slice below is implemented on the
+branch. What is left is *acceptance*, not code — one successful hdMerlin managed
+launch (OST20-RND-002/003/005, unverified downstream), and the usd-vrm-plugins
+re-run that consumes the workspace cell, the tool member, and the
+consumer-configure gate. The host discovery slice still owes its Linux and macOS
+passes, which move to v0.22.0 with the adapters.
+
 ### Dogfooding intake (2026-07-26/27)
 
 - usd-vrm-plugins, reports
@@ -386,12 +393,31 @@ the report:
 
 - **Generated preset includes must be self-contained for the selected profile.**
   `renderer view --profile usd` must not fail because an unrelated core preset is
-  absent. Not started.
+  absent.
+  **Implemented on the v0.21.0 branch:** CMake resolves every `include` of a
+  presets document before it evaluates any preset, so one managed include
+  pointing at a target that no longer exists fails the preset that is present and
+  correct. `configure`/`build` now drop managed includes whose per-target presets
+  file is gone, and `presets install|diff` re-sync the same way. A dangling
+  managed include in the user's *committed* `CMakePresets.json` is reported with
+  the file named — never silently rewritten, because that file is theirs.
 - **Managed configure diagnostics** must name the active child, phase, and
   retained CMake log tail, and timeout cleanup must remove descendants and target
   leases deterministically. v0.20.0 implemented this for the *timeout* path; this
   pass says the *stall* path still reports nothing useful and left OST/cmake/ninja
-  descendants to clean up by hand. Reopened as a carry.
+  descendants to clean up by hand.
+  **Implemented on the v0.21.0 branch:** a heartbeat is chatter and is suppressed
+  under `--quiet`, which is exactly how `renderer view --json` runs its nested
+  build — so the stall reported nothing at all. A stall is now a distinct event
+  that survives quiet and the JSON stream, naming the active child (pid, command,
+  cwd), the phase, the retained log, what is left of the timeout budget, and the
+  tail of the CMake logs the configure phase registers; the timeout error carries
+  those tails too. An interrupted `ost` also no longer leaves cmake and ninja
+  running: managed children are spawned into their own process group precisely so
+  a console Ctrl-C cannot race OpenStrata to them, which left nothing listening —
+  so `ost` listens, and kills the tree it started. The target lease is
+  deliberately kept, because a configure killed mid-write is what takeover
+  evidence exists to announce.
 - OST20-RND-002/003/005 (producer-bound evidence, viewport JSON success contract,
   durable launch record) ship in v0.20.0 and were exercised locally on 2026-07-23
   against a real runtime; they stay open **as unverified downstream** until a
