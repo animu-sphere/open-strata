@@ -531,7 +531,8 @@ $resultsDocument = [ordered]@{
         python = $script:PythonVersion
         vulkan = $true
         examples = $true
-        full_export = $true
+        layout_profile = 'sdk'
+        slim_export = $true
     }
     runtimes = $results
 }
