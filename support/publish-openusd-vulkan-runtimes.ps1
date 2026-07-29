@@ -19,6 +19,8 @@ param(
 
     [string] $VulkanVmaInclude,
 
+    [string] $Python = 'python',
+
     [switch] $Publish,
 
     [string] $PublishFrom,
@@ -36,6 +38,8 @@ $script:LinuxDockerfile = Join-Path $PSScriptRoot 'openusd-vulkan-runtime-linux.
 $script:Ost = (Get-Command ost -ErrorAction Stop).Source
 $script:Git = (Get-Command git -ErrorAction Stop).Source
 $script:ResolvedVmaInclude = $null
+$script:Python = $null
+$script:PythonVersion = $null
 
 function Invoke-Checked {
     param(
@@ -110,10 +114,19 @@ function Assert-CommonPrerequisites {
         throw "ost 0.21.x is required; found '$ostVersion'"
     }
 
-    $pythonVersion = (& python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")') -join ''
-    if ($LASTEXITCODE -ne 0 -or $pythonVersion -ne '3.13') {
+    $pythonCommand = if (Test-Path -LiteralPath $Python) {
+        (Resolve-Path -LiteralPath $Python).Path
+    }
+    else {
+        (Get-Command $Python -ErrorAction Stop).Source
+    }
+    $pythonVersion = (& $pythonCommand -c 'import sys; print(".".join(map(str, sys.version_info[:3])))') -join ''
+    if ($LASTEXITCODE -ne 0 -or $pythonVersion -notmatch '^3\.13\.') {
         throw "Python 3.13 is required; found '$pythonVersion'"
     }
+    $script:Python = $pythonCommand
+    $script:PythonVersion = $pythonVersion
+    $env:PATH = "$(Split-Path -Parent $pythonCommand);$env:PATH"
 }
 
 function Assert-WindowsPrerequisites {
@@ -229,6 +242,7 @@ function New-BuildMetadata {
                 else {
                     '/usr/include'
                 }
+                python = $script:PythonVersion
             }
         }
     }
@@ -275,7 +289,7 @@ function Build-WindowsRuntime {
 
     $runtimeRoot = Join-Path $ostHome 'runtimes\openstrata-cy2026-windows-x86_64-py313-usd'
     $validationPath = Join-Path $output 'feature-validation.json'
-    $validation = & python $script:Validator $runtimeRoot `
+    $validation = & $script:Python $script:Validator $runtimeRoot `
         --version $OpenUsdVersion --platform windows
     if ($LASTEXITCODE -ne 0) {
         throw "OpenUSD feature validation failed for $slug"
@@ -508,6 +522,7 @@ $resultsDocument = [ordered]@{
         registry = $Registry
         vulkan_sdk = $VulkanSdk
         vulkan_vma_include = $script:ResolvedVmaInclude
+        python = $script:PythonVersion
         vulkan = $true
         examples = $true
         full_export = $true

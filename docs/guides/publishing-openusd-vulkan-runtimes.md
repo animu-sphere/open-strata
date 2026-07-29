@@ -29,6 +29,10 @@ The Linux build runs in Docker under WSL2. Its Ubuntu 24.04 base deliberately
 preserves the target contract of the existing Linux tags; `ost runtime export`
 still measures and records the actual glibc floor.
 
+OpenUSD records an exact Python patch version in `pxrConfig.cmake`. Use
+`-Python` to select the same 3.13 installation consumers use; the animu-sphere
+cy2026 runtimes use Python 3.13.14.
+
 ## Build and export
 
 From the OpenStrata repository root:
@@ -60,6 +64,7 @@ selected MSVC toolset instead of relying on the process environment:
 ```powershell
 .\support\publish-openusd-vulkan-runtimes.ps1 `
   -Platform windows `
+  -Python C:\path\to\python-3.13.14\python.exe `
   -VulkanSdk C:\VulkanSDK\1.3.236.0 `
   -VulkanVmaInclude C:\VulkanSDK\1.4.350.0\Include
 ```
