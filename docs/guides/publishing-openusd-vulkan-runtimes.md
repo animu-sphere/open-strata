@@ -14,8 +14,8 @@ Every build explicitly forwards `--vulkan` and `--examples` to OpenUSD's
 `build_usd.py`. The 26.08 builds also forward
 `--python-install-dir=lib/python` to preserve the 26.05-compatible Python
 layout; 26.05 predates that option and already uses the required layout. The
-export is intentionally full: OpenUSD 26.08 installs its Exec examples under
-`share/`, which must remain in the published runtime.
+export uses OpenStrata 0.21's slim SDK layout. It retains `share/`, including
+OpenUSD 26.08's Exec examples, while excluding the source and build trees.
 
 ## Prerequisites
 

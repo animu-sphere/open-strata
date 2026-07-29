@@ -310,6 +310,7 @@ function Build-WindowsRuntime {
         '--profile', 'usd',
         '--dist', $dist,
         '--build-metadata', $metadataPath,
+        '--slim',
         '--jobs', "$Jobs",
         '--json'
     )

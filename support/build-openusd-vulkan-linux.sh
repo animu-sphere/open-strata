@@ -81,6 +81,7 @@ ost runtime export cy2026 \
   --profile usd \
   --dist "${dist_dir}" \
   --build-metadata "${metadata_file}" \
+  --slim \
   --jobs "${jobs}" \
   --json \
   | tee "${output_root}/export.json"
