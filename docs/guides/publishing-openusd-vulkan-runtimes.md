@@ -54,6 +54,14 @@ Select a subset while iterating:
   -Version 26.08 -Platform linux -Jobs 16
 ```
 
+When more than one Windows SDK is installed, pin the one compatible with the
+selected MSVC toolset instead of relying on the process environment:
+
+```powershell
+.\support\publish-openusd-vulkan-runtimes.ps1 `
+  -Platform windows -VulkanSdk C:\VulkanSDK\1.3.236.0
+```
+
 ## Publish and verify
 
 Set a GHCR identity and token with package write access without writing the

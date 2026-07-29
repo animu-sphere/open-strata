@@ -15,6 +15,8 @@ param(
 
     [string] $Registry = 'oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd',
 
+    [string] $VulkanSdk = $env:VULKAN_SDK,
+
     [switch] $Publish,
 
     [string] $PublishFrom,
@@ -113,9 +115,10 @@ function Assert-CommonPrerequisites {
 
 function Assert-WindowsPrerequisites {
     Initialize-VsDevEnvironment
-    if (-not $env:VULKAN_SDK -or -not (Test-Path -LiteralPath $env:VULKAN_SDK)) {
+    if (-not $VulkanSdk -or -not (Test-Path -LiteralPath $VulkanSdk)) {
         throw 'VULKAN_SDK must point to an installed Vulkan SDK'
     }
+    $env:VULKAN_SDK = (Resolve-Path -LiteralPath $VulkanSdk).Path
 }
 
 function ConvertTo-WslPath {
@@ -187,6 +190,12 @@ function New-BuildMetadata {
                 pipeline = 'openusd-vulkan-runtime'
                 git_ref = "v$OpenUsdVersion"
                 platform = $TargetPlatform
+                vulkan_sdk = if ($TargetPlatform -eq 'windows-x86_64') {
+                    Split-Path -Leaf $env:VULKAN_SDK
+                }
+                else {
+                    'distribution-libvulkan-dev'
+                }
             }
         }
     }
@@ -464,6 +473,7 @@ $resultsDocument = [ordered]@{
         platforms = $Platform
         jobs = $Jobs
         registry = $Registry
+        vulkan_sdk = $VulkanSdk
         vulkan = $true
         examples = $true
         full_export = $true

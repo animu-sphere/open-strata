@@ -50,7 +50,8 @@ cat >"${metadata_file}" <<EOF
       "host": "wsl2-docker",
       "pipeline": "openusd-vulkan-runtime",
       "git_ref": "${tag}",
-      "platform": "linux-x86_64"
+      "platform": "linux-x86_64",
+      "vulkan_sdk": "ubuntu-24.04-libvulkan-dev"
     }
   }
 }
