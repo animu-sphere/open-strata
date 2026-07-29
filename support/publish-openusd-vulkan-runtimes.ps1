@@ -360,7 +360,9 @@ function Build-LinuxRuntime {
     New-Item -ItemType Directory -Force -Path $output | Out-Null
     $runRootWsl = ConvertTo-WslPath $RunRoot
     $repoWsl = ConvertTo-WslPath $script:RepositoryRoot
-    $volume = "openstrata-openusd-vulkan-$($OpenUsdVersion.Replace('.', ''))"
+    # The suffix separates CMake caches created with Ubuntu's older headers
+    # from the pinned Vulkan 1.4.350/VMA 3.4.0 builder generation.
+    $volume = "openstrata-openusd-vulkan-$($OpenUsdVersion.Replace('.', ''))-vk14350"
     Invoke-Checked wsl.exe @('docker', 'volume', 'create', $volume)
     Invoke-Checked wsl.exe @(
         'docker', 'run', '--rm',

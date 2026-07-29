@@ -4,25 +4,36 @@
 FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG VULKAN_HEADERS_VERSION=v1.4.350
+ARG VMA_VERSION=v3.4.0
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       build-essential ca-certificates cmake curl git ninja-build pkg-config \
       software-properties-common unzip \
       libgl1-mesa-dev libglu1-mesa-dev libshaderc-dev libvulkan-dev \
-      libvulkan-memory-allocator-dev \
       libx11-dev libxcursor-dev libxext-dev libxi-dev libxinerama-dev \
       libxrandr-dev libxt-dev libxkbcommon-x11-0 \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
       python3.13 python3.13-dev python3.13-venv \
-    && install -d /usr/include/vma \
-    && ln -s /usr/include/vk_mem_alloc.h /usr/include/vma/vk_mem_alloc.h \
     && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --branch "${VULKAN_HEADERS_VERSION}" --depth 1 \
+      https://github.com/KhronosGroup/Vulkan-Headers.git /tmp/Vulkan-Headers \
+    && cmake -S /tmp/Vulkan-Headers -B /tmp/Vulkan-Headers/build \
+      -DCMAKE_INSTALL_PREFIX=/opt/vulkan-sdk \
+    && cmake --install /tmp/Vulkan-Headers/build \
+    && git clone --branch "${VMA_VERSION}" --depth 1 \
+      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git /tmp/VMA \
+    && install -d /opt/vulkan-sdk/include/vma \
+    && install -m 0644 /tmp/VMA/include/vk_mem_alloc.h \
+      /opt/vulkan-sdk/include/vma/vk_mem_alloc.h \
+    && rm -rf /tmp/Vulkan-Headers /tmp/VMA
 
 ENV VIRTUAL_ENV=/opt/py313
 ENV PATH=/opt/py313/bin:/root/.cargo/bin:${PATH}
-ENV VULKAN_SDK=/usr
+ENV VULKAN_SDK=/opt/vulkan-sdk
 RUN python3.13 -m venv /opt/py313 \
     && python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir Jinja2 PyOpenGL PySide6

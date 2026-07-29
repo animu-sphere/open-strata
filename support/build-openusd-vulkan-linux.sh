@@ -51,7 +51,7 @@ cat >"${metadata_file}" <<EOF
       "pipeline": "openusd-vulkan-runtime",
       "git_ref": "${tag}",
       "platform": "linux-x86_64",
-      "vulkan_sdk": "ubuntu-24.04-libvulkan-dev+shaderc+vma"
+      "vulkan_sdk": "headers-1.4.350+vma-3.4.0+ubuntu-24.04-loader+shaderc"
     }
   }
 }
