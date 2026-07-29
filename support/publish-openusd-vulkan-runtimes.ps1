@@ -19,7 +19,8 @@ param(
 
     [string] $VulkanVmaInclude,
 
-    [string] $Python = 'python',
+    [Alias('Python')]
+    [string] $PythonExecutable = 'python',
 
     [switch] $Publish,
 
@@ -38,7 +39,7 @@ $script:LinuxDockerfile = Join-Path $PSScriptRoot 'openusd-vulkan-runtime-linux.
 $script:Ost = (Get-Command ost -ErrorAction Stop).Source
 $script:Git = (Get-Command git -ErrorAction Stop).Source
 $script:ResolvedVmaInclude = $null
-$script:Python = $null
+$script:BuildPython = $null
 $script:PythonVersion = $null
 
 function Invoke-Checked {
@@ -114,17 +115,17 @@ function Assert-CommonPrerequisites {
         throw "ost 0.21.x is required; found '$ostVersion'"
     }
 
-    $pythonCommand = if (Test-Path -LiteralPath $Python) {
-        (Resolve-Path -LiteralPath $Python).Path
+    $pythonCommand = if (Test-Path -LiteralPath $PythonExecutable) {
+        (Resolve-Path -LiteralPath $PythonExecutable).Path
     }
     else {
-        (Get-Command $Python -ErrorAction Stop).Source
+        (Get-Command $PythonExecutable -ErrorAction Stop).Source
     }
     $pythonVersion = (& $pythonCommand -c 'import sys; print(".".join(map(str, sys.version_info[:3])))') -join ''
     if ($LASTEXITCODE -ne 0 -or $pythonVersion -notmatch '^3\.13\.') {
         throw "Python 3.13 is required; found '$pythonVersion'"
     }
-    $script:Python = $pythonCommand
+    $script:BuildPython = $pythonCommand
     $script:PythonVersion = $pythonVersion
     $env:PATH = "$(Split-Path -Parent $pythonCommand);$env:PATH"
 }
@@ -289,7 +290,7 @@ function Build-WindowsRuntime {
 
     $runtimeRoot = Join-Path $ostHome 'runtimes\openstrata-cy2026-windows-x86_64-py313-usd'
     $validationPath = Join-Path $output 'feature-validation.json'
-    $validation = & $script:Python $script:Validator $runtimeRoot `
+    $validation = & $script:BuildPython $script:Validator $runtimeRoot `
         --version $OpenUsdVersion --platform windows
     if ($LASTEXITCODE -ne 0) {
         throw "OpenUSD feature validation failed for $slug"
