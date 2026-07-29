@@ -5,6 +5,7 @@ FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG VULKAN_HEADERS_VERSION=v1.4.350
+ARG VULKAN_UTILITY_LIBRARIES_VERSION=v1.4.350
 ARG VMA_VERSION=v3.4.0
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -24,12 +25,17 @@ RUN git clone --branch "${VULKAN_HEADERS_VERSION}" --depth 1 \
     && cmake -S /tmp/Vulkan-Headers -B /tmp/Vulkan-Headers/build \
       -DCMAKE_INSTALL_PREFIX=/opt/vulkan-sdk \
     && cmake --install /tmp/Vulkan-Headers/build \
+    && git clone --branch "${VULKAN_UTILITY_LIBRARIES_VERSION}" --depth 1 \
+      https://github.com/KhronosGroup/Vulkan-Utility-Libraries.git /tmp/Vulkan-Utility-Libraries \
+    && install -m 0644 \
+      /tmp/Vulkan-Utility-Libraries/include/vulkan/vk_enum_string_helper.h \
+      /opt/vulkan-sdk/include/vulkan/vk_enum_string_helper.h \
     && git clone --branch "${VMA_VERSION}" --depth 1 \
       https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git /tmp/VMA \
     && install -d /opt/vulkan-sdk/include/vma \
     && install -m 0644 /tmp/VMA/include/vk_mem_alloc.h \
       /opt/vulkan-sdk/include/vma/vk_mem_alloc.h \
-    && rm -rf /tmp/Vulkan-Headers /tmp/VMA
+    && rm -rf /tmp/Vulkan-Headers /tmp/Vulkan-Utility-Libraries /tmp/VMA
 
 ENV VIRTUAL_ENV=/opt/py313
 ENV PATH=/opt/py313/bin:/root/.cargo/bin:${PATH}

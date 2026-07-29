@@ -28,9 +28,10 @@ OpenUSD 26.08's Exec examples, while excluding the source and build trees.
 The Linux build runs in Docker under WSL2. Its Ubuntu 24.04 base deliberately
 preserves the target contract of the existing Linux tags; `ost runtime export`
 still measures and records the actual glibc floor. The image pins official
-Vulkan-Headers 1.4.350 and Vulkan Memory Allocator 3.4.0 because Ubuntu's
-headers are older than the HgiVulkan API used by OpenUSD 26.05/26.08; the
-Vulkan loader and `shaderc_combined` remain Ubuntu packages.
+Vulkan-Headers and Vulkan-Utility-Libraries 1.4.350 plus Vulkan Memory
+Allocator 3.4.0 because Ubuntu's headers are older than the HgiVulkan API used
+by OpenUSD 26.05/26.08; the Vulkan loader and `shaderc_combined` remain Ubuntu
+packages.
 
 Keep the Windows `-WorkRoot` short. OpenUSD 26.08's Exec examples create deeply
 nested MSVC tracking-log paths, so the default is `C:\usd\ovp`.
