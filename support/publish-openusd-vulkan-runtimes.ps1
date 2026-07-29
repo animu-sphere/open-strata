@@ -518,6 +518,22 @@ if ($VerifyPublished) {
 }
 
 $resultsPath = Join-Path $runRoot 'results.json'
+$builderOptions = [ordered]@{}
+if ($Platform -contains 'windows') {
+    $builderOptions['windows'] = [ordered]@{
+        python = $script:PythonVersion
+        vulkan_sdk = $VulkanSdk
+        vulkan_vma_include = $script:ResolvedVmaInclude
+    }
+}
+if ($Platform -contains 'linux') {
+    $builderOptions['linux'] = [ordered]@{
+        environment = 'wsl2-docker'
+        image = $linuxImage
+        python = '3.13.14'
+        vulkan_sdk = 'headers+utility-1.4.350+vma-3.4.0+ubuntu-24.04-loader+shaderc'
+    }
+}
 $resultsDocument = [ordered]@{
     openstrata_revision = $openStrataRevision
     created_at = [DateTime]::UtcNow.ToString('o')
@@ -526,9 +542,7 @@ $resultsDocument = [ordered]@{
         platforms = $Platform
         jobs = $Jobs
         registry = $Registry
-        vulkan_sdk = $VulkanSdk
-        vulkan_vma_include = $script:ResolvedVmaInclude
-        python = $script:PythonVersion
+        builders = $builderOptions
         vulkan = $true
         examples = $true
         layout_profile = 'sdk'
