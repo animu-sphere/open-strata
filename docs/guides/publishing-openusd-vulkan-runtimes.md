@@ -29,6 +29,9 @@ The Linux build runs in Docker under WSL2. Its Ubuntu 24.04 base deliberately
 preserves the target contract of the existing Linux tags; `ost runtime export`
 still measures and records the actual glibc floor.
 
+Keep the Windows `-WorkRoot` short. OpenUSD 26.08's Exec examples create deeply
+nested MSVC tracking-log paths, so the default is `C:\usd\ovp`.
+
 OpenUSD records an exact Python patch version in `pxrConfig.cmake`. Use
 `-Python` to select the same 3.13 installation consumers use; the animu-sphere
 cy2026 runtimes use Python 3.13.14.

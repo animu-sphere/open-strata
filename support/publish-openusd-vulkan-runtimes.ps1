@@ -9,7 +9,9 @@ param(
     [ValidateRange(1, 256)]
     [int] $Jobs = [Environment]::ProcessorCount,
 
-    [string] $WorkRoot = 'C:\usd\openusd-vulkan-publish',
+    # OpenUSD 26.08's Exec examples create deeply nested MSVC tlog paths.
+    # Keep this default short enough for tools that still observe MAX_PATH.
+    [string] $WorkRoot = 'C:\usd\ovp',
 
     [string] $OutputRoot = 'C:\usd\openusd-vulkan-publish\output',
 
