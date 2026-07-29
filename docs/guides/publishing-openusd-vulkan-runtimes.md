@@ -59,8 +59,14 @@ selected MSVC toolset instead of relying on the process environment:
 
 ```powershell
 .\support\publish-openusd-vulkan-runtimes.ps1 `
-  -Platform windows -VulkanSdk C:\VulkanSDK\1.3.236.0
+  -Platform windows `
+  -VulkanSdk C:\VulkanSDK\1.3.236.0 `
+  -VulkanVmaInclude C:\VulkanSDK\1.4.350.0\Include
 ```
+
+`VulkanVmaInclude` is only needed when the selected SDK predates its bundled
+header-only Vulkan Memory Allocator. It supplements compile includes; Vulkan
+and shaderc libraries still come entirely from `VulkanSdk`.
 
 ## Publish and verify
 

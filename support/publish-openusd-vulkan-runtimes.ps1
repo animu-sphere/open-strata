@@ -17,6 +17,8 @@ param(
 
     [string] $VulkanSdk = $env:VULKAN_SDK,
 
+    [string] $VulkanVmaInclude,
+
     [switch] $Publish,
 
     [string] $PublishFrom,
@@ -33,6 +35,7 @@ $script:LinuxBuildScript = Join-Path $PSScriptRoot 'build-openusd-vulkan-linux.s
 $script:LinuxDockerfile = Join-Path $PSScriptRoot 'openusd-vulkan-runtime-linux.Dockerfile'
 $script:Ost = (Get-Command ost -ErrorAction Stop).Source
 $script:Git = (Get-Command git -ErrorAction Stop).Source
+$script:ResolvedVmaInclude = $null
 
 function Invoke-Checked {
     param(
@@ -119,6 +122,26 @@ function Assert-WindowsPrerequisites {
         throw 'VULKAN_SDK must point to an installed Vulkan SDK'
     }
     $env:VULKAN_SDK = (Resolve-Path -LiteralPath $VulkanSdk).Path
+
+    $sdkInclude = Join-Path $env:VULKAN_SDK 'Include'
+    $vmaHeader = Join-Path $sdkInclude 'vma\vk_mem_alloc.h'
+    if (Test-Path -LiteralPath $vmaHeader) {
+        $script:ResolvedVmaInclude = $sdkInclude
+    }
+    else {
+        if (-not $VulkanVmaInclude) {
+            throw @"
+The selected Vulkan SDK has no Include\vma\vk_mem_alloc.h.
+Pass -VulkanVmaInclude with an include root containing vma\vk_mem_alloc.h.
+"@
+        }
+        $resolvedInclude = (Resolve-Path -LiteralPath $VulkanVmaInclude).Path
+        if (-not (Test-Path -LiteralPath (Join-Path $resolvedInclude 'vma\vk_mem_alloc.h'))) {
+            throw "VMA header is missing under: $resolvedInclude"
+        }
+        $script:ResolvedVmaInclude = $resolvedInclude
+        $env:INCLUDE = "$resolvedInclude;$env:INCLUDE"
+    }
 }
 
 function ConvertTo-WslPath {
@@ -195,6 +218,12 @@ function New-BuildMetadata {
                 }
                 else {
                     'distribution-libvulkan-dev'
+                }
+                vma_include = if ($TargetPlatform -eq 'windows-x86_64') {
+                    $script:ResolvedVmaInclude
+                }
+                else {
+                    '/usr/include'
                 }
             }
         }
@@ -474,6 +503,7 @@ $resultsDocument = [ordered]@{
         jobs = $Jobs
         registry = $Registry
         vulkan_sdk = $VulkanSdk
+        vulkan_vma_include = $script:ResolvedVmaInclude
         vulkan = $true
         examples = $true
         full_export = $true
