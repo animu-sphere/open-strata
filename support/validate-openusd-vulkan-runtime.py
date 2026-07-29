@@ -24,6 +24,15 @@ def _require_glob(root: Path, pattern: str) -> list[Path]:
     return matches
 
 
+def _require_one_file(root: Path, relatives: tuple[str, ...]) -> Path:
+    for relative in relatives:
+        path = root / relative
+        if path.is_file():
+            return path
+    choices = ", ".join(str(root / relative) for relative in relatives)
+    raise RuntimeError(f"none of the required files exist: {choices}")
+
+
 def _pxr_version(pxr_header: Path) -> str:
     contents = pxr_header.read_text(encoding="utf-8")
 
@@ -49,13 +58,19 @@ def validate(root: Path, expected_version: str, platform: str) -> dict[str, obje
         )
 
     hgi_header = _require_file(root, "include/pxr/imaging/hgiVulkan/hgi.h")
-    plugin_info = _require_file(root, "plugin/usd/hgiVulkan/resources/plugInfo.json")
+    plugin_info = _require_one_file(
+        root,
+        (
+            "lib/usd/hgiVulkan/resources/plugInfo.json",
+            "plugin/usd/hgiVulkan/resources/plugInfo.json",
+        ),
+    )
     if "hgiVulkan" not in plugin_info.read_text(encoding="utf-8"):
         raise RuntimeError(f"hgiVulkan registration is missing from {plugin_info}")
 
     if platform == "windows":
         vulkan_libraries = _require_glob(root, "lib/*hgiVulkan*.lib")
-        vulkan_runtime = _require_glob(root, "bin/*hgiVulkan*.dll")
+        vulkan_runtime = _require_glob(root, "lib/*hgiVulkan*.dll")
     else:
         vulkan_libraries = _require_glob(root, "lib/lib*hgiVulkan*.so*")
         vulkan_runtime = vulkan_libraries
