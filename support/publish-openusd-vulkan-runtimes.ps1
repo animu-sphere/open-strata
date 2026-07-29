@@ -140,7 +140,11 @@ Pass -VulkanVmaInclude with an include root containing vma\vk_mem_alloc.h.
             throw "VMA header is missing under: $resolvedInclude"
         }
         $script:ResolvedVmaInclude = $resolvedInclude
-        $env:INCLUDE = "$resolvedInclude;$env:INCLUDE"
+        # CMake's generated Visual Studio projects do not reliably inherit a
+        # late INCLUDE edit. CL is MSVC's supported process-wide extra-options
+        # channel and reaches every cl.exe launched by MSBuild.
+        $existingCl = $env:CL
+        $env:CL = ("/I`"$resolvedInclude`" $existingCl").Trim()
     }
 }
 
