@@ -8,13 +8,16 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       build-essential ca-certificates cmake curl git ninja-build pkg-config \
       software-properties-common unzip \
-      libgl1-mesa-dev libglu1-mesa-dev libvulkan-dev \
+      libgl1-mesa-dev libglu1-mesa-dev libshaderc-dev libvulkan-dev \
+      libvulkan-memory-allocator-dev \
       libx11-dev libxcursor-dev libxext-dev libxi-dev libxinerama-dev \
       libxrandr-dev libxt-dev libxkbcommon-x11-0 \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
       python3.13 python3.13-dev python3.13-venv \
+    && install -d /usr/include/vma \
+    && ln -s /usr/include/vk_mem_alloc.h /usr/include/vma/vk_mem_alloc.h \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VIRTUAL_ENV=/opt/py313
