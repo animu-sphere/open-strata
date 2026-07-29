@@ -211,16 +211,19 @@ function Build-WindowsRuntime {
     }
 
     $env:OST_HOME = $ostHome
-    Invoke-Checked $script:Ost @(
+    $buildArguments = @(
         'runtime', 'pull', 'cy2026',
         '--profile', 'usd',
         '--build', $source,
         '--jobs', "$Jobs",
         '--force',
         '--build-arg', '--vulkan',
-        '--build-arg', '--examples',
-        '--build-arg', '--python-install-dir=lib/python'
+        '--build-arg', '--examples'
     )
+    if ($OpenUsdVersion -eq '26.08') {
+        $buildArguments += @('--build-arg', '--python-install-dir=lib/python')
+    }
+    Invoke-Checked $script:Ost $buildArguments
     Invoke-Checked $script:Ost @('runtime', 'validate', 'cy2026', '--profile', 'usd')
 
     $runtimeRoot = Join-Path $ostHome 'runtimes\openstrata-cy2026-windows-x86_64-py313-usd'

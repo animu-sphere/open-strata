@@ -56,14 +56,20 @@ cat >"${metadata_file}" <<EOF
 }
 EOF
 
+build_args=(
+  --build-arg --vulkan
+  --build-arg --examples
+)
+if [[ "${version}" == "26.08" ]]; then
+  build_args+=(--build-arg --python-install-dir=lib/python)
+fi
+
 ost runtime pull cy2026 \
   --profile usd \
   --build "${source_dir}" \
   --jobs "${jobs}" \
   --force \
-  --build-arg --vulkan \
-  --build-arg --examples \
-  --build-arg --python-install-dir=lib/python
+  "${build_args[@]}"
 
 ost runtime validate cy2026 --profile usd
 python /src/open-strata/support/validate-openusd-vulkan-runtime.py \
