@@ -211,6 +211,11 @@ function Build-WindowsRuntime {
     }
 
     $env:OST_HOME = $ostHome
+    # build_usd.py decodes CMake/MSVC output through Python's locale. On a
+    # Japanese Windows host, UTF-8 diagnostics otherwise fail under CP932 after
+    # a successful compile.
+    $env:PYTHONUTF8 = '1'
+    $env:PYTHONIOENCODING = 'utf-8'
     $buildArguments = @(
         'runtime', 'pull', 'cy2026',
         '--profile', 'usd',
