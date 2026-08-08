@@ -1332,6 +1332,7 @@ Materialize a runtime into the local store
 | `--force` | Re-pull even if the runtime already exists |
 | `--from-artifact <FROM_ARTIFACT>` | Materialize the runtime from a registry artifact (`artifact` source): a digest reference (`sha256:<hex>` or a unique hex prefix) of an `ost runtime export`ed artifact |
 | `--from-usd <FROM_USD>` | Adopt an existing OpenUSD install at this path instead of materializing a mock layout (`local` source). Falls back to `OST_USD_ROOT` when unset |
+| `--host-package <MANAGER:PACKAGE>` | Native package the produced runtime leaves to its consuming host, written as `apt:PACKAGE` (Linux) or `brew:FORMULA` (macOS). Repeatable and recorded as compatibility identity |
 | `--jobs <JOBS>` | Parallel build jobs for `--build` (passed to the builder as `-j`) |
 | `--profile <PROFILE>` | Profile to pull, e.g. `usd` or `lookdev` |
 | `--sdk <SDK>` | macOS SDK to build `--build` against: a full path, or a version like `15.2` resolved with `xcrun --sdk macosx<version> --show-sdk-path`. Sets `CMAKE_OSX_SYSROOT` for the whole build |

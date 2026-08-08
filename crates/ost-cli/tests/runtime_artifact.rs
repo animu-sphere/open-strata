@@ -261,6 +261,61 @@ fn export_handoff_and_pull_from_artifact_roundtrip() {
     error_json(&out, 2);
 }
 
+#[cfg(unix)]
+#[test]
+fn artifact_runtime_refuses_a_missing_declared_host_package_before_extraction() {
+    let manager = if cfg!(target_os = "macos") {
+        "brew"
+    } else {
+        "apt"
+    };
+    let declaration = format!(
+        "{manager}:openstrata-package-that-does-not-exist-{}",
+        std::process::id()
+    );
+    let sb1 = Sandbox::new("host-requirement-export");
+    stdout_json(&sb1.ost(&[
+        "--json",
+        "runtime",
+        "pull",
+        "cy2026",
+        "--profile",
+        "usd",
+        "--host-package",
+        &declaration,
+    ]));
+    sb1.promote_mock_to_build();
+
+    let shown = stdout_json(&sb1.ost(&["--json", "runtime", "show", "cy2026", "--profile", "usd"]));
+    assert_eq!(shown["data"]["host_requirements"][0]["manager"], manager);
+    let runtime_id = shown["data"]["id"].as_str().unwrap().to_string();
+
+    let exported =
+        stdout_json(&sb1.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
+    let digest = exported["data"]["digest"].as_str().unwrap().to_string();
+    let handoff = sb1.base.join("handoff");
+    stdout_json(&sb1.ost(&["--json", "artifact", "export", &digest, path_str(&handoff)]));
+
+    let sb2 = Sandbox::new("host-requirement-fetch");
+    stdout_json(&sb2.ost(&["--json", "artifact", "import", path_str(&handoff)]));
+    let out = sb2.ost(&[
+        "--json",
+        "runtime",
+        "pull",
+        "cy2026",
+        "--profile",
+        "usd",
+        "--from-artifact",
+        &digest,
+    ]);
+    let error = error_json(&out, 4);
+    assert_eq!(error["error"]["code"], "ARTIFACT_HOST_REQUIREMENT_MISSING");
+    assert!(
+        !sb2.home.join("runtimes").join(runtime_id).exists(),
+        "the incompatible runtime must not be extracted"
+    );
+}
+
 /// A Linux runtime SDK ships shared-library soname chains as in-tree relative
 /// symlinks (`libFoo.so → libFoo.so.1.39.4`). Export must pack them as link
 /// entries — never dereferencing them into copies — and materialization from the

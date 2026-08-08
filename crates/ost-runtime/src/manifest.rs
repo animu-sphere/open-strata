@@ -14,6 +14,38 @@ use ost_core::{digest, Variant};
 
 use crate::runtime::Runtime;
 
+/// Native package manager that can satisfy a runtime's host-side dependency.
+///
+/// These requirements are deliberately separate from `runtime_deps`: the
+/// latter are artifact prefixes already resolved into the runtime environment,
+/// while these packages must exist on the consuming machine before the runtime
+/// can be configured or launched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostPackageManager {
+    /// Debian/Ubuntu package installed through APT.
+    Apt,
+    /// macOS formula installed through Homebrew.
+    Brew,
+}
+
+impl HostPackageManager {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HostPackageManager::Apt => "apt",
+            HostPackageManager::Brew => "brew",
+        }
+    }
+}
+
+/// One package the artifact intentionally leaves to the consuming host.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostRequirement {
+    pub manager: HostPackageManager,
+    pub name: String,
+}
+
 /// Filename of the runtime manifest within a runtime prefix.
 pub const MANIFEST_FILE: &str = "runtime.json";
 
@@ -100,6 +132,7 @@ struct Canonical {
     capabilities: Vec<String>,
     layout: Vec<String>,
     extensions: Vec<ExtensionRecord>,
+    host_requirements: Vec<HostRequirement>,
 }
 
 /// A written runtime manifest.
@@ -137,6 +170,11 @@ pub struct RuntimeManifest {
     /// self-contained (build_usd.py installs deps into the prefix).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_deps: Vec<String>,
+    /// Native packages the artifact does not bundle but a consumer must have.
+    /// This is compatibility identity, not incidental provenance: changing a
+    /// requirement changes the runtime digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_requirements: Vec<HostRequirement>,
     /// For an `artifact`-sourced runtime, the registry digest (`sha256:<hex>`)
     /// of the artifact it was materialized from. Provenance, not identity (the
     /// canonical `digest` above still describes the runtime itself).
@@ -144,10 +182,10 @@ pub struct RuntimeManifest {
     pub artifact_digest: Option<String>,
 }
 
-// Bumped to 3 when `mock: bool` generalized to `source` (Phase 4b backend
-// sources). Older manifests lack `source`; they deserialize as `mock` and the
-// schema check flags them (re-pull to migrate) rather than misreporting trust.
-const SCHEMA: u32 = 3;
+// Bumped to 4 when host-side package requirements became compatibility
+// identity. Older manifests deserialize with an empty list, but the schema gate
+// still requires an explicit re-pull/repair before they can be republished.
+const SCHEMA: u32 = 4;
 
 impl RuntimeManifest {
     /// Build a manifest for a resolved runtime, computing the digest.
@@ -171,6 +209,7 @@ impl RuntimeManifest {
             capabilities,
             layout,
             extensions,
+            host_requirements: Vec::new(),
         };
         // Serialization of a fixed-field struct is deterministic.
         let bytes = serde_json::to_vec(&canonical).expect("canonical serializes");
@@ -192,6 +231,7 @@ impl RuntimeManifest {
             source,
             external_prefix: None,
             runtime_deps: Vec::new(),
+            host_requirements: Vec::new(),
             artifact_digest: None,
         }
     }
@@ -221,6 +261,7 @@ impl RuntimeManifest {
             capabilities: self.capabilities.clone(),
             layout: self.layout.clone(),
             extensions: self.extensions.clone(),
+            host_requirements: self.host_requirements.clone(),
         };
         let bytes = serde_json::to_vec(&canonical).expect("canonical serializes");
         digest::sha256_hex(&bytes)
@@ -228,6 +269,15 @@ impl RuntimeManifest {
 
     pub fn set_validation(&mut self, validation: Validation) {
         self.validation = validation;
+    }
+
+    /// Replace host requirements with a deterministic, duplicate-free set and
+    /// refresh the runtime identity that includes them.
+    pub fn set_host_requirements(&mut self, mut requirements: Vec<HostRequirement>) {
+        requirements.sort();
+        requirements.dedup();
+        self.host_requirements = requirements;
+        self.digest = self.compute_digest();
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -278,6 +328,35 @@ mod tests {
         let before = m.digest.clone();
         m.set_validation(Validation::Passed);
         assert_eq!(m.compute_digest(), before);
+    }
+
+    #[test]
+    fn host_requirements_are_sorted_identity() {
+        let mut m = sample();
+        let before = m.digest.clone();
+        m.set_host_requirements(vec![
+            HostRequirement {
+                manager: HostPackageManager::Apt,
+                name: "libxt-dev".into(),
+            },
+            HostRequirement {
+                manager: HostPackageManager::Apt,
+                name: "libx11-dev".into(),
+            },
+            HostRequirement {
+                manager: HostPackageManager::Apt,
+                name: "libx11-dev".into(),
+            },
+        ]);
+
+        assert_ne!(m.digest, before);
+        assert_eq!(m.compute_digest(), m.digest);
+        assert_eq!(m.host_requirements.len(), 2);
+        assert_eq!(m.host_requirements[0].name, "libx11-dev");
+
+        let json = m.to_json().unwrap();
+        let roundtrip = RuntimeManifest::from_json(&json).unwrap();
+        assert_eq!(roundtrip, m);
     }
 
     #[test]

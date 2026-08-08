@@ -232,6 +232,57 @@ const EVIDENCE_GAP_HINT: &str = "re-import the dist directory to attach its side
      (`ost artifact rm <digest>` first if it predates evidence), or lower \
      `require_evidence` while the artifact is republished";
 
+/// Source cells must provision every native package declared by their pinned
+/// runtime before the generated runtime bootstrap runs. The artifact is the
+/// authority; `host_packages` is its lossless CI rendering.
+fn host_requirement_gaps(matrix: &SupportMatrix) -> Vec<String> {
+    let store = ArtifactStore::discover();
+    let mut gaps = Vec::new();
+    for cell in matrix.cells.iter().filter(|cell| cell.lane.is_source()) {
+        let Ok(record) = store.resolve(&cell.runtime_artifact) else {
+            continue;
+        };
+        let requirements =
+            match crate::commands::runtime::artifact_host_requirements(&store, &record) {
+                Ok(requirements) => requirements,
+                Err(error) => {
+                    gaps.push(format!(
+                        "{}: runtime {} carries invalid host_requirements ({error})",
+                        cell.name,
+                        record.short_digest()
+                    ));
+                    continue;
+                }
+            };
+        for requirement in requirements {
+            let declared = match requirement.manager {
+                ost_runtime::HostPackageManager::Apt => cell
+                    .host_packages
+                    .as_ref()
+                    .is_some_and(|packages| packages.apt.contains(&requirement.name)),
+                ost_runtime::HostPackageManager::Brew => cell
+                    .host_packages
+                    .as_ref()
+                    .is_some_and(|packages| packages.brew.contains(&requirement.name)),
+            };
+            if !declared {
+                gaps.push(format!(
+                    "{}: runtime {} requires {}:{}, but the source cell does not render it under host_packages.{}",
+                    cell.name,
+                    record.short_digest(),
+                    requirement.manager.as_str(),
+                    requirement.name,
+                    requirement.manager.as_str()
+                ));
+            }
+        }
+    }
+    gaps
+}
+
+const HOST_REQUIREMENT_GAP_HINT: &str = "copy each pinned runtime requirement into the \
+     source cell's host_packages block, then regenerate the workflow";
+
 fn validate(
     matrix_flag: Option<&str>,
     resolve: bool,
@@ -291,11 +342,13 @@ fn validate(
     // A gate the pinned artifacts cannot satisfy is a validation failure, not a
     // warning: shipping it means a red lane on every runner.
     let evidence_gaps = evidence_gate_gaps(&matrix);
+    let host_requirement_gaps = host_requirement_gaps(&matrix);
 
     let ok = unresolved.is_empty()
         && ack_errors.is_empty()
         && support_issues.is_empty()
-        && evidence_gaps.is_empty();
+        && evidence_gaps.is_empty()
+        && host_requirement_gaps.is_empty();
     if fmt.is_json() {
         let mut warnings: Vec<serde_json::Value> = placeholders
             .iter()
@@ -328,6 +381,7 @@ fn validate(
                 "hosted_unacknowledged": ack_missing,
                 "billing_errors": ack_errors,
                 "evidence_gaps": evidence_gaps,
+                "host_requirement_gaps": host_requirement_gaps,
             }),
             &warnings,
         );
@@ -360,6 +414,12 @@ fn validate(
         }
         if !evidence_gaps.is_empty() {
             println!("  {EVIDENCE_GAP_HINT}");
+        }
+        for gap in &host_requirement_gaps {
+            println!("  HOST REQUIREMENT GAP: {gap}");
+        }
+        if !host_requirement_gaps.is_empty() {
+            println!("  {HOST_REQUIREMENT_GAP_HINT}");
         }
         if let Some(support_path) = &support_path {
             if support_issues.is_empty() {
@@ -810,6 +870,7 @@ fn generate(
     // generation may legitimately run on a machine whose registry is not the
     // one the lane will use. `ost ci validate` is the gate that fails.
     let evidence_gaps = evidence_gate_gaps(&matrix);
+    let host_requirement_gaps = host_requirement_gaps(&matrix);
 
     if to_stdout {
         // The workflows themselves are the output; a multi-workflow matrix
@@ -829,6 +890,12 @@ fn generate(
         }
         if !evidence_gaps.is_empty() {
             eprintln!("{EVIDENCE_GAP_HINT}");
+        }
+        for gap in &host_requirement_gaps {
+            eprintln!("WARNING: the rendered host provisioning is incomplete — {gap}");
+        }
+        if !host_requirement_gaps.is_empty() {
+            eprintln!("{HOST_REQUIREMENT_GAP_HINT}");
         }
         return Ok(());
     }
@@ -867,7 +934,7 @@ fn generate(
     }
 
     if fmt.is_json() {
-        let warnings: Vec<serde_json::Value> = evidence_gaps
+        let mut warnings: Vec<serde_json::Value> = evidence_gaps
             .iter()
             .map(|gap| {
                 serde_json::json!({
@@ -876,6 +943,12 @@ fn generate(
                 })
             })
             .collect();
+        warnings.extend(host_requirement_gaps.iter().map(|gap| {
+            serde_json::json!({
+                "code": "CI_HOST_REQUIREMENT_UNPROVISIONED",
+                "message": gap,
+            })
+        }));
         output::report_with_warnings(
             true,
             &serde_json::json!({
@@ -886,6 +959,7 @@ fn generate(
                 "workflows": out_paths.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
                 "cells": matrix.cells.len(),
                 "evidence_gaps": evidence_gaps,
+                "host_requirement_gaps": host_requirement_gaps,
             }),
             &warnings,
         );
@@ -901,6 +975,12 @@ fn generate(
     }
     if !evidence_gaps.is_empty() {
         println!("  {EVIDENCE_GAP_HINT}");
+    }
+    for gap in &host_requirement_gaps {
+        println!("  WARNING: the rendered host provisioning is incomplete — {gap}");
+    }
+    if !host_requirement_gaps.is_empty() {
+        println!("  {HOST_REQUIREMENT_GAP_HINT}");
     }
     Ok(())
 }

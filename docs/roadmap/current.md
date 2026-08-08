@@ -109,10 +109,11 @@ now. Concrete DCC consumption of that contract is v0.23.0.
 - **A runtime *declares* what a consumer needs.** v0.21.0 shipped the half that
   lets `ost` *notice* an unmet host requirement (`runtime validate`'s
   `consumer-configure` check) and the half that lets a CI contract *say* it
-  (`host_packages`). The open half is a declarative `host_requirements` list in
-  the runtime record — renderable into CI and checkable at `artifact pull` — so
-  a consumer learns the requirement from the artifact instead of from a red
-  lane.
+  (`host_packages`). **Implemented 2026-08-09:** schema-4 runtime records carry
+  digest-significant `host_requirements`; producers declare them with
+  `runtime pull --host-package`, runtime and remote artifact pulls check them
+  before materialization/use, and CI validation rejects a source cell whose
+  rendered `host_packages` omits a pinned runtime requirement.
 
 The v0.21.0 dogfooding pass also remains in this milestone. Reliable
 digest-pinned runtime transport is the first release-order item; workspace
@@ -557,10 +558,14 @@ From reports 30 §1 and 31 §4, the theme of this whole intake.
   CMake on PATH, or a profile that ships no `pxrConfig.cmake`, is reported as not
   checked rather than counted as proof.
 
-The `host_packages` knob above lets a CI contract *say* what the host needs; this
-is the half that lets `ost` *notice*. A declarative `host_requirements` list in
-the record — renderable into CI and checkable at `artifact pull` — remains the
-open half of the ask.
+The `host_packages` knob above lets a CI contract provision what the host needs.
+**Implemented 2026-08-09:** a producer records the same contract with repeatable
+`runtime pull --host-package apt:<package>|brew:<formula>`. The deterministic,
+deduplicated `host_requirements` list is part of runtime identity, survives
+export/OCI/import, and is checked by both `artifact pull` and
+`runtime pull --from-artifact`. `ci validate` compares locally resolvable runtime
+pins with source-cell `host_packages`, so a generated workflow cannot silently
+omit an artifact-declared dependency.
 
 ### P1 - a CI cell that is not a bundle
 

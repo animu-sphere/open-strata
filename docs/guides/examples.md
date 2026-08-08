@@ -690,8 +690,21 @@ when the runtime ships its own interpreter.
    `MaterialXConfig.cmake` gained an unconditional
    `find_dependency(X11 REQUIRED COMPONENTS Xt)` on non-Apple UNIX — and
    `pxrConfig.cmake` chains into it, so every Linux consumer needs X11
-   development headers merely to *configure*. Declare them per source cell with
-   `host_packages`, keyed by the runner's native installer:
+   development headers merely to *configure*. The runtime producer records that
+   boundary while creating/adopting the runtime; it becomes digest-significant
+   `host_requirements` in `runtime.json` and the exported artifact manifest:
+
+```bash
+ost runtime pull cy2026 --profile usd --build /src/OpenUSD \
+  --host-package apt:libx11-dev \
+  --host-package apt:libxt-dev
+ost runtime export cy2026 --profile usd
+```
+
+   Linux accepts `apt:<package>`, macOS accepts `brew:<formula>`, and Windows
+   assumes no package manager (provision dependencies on the runner image).
+   Declare the same requirements per source cell with `host_packages`, keyed by
+   the runner's native installer:
 
 ```yaml
 cells:
@@ -721,6 +734,14 @@ names only `brew` on a Linux runner or only `apt` on a macOS one. A cell serving
 both declares both. Where the runner's OS cannot be resolved at generation time —
 an opaque self-hosted label — the rendered step decides at run time and fails
 loudly rather than skipping a dependency the configure step needs.
+
+When the pinned runtime exists in the local artifact store, `ost ci validate`
+also compares its embedded `host_requirements` with the source cell. An omitted
+package is `CI_HOST_REQUIREMENT_UNPROVISIONED`; add it under the named manager
+and regenerate. `ost artifact pull` and `ost runtime pull --from-artifact`
+independently check the installed packages and fail with
+`ARTIFACT_HOST_REQUIREMENT_MISSING` before the runtime is used, including the
+selected artifact digest and an install command in the diagnostic.
 
 ### Reading the matrix from a lane `ci generate` cannot express
 

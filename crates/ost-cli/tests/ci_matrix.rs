@@ -719,6 +719,84 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     assert_eq!(out.status.code(), Some(2));
 }
 
+#[cfg(unix)]
+#[test]
+fn pinned_runtime_host_requirements_must_reach_source_cell_provisioning() {
+    let sb = Sandbox::new("runtime-host-requirements");
+    let (manager, package, os) = if cfg!(target_os = "macos") {
+        ("brew", "openimageio", "macos")
+    } else {
+        ("apt", "libx11-dev", "linux")
+    };
+    let declaration = format!("{manager}:{package}");
+    stdout_json(&sb.ost(&[
+        "--json",
+        "runtime",
+        "pull",
+        "cy2026",
+        "--profile",
+        "usd",
+        "--host-package",
+        &declaration,
+    ]));
+
+    let prefix = std::fs::read_dir(sb.home.join("runtimes"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let manifest_path = prefix.join("runtime.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["source"] = "build".into();
+    manifest["validation"] = "passed".into();
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    for (relative, contents) in [
+        ("plugin/usd/plugInfo.json", "{}"),
+        ("lib/python/pxr/__init__.py", ""),
+        ("bin/usdcat", "#!/bin/sh\n"),
+    ] {
+        let path = prefix.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        prefix.join("bin/usdcat"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let exported =
+        stdout_json(&sb.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
+    let digest = exported["data"]["digest"].as_str().unwrap();
+
+    let matrix = |host_packages: &str| {
+        format!(
+            "schema: 1\nrequire_evidence: none\ncells:\n  - name: runtime-source\n    lane: pull_request\n    runtime_artifact: {digest}\n    platform: cy2026\n    profile: usd\n{host_packages}    host:\n      os: {os}\n      labels: [self-hosted, {os}]\n"
+        )
+    };
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), matrix("")).unwrap();
+    let out = sb.ost(&["--json", "ci", "validate", "--resolve"]);
+    assert_eq!(out.status.code(), Some(5));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let gaps = report["data"]["host_requirement_gaps"].as_array().unwrap();
+    assert_eq!(gaps.len(), 1);
+    assert!(gaps[0].as_str().unwrap().contains(&declaration));
+
+    let packages = format!("    host_packages:\n      {manager}: [{package}]\n");
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), matrix(&packages)).unwrap();
+    let report = stdout_json(&sb.ost(&["--json", "ci", "validate", "--resolve"]));
+    assert!(report["data"]["host_requirement_gaps"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
 /// The v0.17.0 adoption failure, caught locally instead of on nine red runners:
 /// a matrix whose pinned artifact predates evidence renders a gate the artifact
 /// cannot pass. `generate` warns, `validate` fails, and both name a way out.
