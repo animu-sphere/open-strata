@@ -6,6 +6,7 @@
 //! ```text
 //! artifacts/
 //!   index.json                    # {schema, artifacts:[ArtifactRecord]} sorted by digest
+//!   .partial-blobs/<hex>.part     # unindexed resumable OCI layers; scavenged after 7 days
 //!   objects/sha256/<hex>/         # one directory per artifact, keyed by digest
 //!     record.json                 # the registry's identity record
 //!     manifest.json               # the producer manifest, byte-for-byte

@@ -462,6 +462,16 @@ ost artifact resolve oci://ghcr.io/<owner>/openstrata-runtime:usd-26.05-linux-x8
 ost artifact pull    oci://ghcr.io/<owner>/openstrata-runtime@sha256:<oci-digest>
 ```
 
+OCI layer downloads retry up to four times with bounded exponential backoff.
+An interrupted layer is retained by descriptor digest under the local artifact
+store and resumed with `Range` on the next attempt or a later invocation.
+`ost` accepts resumed bytes only after validating `Content-Range`, descriptor
+size, and the final SHA-256 digest; a registry that ignores or rejects the range
+causes a safe full restart. Partials are never listed by `artifact list|show`
+and are scavenged after seven days. Tune the bounded retry with
+`--max-attempts` (1–16) and `--retry-backoff` (initial milliseconds); the four
+phase timeout controls remain independent.
+
 When `openstrata-artifact-policy.toml` protects the destination, `push`
 auto-discovers it from the current directory or a parent and verifies the
 GitHub Actions OIDC publisher before contacting the registry. CI jobs need

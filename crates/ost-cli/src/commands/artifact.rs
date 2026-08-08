@@ -160,6 +160,12 @@ pub enum ArtifactCmd {
         /// End-to-end timeout for each HTTP exchange; 0 disables it.
         #[arg(long, default_value_t = 0, value_name = "SECONDS")]
         overall_timeout: u32,
+        /// Maximum attempts for each OCI layer, including the first request.
+        #[arg(long, default_value_t = 4, value_name = "COUNT")]
+        max_attempts: u32,
+        /// Initial retry delay in milliseconds; later delays double to 30s.
+        #[arg(long, default_value_t = 250, value_name = "MILLISECONDS")]
+        retry_backoff: u32,
     },
 }
 
@@ -221,7 +227,19 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
             response_timeout,
             body_idle_timeout,
             overall_timeout,
+            max_attempts,
+            retry_backoff,
         } => {
+            if !(1..=16).contains(&max_attempts) {
+                return Err(Error::usage(
+                    "--max-attempts must be between 1 and 16 (inclusive)",
+                ));
+            }
+            if retry_backoff > 30_000 {
+                return Err(Error::usage(
+                    "--retry-backoff must be at most 30000 milliseconds",
+                ));
+            }
             let policy = PullPolicy {
                 expected_artifact_digest: expect_artifact,
                 require_kind: require_kind
@@ -236,11 +254,16 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
                     .transpose()?,
                 require_target,
             };
+            let initial_retry_backoff = Duration::from_millis(u64::from(retry_backoff));
             let transfer = OciTransferPolicy {
                 connect_timeout: timeout(connect_timeout),
                 response_timeout: timeout(response_timeout),
                 body_idle_timeout: timeout(body_idle_timeout),
                 overall_timeout: timeout(overall_timeout),
+                max_attempts,
+                initial_retry_backoff,
+                max_retry_backoff: Duration::from_secs(30),
+                ..OciTransferPolicy::default()
             };
             pull_remote(&store, &reference, &policy, plain_http, transfer, fmt)
         }

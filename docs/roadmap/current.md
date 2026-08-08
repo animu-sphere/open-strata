@@ -144,6 +144,15 @@ later completed the same content, and `artifact import` verified the finished
 packages, so the artifact and import path are not implicated. v0.22.0 must make
 transient slowness or disconnects recoverable without weakening digest checks:
 
+**Implemented 2026-08-09:** the pull path now separates connect,
+response-header, body-idle, and optional overall timeouts; keeps advancing
+transfers unbounded by default; and retains OCI layers by digest for bounded
+retry and validated `Range` resume across invocations. Range ignore/rejection,
+changed content, corrupt partials, retry exhaustion, slow progress, and resumed
+import are covered by loopback-registry fixtures. Partials remain outside the
+artifact index and expire after seven days. The transfer-evidence and generated
+CI follow-up remains in the P1 section below.
+
 - separate connect, response-header, body-idle, and optional overall timeouts;
   expose bounded CLI or documented configuration controls, and let a continuously
   advancing transfer take longer than 120 seconds by default;

@@ -26,8 +26,9 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -85,6 +86,12 @@ const MAX_PRODUCER_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
 /// Maximum redirect hops on a blob GET (registries bounce to CDN storage).
 const MAX_REDIRECTS: usize = 5;
 
+/// Incomplete OCI blobs live outside per-invocation scratch directories so a
+/// later digest-pinned pull can resume them. They are never indexed by the
+/// artifact store and only move into the verification path after descriptor
+/// digest and size validation succeeds.
+const PARTIAL_BLOBS_DIR: &str = ".partial-blobs";
+
 /// Environment variables supplying registry credentials.
 const ENV_TOKEN: &str = "OST_REGISTRY_TOKEN";
 const ENV_USER: &str = "OST_REGISTRY_USER";
@@ -118,6 +125,14 @@ pub struct OciTransferPolicy {
     pub response_timeout: Option<Duration>,
     pub body_idle_timeout: Option<Duration>,
     pub overall_timeout: Option<Duration>,
+    /// Total attempts for one layer, including the first request.
+    pub max_attempts: u32,
+    /// Initial delay before retrying a transient layer failure. Each later
+    /// delay doubles up to [`OciTransferPolicy::max_retry_backoff`].
+    pub initial_retry_backoff: Duration,
+    pub max_retry_backoff: Duration,
+    /// Incomplete blobs older than this are scavenged before a fetch.
+    pub partial_max_age: Duration,
 }
 
 impl Default for OciTransferPolicy {
@@ -127,6 +142,10 @@ impl Default for OciTransferPolicy {
             response_timeout: Some(Duration::from_secs(120)),
             body_idle_timeout: Some(Duration::from_secs(30)),
             overall_timeout: None,
+            max_attempts: 4,
+            initial_retry_backoff: Duration::from_millis(250),
+            max_retry_backoff: Duration::from_secs(30),
+            partial_max_age: Duration::from_secs(7 * 24 * 60 * 60),
         }
     }
 }
@@ -181,11 +200,18 @@ impl OciTransport {
         format!("{scheme}://{registry}")
     }
 
-    /// One authorized GET against the registry, with a single token-exchange
-    /// retry on 401. Returns any non-4xx/5xx response (including 3xx).
-    fn get(&self, reference: &OciReference, url: &str, accept: &str) -> Result<HttpResponse> {
+    /// Authorized GET with caller-supplied representation headers. Range is
+    /// used for blob resume and is safe to preserve across a CDN redirect;
+    /// Authorization remains restricted to the registry origin.
+    fn get_with_headers(
+        &self,
+        reference: &OciReference,
+        url: &str,
+        accept: &str,
+        headers: &[(&str, String)],
+    ) -> Result<HttpResponse> {
         let auth = self.auth_header(reference)?;
-        match self.raw_get(url, accept, auth.as_deref()) {
+        match self.raw_get(url, accept, auth.as_deref(), headers) {
             Err(RequestFailure::Status(401, resp)) => {
                 let challenge = resp_header(&resp, "www-authenticate")
                     .unwrap_or("")
@@ -193,7 +219,7 @@ impl OciTransport {
                 let scope = format!("repository:{}:pull", reference.repository);
                 let token = self.exchange_token(reference, &challenge, &scope)?;
                 let bearer = format!("Bearer {token}");
-                match self.raw_get(url, accept, Some(&bearer)) {
+                match self.raw_get(url, accept, Some(&bearer), headers) {
                     Ok(resp) => Ok(resp),
                     Err(f) => Err(self.classify(reference, url, false, f)),
                 }
@@ -211,9 +237,20 @@ impl OciTransport {
         url: &str,
         accept: &str,
     ) -> Result<(HttpResponse, String)> {
+        self.get_following_redirects_with_headers(reference, url, accept, &[], false)
+    }
+
+    fn get_following_redirects_with_headers(
+        &self,
+        reference: &OciReference,
+        url: &str,
+        accept: &str,
+        headers: &[(&str, String)],
+        allow_range_not_satisfiable: bool,
+    ) -> Result<(HttpResponse, String)> {
         let registry_origin = origin_of(url).to_string();
         let mut auth_still_allowed = true;
-        let mut resp = self.get(reference, url, accept)?;
+        let mut resp = self.get_with_headers(reference, url, accept, headers)?;
         let mut hops = 0;
         let mut current_url = url.to_string();
 
@@ -240,12 +277,14 @@ impl OciTransport {
                 None
             };
             resp = self
-                .raw_get(&next, accept, auth.as_deref())
+                .raw_get(&next, accept, auth.as_deref(), headers)
                 .map_err(|f| self.classify(reference, &next, false, f))?;
             current_url = next;
         }
 
-        if !(200..300).contains(&resp.status().as_u16()) {
+        if !((200..300).contains(&resp.status().as_u16())
+            || allow_range_not_satisfiable && resp.status().as_u16() == 416)
+        {
             let code = resp.status().as_u16();
             return Err(self.classify(
                 reference,
@@ -262,12 +301,25 @@ impl OciTransport {
         url: &str,
         accept: &str,
         auth: Option<&str>,
+        headers: &[(&str, String)],
     ) -> std::result::Result<HttpResponse, RequestFailure> {
         let mut req = self.agent.get(url).header("Accept", accept);
+        for (name, value) in headers {
+            req = req.header(*name, value);
+        }
         if let Some(auth) = auth {
             req = req.header("Authorization", auth);
         }
-        classify_response(req.call())
+        match classify_response(req.call()) {
+            Err(RequestFailure::Status(416, resp))
+                if headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case("range")) =>
+            {
+                Ok(*resp)
+            }
+            outcome => outcome,
+        }
     }
 
     /// Map a request failure onto the stable `ARTIFACT_*` codes. `write` selects
@@ -443,7 +495,7 @@ impl OciTransport {
         };
 
         let resp = self
-            .raw_get(&url, "application/json", basic.as_deref())
+            .raw_get(&url, "application/json", basic.as_deref(), &[])
             .map_err(|f| match f {
                 RequestFailure::Status(code, _) => {
                     auth_denied(format!("token endpoint {realm} answered HTTP {code}"))
@@ -503,83 +555,204 @@ impl OciTransport {
         Ok((body, computed))
     }
 
-    /// Download one blob to `dest`, streaming and hashing, and require it to
-    /// match the descriptor's digest and size.
+    /// Download one blob to `dest`, retaining an incomplete digest-keyed file
+    /// across invocations and resuming it with a validated HTTP range. Only a
+    /// complete descriptor-verified blob moves into the caller's scratch tree.
     fn fetch_blob_to(
         &self,
         reference: &OciReference,
         layer: &Layer,
         dest: &Utf8Path,
     ) -> Result<()> {
-        let started = Instant::now();
         let url = format!(
             "{}/v2/{}/blobs/{}",
             self.base_url(&reference.registry),
             reference.repository,
             layer.digest
         );
+        let store_root = dest
+            .parent()
+            .and_then(Utf8Path::parent)
+            .ok_or_else(|| Error::usage("artifact pull scratch directory has no store parent"))?;
+        let partial_dir = store_root.join(PARTIAL_BLOBS_DIR);
+        std::fs::create_dir_all(partial_dir.as_std_path())
+            .map_err(|error| Error::io(partial_dir.to_string(), error))?;
+        scavenge_partial_blobs(&partial_dir, self.transfer.partial_max_age)?;
+        let partial = partial_dir.join(format!(
+            "{}.part",
+            layer
+                .digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&layer.digest)
+        ));
 
-        let (resp, _) =
-            self.get_following_redirects(reference, &url, "application/octet-stream")?;
+        let max_attempts = self.transfer.max_attempts.max(1);
+        for attempt in 1..=max_attempts {
+            let started = Instant::now();
+            let mut offset = partial_len(&partial)?;
+            if offset > layer.size {
+                remove_if_present(&partial)?;
+                offset = 0;
+            }
+            if offset == layer.size && offset > 0 {
+                let (actual, size) = hash_file(&partial)?;
+                if actual == layer.digest && size == layer.size {
+                    move_verified_blob(&partial, dest)?;
+                    return Ok(());
+                }
+                remove_if_present(&partial)?;
+                offset = 0;
+            }
 
-        let file = std::fs::File::create(dest.as_std_path())
-            .map_err(|e| Error::io(dest.to_string(), e))?;
-        let mut writer = CountingWriter::new(std::io::BufWriter::new(file));
-        let body = resp.into_body().into_reader();
-        let mut reader = DeadlineReader::new(body, started, self.transfer.overall_timeout);
-        let copied = digest::sha256_hex_copy(&mut reader, &mut writer);
-        let received = writer.bytes_written();
-        let (actual, size) = match copied {
-            Ok(value) => value,
-            Err(error) => {
-                drop(writer);
-                let _ = std::fs::remove_file(dest.as_std_path());
+            let range_headers = if offset > 0 {
+                vec![("Range", format!("bytes={offset}-"))]
+            } else {
+                Vec::new()
+            };
+            let response = self.get_following_redirects_with_headers(
+                reference,
+                &url,
+                "application/octet-stream",
+                &range_headers,
+                offset > 0,
+            );
+            let (resp, final_url) = match response {
+                Ok(value) => value,
+                Err(error) if retryable_transfer_error(&error) && attempt < max_attempts => {
+                    retry_delay(&self.transfer, attempt);
+                    continue;
+                }
+                Err(error) => {
+                    return Err(layer_request_error(
+                        error,
+                        reference,
+                        layer,
+                        attempt,
+                        offset,
+                        started.elapsed(),
+                    ));
+                }
+            };
+
+            let status = resp.status().as_u16();
+            if status == 416 {
+                remove_if_present(&partial)?;
+                if attempt < max_attempts {
+                    retry_delay(&self.transfer, attempt);
+                    continue;
+                }
+                return Err(transfer_exhausted(
+                    reference,
+                    layer,
+                    attempt,
+                    offset,
+                    started.elapsed(),
+                    "registry rejected the resume range",
+                    "retry the digest-pinned pull; the rejected partial was discarded",
+                ));
+            }
+
+            let append = if offset > 0 && status == 206 {
+                if let Err(error) = validate_content_range(&resp, &final_url, offset, layer.size) {
+                    remove_if_present(&partial)?;
+                    return Err(error);
+                }
+                true
+            } else if offset > 0 && status == 200 {
+                // A registry/CDN may ignore Range. Its full 200 response is safe
+                // to use only after truncating the old prefix.
+                offset = 0;
+                false
+            } else if offset == 0 && status == 200 {
+                false
+            } else {
+                remove_if_present(&partial)?;
+                return Err(Error::coded(
+                    "ARTIFACT_RANGE_INVALID",
+                    Category::Validation,
+                    format!(
+                        "blob {} from {final_url} answered HTTP {status} for resume offset {offset}",
+                        layer.digest
+                    ),
+                )
+                .with_hint("the registry returned an invalid range representation; retry from a trusted mirror"));
+            };
+
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .append(append)
+                .truncate(!append)
+                .open(partial.as_std_path())
+                .map_err(|error| Error::io(partial.to_string(), error))?;
+            let mut writer = CountingWriter::new(std::io::BufWriter::new(file));
+            let body = resp.into_body().into_reader();
+            let mut reader = DeadlineReader::new(body, started, self.transfer.overall_timeout);
+            let copy_result = std::io::copy(&mut reader, &mut writer);
+            let flush_result = writer.flush();
+            let copied = copy_result.and(flush_result);
+            let received = offset.saturating_add(writer.bytes_written());
+            drop(writer);
+
+            if let Err(error) = copied {
                 let detail = error.to_string();
+                if attempt < max_attempts {
+                    retry_delay(&self.transfer, attempt);
+                    continue;
+                }
                 let timed_out = detail.to_ascii_lowercase().contains("timeout")
                     || detail.to_ascii_lowercase().contains("timed out");
-                let code = if timed_out {
-                    "ARTIFACT_TRANSFER_TIMEOUT"
-                } else {
-                    "ARTIFACT_TRANSPORT_FAILED"
-                };
-                let decision = if timed_out {
-                    timeout_decision(&detail, &self.transfer)
-                } else {
-                    "retry the digest-pinned pull; the incomplete layer was discarded".to_string()
-                };
-                return Err(
-                    Error::coded(
-                        code,
-                        Category::ExternalTool,
-                        format!(
-                            "blob {} ('{}') from '{}' stopped after {received}/{} bytes in {:.1}s: {detail}",
-                            layer.digest,
-                            layer.title.as_deref().unwrap_or("untitled layer"),
-                            reference.locator(),
-                            layer.size,
-                            started.elapsed().as_secs_f64(),
-                        ),
-                    )
-                    .with_hint(decision),
-                );
+                return Err(transfer_exhausted(
+                    reference,
+                    layer,
+                    attempt,
+                    received,
+                    started.elapsed(),
+                    &detail,
+                    &if timed_out {
+                        timeout_decision(&detail, &self.transfer)
+                    } else {
+                        "retry the digest-pinned pull; the verified partial will be resumed"
+                            .to_string()
+                    },
+                ));
             }
-        };
-        drop(writer);
-        if actual != layer.digest || size != layer.size {
-            let _ = std::fs::remove_file(dest.as_std_path());
+
+            let (actual, size) = hash_file(&partial)?;
+            if actual == layer.digest && size == layer.size {
+                move_verified_blob(&partial, dest)?;
+                return Ok(());
+            }
+
+            // A short response remains resumable. A full-sized wrong digest or
+            // an oversized response is not a trustworthy prefix: discard it
+            // and spend the next bounded attempt on a clean request.
+            let corrupt = size >= layer.size;
+            if corrupt {
+                remove_if_present(&partial)?;
+            }
+            if attempt < max_attempts {
+                retry_delay(&self.transfer, attempt);
+                continue;
+            }
             return Err(Error::coded(
                 "ARTIFACT_OCI_DIGEST_MISMATCH",
                 Category::Validation,
                 format!(
-                    "blob {} from '{}' arrived as {actual} ({size} bytes), expected {} bytes",
+                    "blob {} ('{}') from '{}' exhausted {attempt} attempt(s): local bytes hash to {actual} ({size}/{} bytes)",
                     layer.digest,
+                    layer.title.as_deref().unwrap_or("untitled layer"),
                     reference.locator(),
-                    layer.size
+                    layer.size,
                 ),
             )
-            .with_hint("the registry served corrupted or substituted bytes — do not trust it"));
+            .with_hint(if corrupt {
+                "the corrupt partial was discarded; retry from a trusted registry or mirror"
+            } else {
+                "retry the digest-pinned pull; the incomplete digest-keyed partial was retained"
+            }));
         }
-        Ok(())
+        unreachable!("max_attempts is clamped to at least one")
     }
 
     /// Build and send a write request (`POST`/`PUT`/`HEAD`), mapping ureq
@@ -1170,6 +1343,195 @@ impl<W: Write> Write for CountingWriter<W> {
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
     }
+}
+
+fn partial_len(path: &Utf8Path) -> Result<u64> {
+    match std::fs::metadata(path.as_std_path()) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(Error::io(path.to_string(), error)),
+    }
+}
+
+fn hash_file(path: &Utf8Path) -> Result<(String, u64)> {
+    let mut file =
+        File::open(path.as_std_path()).map_err(|error| Error::io(path.to_string(), error))?;
+    digest::sha256_hex_reader(&mut file).map_err(|error| Error::io(path.to_string(), error))
+}
+
+fn remove_if_present(path: &Utf8Path) -> Result<()> {
+    match std::fs::remove_file(path.as_std_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::io(path.to_string(), error)),
+    }
+}
+
+fn move_verified_blob(source: &Utf8Path, destination: &Utf8Path) -> Result<()> {
+    remove_if_present(destination)?;
+    std::fs::rename(source.as_std_path(), destination.as_std_path())
+        .map_err(|error| Error::io(destination.to_string(), error))
+}
+
+fn scavenge_partial_blobs(directory: &Utf8Path, max_age: Duration) -> Result<()> {
+    let now = SystemTime::now();
+    let entries = std::fs::read_dir(directory.as_std_path())
+        .map_err(|error| Error::io(directory.to_string(), error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| Error::io(directory.to_string(), error))?;
+        let path = entry.path();
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(Error::io(path.display().to_string(), error)),
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let stale = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > max_age);
+        if stale {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(Error::io(path.display().to_string(), error)),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_content_range(
+    response: &HttpResponse,
+    url: &str,
+    expected_start: u64,
+    expected_total: u64,
+) -> Result<()> {
+    let value = resp_header(response, "content-range").ok_or_else(|| {
+        Error::coded(
+            "ARTIFACT_RANGE_INVALID",
+            Category::Validation,
+            format!("resumed blob response from {url} has no Content-Range header"),
+        )
+    })?;
+    let (start, end, total) = parse_content_range(value).ok_or_else(|| {
+        Error::coded(
+            "ARTIFACT_RANGE_INVALID",
+            Category::Validation,
+            format!("resumed blob response from {url} has invalid Content-Range '{value}'"),
+        )
+    })?;
+    if start != expected_start || total != expected_total || end.saturating_add(1) != total {
+        return Err(Error::coded(
+            "ARTIFACT_RANGE_INVALID",
+            Category::Validation,
+            format!(
+                "resumed blob response from {url} returned Content-Range '{value}', expected bytes {expected_start}-{}/{expected_total}",
+                expected_total.saturating_sub(1)
+            ),
+        )
+        .with_hint("discard the partial and retry from a registry that serves the pinned descriptor unchanged"));
+    }
+    if let Some(length) = resp_header(response, "content-length") {
+        let expected_length = expected_total.saturating_sub(expected_start);
+        if length.parse::<u64>().ok() != Some(expected_length) {
+            return Err(Error::coded(
+                "ARTIFACT_RANGE_INVALID",
+                Category::Validation,
+                format!(
+                    "resumed blob response from {url} declares Content-Length {length}, expected {expected_length}"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let range = value.strip_prefix("bytes ")?;
+    let (span, total) = range.split_once('/')?;
+    let (start, end) = span.split_once('-')?;
+    let start = start.parse().ok()?;
+    let end = end.parse().ok()?;
+    let total = total.parse().ok()?;
+    (start <= end && end < total).then_some((start, end, total))
+}
+
+fn retryable_transfer_error(error: &Error) -> bool {
+    matches!(
+        error.code(),
+        "ARTIFACT_TRANSFER_TIMEOUT" | "ARTIFACT_TRANSPORT_FAILED"
+    )
+}
+
+fn retry_delay(policy: &OciTransferPolicy, attempt: u32) {
+    let multiplier = 1_u32 << attempt.saturating_sub(1).min(30);
+    let delay = policy
+        .initial_retry_backoff
+        .saturating_mul(multiplier)
+        .min(policy.max_retry_backoff);
+    if !delay.is_zero() {
+        std::thread::sleep(delay);
+    }
+}
+
+fn layer_request_error(
+    error: Error,
+    reference: &OciReference,
+    layer: &Layer,
+    attempt: u32,
+    offset: u64,
+    elapsed: Duration,
+) -> Error {
+    let hint = error.hint().map(str::to_string).unwrap_or_else(|| {
+        "retry the digest-pinned pull; any incomplete digest-keyed layer was retained".to_string()
+    });
+    Error::coded(
+        error.code(),
+        error.category(),
+        format!(
+            "blob {} ('{}') from '{}' failed on attempt {attempt} at resume offset {offset}/{} after {:.1}s: {error}",
+            layer.digest,
+            layer.title.as_deref().unwrap_or("untitled layer"),
+            reference.locator(),
+            layer.size,
+            elapsed.as_secs_f64(),
+        ),
+    )
+    .with_hint(hint)
+}
+
+fn transfer_exhausted(
+    reference: &OciReference,
+    layer: &Layer,
+    attempt: u32,
+    received: u64,
+    elapsed: Duration,
+    detail: &str,
+    hint: &str,
+) -> Error {
+    let lower = detail.to_ascii_lowercase();
+    let timed_out = lower.contains("timeout") || lower.contains("timed out");
+    Error::coded(
+        if timed_out {
+            "ARTIFACT_TRANSFER_TIMEOUT"
+        } else {
+            "ARTIFACT_TRANSPORT_FAILED"
+        },
+        Category::ExternalTool,
+        format!(
+            "blob {} ('{}') from '{}' exhausted {attempt} attempt(s) after {received}/{} bytes in {:.1}s: {detail}",
+            layer.digest,
+            layer.title.as_deref().unwrap_or("untitled layer"),
+            reference.locator(),
+            layer.size,
+            elapsed.as_secs_f64(),
+        ),
+    )
+    .with_hint(hint)
 }
 
 fn display_timeout(timeout: Option<Duration>) -> String {
