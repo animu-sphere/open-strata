@@ -3,55 +3,106 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## v0.22.0 - DCC host adapters and matrix
+## v0.22.0 - OpenUSD artifact build and distribution foundation
 
-**Status:** 🚧 next milestone from 2026-07-27; dogfooding intake updated
-2026-07-31 · **Depends on:** v0.21.0 host discovery, over the v0.20.0
-package/product closure and Formation diagnostics below it.
+**Status:** 🚧 next milestone; replanned 2026-08-09 · **Depends on:** the
+digest-addressed artifact, OCI transport, runtime build/export, Formation, and
+evidence contracts shipped through v0.21.0.
 
-v0.21.0 answered *which hosts are installed*. This milestone is everything that
-*runs* one: a host adapter boundary executing minimal headless
-load/open/validate probes with preserved output and an explained SKIP for an
-unavailable license, display, or capability. The adapter's `environment`
-capability contributes to Formation resolution rather than composing paths on
-its own, so a host probe and a runtime-native app share one environment
-contract. Host-standard packaging (Maya `.mod`, Houdini package JSON) belongs to
-this slice; editing `Maya.env` or any user configuration does not.
+This milestone turns the existing OpenUSD build and artifact surfaces into one
+explicit compatibility policy. An OpenUSD artifact is identified by more than
+its upstream version: the normalized record carries its VFX Reference Platform
+profile, platform/architecture, toolchain and libc/CRT boundary, Python ABI and
+provider, TBB family and provider, build variant, Hgi capabilities, exact source
+and dependency identities, verification state, SBOM, provenance, and immutable
+artifact digest.
 
-Support-matrix cells follow the adapters, because a matrix cell pins host
-evidence that only a host probe can produce. A cell carries a pinned host
-record, stable/nightly/release/legacy tiers, and trusted release candidates fed
-in without weakening the artifact publisher boundary. A cell is one
-production-guaranteed runtime set, and cross-DCC data contracts are edges — the
-matrix is a graph, not a Cartesian product.
+Delivery is an end-to-end contract:
 
-Host integration consumes Formation as its environment and component-assembly
-layer and reuses the renderer identity/evidence model. OpenStrata never
-installs, updates, licenses, or modifies a host, and no DCC API is abstracted:
-differences are pushed into host adapters, never leaked into the core. Sessions,
-GPU/AI, and broader DCC matrices remain later work still. Direction:
-[dcc-hosts.md](../design/proposed/dcc-hosts.md).
+```text
+compatibility profile
+→ deterministic OpenUSD build
+→ normalized artifact manifest
+→ OCI publish
+→ tag-to-digest resolution
+→ digest-pinned pull
+→ compatibility and evidence validation
+```
 
-The v0.21.0 dogfooding pass added a corrective slice without changing that
-headline. Reliable digest-pinned runtime transport is the P0 release-order item:
-host and renderer cells cannot be reproducible if their first uncached runtime
-pull is a one-shot transfer. Workspace graph/provenance closure and renderer
-evidence hardening follow in the same milestone. The DCC adapter and matrix exit
-criteria remain required; corrective work does not replace them.
+Implementing only the schema does not complete the milestone. The same declared
+inputs must resolve deterministically, approved build cells must publish and
+round-trip through a clean environment, and incompatible artifacts must fail
+before process launch rather than at import or `dlopen` time.
 
-### Carried acceptance
+### Artifact policy priorities
 
-- **Linux and macOS host discovery passes.** v0.21.0's discovery slice was
-  accepted on Windows against a real Maya 2024 and Houdini 20.5.522. The Linux
-  and macOS install layouts — and, for Houdini on macOS, the framework root
-  shape — are encoded from documentation rather than demonstrated. They travel
-  with the adapters because both need a real install to exercise.
-- **One successful hdMerlin managed launch.** OST20-RND-002/003/005 —
-  producer-bound evidence, the viewport JSON success contract, and the durable
-  launch record — shipped in v0.20.0 and were exercised locally on 2026-07-23
-  against a real runtime. They stay open **as unverified downstream** until a
-  managed build completes in that repository. The task is one successful launch,
-  not a reimplementation.
+#### P0 - schema, profiles, and deterministic variants
+
+- Version and validate the OpenUSD artifact record, including ABI dimensions,
+  capabilities, runtime providers, build/runtime requirement separation, exact
+  dependency identities, and evidence digests.
+- Resolve toolchain, Python, and TBB from data-driven CY profiles. The OpenUSD
+  build may consume `build_usd.py`, but its defaults must not silently select
+  compatibility-critical dependencies.
+- Support a constrained, declared matrix of `headless`, `standard` (Imaging +
+  OpenGL), and `vulkan` (Imaging + OpenGL + Vulkan) variants. Exact cells are
+  data, not hard-coded resolver branches, and the full Cartesian product is not
+  a release goal.
+
+#### P1 - immutable OCI distribution and resolver validation
+
+- Establish one canonical publish/consume path with deterministic compatibility
+  tags, OCI annotations and media types, immutable digest capture, tag-to-digest
+  resolution, digest-pinned pull, and local verification. Mutable convenience
+  aliases are explicitly classified and never retained as reproducible identity.
+- Validate platform/architecture, toolchain/libc/CRT, Python ABI/provider, TBB
+  family/provider, graphics capabilities, runtime requirements, integrity, and
+  required trust evidence before composition or launch.
+- Diagnostics name the incompatible requirement, its provider, the selected
+  artifact, and a direct next action in deterministic human and JSON output.
+
+#### P1 - provenance and verification truth
+
+- Every published artifact carries or references its source revision, resolved
+  dependencies, workflow identity, third-party attribution, SBOM, evidence
+  digests, and SLSA-compatible provenance.
+- Compile, link, loader, physical-device, and render verification remain
+  separate states. A Vulkan artifact built on a runner without a physical device
+  must not be reported as render-verified.
+
+#### P2 - artifact diagnostics
+
+- Inspection reports the selected profile, ABI/provider choices, graphics
+  capabilities, tag, digest, and evidence status. Add the OpenGL/Vulkan
+  loader/device checks needed to explain whether the host can consume an
+  artifact; DCC-specific probing waits for v0.23.0.
+
+### Artifact-policy exit criteria
+
+1. Identical declared inputs produce the same normalized manifest and selector,
+   with exact resolved versions and source revisions recorded.
+2. At least one approved profile/platform cell for each initial variant completes
+   build, package, manifest validation, and local verification.
+3. A published artifact resolves from a readable tag to an immutable digest,
+   pulls by digest into a clean environment, and verifies there.
+4. Negative fixtures reject Python, TBB, platform, and graphics mismatches before
+   launch.
+5. Published test artifacts expose source, dependency, attribution, SBOM,
+   provenance, and verification evidence without build-tree state.
+6. The supported build matrix and mutable/immutable tag policy are documented
+   and machine-readable.
+
+### Explicit non-goals for v0.22.0
+
+- new or expanded DCC adapters, headless DCC execution, host-standard package
+  generation, and DCC support-matrix evidence
+- DCC installation, updates, licensing, or user-environment mutation
+- the full OpenUSD × CY × Python × graphics × OS Cartesian product
+- bundling GPU drivers or requiring the full Vulkan SDK at runtime
+
+The schema remains DCC-ready: host-provided Python/TBB, ABI dimensions,
+capabilities, and generic host requirements must be representable and resolvable
+now. Concrete DCC consumption of that contract is v0.23.0.
 
 ### Carried from the v0.21.0 intake
 
@@ -62,6 +113,10 @@ criteria remain required; corrective work does not replace them.
   the runtime record — renderable into CI and checkable at `artifact pull` — so
   a consumer learns the requirement from the artifact instead of from a red
   lane.
+
+The v0.21.0 dogfooding pass also remains in this milestone. Reliable
+digest-pinned runtime transport is the first release-order item; workspace
+graph/provenance closure and renderer evidence hardening follow it.
 
 ### v0.21.0 dogfooding intake (2026-07-28 to 2026-07-31)
 
@@ -152,6 +207,52 @@ transient slowness or disconnects recoverable without weakening digest checks:
 - Complete the carried hdMerlin acceptance pass with one successful managed
   launch that demonstrates the durable viewport record and producer binding.
 
+## v0.23.0 - DCC host adapters and matrix
+
+**Status:** ⬜ follows v0.22.0; moved from v0.22.0 on 2026-08-09 · **Depends
+on:** v0.21.0 host discovery and the v0.22.0 artifact compatibility,
+distribution, provider, and evidence contracts.
+
+v0.21.0 answered *which hosts are installed*. This milestone is everything that
+*runs* one: a host adapter boundary executing minimal headless
+load/open/validate probes with preserved output and an explained SKIP for an
+unavailable license, display, or capability. The adapter's `environment`
+capability contributes to Formation resolution rather than composing paths on
+its own, so a host probe and a runtime-native app share one environment
+contract. Host-standard packaging (Maya `.mod`, Houdini package JSON) belongs to
+this slice; editing `Maya.env` or any user configuration does not.
+
+Support-matrix cells follow the adapters, because a matrix cell pins host
+evidence that only a host probe can produce. A cell carries a pinned host record
+and artifact digests, stable/nightly/release/legacy tiers, and trusted release
+candidates fed in without weakening the artifact publisher boundary. A cell is
+one production-guaranteed runtime set, and cross-DCC data contracts are edges —
+the matrix is a graph, not a Cartesian product.
+
+Host integration consumes Formation as its environment and component-assembly
+layer and reuses the v0.22.0 artifact resolver/provider model and the renderer
+identity/evidence model. OpenStrata never installs, updates, licenses, or
+modifies a host, and no DCC API is abstracted: differences are pushed into host
+adapters, never leaked into the core. Sessions, GPU/AI, and broader DCC matrices
+remain later work still. Direction:
+[dcc-hosts.md](../design/proposed/dcc-hosts.md).
+
+### Carried acceptance
+
+- **Linux and macOS host discovery passes.** v0.21.0's discovery slice was
+  accepted on Windows against a real Maya 2024 and Houdini 20.5.522. The Linux
+  and macOS install layouts — and, for Houdini on macOS, the framework root
+  shape — are encoded from documentation rather than demonstrated. They travel
+  with the adapters because both need a real install to exercise.
+
+### DCC exit criteria
+
+A pinned, verified OpenUSD artifact and plugin set resolves against supported
+Maya and Houdini host records, packages in each host's standard form, completes
+minimal headless probes, and records reproducible matrix evidence. Unavailable
+host prerequisites produce an explained SKIP; compatibility failures are
+actionable pre-launch errors.
+
 ## Shipped: v0.21.0 - host discovery and dogfooding closure
 
 **Status:** ✅ shipped 2026-07-27 · **Depends on:** v0.20.0
@@ -164,7 +265,7 @@ as its environment and component-assembly layer and reuses the renderer
 identity/evidence model. Direction:
 [dcc-hosts.md](../design/proposed/dcc-hosts.md).
 
-**Deferred to v0.22.0 on 2026-07-27:** working Maya and Houdini support — the
+**Deferred to v0.23.0 (replanned 2026-08-09):** working Maya and Houdini support — the
 headless host adapters and the support-matrix cells that carry pinned host
 evidence. Discovery answers *which hosts are installed*, which is useful on its
 own and is what the milestone kept; *running* something in a host is the next
@@ -267,12 +368,12 @@ instance ids carrying the `sha256:` prefix, doubled prefixes in fingerprint
 digests, and mixed path separators in recorded roots and evidence — each now
 covered by a test.
 
-Still owed, and moving to v0.22.0 with the adapters: the same pass on Linux and
+Still owed, and moving to v0.23.0 with the adapters: the same pass on Linux and
 macOS, where the install layouts (and, for Houdini on macOS, the framework root
 shape) are encoded from documentation rather than demonstrated.
 
-**Moved out of v0.21.0 on 2026-07-27** and now scoped in the
-[v0.22.0 milestone](#v0220---dcc-host-adapters-and-matrix) above: the headless
+**Moved out of v0.21.0 on 2026-07-27 and replanned on 2026-08-09** in the
+[v0.23.0 milestone](#v0230---dcc-host-adapters-and-matrix) above: the headless
 host adapters, host-standard packaging, and the support-matrix cells that carry
 pinned host evidence. The discovery foundation is shipped and unaffected —
 `ost host discover | list | inspect` resolves real Maya and Houdini installs
