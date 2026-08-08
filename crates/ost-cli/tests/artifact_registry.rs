@@ -38,6 +38,23 @@ fn artifact_pull_rejects_timeout_values_that_cannot_be_safely_scheduled() {
     assert!(!stderr.contains("panicked"), "{stderr}");
 }
 
+#[test]
+fn artifact_pull_rejects_unbounded_retry_counts() {
+    let sb = Sandbox::new("retry-range");
+    let out = sb.ost(&[
+        "artifact",
+        "pull",
+        "oci://127.0.0.1:9/fixtures/test@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "--plain-http",
+        "--max-attempts",
+        "17",
+    ]);
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("between 1 and 16"), "{stderr}");
+}
+
 struct Sandbox {
     base: PathBuf,
     home: PathBuf,

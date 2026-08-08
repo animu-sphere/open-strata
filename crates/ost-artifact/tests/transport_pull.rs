@@ -37,7 +37,20 @@ struct Route {
     body_start_delay: Duration,
     chunk_delay: Duration,
     chunk_size: usize,
+    disconnect_after: Option<usize>,
+    disconnects_remaining: u32,
+    range_behavior: RangeBehavior,
 }
+
+#[derive(Clone, Copy)]
+enum RangeBehavior {
+    Honor,
+    Ignore,
+    Reject,
+    ChangedTotal,
+}
+
+type RequestLog = Arc<Mutex<Vec<(String, Option<String>)>>>;
 
 struct MockRegistry {
     addr: SocketAddr,
@@ -45,6 +58,7 @@ struct MockRegistry {
     /// When set, every /v2/ request must carry `Authorization: Bearer <this>`;
     /// the mock answers 401 with a token-exchange challenge otherwise.
     required_token: Arc<Mutex<Option<String>>>,
+    requests: RequestLog,
 }
 
 impl MockRegistry {
@@ -53,13 +67,21 @@ impl MockRegistry {
         let addr = listener.local_addr().unwrap();
         let routes: Arc<Mutex<HashMap<String, Route>>> = Arc::new(Mutex::new(HashMap::new()));
         let required_token: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let requests = Arc::new(Mutex::new(Vec::new()));
 
         let thread_routes = Arc::clone(&routes);
         let thread_token = Arc::clone(&required_token);
+        let thread_requests = Arc::clone(&requests);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { break };
-                let _ = handle_connection(stream, addr, &thread_routes, &thread_token);
+                let _ = handle_connection(
+                    stream,
+                    addr,
+                    &thread_routes,
+                    &thread_token,
+                    &thread_requests,
+                );
             }
         });
 
@@ -67,6 +89,7 @@ impl MockRegistry {
             addr,
             routes,
             required_token,
+            requests,
         }
     }
 
@@ -85,6 +108,9 @@ impl MockRegistry {
                 body_start_delay: Duration::ZERO,
                 chunk_delay: Duration::ZERO,
                 chunk_size: usize::MAX,
+                disconnect_after: None,
+                disconnects_remaining: 0,
+                range_behavior: RangeBehavior::Honor,
             },
         );
     }
@@ -100,6 +126,9 @@ impl MockRegistry {
                 body_start_delay: Duration::ZERO,
                 chunk_delay: Duration::ZERO,
                 chunk_size: usize::MAX,
+                disconnect_after: None,
+                disconnects_remaining: 0,
+                range_behavior: RangeBehavior::Honor,
             },
         );
     }
@@ -121,6 +150,50 @@ impl MockRegistry {
 
     fn require_token(&self, token: &str) {
         *self.required_token.lock().unwrap() = Some(token.to_string());
+    }
+
+    fn disconnect(&self, path: &str, after: usize, times: u32) {
+        let mut routes = self.routes.lock().unwrap();
+        let route = routes.get_mut(path).expect("registered route");
+        route.disconnect_after = Some(after);
+        route.disconnects_remaining = times;
+    }
+
+    fn ignore_ranges(&self, path: &str) {
+        self.routes
+            .lock()
+            .unwrap()
+            .get_mut(path)
+            .expect("registered route")
+            .range_behavior = RangeBehavior::Ignore;
+    }
+
+    fn reject_ranges(&self, path: &str) {
+        self.routes
+            .lock()
+            .unwrap()
+            .get_mut(path)
+            .expect("registered route")
+            .range_behavior = RangeBehavior::Reject;
+    }
+
+    fn change_range_total(&self, path: &str) {
+        self.routes
+            .lock()
+            .unwrap()
+            .get_mut(path)
+            .expect("registered route")
+            .range_behavior = RangeBehavior::ChangedTotal;
+    }
+
+    fn ranges_for(&self, path: &str) -> Vec<Option<String>> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(request_path, _)| request_path == path)
+            .map(|(_, range)| range.clone())
+            .collect()
     }
 
     /// Register a bundle's manifest (under tag and digest) and its blobs.
@@ -164,6 +237,7 @@ fn handle_connection(
     addr: SocketAddr,
     routes: &Mutex<HashMap<String, Route>>,
     required_token: &Mutex<Option<String>>,
+    requests: &Mutex<Vec<(String, Option<String>)>>,
 ) -> std::io::Result<()> {
     // Read the request head (GET requests only — no bodies).
     let mut head = Vec::new();
@@ -182,10 +256,19 @@ fn handle_connection(
     let request_line = lines.next().unwrap_or("");
     let path_with_query = request_line.split(' ').nth(1).unwrap_or("/");
     let path = path_with_query.split('?').next().unwrap_or("/");
-    let auth = lines
-        .filter_map(|l| l.split_once(':'))
+    let headers: Vec<_> = lines.filter_map(|line| line.split_once(':')).collect();
+    let auth = headers
+        .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
         .map(|(_, v)| v.trim().to_string());
+    let range = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("range"))
+        .map(|(_, v)| v.trim().to_string());
+    requests
+        .lock()
+        .unwrap()
+        .push((path.to_string(), range.clone()));
 
     let token = required_token.lock().unwrap().clone();
     if let Some(token) = token {
@@ -201,18 +284,71 @@ fn handle_connection(
         }
     }
 
-    match routes.lock().unwrap().get(path) {
+    let route = {
+        let mut routes = routes.lock().unwrap();
+        routes.get_mut(path).map(|route| {
+            let mut response = route.clone();
+            if route.disconnects_remaining > 0 {
+                route.disconnects_remaining -= 1;
+            } else {
+                response.disconnect_after = None;
+            }
+            response
+        })
+    };
+    match route {
         Some(route) => {
-            let route = route.clone();
+            let mut status = route.status;
+            let mut body = route.body.as_slice();
+            let mut extra_headers = route.extra_headers.clone();
+            if let Some(start) = range
+                .as_deref()
+                .and_then(|value| value.strip_prefix("bytes="))
+                .and_then(|value| value.strip_suffix('-'))
+                .and_then(|value| value.parse::<usize>().ok())
+            {
+                match route.range_behavior {
+                    RangeBehavior::Honor if start < body.len() => {
+                        status = 206;
+                        extra_headers.push_str(&format!(
+                            "Content-Range: bytes {start}-{}/{}\r\n",
+                            body.len() - 1,
+                            body.len()
+                        ));
+                        body = &body[start..];
+                    }
+                    RangeBehavior::Honor | RangeBehavior::Reject => {
+                        status = 416;
+                        extra_headers
+                            .push_str(&format!("Content-Range: bytes */{}\r\n", body.len()));
+                        body = &[];
+                    }
+                    RangeBehavior::ChangedTotal if start < body.len() => {
+                        status = 206;
+                        extra_headers.push_str(&format!(
+                            "Content-Range: bytes {start}-{}/{}\r\n",
+                            body.len() - 1,
+                            body.len() + 1
+                        ));
+                        body = &body[start..];
+                    }
+                    RangeBehavior::ChangedTotal => {
+                        status = 416;
+                        body = &[];
+                    }
+                    RangeBehavior::Ignore => {}
+                }
+            }
             respond_slow(
                 &mut stream,
-                route.status,
+                status,
                 route.content_type,
-                &route.body,
-                &route.extra_headers,
+                body,
+                &extra_headers,
                 route.body_start_delay,
                 route.chunk_delay,
                 route.chunk_size,
+                route.disconnect_after,
             )
         }
         None => respond(&mut stream, 404, "application/json", b"{}", ""),
@@ -235,6 +371,7 @@ fn respond(
         Duration::ZERO,
         Duration::ZERO,
         usize::MAX,
+        None,
     )
 }
 
@@ -248,6 +385,7 @@ fn respond_slow(
     body_start_delay: Duration,
     chunk_delay: Duration,
     chunk_size: usize,
+    disconnect_after: Option<usize>,
 ) -> std::io::Result<()> {
     let reason = match status {
         200 => "OK",
@@ -262,7 +400,8 @@ fn respond_slow(
     )?;
     stream.flush()?;
     std::thread::sleep(body_start_delay);
-    for chunk in body.chunks(chunk_size.max(1)) {
+    let send_len = disconnect_after.unwrap_or(body.len()).min(body.len());
+    for chunk in body[..send_len].chunks(chunk_size.max(1)) {
         stream.write_all(chunk)?;
         stream.flush()?;
         std::thread::sleep(chunk_delay);
@@ -473,6 +612,19 @@ fn assert_store_empty(store: &ArtifactStore) {
     );
 }
 
+fn retry_policy(max_attempts: u32) -> OciTransferPolicy {
+    OciTransferPolicy {
+        connect_timeout: Some(Duration::from_secs(1)),
+        response_timeout: Some(Duration::from_secs(1)),
+        body_idle_timeout: Some(Duration::from_secs(1)),
+        overall_timeout: None,
+        max_attempts,
+        initial_retry_backoff: Duration::ZERO,
+        max_retry_backoff: Duration::ZERO,
+        ..OciTransferPolicy::default()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -606,6 +758,7 @@ fn advancing_blob_can_outlast_the_body_idle_budget() {
             response_timeout: Some(Duration::from_secs(1)),
             body_idle_timeout: Some(Duration::from_millis(100)),
             overall_timeout: None,
+            ..OciTransferPolicy::default()
         },
     );
     let reference = oci_ref(
@@ -616,6 +769,273 @@ fn advancing_blob_can_outlast_the_body_idle_budget() {
 
     let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
     assert_eq!(evidence.record.digest, bundle.artifact_digest);
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn disconnected_blob_resumes_from_a_validated_range() {
+    let registry = MockRegistry::start();
+    let content = pseudo_random_bytes(128 * 1024);
+    let bundle = make_bundle("resume", &content);
+    registry.register("fixtures/resume", "v1", &bundle);
+    let archive_path = format!(
+        "/v2/fixtures/resume/blobs/{}",
+        digest::sha256_hex(&bundle.archive)
+    );
+    registry.disconnect(&archive_path, bundle.archive.len() / 3, 1);
+
+    let root = tmp_root("pull-resume");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::with_transfer_policy(true, retry_policy(3));
+    let reference = oci_ref(
+        &registry,
+        "fixtures/resume",
+        &format!("@{}", bundle.oci_digest),
+    );
+
+    let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
+    assert_eq!(evidence.record.digest, bundle.artifact_digest);
+    let ranges = registry.ranges_for(&archive_path);
+    assert_eq!(ranges.first(), Some(&None));
+    assert!(
+        ranges.iter().skip(1).any(|range| range
+            .as_deref()
+            .is_some_and(|value| value.starts_with("bytes=") && value != "bytes=0-")),
+        "resume requests: {ranges:?}"
+    );
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn ignored_range_restarts_safely_from_the_full_response() {
+    let registry = MockRegistry::start();
+    let content = pseudo_random_bytes(96 * 1024);
+    let bundle = make_bundle("ignore-range", &content);
+    registry.register("fixtures/ignore-range", "v1", &bundle);
+    let archive_path = format!(
+        "/v2/fixtures/ignore-range/blobs/{}",
+        digest::sha256_hex(&bundle.archive)
+    );
+    registry.disconnect(&archive_path, bundle.archive.len() / 4, 1);
+    registry.ignore_ranges(&archive_path);
+
+    let root = tmp_root("pull-ignore-range");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::with_transfer_policy(true, retry_policy(3));
+    let reference = oci_ref(
+        &registry,
+        "fixtures/ignore-range",
+        &format!("@{}", bundle.oci_digest),
+    );
+
+    let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
+    assert_eq!(evidence.record.digest, bundle.artifact_digest);
+    assert!(
+        registry
+            .ranges_for(&archive_path)
+            .iter()
+            .any(Option::is_some),
+        "the second request must attempt a range before accepting the full 200 response"
+    );
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn rejected_range_discards_the_partial_and_restarts() {
+    let registry = MockRegistry::start();
+    let content = pseudo_random_bytes(96 * 1024);
+    let bundle = make_bundle("reject-range", &content);
+    registry.register("fixtures/reject-range", "v1", &bundle);
+    let archive_path = format!(
+        "/v2/fixtures/reject-range/blobs/{}",
+        digest::sha256_hex(&bundle.archive)
+    );
+    registry.disconnect(&archive_path, bundle.archive.len() / 4, 1);
+    registry.reject_ranges(&archive_path);
+
+    let root = tmp_root("pull-reject-range");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::with_transfer_policy(true, retry_policy(4));
+    let reference = oci_ref(
+        &registry,
+        "fixtures/reject-range",
+        &format!("@{}", bundle.oci_digest),
+    );
+
+    let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
+    assert_eq!(evidence.record.digest, bundle.artifact_digest);
+    let ranges = registry.ranges_for(&archive_path);
+    assert!(ranges.iter().any(Option::is_some), "requests: {ranges:?}");
+    assert_eq!(ranges.last(), Some(&None), "restart requests: {ranges:?}");
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn changed_content_range_is_rejected_and_the_partial_is_discarded() {
+    let registry = MockRegistry::start();
+    let content = pseudo_random_bytes(96 * 1024);
+    let bundle = make_bundle("changed-range", &content);
+    registry.register("fixtures/changed-range", "v1", &bundle);
+    let archive_path = format!(
+        "/v2/fixtures/changed-range/blobs/{}",
+        digest::sha256_hex(&bundle.archive)
+    );
+    registry.disconnect(&archive_path, bundle.archive.len() / 4, 1);
+    registry.change_range_total(&archive_path);
+
+    let root = tmp_root("pull-changed-range");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::with_transfer_policy(true, retry_policy(3));
+    let reference = oci_ref(
+        &registry,
+        "fixtures/changed-range",
+        &format!("@{}", bundle.oci_digest),
+    );
+    let error = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap_err();
+
+    assert_eq!(error.code(), "ARTIFACT_RANGE_INVALID");
+    assert!(error.to_string().contains("Content-Range"));
+    assert_store_empty(&store);
+    let partial = store.root().join(".partial-blobs").join(format!(
+        "{}.part",
+        bundle.artifact_digest.trim_start_matches("sha256:")
+    ));
+    assert!(!partial.as_std_path().exists());
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn corrupt_partial_is_discarded_before_a_clean_retry() {
+    let registry = MockRegistry::start();
+    let content = pseudo_random_bytes(96 * 1024);
+    let bundle = make_bundle("corrupt-partial", &content);
+    registry.register("fixtures/corrupt-partial", "v1", &bundle);
+    let archive_path = format!(
+        "/v2/fixtures/corrupt-partial/blobs/{}",
+        digest::sha256_hex(&bundle.archive)
+    );
+
+    let root = tmp_root("pull-corrupt-partial");
+    let store = ArtifactStore::at(root.join("store"));
+    let partial_dir = store.root().join(".partial-blobs");
+    std::fs::create_dir_all(partial_dir.as_std_path()).unwrap();
+    let partial = partial_dir.join(format!(
+        "{}.part",
+        bundle.artifact_digest.trim_start_matches("sha256:")
+    ));
+    std::fs::write(partial.as_std_path(), vec![0xff; 4096]).unwrap();
+
+    let transport = OciTransport::with_transfer_policy(true, retry_policy(3));
+    let reference = oci_ref(
+        &registry,
+        "fixtures/corrupt-partial",
+        &format!("@{}", bundle.oci_digest),
+    );
+    let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
+
+    assert_eq!(evidence.record.digest, bundle.artifact_digest);
+    let ranges = registry.ranges_for(&archive_path);
+    assert!(
+        ranges.first().is_some_and(Option::is_some),
+        "requests: {ranges:?}"
+    );
+    assert_eq!(ranges.last(), Some(&None), "clean retry: {ranges:?}");
+    assert!(!partial.as_std_path().exists());
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn stale_partial_is_scavenged_before_transfer() {
+    let registry = MockRegistry::start();
+    let content = pseudo_random_bytes(64 * 1024);
+    let bundle = make_bundle("stale-partial", &content);
+    registry.register("fixtures/stale-partial", "v1", &bundle);
+    let archive_path = format!(
+        "/v2/fixtures/stale-partial/blobs/{}",
+        digest::sha256_hex(&bundle.archive)
+    );
+
+    let root = tmp_root("pull-stale-partial");
+    let store = ArtifactStore::at(root.join("store"));
+    let partial_dir = store.root().join(".partial-blobs");
+    std::fs::create_dir_all(partial_dir.as_std_path()).unwrap();
+    let partial = partial_dir.join(format!(
+        "{}.part",
+        bundle.artifact_digest.trim_start_matches("sha256:")
+    ));
+    std::fs::write(partial.as_std_path(), &bundle.archive[..4096]).unwrap();
+    std::thread::sleep(Duration::from_millis(2));
+
+    let mut policy = retry_policy(2);
+    policy.partial_max_age = Duration::ZERO;
+    let transport = OciTransport::with_transfer_policy(true, policy);
+    let reference = oci_ref(
+        &registry,
+        "fixtures/stale-partial",
+        &format!("@{}", bundle.oci_digest),
+    );
+    let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
+
+    assert_eq!(evidence.record.digest, bundle.artifact_digest);
+    assert_eq!(registry.ranges_for(&archive_path).first(), Some(&None));
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn retry_exhaustion_retains_an_invisible_partial_for_the_next_pull() {
+    let registry = MockRegistry::start();
+    let content = pseudo_random_bytes(128 * 1024);
+    let bundle = make_bundle("exhausted", &content);
+    registry.register("fixtures/exhausted", "v1", &bundle);
+    let archive_path = format!(
+        "/v2/fixtures/exhausted/blobs/{}",
+        digest::sha256_hex(&bundle.archive)
+    );
+    registry.disconnect(&archive_path, 4096, 10);
+
+    let root = tmp_root("pull-exhausted");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::with_transfer_policy(true, retry_policy(2));
+    let reference = oci_ref(
+        &registry,
+        "fixtures/exhausted",
+        &format!("@{}", bundle.oci_digest),
+    );
+    let error = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap_err();
+
+    assert_eq!(error.code(), "ARTIFACT_TRANSPORT_FAILED");
+    assert!(error.to_string().contains("exhausted 2 attempt"));
+    assert_store_empty(&store);
+    let partial = store.root().join(".partial-blobs").join(format!(
+        "{}.part",
+        bundle.artifact_digest.trim_start_matches("sha256:")
+    ));
+    assert!(
+        partial.as_std_path().is_file(),
+        "retained partial: {partial}"
+    );
+    assert!(std::fs::metadata(partial.as_std_path()).unwrap().len() > 0);
+
+    // A distinct invocation reuses the digest-keyed prefix after the transient
+    // server failure is gone; nothing from the failed invocation was imported.
+    registry.disconnect(&archive_path, 0, 0);
+    let resumed_transport = OciTransport::with_transfer_policy(true, retry_policy(2));
+    let evidence = pull(
+        &resumed_transport,
+        &reference,
+        &store,
+        &PullPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(evidence.record.digest, bundle.artifact_digest);
+    assert!(!partial.as_std_path().exists());
+    assert!(
+        registry
+            .ranges_for(&archive_path)
+            .last()
+            .is_some_and(Option::is_some),
+        "the next pull must resume the retained prefix"
+    );
     std::fs::remove_dir_all(root.as_std_path()).ok();
 }
 
@@ -640,6 +1060,8 @@ fn optional_overall_budget_stops_an_active_blob() {
             response_timeout: Some(Duration::from_secs(1)),
             body_idle_timeout: Some(Duration::from_millis(100)),
             overall_timeout: Some(Duration::from_millis(150)),
+            max_attempts: 1,
+            ..OciTransferPolicy::default()
         },
     );
     let reference = oci_ref(
@@ -680,6 +1102,8 @@ fn stalled_blob_reports_transfer_timeout_and_received_bytes() {
             response_timeout: Some(Duration::from_secs(1)),
             body_idle_timeout: Some(Duration::from_millis(100)),
             overall_timeout: None,
+            max_attempts: 1,
+            ..OciTransferPolicy::default()
         },
     );
     let reference = oci_ref(
