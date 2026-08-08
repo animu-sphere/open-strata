@@ -178,7 +178,7 @@ Recommended primary cells: `maya-2026 + linux + MayaUSD + production`,
 
 ```text
 # Hosts (third-party installs) — discover/list/inspect ship in v0.21.0;
-# probe/run/test follow in v0.22.0
+# probe/run/test follow in v0.23.0
 ost host discover [--host maya] [--root …] [--path …] [--depth N] [--probe]
                   [--fingerprint standard|deep] [--refresh] [--register]
 ost host list [--host <family>] [--status <status>]
@@ -279,11 +279,15 @@ Still open from phase 2 onward: a Nuke validator, JSONL output, headless
 `run`/`test` and host-standard packaging (phase 3), the matrix and cross-DCC
 compatibility edges (phase 4), and fleet/productization (phase 5).
 
-**Milestone split (2026-07-27).** v0.21.0 shipped the discovery half above and
-nothing that runs a host; phases 3 and 4 — the headless adapters, host-standard
-packaging, and matrix cells with pinned host evidence — moved to **v0.22.0**,
-along with the Linux and macOS discovery acceptance passes that are still owed.
-Knowing which hosts are installed is useful on its own, so it shipped on its own.
+**Milestone split (replanned 2026-08-09).** v0.21.0 shipped the discovery half
+above and nothing that runs a host. v0.22.0 establishes the OpenUSD artifact,
+ABI/provider, capability, immutable-distribution, and provenance contracts that
+host execution must consume. Phases 3 and 4 — the headless adapters,
+host-standard packaging, matrix cells with pinned host/artifact evidence, and
+the Linux and macOS discovery acceptance passes still owed — therefore move to
+**v0.23.0**. Knowing which hosts are installed remains independently useful;
+running one waits for the shared artifact contract rather than inventing a
+parallel DCC-specific model.
 
 ## Positioning
 

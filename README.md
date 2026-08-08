@@ -41,8 +41,11 @@ Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.22.0** milestone is everything that *runs* a host: the headless
-adapters and the support matrix with pinned host evidence. Sessions, GPU/AI, and
+The active **v0.22.0** milestone makes OpenUSD artifact identity, compatibility
+profiles, deterministic build variants, OCI publication, digest resolution,
+provider/ABI validation, and provenance one end-to-end contract. DCC-relevant
+provider metadata is modeled now; headless host adapters, host-standard
+packaging, and the support matrix move to **v0.23.0**. Sessions, GPU/AI, and
 broader DCC matrices remain ahead.
 Linux x86_64 is the first-class target; other OS targets are modeled and
 partially working — these examples were exercised on Windows.

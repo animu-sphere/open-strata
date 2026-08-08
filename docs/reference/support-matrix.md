@@ -38,4 +38,4 @@ Per-feature, per-platform support levels. Sourced from [`support/platforms.toml`
 [^5]: Linux SDK soname chains; not part of the Windows packaging model.
 [^6]: A Linux-only concept (ELF scan of the runtime's binaries).
 [^7]: Maya/Houdini discovery exercised against real installs on Windows; other install layouts are encoded from vendor documentation and not yet demonstrated.
-[^8]: Planned (Phase 10 second half / v0.22.0); headless probes and pinned host matrix cells are not implemented on any platform.
+[^8]: Planned (Phase 10 second half / v0.23.0); headless probes and pinned host matrix cells are not implemented on any platform.

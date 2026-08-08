@@ -12,8 +12,9 @@ The v0.19.0 composition and reach milestone is shipped in
 [v0.19.0](../releases/v0.19.0.md). The v0.20.0 dogfood-closure and
 renderer-workflow milestone is shipped in [v0.20.0](../releases/v0.20.0.md).
 DCC host integration is split: discovery and the v0.20.0 dogfooding closure
-shipped in [v0.21.0](../releases/v0.21.0.md), and the adapters and host matrix
-are active in v0.22.0 via [current.md](current.md).
+shipped in [v0.21.0](../releases/v0.21.0.md); the OpenUSD artifact foundation is
+active in v0.22.0; and the adapters and host matrix follow in v0.23.0. Both open
+milestones are specified in [current.md](current.md).
 
 The Formation scope below is **Half B** of v0.19.0, narrowed to
 `resolve|inspect|run|lock`. It is gated on Half A (artifact closure, staged-byte
@@ -22,7 +23,8 @@ Formation's own acceptance criteria — three dogfoods run from packaged,
 digest-pinned artifacts on a clean machine — cannot pass while a packaged bundle
 from a split workspace is not independently installable. If Half A consumes the
 milestone. Formation shipped across v0.19.0 and v0.20.0; DCC host discovery
-shipped in v0.21.0 and the host adapters follow in v0.22.0.
+shipped in v0.21.0, the artifact/provider contract follows in v0.22.0, and the
+host adapters consume both in v0.23.0.
 
 - ✅ **v0.19.0 Half B - Formation composition.** Turn the reference-project
   ecosystem documented in v0.18.0 into an executable contract. A **Formation** is a
@@ -60,27 +62,27 @@ shipped in v0.21.0 and the host adapters follow in v0.22.0.
   with deterministic Maya and Houdini detectors that never mutate a host install
   or accept ambient PATH guesses — plus the corrective work from the v0.20.0
   dogfooding intake.
-- 🚧 **v0.22.0 - DCC host adapters and matrix (Phase 10, second half).** Active
-  in [current.md](current.md). Split out of v0.21.0 on 2026-07-27: discovery
-  answers which hosts are installed, and *running* something in one is its own
-  milestone. A host adapter boundary
-  running minimal headless load/open/validate probes with preserved output and
-  explained SKIP for unavailable licenses/display/capability; host-standard
-  packaging (Maya `.mod`, Houdini package JSON); support-matrix cells with pinned
-  host records, stable/nightly/release/legacy tiers, and trusted release
-  candidates fed in without weakening the artifact publisher boundary; and the
-  Linux/macOS discovery acceptance passes still owed. Host integration **consumes
-  Formation** as its environment and component-assembly layer — a host record is
-  a Formation component, and a host launch binds a runtime, plugins, renderer,
-  and host executable through the same resolved model — rather than introducing a
-  parallel DCC composition or environment mechanism. It must also consume the
-  renderer identity and evidence model established in v0.17.0 and corrected in
-  v0.18.0. The 2026-07-28 to 2026-07-31 v0.21.0 dogfooding intake adds a
-  corrective slice: P0 resilient, resumable digest-pinned runtime pulls; P1
-  explicit workspace-member discovery and root-build/package provenance; and
-  renderer timeout and managed-evidence fixtures. These are release criteria,
-  not a replacement for the host adapter and matrix exit. Direction:
-  [dcc-hosts.md](../design/proposed/dcc-hosts.md).
+- 🚧 **v0.22.0 - OpenUSD artifact build and distribution foundation.** Active
+  in [current.md](current.md). Normalize the OpenUSD artifact identity across
+  VFX profile, platform/architecture, toolchain/libc/CRT, Python ABI/provider,
+  TBB family/provider, build variant, Hgi capabilities, exact dependencies,
+  verification, SBOM, provenance, and immutable digest. Prove the complete
+  profile → deterministic build → manifest → OCI publish → digest resolution →
+  clean pull → compatibility validation path for a constrained initial matrix.
+  The v0.21.0 dogfooding intake remains release work: resilient resumable pulls,
+  explicit workspace discovery and package provenance, transfer evidence, and
+  renderer evidence hardening. DCC-relevant providers and requirements are
+  modeled here, but concrete DCC execution and matrix work are excluded.
+- ⬜ **v0.23.0 - DCC host adapters and matrix (Phase 10, second half).** Moved
+  from v0.22.0 on 2026-08-09. Consume v0.21.0 host discovery and the v0.22.0
+  artifact/provider contract to run minimal headless load/open/validate probes
+  with preserved output and explained SKIP results; generate Maya `.mod` and
+  Houdini package JSON layouts; and publish support-matrix cells with pinned
+  host records, artifact digests, tiers, and execution evidence. Host integration
+  consumes Formation and the existing renderer identity/evidence model rather
+  than introducing parallel composition, environment, artifact, or provenance
+  mechanisms. The Linux/macOS discovery acceptance passes remain owed.
+  Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md).
 - ⬜ **v1.0.0 (after the DCC host milestones).** Cut once the produce → trust →
   provenance → trusted-CI arc, cross-repository Formation composition, and the
   initial DCC host matrix are shipped and dogfooded — i.e. "build it, publish it,
