@@ -5,9 +5,9 @@ The next milestone and active carry-over work. Shipped detail is in
 
 ## v0.22.0 - DCC host adapters and matrix
 
-**Status:** 🚧 next milestone from 2026-07-27 · **Depends on:** v0.21.0 host
-discovery, over the v0.20.0 package/product closure and Formation diagnostics
-below it.
+**Status:** 🚧 next milestone from 2026-07-27; dogfooding intake updated
+2026-07-31 · **Depends on:** v0.21.0 host discovery, over the v0.20.0
+package/product closure and Formation diagnostics below it.
 
 v0.21.0 answered *which hosts are installed*. This milestone is everything that
 *runs* one: a host adapter boundary executing minimal headless
@@ -32,6 +32,13 @@ differences are pushed into host adapters, never leaked into the core. Sessions,
 GPU/AI, and broader DCC matrices remain later work still. Direction:
 [dcc-hosts.md](../design/proposed/dcc-hosts.md).
 
+The v0.21.0 dogfooding pass added a corrective slice without changing that
+headline. Reliable digest-pinned runtime transport is the P0 release-order item:
+host and renderer cells cannot be reproducible if their first uncached runtime
+pull is a one-shot transfer. Workspace graph/provenance closure and renderer
+evidence hardening follow in the same milestone. The DCC adapter and matrix exit
+criteria remain required; corrective work does not replace them.
+
 ### Carried acceptance
 
 - **Linux and macOS host discovery passes.** v0.21.0's discovery slice was
@@ -45,8 +52,6 @@ GPU/AI, and broader DCC matrices remain later work still. Direction:
   against a real runtime. They stay open **as unverified downstream** until a
   managed build completes in that repository. The task is one successful launch,
   not a reimplementation.
-- **The usd-vrm-plugins v0.21.0 re-run** that consumes the workspace cell, the
-  tool member, and the `consumer-configure` gate.
 
 ### Carried from the v0.21.0 intake
 
@@ -57,6 +62,95 @@ GPU/AI, and broader DCC matrices remain later work still. Direction:
   the runtime record — renderable into CI and checkable at `artifact pull` — so
   a consumer learns the requirement from the artifact instead of from a red
   lane.
+
+### v0.21.0 dogfooding intake (2026-07-28 to 2026-07-31)
+
+Sources: usd-vrm-plugins reports
+[33](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/33-2026-07-28-v0.21.0-workspace-ci-adoption.md)
+and
+[34](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/34-2026-07-29-v0.21.0-adapter-library-discovery-gap.md),
+and hdMerlin reports
+[11](https://github.com/animu-sphere/hydra-merlin/blob/main/docs/reports/ost/11-2026-07-29-v0.21.0-recheck-v0.22.0-asks.md)
+and
+[12](https://github.com/animu-sphere/hydra-merlin/blob/main/docs/reports/ost/12-2026-07-31-v0.21.0-runtime-artifact-pull-v0.22.0-asks.md).
+
+Report 33 exercised and closes all six asks carried into v0.21.0: workspace CI
+cells, matrix projection, per-cell host packages, tool product members, the
+standalone graph gate, and the consumer CMake toolchain contract. It also retires
+the prior usd-vrm-plugins re-run acceptance item above. Report 34 is the live
+workspace ask list after the first nested input adapter. Reports 11 and 12 carry
+the renderer and artifact-transport asks below. Only incomplete work is retained.
+
+#### P0 - resilient runtime artifact pull
+
+An uncached `ost artifact pull` of either valid 110 MB Windows runtime reached a
+fixed receive-response boundary at about 122 seconds. A resumable control client
+later completed the same content, and `artifact import` verified the finished
+packages, so the artifact and import path are not implicated. v0.22.0 must make
+transient slowness or disconnects recoverable without weakening digest checks:
+
+- separate connect, response-header, body-idle, and optional overall timeouts;
+  expose bounded CLI or documented configuration controls, and let a continuously
+  advancing transfer take longer than 120 seconds by default;
+- retain partial blobs by OCI layer digest, retry with bounded exponential
+  backoff, and resume with HTTP ranges after verifying the local length,
+  `Content-Range`, total size, descriptor digest, and final file digest;
+- safely restart when a registry ignores or rejects a range, never replay
+  credentials across origins, keep partials invisible to `artifact show`, and
+  scavenge them with an explicit bounded policy; and
+- cover slow transfer, disconnect, ignored range, changed content, corrupt
+  partial, retry exhaustion, and successful resumed import with fixtures.
+
+#### P1 - workspace discovery and managed provenance
+
+- **Make workspace membership explicit.** Prefer an `openstrata.toml`
+  `[workspace].members` glob list that can include layouts such as
+  `adapters/*/*`; a bounded recursive descriptor scan excluding build and
+  `.strata` directories is an acceptable fallback. A descriptor found but not
+  loaded must be reported, so a green `--graph-only` result cannot silently omit
+  a declared library and its dependency edges.
+- **Make root-build bundle outputs safe to package.** Either record bundle
+  outputs produced by `ost build` as managed provenance for the selected target
+  and runtime, or stage them away from paths consumed by `plugin package`.
+  `ost build` followed by packaging must not require a hidden per-bundle rebuild
+  order to avoid `PLUGIN_PACKAGE_OUTPUT_MISMATCH`.
+
+#### P1 - artifact transfer evidence and generated CI
+
+- JSON and human diagnostics name the OCI manifest and layer digests, layer
+  title, expected/received bytes, attempt, resume offset, elapsed and idle age,
+  and the exact timeout/retry decision, with a direct next action.
+- Generated GitHub Actions runtime bootstrap exercises the resilient pull path,
+  keys its cache by OpenStrata artifact digest, and saves only a completely
+  verified artifact — never partial transfer state presented as a cache hit.
+
+#### P2 - library/tool operability and migration diagnostics
+
+- Add a library-scoped `build|test|package` path, either as `ost library ...` or
+  an explicit library selector on existing verbs. Packaging must produce a
+  descriptor-named archive from one library's install tree so an optional
+  adapter can ship outside the aggregate product.
+- Stage declared tool executables produced by `ost build`, or make the packaging
+  error lead with the actual requirement that the executable must exist below a
+  declared member directory rather than suggesting a build that already ran.
+- When an OST upgrade enriches and re-identifies an unchanged runtime record,
+  distinguish that migration from a runtime substitution in managed-build
+  mismatch diagnostics and direct the user to rebuild the affected member.
+
+#### Renderer workflow and evidence acceptance
+
+- Expose configure/build timeout controls on managed `renderer view` and
+  `renderer viewport`, or document and test how they inherit project build
+  timeout policy, so recovery can be exercised without waiting for an implicit
+  default.
+- Add an upstream fixture that completes both managed launch paths and asserts
+  their persisted success and failure JSON envelopes independently of a
+  downstream compiler environment.
+- Add a negative managed-evidence fixture proving that a stale or separately
+  produced renderer report cannot be promoted by copying or attaching a newer
+  successful completion record.
+- Complete the carried hdMerlin acceptance pass with one successful managed
+  launch that demonstrates the durable viewport record and producer binding.
 
 ## Shipped: v0.21.0 - host discovery and dogfooding closure
 

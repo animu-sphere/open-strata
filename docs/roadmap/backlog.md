@@ -75,7 +75,12 @@ shipped in v0.21.0 and the host adapters follow in v0.22.0.
   and host executable through the same resolved model — rather than introducing a
   parallel DCC composition or environment mechanism. It must also consume the
   renderer identity and evidence model established in v0.17.0 and corrected in
-  v0.18.0. Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md).
+  v0.18.0. The 2026-07-28 to 2026-07-31 v0.21.0 dogfooding intake adds a
+  corrective slice: P0 resilient, resumable digest-pinned runtime pulls; P1
+  explicit workspace-member discovery and root-build/package provenance; and
+  renderer timeout and managed-evidence fixtures. These are release criteria,
+  not a replacement for the host adapter and matrix exit. Direction:
+  [dcc-hosts.md](../design/proposed/dcc-hosts.md).
 - ⬜ **v1.0.0 (after the DCC host milestones).** Cut once the produce → trust →
   provenance → trusted-CI arc, cross-repository Formation composition, and the
   initial DCC host matrix are shipped and dogfooded — i.e. "build it, publish it,
