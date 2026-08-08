@@ -447,8 +447,8 @@ Used by:
 - anstyle-query 1.1.5 — https://github.com/rust-cli/anstyle.git
 - anstyle-wincon 3.0.11 — https://github.com/rust-cli/anstyle.git
 - anstyle 1.0.14 — https://github.com/rust-cli/anstyle.git
-- clap 4.6.4 — https://github.com/clap-rs/clap
-- clap_builder 4.6.2 — https://github.com/clap-rs/clap
+- clap 4.6.5 — https://github.com/clap-rs/clap
+- clap_builder 4.6.5 — https://github.com/clap-rs/clap
 - clap_derive 4.6.4 — https://github.com/clap-rs/clap
 - clap_lex 1.1.0 — https://github.com/clap-rs/clap
 - colorchoice 1.0.5 — https://github.com/rust-cli/anstyle.git
@@ -456,10 +456,10 @@ Used by:
 - is_terminal_polyfill 1.70.2 — https://github.com/polyfill-rs/is_terminal_polyfill
 - once_cell_polyfill 1.70.2 — https://github.com/polyfill-rs/once_cell_polyfill
 - serde_spanned 1.1.1 — https://github.com/toml-rs/toml
-- toml 1.1.3+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml 1.1.4+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_datetime 1.1.1+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_edit 0.25.13+spec-1.1.0 — https://github.com/toml-rs/toml
-- toml_parser 1.1.2+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml_parser 1.1.3+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_writer 1.1.2+spec-1.1.0 — https://github.com/toml-rs/toml
 
 ```
@@ -1302,7 +1302,7 @@ limitations under the License.
 Used by:
 - base64 0.22.1 — https://github.com/marshallpierce/rust-base64
 - bitflags 2.13.0 — https://github.com/bitflags/bitflags
-- camino 1.2.4 — https://github.com/camino-rs/camino
+- camino 1.2.5 — https://github.com/camino-rs/camino
 - cc 1.2.65 — https://github.com/rust-lang/cc-rs
 - cfg-if 1.0.4 — https://github.com/rust-lang/cfg-if
 - equivalent 1.0.2 — https://github.com/indexmap-rs/equivalent
