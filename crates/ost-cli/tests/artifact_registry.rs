@@ -20,6 +20,24 @@ fn ost_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ost")
 }
 
+#[test]
+fn artifact_pull_rejects_timeout_values_that_cannot_be_safely_scheduled() {
+    let sb = Sandbox::new("timeout-range");
+    let out = sb.ost(&[
+        "artifact",
+        "pull",
+        "oci://127.0.0.1:9/fixtures/test@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "--plain-http",
+        "--connect-timeout",
+        "18446744073709551615",
+    ]);
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("invalid value"), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
 struct Sandbox {
     base: PathBuf,
     home: PathBuf,

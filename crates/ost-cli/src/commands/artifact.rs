@@ -150,16 +150,16 @@ pub enum ArtifactCmd {
         plain_http: bool,
         /// Connection timeout in seconds; 0 disables it.
         #[arg(long, default_value_t = 30, value_name = "SECONDS")]
-        connect_timeout: u64,
+        connect_timeout: u32,
         /// Response-header timeout in seconds; 0 disables it.
         #[arg(long, default_value_t = 120, value_name = "SECONDS")]
-        response_timeout: u64,
+        response_timeout: u32,
         /// Maximum idle time between response-body bytes; 0 disables it.
         #[arg(long, default_value_t = 30, value_name = "SECONDS")]
-        body_idle_timeout: u64,
+        body_idle_timeout: u32,
         /// End-to-end timeout for each HTTP exchange; 0 disables it.
         #[arg(long, default_value_t = 0, value_name = "SECONDS")]
-        overall_timeout: u64,
+        overall_timeout: u32,
     },
 }
 
@@ -514,8 +514,8 @@ fn pull_remote(
     Ok(())
 }
 
-fn timeout(seconds: u64) -> Option<Duration> {
-    (seconds > 0).then(|| Duration::from_secs(seconds))
+fn timeout(seconds: u32) -> Option<Duration> {
+    (seconds > 0).then(|| Duration::from_secs(seconds.into()))
 }
 
 /// Pull evidence as JSON (transport plan, "Minimum JSON output").

@@ -315,12 +315,23 @@ impl OciTransport {
                 Category::ExternalTool,
                 format!("{url} answered HTTP {code}"),
             ),
+            RequestFailure::Timeout(reason) => self.timeout_error(url, reason),
             RequestFailure::Transport(msg) => Error::coded(
                 "ARTIFACT_TRANSPORT_FAILED",
                 Category::ExternalTool,
                 format!("request to {url} failed: {msg}"),
             ),
         }
+    }
+
+    fn timeout_error(&self, url: &str, reason: ureq::Timeout) -> Error {
+        let (phase, decision) = request_timeout_decision(reason, &self.transfer);
+        Error::coded(
+            "ARTIFACT_TRANSFER_TIMEOUT",
+            Category::ExternalTool,
+            format!("request to {url} hit the {phase} timeout: {reason}"),
+        )
+        .with_hint(decision)
     }
 
     /// The hint for a write (`push`) that the registry answered 401/403, keyed on
@@ -437,6 +448,7 @@ impl OciTransport {
                 RequestFailure::Status(code, _) => {
                     auth_denied(format!("token endpoint {realm} answered HTTP {code}"))
                 }
+                RequestFailure::Timeout(reason) => self.timeout_error(realm, reason),
                 RequestFailure::Transport(msg) => Error::coded(
                     "ARTIFACT_TRANSPORT_FAILED",
                     Category::ExternalTool,
@@ -1091,6 +1103,7 @@ impl ArtifactTransport for OciTransport {
 /// path never carries the failure variant's weight.
 enum RequestFailure {
     Status(u16, Box<HttpResponse>),
+    Timeout(ureq::Timeout),
     Transport(String),
 }
 
@@ -1179,6 +1192,46 @@ fn timeout_decision(detail: &str, transfer: &OciTransferPolicy) -> String {
     )
 }
 
+fn request_timeout_decision(
+    reason: ureq::Timeout,
+    transfer: &OciTransferPolicy,
+) -> (&'static str, String) {
+    match reason {
+        ureq::Timeout::Global => (
+            "overall",
+            format!(
+                "overall timeout {}; increase --overall-timeout or set it to 0 to disable the end-to-end ceiling",
+                display_timeout(transfer.overall_timeout)
+            ),
+        ),
+        ureq::Timeout::Resolve | ureq::Timeout::Connect => (
+            "connection",
+            format!(
+                "connection timeout {}; increase --connect-timeout or retry",
+                display_timeout(transfer.connect_timeout)
+            ),
+        ),
+        ureq::Timeout::RecvResponse => (
+            "response-header",
+            format!(
+                "response-header timeout {}; increase --response-timeout or retry",
+                display_timeout(transfer.response_timeout)
+            ),
+        ),
+        ureq::Timeout::RecvBody => (
+            "body-idle",
+            format!(
+                "body idle timeout {}; increase --body-idle-timeout or retry",
+                display_timeout(transfer.body_idle_timeout)
+            ),
+        ),
+        _ => (
+            "request",
+            "request timed out; retry or increase the timeout for the reported phase".to_string(),
+        ),
+    }
+}
+
 /// Map a ureq call outcome onto [`RequestFailure`]. The agent runs with
 /// `http_status_as_error(false)`, so 4xx/5xx arrive as `Ok` and are the only
 /// codes turned into a `Status` failure; 2xx/3xx flow back to the caller (which
@@ -1195,6 +1248,7 @@ fn classify_response(
                 Ok(resp)
             }
         }
+        Err(ureq::Error::Timeout(reason)) => Err(RequestFailure::Timeout(reason)),
         Err(e) => Err(RequestFailure::Transport(e.to_string())),
     }
 }
@@ -1478,6 +1532,38 @@ fn read_capped(reader: &mut impl Read, cap: u64) -> std::io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_timeouts_name_the_phase_and_matching_cli_option() {
+        let transfer = OciTransferPolicy::default();
+
+        let (phase, hint) = request_timeout_decision(ureq::Timeout::Connect, &transfer);
+        assert_eq!(phase, "connection");
+        assert!(hint.contains("--connect-timeout"));
+
+        let (phase, hint) = request_timeout_decision(ureq::Timeout::RecvResponse, &transfer);
+        assert_eq!(phase, "response-header");
+        assert!(hint.contains("--response-timeout"));
+        assert!(matches!(
+            classify_response(Err(ureq::Error::Timeout(ureq::Timeout::RecvResponse))),
+            Err(RequestFailure::Timeout(ureq::Timeout::RecvResponse))
+        ));
+
+        let error = OciTransport::new(true)
+            .timeout_error("http://registry.example/v2/", ureq::Timeout::RecvResponse);
+        assert_eq!(error.code(), "ARTIFACT_TRANSFER_TIMEOUT");
+        assert!(error
+            .hint()
+            .is_some_and(|hint| hint.contains("--response-timeout")));
+
+        let transfer = OciTransferPolicy {
+            overall_timeout: Some(Duration::from_secs(60)),
+            ..transfer
+        };
+        let (phase, hint) = request_timeout_decision(ureq::Timeout::Global, &transfer);
+        assert_eq!(phase, "overall");
+        assert!(hint.contains("--overall-timeout"));
+    }
 
     #[test]
     fn base64_known_vectors() {
