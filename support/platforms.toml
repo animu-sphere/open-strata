@@ -119,5 +119,5 @@ support = { linux_x86_64 = "experimental", macos_arm64 = "experimental", macos_x
 [[features]]
 id = "dcc_integration"
 label = "DCC host adapters and matrix"
-note = "Planned (Phase 10 second half / v0.22.0); headless probes and pinned host matrix cells are not implemented on any platform."
+note = "Planned (Phase 10 second half / v0.23.0); headless probes and pinned host matrix cells are not implemented on any platform."
 support = { linux_x86_64 = "unsupported", macos_arm64 = "unsupported", macos_x86_64 = "unsupported", windows_x86_64 = "unsupported" }

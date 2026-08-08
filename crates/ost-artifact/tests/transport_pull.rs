@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -19,7 +20,7 @@ use ost_artifact::transport::oci::{
 };
 use ost_artifact::{
     pull, ArtifactKind, ArtifactSource, ArtifactStore, ArtifactTransport, FileTransport,
-    OciTransport, PullPolicy, RemoteReference,
+    OciTransferPolicy, OciTransport, PullPolicy, RemoteReference,
 };
 use ost_core::digest;
 
@@ -33,6 +34,9 @@ struct Route {
     content_type: &'static str,
     body: Vec<u8>,
     extra_headers: String,
+    body_start_delay: Duration,
+    chunk_delay: Duration,
+    chunk_size: usize,
 }
 
 struct MockRegistry {
@@ -78,6 +82,9 @@ impl MockRegistry {
                 content_type,
                 body,
                 extra_headers: String::new(),
+                body_start_delay: Duration::ZERO,
+                chunk_delay: Duration::ZERO,
+                chunk_size: usize::MAX,
             },
         );
     }
@@ -90,8 +97,26 @@ impl MockRegistry {
                 content_type: "application/json",
                 body: b"{}".to_vec(),
                 extra_headers: format!("Location: {location}\r\n"),
+                body_start_delay: Duration::ZERO,
+                chunk_delay: Duration::ZERO,
+                chunk_size: usize::MAX,
             },
         );
+    }
+
+    fn stream_body(&self, path: &str, chunk_size: usize, chunk_delay: Duration) {
+        let mut routes = self.routes.lock().unwrap();
+        let route = routes.get_mut(path).expect("registered route");
+        route.chunk_size = chunk_size.max(1);
+        route.chunk_delay = chunk_delay;
+    }
+
+    fn stall_body(&self, path: &str, delay: Duration) {
+        let mut routes = self.routes.lock().unwrap();
+        routes
+            .get_mut(path)
+            .expect("registered route")
+            .body_start_delay = delay;
     }
 
     fn require_token(&self, token: &str) {
@@ -179,12 +204,15 @@ fn handle_connection(
     match routes.lock().unwrap().get(path) {
         Some(route) => {
             let route = route.clone();
-            respond(
+            respond_slow(
                 &mut stream,
                 route.status,
                 route.content_type,
                 &route.body,
                 &route.extra_headers,
+                route.body_start_delay,
+                route.chunk_delay,
+                route.chunk_size,
             )
         }
         None => respond(&mut stream, 404, "application/json", b"{}", ""),
@@ -198,6 +226,29 @@ fn respond(
     body: &[u8],
     extra_headers: &str,
 ) -> std::io::Result<()> {
+    respond_slow(
+        stream,
+        status,
+        content_type,
+        body,
+        extra_headers,
+        Duration::ZERO,
+        Duration::ZERO,
+        usize::MAX,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn respond_slow(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    extra_headers: &str,
+    body_start_delay: Duration,
+    chunk_delay: Duration,
+    chunk_size: usize,
+) -> std::io::Result<()> {
     let reason = match status {
         200 => "OK",
         401 => "Unauthorized",
@@ -209,7 +260,13 @@ fn respond(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n{extra_headers}\r\n",
         body.len()
     )?;
-    stream.write_all(body)?;
+    stream.flush()?;
+    std::thread::sleep(body_start_delay);
+    for chunk in body.chunks(chunk_size.max(1)) {
+        stream.write_all(chunk)?;
+        stream.flush()?;
+        std::thread::sleep(chunk_delay);
+    }
     stream.flush()
 }
 
@@ -228,6 +285,18 @@ struct Bundle {
     oci_manifest: Vec<u8>,
     oci_digest: String,
     artifact_digest: String,
+}
+
+fn pseudo_random_bytes(len: usize) -> Vec<u8> {
+    let mut state = 0x1234_5678_u32;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect()
 }
 
 /// A plugin-bundle artifact with one payload file, plus its OCI bundle.
@@ -513,6 +582,127 @@ fn digest_pinned_pull_imports_and_verifies() {
         .collect();
     assert!(leftovers.is_empty(), "scratch dirs must be cleaned up");
 
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn advancing_blob_can_outlast_the_body_idle_budget() {
+    let registry = MockRegistry::start();
+    let content = pseudo_random_bytes(64 * 1024);
+    let bundle = make_bundle("slow-progress", &content);
+    registry.register("fixtures/slow-progress", "v1", &bundle);
+    let archive_path = format!(
+        "/v2/fixtures/slow-progress/blobs/{}",
+        digest::sha256_hex(&bundle.archive)
+    );
+    registry.stream_body(&archive_path, 8 * 1024, Duration::from_millis(30));
+
+    let root = tmp_root("pull-slow-progress");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::with_transfer_policy(
+        true,
+        OciTransferPolicy {
+            connect_timeout: Some(Duration::from_secs(1)),
+            response_timeout: Some(Duration::from_secs(1)),
+            body_idle_timeout: Some(Duration::from_millis(100)),
+            overall_timeout: None,
+        },
+    );
+    let reference = oci_ref(
+        &registry,
+        "fixtures/slow-progress",
+        &format!("@{}", bundle.oci_digest),
+    );
+
+    let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
+    assert_eq!(evidence.record.digest, bundle.artifact_digest);
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn optional_overall_budget_stops_an_active_blob() {
+    let registry = MockRegistry::start();
+    let content = pseudo_random_bytes(256 * 1024);
+    let bundle = make_bundle("overall-budget", &content);
+    registry.register("fixtures/overall-budget", "v1", &bundle);
+    let archive_path = format!(
+        "/v2/fixtures/overall-budget/blobs/{}",
+        digest::sha256_hex(&bundle.archive)
+    );
+    registry.stream_body(&archive_path, 16 * 1024, Duration::from_millis(30));
+
+    let root = tmp_root("pull-overall-budget");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::with_transfer_policy(
+        true,
+        OciTransferPolicy {
+            connect_timeout: Some(Duration::from_secs(1)),
+            response_timeout: Some(Duration::from_secs(1)),
+            body_idle_timeout: Some(Duration::from_millis(100)),
+            overall_timeout: Some(Duration::from_millis(150)),
+        },
+    );
+    let reference = oci_ref(
+        &registry,
+        "fixtures/overall-budget",
+        &format!("@{}", bundle.oci_digest),
+    );
+
+    let error = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap_err();
+    assert_eq!(error.code(), "ARTIFACT_TRANSFER_TIMEOUT");
+    assert!(
+        error
+            .hint()
+            .is_some_and(|hint| hint.contains("--overall-timeout")),
+        "overall timeout decision: {:?}",
+        error.hint()
+    );
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn stalled_blob_reports_transfer_timeout_and_received_bytes() {
+    let registry = MockRegistry::start();
+    let bundle = make_bundle("stalled", b"plugin bytes");
+    registry.register("fixtures/stalled", "v1", &bundle);
+    let archive_path = format!(
+        "/v2/fixtures/stalled/blobs/{}",
+        digest::sha256_hex(&bundle.archive)
+    );
+    registry.stall_body(&archive_path, Duration::from_millis(300));
+
+    let root = tmp_root("pull-stalled");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::with_transfer_policy(
+        true,
+        OciTransferPolicy {
+            connect_timeout: Some(Duration::from_secs(1)),
+            response_timeout: Some(Duration::from_secs(1)),
+            body_idle_timeout: Some(Duration::from_millis(100)),
+            overall_timeout: None,
+        },
+    );
+    let reference = oci_ref(
+        &registry,
+        "fixtures/stalled",
+        &format!("@{}", bundle.oci_digest),
+    );
+
+    let error = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap_err();
+    assert_eq!(error.code(), "ARTIFACT_TRANSFER_TIMEOUT");
+    let detail = error.to_string();
+    assert!(detail.contains("0/"), "received-byte evidence: {detail}");
+    assert!(
+        detail.contains(&bundle.artifact_digest),
+        "layer digest: {detail}"
+    );
+    assert!(
+        error
+            .hint()
+            .is_some_and(|hint| hint.contains("--body-idle-timeout")),
+        "direct next action: {:?}",
+        error.hint()
+    );
     std::fs::remove_dir_all(root.as_std_path()).ok();
 }
 
