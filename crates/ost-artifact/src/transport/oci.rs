@@ -585,6 +585,11 @@ impl OciTransport {
                 .strip_prefix("sha256:")
                 .unwrap_or(&layer.digest)
         ));
+        // The digest-keyed partial is shared by every process using this store.
+        // Hold one kernel-backed lease across the complete inspect → request →
+        // write → hash → move lifecycle so concurrent pulls cannot append,
+        // truncate, rename, or scavenge each other's bytes.
+        let _lease = acquire_partial_lease(&partial)?;
 
         let max_attempts = self.transfer.max_attempts.max(1);
         for attempt in 1..=max_attempts {
@@ -1379,11 +1384,22 @@ fn scavenge_partial_blobs(directory: &Utf8Path, max_age: Duration) -> Result<()>
         .map_err(|error| Error::io(directory.to_string(), error))?;
     for entry in entries {
         let entry = entry.map_err(|error| Error::io(directory.to_string(), error))?;
-        let path = entry.path();
-        let metadata = match entry.metadata() {
+        let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
+            continue;
+        };
+        if path.extension() != Some("part") {
+            continue;
+        }
+        // A locked partial is active in this or another process. Never wait in
+        // the scavenger: the owning pull will refresh or move it, and a future
+        // pass can reconsider it after the lease is released.
+        let Some(_lease) = try_acquire_partial_lease(&path)? else {
+            continue;
+        };
+        let metadata = match std::fs::metadata(path.as_std_path()) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(Error::io(path.display().to_string(), error)),
+            Err(error) => return Err(Error::io(path.to_string(), error)),
         };
         if !metadata.is_file() {
             continue;
@@ -1394,14 +1410,105 @@ fn scavenge_partial_blobs(directory: &Utf8Path, max_age: Duration) -> Result<()>
             .and_then(|modified| now.duration_since(modified).ok())
             .is_some_and(|age| age > max_age);
         if stale {
-            match std::fs::remove_file(&path) {
+            match std::fs::remove_file(path.as_std_path()) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(Error::io(path.display().to_string(), error)),
+                Err(error) => return Err(Error::io(path.to_string(), error)),
             }
         }
     }
     Ok(())
+}
+
+/// Held kernel-backed lease for one digest-keyed partial. Dropping the file
+/// releases the lease even when a pull exits through an error or is killed.
+struct PartialLease {
+    _file: File,
+}
+
+fn partial_lock_path(partial: &Utf8Path) -> Utf8PathBuf {
+    partial.with_extension("lock")
+}
+
+/// Wait until the current owner finishes. A blob transfer has no default total
+/// deadline, so the lease must not impose a shorter hidden one; process death
+/// releases the kernel lock and Ctrl-C still interrupts the waiting process.
+fn acquire_partial_lease(partial: &Utf8Path) -> Result<PartialLease> {
+    loop {
+        if let Some(lease) = try_acquire_partial_lease(partial)? {
+            return Ok(lease);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Non-blocking lease acquisition used both by pull and by the scavenger.
+fn try_acquire_partial_lease(partial: &Utf8Path) -> Result<Option<PartialLease>> {
+    try_lock_file(&partial_lock_path(partial))
+        .map(|file| file.map(|file| PartialLease { _file: file }))
+}
+
+/// Try to take an exclusive advisory lock. `Ok(None)` means another process
+/// owns it. This mirrors the build lease's dependency-free platform contract.
+#[cfg(unix)]
+fn try_lock_file(path: &Utf8Path) -> Result<Option<File>> {
+    use std::os::unix::io::AsRawFd;
+
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path.as_std_path())
+        .map_err(|error| Error::io(path.to_string(), error))?;
+    // SAFETY: `file` owns this descriptor and outlives the call.
+    let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+    if rc == 0 {
+        return Ok(Some(file));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        Ok(None)
+    } else {
+        Err(Error::io(path.to_string(), error))
+    }
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn flock(fd: std::os::raw::c_int, operation: std::os::raw::c_int) -> std::os::raw::c_int;
+}
+
+#[cfg(windows)]
+fn try_lock_file(path: &Utf8Path) -> Result<Option<File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+
+    match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(FILE_SHARE_READ)
+        .open(path.as_std_path())
+    {
+        Ok(file) => Ok(Some(file)),
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(ERROR_SHARING_VIOLATION) | Some(ERROR_LOCK_VIOLATION)
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(Error::io(path.to_string(), error)),
+    }
 }
 
 fn validate_content_range(
@@ -1894,6 +2001,49 @@ fn read_capped(reader: &mut impl Read, cap: u64) -> std::io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn partial_test_dir(tag: &str) -> Utf8PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("ost-partial-{tag}-{}-{nanos}", std::process::id()));
+        let dir = Utf8PathBuf::from_path_buf(dir).unwrap();
+        std::fs::create_dir_all(dir.as_std_path()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn partial_lease_is_exclusive_and_released_on_drop() {
+        let dir = partial_test_dir("lease");
+        let partial = dir.join(format!("{}.part", "a".repeat(64)));
+
+        let first = try_acquire_partial_lease(&partial).unwrap().unwrap();
+        assert!(try_acquire_partial_lease(&partial).unwrap().is_none());
+        drop(first);
+
+        let second = try_acquire_partial_lease(&partial).unwrap().unwrap();
+        drop(second);
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn partial_scavenger_skips_a_held_lease() {
+        let dir = partial_test_dir("scavenge-lease");
+        let partial = dir.join(format!("{}.part", "b".repeat(64)));
+        std::fs::write(partial.as_std_path(), b"in progress").unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+
+        let lease = try_acquire_partial_lease(&partial).unwrap().unwrap();
+        scavenge_partial_blobs(&dir, Duration::ZERO).unwrap();
+        assert!(partial.as_std_path().is_file());
+
+        drop(lease);
+        scavenge_partial_blobs(&dir, Duration::ZERO).unwrap();
+        assert!(!partial.as_std_path().exists());
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
 
     #[test]
     fn request_timeouts_name_the_phase_and_matching_cli_option() {

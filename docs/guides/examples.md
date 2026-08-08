@@ -468,7 +468,9 @@ store and resumed with `Range` on the next attempt or a later invocation.
 `ost` accepts resumed bytes only after validating `Content-Range`, descriptor
 size, and the final SHA-256 digest; a registry that ignores or rejects the range
 causes a safe full restart. Partials are never listed by `artifact list|show`
-and are scavenged after seven days. Tune the bounded retry with
+and are scavenged after seven days. Pulls sharing one artifact store serialize
+access to each digest's partial, so they cannot truncate or append each other's
+bytes. Tune the bounded retry with
 `--max-attempts` (1–16) and `--retry-backoff` (initial milliseconds); the four
 phase timeout controls remain independent.
 
