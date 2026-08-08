@@ -26,8 +26,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Read;
-use std::time::Duration;
+use std::io::{Read, Write};
+use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -93,6 +93,7 @@ const ENV_PASSWORD: &str = "OST_REGISTRY_PASSWORD";
 /// Read-only OCI registry backend.
 pub struct OciTransport {
     agent: ureq::Agent,
+    transfer: OciTransferPolicy,
     /// Use plain `http://` instead of `https://` — fixture registries and
     /// air-gapped mirrors only, never the public internet.
     plain_http: bool,
@@ -105,26 +106,59 @@ pub struct OciTransport {
     auth_mode: RefCell<&'static str>,
 }
 
+/// Timeouts for one OCI registry HTTP exchange.
+///
+/// The body timeout is an *idle* timeout: it is renewed whenever bytes arrive,
+/// so a large, continuously advancing layer is not constrained by the response
+/// header budget. `overall_timeout` is the optional end-to-end ceiling for one
+/// manifest or blob request (DNS through the final body byte).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OciTransferPolicy {
+    pub connect_timeout: Option<Duration>,
+    pub response_timeout: Option<Duration>,
+    pub body_idle_timeout: Option<Duration>,
+    pub overall_timeout: Option<Duration>,
+}
+
+impl Default for OciTransferPolicy {
+    fn default() -> Self {
+        Self {
+            connect_timeout: Some(Duration::from_secs(30)),
+            response_timeout: Some(Duration::from_secs(120)),
+            body_idle_timeout: Some(Duration::from_secs(30)),
+            overall_timeout: None,
+        }
+    }
+}
+
 impl OciTransport {
     pub fn new(plain_http: bool) -> OciTransport {
+        Self::with_transfer_policy(plain_http, OciTransferPolicy::default())
+    }
+
+    pub fn with_transfer_policy(plain_http: bool, transfer: OciTransferPolicy) -> OciTransport {
         // ureq 3.x: build a Config, then an Agent. `http_status_as_error(false)`
         // hands non-2xx responses back as `Ok` so this transport keeps
         // classifying status codes itself (it needs the 401 body's
         // `WWW-Authenticate` for the token exchange). `max_redirects(0)` +
         // `max_redirects_will_error(false)` returns the 3xx response instead of
         // erroring, so blob redirects are still followed manually (see
-        // get_following_redirects). Only a connect and response-header timeout
-        // are bounded — a blob body may be large, so its read is left unbounded.
+        // get_following_redirects). Blob bodies use an idle timeout, not a
+        // total-duration timeout: a continuously advancing large transfer may
+        // run for as long as it needs unless an overall ceiling is requested.
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .max_redirects(0)
             .max_redirects_will_error(false)
-            .timeout_connect(Some(Duration::from_secs(30)))
-            .timeout_recv_response(Some(Duration::from_secs(120)))
+            .timeout_connect(transfer.connect_timeout)
+            .timeout_recv_response(transfer.response_timeout)
+            .timeout_recv_body(transfer.body_idle_timeout)
+            .timeout_global(transfer.overall_timeout)
             .user_agent(format!("ost/{}", env!("CARGO_PKG_VERSION")))
             .build();
         OciTransport {
             agent: ureq::Agent::new_with_config(config),
+            transfer,
             plain_http,
             tokens: RefCell::new(HashMap::new()),
             manifests: RefCell::new(HashMap::new()),
@@ -465,6 +499,7 @@ impl OciTransport {
         layer: &Layer,
         dest: &Utf8Path,
     ) -> Result<()> {
+        let started = Instant::now();
         let url = format!(
             "{}/v2/{}/blobs/{}",
             self.base_url(&reference.registry),
@@ -477,10 +512,46 @@ impl OciTransport {
 
         let file = std::fs::File::create(dest.as_std_path())
             .map_err(|e| Error::io(dest.to_string(), e))?;
-        let mut writer = std::io::BufWriter::new(file);
-        let (actual, size) =
-            digest::sha256_hex_copy(&mut resp.into_body().into_reader(), &mut writer)
-                .map_err(|e| Error::io(dest.to_string(), e))?;
+        let mut writer = CountingWriter::new(std::io::BufWriter::new(file));
+        let body = resp.into_body().into_reader();
+        let mut reader = DeadlineReader::new(body, started, self.transfer.overall_timeout);
+        let copied = digest::sha256_hex_copy(&mut reader, &mut writer);
+        let received = writer.bytes_written();
+        let (actual, size) = match copied {
+            Ok(value) => value,
+            Err(error) => {
+                drop(writer);
+                let _ = std::fs::remove_file(dest.as_std_path());
+                let detail = error.to_string();
+                let timed_out = detail.to_ascii_lowercase().contains("timeout")
+                    || detail.to_ascii_lowercase().contains("timed out");
+                let code = if timed_out {
+                    "ARTIFACT_TRANSFER_TIMEOUT"
+                } else {
+                    "ARTIFACT_TRANSPORT_FAILED"
+                };
+                let decision = if timed_out {
+                    timeout_decision(&detail, &self.transfer)
+                } else {
+                    "retry the digest-pinned pull; the incomplete layer was discarded".to_string()
+                };
+                return Err(
+                    Error::coded(
+                        code,
+                        Category::ExternalTool,
+                        format!(
+                            "blob {} ('{}') from '{}' stopped after {received}/{} bytes in {:.1}s: {detail}",
+                            layer.digest,
+                            layer.title.as_deref().unwrap_or("untitled layer"),
+                            reference.locator(),
+                            layer.size,
+                            started.elapsed().as_secs_f64(),
+                        ),
+                    )
+                    .with_hint(decision),
+                );
+            }
+        };
         drop(writer);
         if actual != layer.digest || size != layer.size {
             let _ = std::fs::remove_file(dest.as_std_path());
@@ -1021,6 +1092,91 @@ impl ArtifactTransport for OciTransport {
 enum RequestFailure {
     Status(u16, Box<HttpResponse>),
     Transport(String),
+}
+
+struct CountingWriter<W> {
+    inner: W,
+    bytes: u64,
+}
+
+struct DeadlineReader<R> {
+    inner: R,
+    started: Instant,
+    deadline: Option<Duration>,
+}
+
+impl<R> DeadlineReader<R> {
+    fn new(inner: R, started: Instant, deadline: Option<Duration>) -> Self {
+        Self {
+            inner,
+            started,
+            deadline,
+        }
+    }
+
+    fn check_deadline(&self) -> std::io::Result<()> {
+        if self
+            .deadline
+            .is_some_and(|deadline| self.started.elapsed() >= deadline)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "overall transfer timeout",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<R: Read> Read for DeadlineReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.check_deadline()?;
+        let read = self.inner.read(buf)?;
+        self.check_deadline()?;
+        Ok(read)
+    }
+}
+
+impl<W> CountingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self { inner, bytes: 0 }
+    }
+
+    fn bytes_written(&self) -> u64 {
+        self.bytes
+    }
+}
+
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.bytes += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn display_timeout(timeout: Option<Duration>) -> String {
+    timeout
+        .map(|duration| format!("{:.1}s", duration.as_secs_f64()))
+        .unwrap_or_else(|| "disabled".to_string())
+}
+
+fn timeout_decision(detail: &str, transfer: &OciTransferPolicy) -> String {
+    let detail = detail.to_ascii_lowercase();
+    if detail.contains("global") || detail.contains("overall") {
+        return format!(
+            "overall timeout {}; increase --overall-timeout or set it to 0 to rely on the idle timeout",
+            display_timeout(transfer.overall_timeout)
+        );
+    }
+    format!(
+        "body idle timeout {}; increase --body-idle-timeout or retry",
+        display_timeout(transfer.body_idle_timeout)
+    )
 }
 
 /// Map a ureq call outcome onto [`RequestFailure`]. The agent runs with

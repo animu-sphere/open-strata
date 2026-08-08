@@ -37,6 +37,8 @@ pub use record::{
 pub use reference::{FileReference, OciReference, RemoteReference};
 pub use store::{extract_archive, ArtifactStore, ImportOutcome, Index, VerifyReport, INDEX_FILE};
 pub use transport::{
-    file::FileTransport, oci::OciTransport, pull, push, ArtifactTransport, PullEvidence,
-    PullPolicy, PushOutcome, PushSource, ResolvedRemote,
+    file::FileTransport,
+    oci::{OciTransferPolicy, OciTransport},
+    pull, push, ArtifactTransport, PullEvidence, PullPolicy, PushOutcome, PushSource,
+    ResolvedRemote,
 };

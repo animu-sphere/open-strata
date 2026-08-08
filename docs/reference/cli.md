@@ -133,10 +133,14 @@ Pull a digest-pinned artifact from a remote source, verify it, and import it int
 
 | Option | Description |
 | --- | --- |
+| `--body-idle-timeout <SECONDS>` | Maximum idle time between response-body bytes; 0 disables it |
+| `--connect-timeout <SECONDS>` | Connection timeout in seconds; 0 disables it |
 | `--expect-artifact <sha256:<hex>>` | Require the pulled OpenStrata artifact digest to equal this pin (the support line / lockfile contract) |
+| `--overall-timeout <SECONDS>` | End-to-end timeout for each HTTP exchange; 0 disables it |
 | `--plain-http` | Use plain http:// instead of https:// (fixture registries and air-gapped mirrors only) |
 | `--require-kind <KIND>` | Require the artifact kind: runtime \| plugin \| product \| package |
 | `--require-target <TARGET>` | Require the artifact's target id to match exactly |
+| `--response-timeout <SECONDS>` | Response-header timeout in seconds; 0 disables it |
 
 #### `ost artifact push`
 

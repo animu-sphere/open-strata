@@ -21,12 +21,13 @@
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
+use std::time::Duration;
 
 use ost_artifact::{
     verify_evidence_digest, verify_provenance, verify_sbom, ArtifactKind, ArtifactPolicy,
     ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport, EvidenceDigest,
-    FileTransport, OciTransport, PublisherIdentity, PullEvidence, PullPolicy, PushOutcome,
-    RemoteReference, TrustLevel, VerifyReport,
+    FileTransport, OciTransferPolicy, OciTransport, PublisherIdentity, PullEvidence, PullPolicy,
+    PushOutcome, RemoteReference, TrustLevel, VerifyReport,
 };
 use ost_core::{Error, Result};
 
@@ -147,6 +148,18 @@ pub enum ArtifactCmd {
         /// air-gapped mirrors only).
         #[arg(long)]
         plain_http: bool,
+        /// Connection timeout in seconds; 0 disables it.
+        #[arg(long, default_value_t = 30, value_name = "SECONDS")]
+        connect_timeout: u64,
+        /// Response-header timeout in seconds; 0 disables it.
+        #[arg(long, default_value_t = 120, value_name = "SECONDS")]
+        response_timeout: u64,
+        /// Maximum idle time between response-body bytes; 0 disables it.
+        #[arg(long, default_value_t = 30, value_name = "SECONDS")]
+        body_idle_timeout: u64,
+        /// End-to-end timeout for each HTTP exchange; 0 disables it.
+        #[arg(long, default_value_t = 0, value_name = "SECONDS")]
+        overall_timeout: u64,
     },
 }
 
@@ -204,6 +217,10 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
             require_kind,
             require_target,
             plain_http,
+            connect_timeout,
+            response_timeout,
+            body_idle_timeout,
+            overall_timeout,
         } => {
             let policy = PullPolicy {
                 expected_artifact_digest: expect_artifact,
@@ -219,7 +236,13 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
                     .transpose()?,
                 require_target,
             };
-            pull_remote(&store, &reference, &policy, plain_http, fmt)
+            let transfer = OciTransferPolicy {
+                connect_timeout: timeout(connect_timeout),
+                response_timeout: timeout(response_timeout),
+                body_idle_timeout: timeout(body_idle_timeout),
+                overall_timeout: timeout(overall_timeout),
+            };
+            pull_remote(&store, &reference, &policy, plain_http, transfer, fmt)
         }
     }
 }
@@ -452,10 +475,16 @@ fn pull_remote(
     reference: &str,
     policy: &PullPolicy,
     plain_http: bool,
+    transfer: OciTransferPolicy,
     fmt: Format,
 ) -> Result<()> {
     let parsed = RemoteReference::parse(reference)?;
-    let transport = transport_for(&parsed, plain_http);
+    let transport: Box<dyn ArtifactTransport> = match &parsed {
+        RemoteReference::Oci(_) => {
+            Box::new(OciTransport::with_transfer_policy(plain_http, transfer))
+        }
+        RemoteReference::File(_) => Box::new(FileTransport::new()),
+    };
     let evidence = ost_artifact::pull(transport.as_ref(), &parsed, store, policy)?;
     if fmt.is_json() {
         output::success(&pull_evidence_json(store, &evidence));
@@ -483,6 +512,10 @@ fn pull_remote(
         evidence.import_status, evidence.import_path
     );
     Ok(())
+}
+
+fn timeout(seconds: u64) -> Option<Duration> {
+    (seconds > 0).then(|| Duration::from_secs(seconds))
 }
 
 /// Pull evidence as JSON (transport plan, "Minimum JSON output").
