@@ -7,6 +7,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG VULKAN_HEADERS_VERSION=v1.4.350
 ARG VULKAN_UTILITY_LIBRARIES_VERSION=v1.4.350
 ARG VMA_VERSION=v3.4.0
+ARG PYTHON_VERSION=3.13.14
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       build-essential ca-certificates cmake curl git ninja-build pkg-config \
@@ -42,7 +43,9 @@ ENV PATH=/opt/py313/bin:/root/.cargo/bin:${PATH}
 ENV VULKAN_SDK=/opt/vulkan-sdk
 RUN python3.13 -m venv /opt/py313 \
     && python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir Jinja2 PyOpenGL PySide6
+    && python -m pip install --no-cache-dir Jinja2 PyOpenGL PySide6 \
+    && test "$(python -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" \
+      = "${PYTHON_VERSION}"
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --profile minimal --default-toolchain 1.96.0

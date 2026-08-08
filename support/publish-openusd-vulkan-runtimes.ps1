@@ -1,3 +1,5 @@
+#requires -Version 7.0
+
 [CmdletBinding()]
 param(
     [ValidateSet('26.05', '26.08')]
@@ -24,6 +26,9 @@ param(
     [Alias('Python')]
     [string] $PythonExecutable = 'python',
 
+    [ValidatePattern('^3\.13\.\d+$')]
+    [string] $ExpectedPythonVersion = '3.13.14',
+
     [switch] $Publish,
 
     [string] $PublishFrom,
@@ -43,6 +48,46 @@ $script:Git = (Get-Command git -ErrorAction Stop).Source
 $script:ResolvedVmaInclude = $null
 $script:BuildPython = $null
 $script:PythonVersion = $null
+
+function Write-Utf8NoBomFile {
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [Parameter(Mandatory)][AllowEmptyString()][string] $Content,
+        [switch] $Atomic
+    )
+
+    $encoding = [Text.UTF8Encoding]::new($false)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not $Atomic) {
+        [IO.File]::WriteAllText($fullPath, $Content, $encoding)
+        return
+    }
+
+    $parent = [IO.Path]::GetDirectoryName($fullPath)
+    $leaf = [IO.Path]::GetFileName($fullPath)
+    $temporary = Join-Path $parent ".$leaf.tmp-$PID-$([Guid]::NewGuid().ToString('N'))"
+    try {
+        [IO.File]::WriteAllText($temporary, $Content, $encoding)
+        [IO.File]::Move($temporary, $fullPath, $true)
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary) {
+            Remove-Item -LiteralPath $temporary -Force
+        }
+    }
+}
+
+function Write-JsonFile {
+    param(
+        [Parameter(Mandatory)][object] $Value,
+        [Parameter(Mandatory)][string] $Path,
+        [ValidateRange(2, 100)][int] $Depth = 20,
+        [switch] $Atomic
+    )
+
+    $json = $Value | ConvertTo-Json -Depth $Depth
+    Write-Utf8NoBomFile -Path $Path -Content ($json + [Environment]::NewLine) -Atomic:$Atomic
+}
 
 function Invoke-Checked {
     param(
@@ -124,12 +169,26 @@ function Assert-CommonPrerequisites {
         (Get-Command $PythonExecutable -ErrorAction Stop).Source
     }
     $pythonVersion = (& $pythonCommand -c 'import sys; print(".".join(map(str, sys.version_info[:3])))') -join ''
-    if ($LASTEXITCODE -ne 0 -or $pythonVersion -notmatch '^3\.13\.') {
-        throw "Python 3.13 is required; found '$pythonVersion'"
+    if ($LASTEXITCODE -ne 0 -or $pythonVersion -ne $ExpectedPythonVersion) {
+        throw "Python $ExpectedPythonVersion is required; found '$pythonVersion'"
     }
     $script:BuildPython = $pythonCommand
     $script:PythonVersion = $pythonVersion
     $env:PATH = "$(Split-Path -Parent $pythonCommand);$env:PATH"
+}
+
+function Assert-CleanRepository {
+    $status = @(& $script:Git -C $script:RepositoryRoot status --porcelain --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'could not inspect the OpenStrata producer checkout'
+    }
+    if ($status.Count -gt 0) {
+        throw @"
+The OpenStrata producer checkout must be clean before a build.
+Uncommitted content would make builder provenance disagree with the code that ran:
+$($status -join [Environment]::NewLine)
+"@
+    }
 }
 
 function Assert-WindowsPrerequisites {
@@ -249,7 +308,7 @@ function New-BuildMetadata {
             }
         }
     }
-    $metadata | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Path -Encoding utf8
+    Write-JsonFile -Value $metadata -Path $Path -Depth 6
 }
 
 function Build-WindowsRuntime {
@@ -297,7 +356,9 @@ function Build-WindowsRuntime {
     if ($LASTEXITCODE -ne 0) {
         throw "OpenUSD feature validation failed for $slug"
     }
-    $validation | Set-Content -LiteralPath $validationPath -Encoding utf8
+    Write-Utf8NoBomFile -Path $validationPath -Content (
+        ($validation -join [Environment]::NewLine) + [Environment]::NewLine
+    )
 
     $sourceRevision = (& $script:Git -C $source rev-parse HEAD) -join ''
     if ($LASTEXITCODE -ne 0) {
@@ -316,8 +377,7 @@ function Build-WindowsRuntime {
         '--jobs', "$Jobs",
         '--json'
     )
-    $export | ConvertTo-Json -Depth 20 |
-        Set-Content -LiteralPath (Join-Path $output 'export.json') -Encoding utf8
+    Write-JsonFile -Value $export -Path (Join-Path $output 'export.json')
 
     return [pscustomobject][ordered]@{
         version = $OpenUsdVersion
@@ -327,6 +387,7 @@ function Build-WindowsRuntime {
         runtime_root = $runtimeRoot
         dist = $dist
         store_home = $ostHome
+        python_version = $script:PythonVersion
         artifact_digest = $export.data.digest
         oci_digest = $null
     }
@@ -342,6 +403,7 @@ function Build-LinuxImage {
         'docker', 'build',
         '--file', $dockerfile,
         '--tag', $image,
+        '--build-arg', "PYTHON_VERSION=$ExpectedPythonVersion",
         $repo
     )
     return $image
@@ -371,7 +433,7 @@ function Build-LinuxRuntime {
         '--volume', "${runRootWsl}:/out",
         $Image,
         'bash', '/src/open-strata/support/build-openusd-vulkan-linux.sh',
-        $OpenUsdVersion, "$Jobs", $slug, $OpenStrataRevision
+        $OpenUsdVersion, "$Jobs", $slug, $OpenStrataRevision, $ExpectedPythonVersion
     )
 
     $exportPath = Join-Path $output 'export.json'
@@ -391,6 +453,7 @@ function Build-LinuxRuntime {
         runtime_root = $null
         dist = $dist
         store_home = $publisherHome
+        python_version = $metadata.builder.identity.python
         artifact_digest = $export.data.digest
         oci_digest = $null
     }
@@ -405,7 +468,13 @@ function Assert-PublishCredentials {
 function Publish-Results {
     param(
         [Parameter(Mandatory)]
-        [object[]] $Results
+        [object[]] $Results,
+
+        [Parameter(Mandatory)]
+        [object] $ResultsDocument,
+
+        [Parameter(Mandatory)]
+        [string] $ResultsPath
     )
 
     Assert-PublishCredentials
@@ -417,11 +486,16 @@ function Publish-Results {
         $push = Invoke-OstJson @(
             'artifact', 'push', $result.artifact_digest, $result.tag, '--json'
         )
+        $result.oci_digest = $push.data.oci_digest
+        $ResultsDocument['published_at'] = [DateTime]::UtcNow.ToString('o')
+        # A later tag may fail after this one has already moved. Journal each
+        # successful push so the durable record never lags the public registry.
+        Write-JsonFile -Value $ResultsDocument -Path $ResultsPath -Atomic
+
         $resolved = Invoke-OstJson @('artifact', 'resolve', $result.tag, '--json')
         if ($push.data.oci_digest -ne $resolved.data.resolved.oci_digest) {
             throw "tag resolution mismatch after publishing $($result.tag)"
         }
-        $result.oci_digest = $push.data.oci_digest
     }
 }
 
@@ -433,9 +507,11 @@ function Verify-PublishedResults {
 
     $savedUser = $env:OST_REGISTRY_USER
     $savedPassword = $env:OST_REGISTRY_PASSWORD
+    $savedToken = $env:OST_REGISTRY_TOKEN
     try {
         Remove-Item Env:OST_REGISTRY_USER -ErrorAction SilentlyContinue
         Remove-Item Env:OST_REGISTRY_PASSWORD -ErrorAction SilentlyContinue
+        Remove-Item Env:OST_REGISTRY_TOKEN -ErrorAction SilentlyContinue
         foreach ($result in $Results) {
             if (-not $result.oci_digest) {
                 throw "no OCI digest is recorded for $($result.tag)"
@@ -459,36 +535,38 @@ function Verify-PublishedResults {
         if ($null -ne $savedPassword) {
             $env:OST_REGISTRY_PASSWORD = $savedPassword
         }
+        if ($null -ne $savedToken) {
+            $env:OST_REGISTRY_TOKEN = $savedToken
+        }
     }
 }
 
 Assert-CommonPrerequisites
+if ($PublishFrom) {
+    $sourceDocument = Get-Content -LiteralPath $PublishFrom -Raw | ConvertFrom-Json
+    $results = @($sourceDocument.runtimes)
+    $resultsDocument = [ordered]@{
+        openstrata_revision = $sourceDocument.openstrata_revision
+        created_at = $sourceDocument.created_at
+        published_at = $null
+        options = $sourceDocument.options
+        runtimes = $results
+    }
+    Publish-Results $results $resultsDocument $PublishFrom
+    if ($VerifyPublished) {
+        Verify-PublishedResults $results
+    }
+    Write-JsonFile -Value $resultsDocument -Path $PublishFrom -Atomic
+    Write-Host "Updated publish results: $PublishFrom"
+    return
+}
+
+Assert-CleanRepository
 $openStrataRevision = (& $script:Git -C $script:RepositoryRoot rev-parse HEAD) -join ''
 if ($LASTEXITCODE -ne 0) {
     throw 'could not resolve the OpenStrata revision'
 }
 $openStrataRevision = $openStrataRevision.Trim()
-
-if ($PublishFrom) {
-    $results = @(
-        Get-Content -LiteralPath $PublishFrom -Raw |
-            ConvertFrom-Json |
-            Select-Object -ExpandProperty runtimes
-    )
-    Publish-Results $results
-    if ($VerifyPublished) {
-        Verify-PublishedResults $results
-    }
-    $resultsDocument = [ordered]@{
-        openstrata_revision = $openStrataRevision
-        published_at = [DateTime]::UtcNow.ToString('o')
-        runtimes = $results
-    }
-    $resultsDocument | ConvertTo-Json -Depth 20 |
-        Set-Content -LiteralPath $PublishFrom -Encoding utf8
-    Write-Host "Updated publish results: $PublishFrom"
-    return
-}
 
 $runId = '{0}-{1}' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'), $openStrataRevision.Substring(0, 12)
 $runRoot = Join-Path $OutputRoot $runId
@@ -510,13 +588,6 @@ if ($Platform -contains 'linux') {
     }
 }
 
-if ($Publish) {
-    Publish-Results $results
-}
-if ($VerifyPublished) {
-    Verify-PublishedResults $results
-}
-
 $resultsPath = Join-Path $runRoot 'results.json'
 $builderOptions = [ordered]@{}
 if ($Platform -contains 'windows') {
@@ -527,16 +598,18 @@ if ($Platform -contains 'windows') {
     }
 }
 if ($Platform -contains 'linux') {
+    $linuxResult = $results | Where-Object platform -eq 'linux' | Select-Object -First 1
     $builderOptions['linux'] = [ordered]@{
         environment = 'wsl2-docker'
         image = $linuxImage
-        python = '3.13.14'
+        python = $linuxResult.python_version
         vulkan_sdk = 'headers+utility-1.4.350+vma-3.4.0+ubuntu-24.04-loader+shaderc'
     }
 }
 $resultsDocument = [ordered]@{
     openstrata_revision = $openStrataRevision
     created_at = [DateTime]::UtcNow.ToString('o')
+    published_at = $null
     options = [ordered]@{
         versions = $Version
         platforms = $Platform
@@ -550,8 +623,15 @@ $resultsDocument = [ordered]@{
     }
     runtimes = $results
 }
-$resultsDocument | ConvertTo-Json -Depth 20 |
-    Set-Content -LiteralPath $resultsPath -Encoding utf8
+Write-JsonFile -Value $resultsDocument -Path $resultsPath -Atomic
+
+if ($Publish) {
+    Publish-Results $results $resultsDocument $resultsPath
+}
+if ($VerifyPublished) {
+    Verify-PublishedResults $results
+}
+Write-JsonFile -Value $resultsDocument -Path $resultsPath -Atomic
 
 Write-Host "Build results: $resultsPath"
 foreach ($result in $results) {

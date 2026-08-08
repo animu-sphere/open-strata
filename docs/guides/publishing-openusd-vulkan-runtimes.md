@@ -20,7 +20,7 @@ OpenUSD 26.08's Exec examples, while excluding the source and build trees.
 ## Prerequisites
 
 - Windows x86_64 with Visual Studio's C++ workload.
-- Python 3.13 and `ost` 0.21.x on `PATH`.
+- PowerShell 7, Python 3.13.14, and `ost` 0.21.x on `PATH`.
 - A Windows Vulkan SDK with `VULKAN_SDK` set.
 - WSL2 with a working Docker engine for the Linux builds.
 - Enough free space for two OpenUSD source builds per operating system.
@@ -38,7 +38,10 @@ nested MSVC tracking-log paths, so the default is `C:\usd\ovp`.
 
 OpenUSD records an exact Python patch version in `pxrConfig.cmake`. Use
 `-Python` to select the same 3.13 installation consumers use; the animu-sphere
-cy2026 runtimes use Python 3.13.14.
+cy2026 runtimes use Python 3.13.14. The producer refuses a different patch
+version on both platforms rather than publishing misleading compatibility
+metadata. Use `-ExpectedPythonVersion` only when deliberately moving the public
+runtime and its consumers to a new patch release together.
 
 ## Build and export
 
@@ -57,6 +60,10 @@ OpenExec/ExecIr examples.
 Each run writes a new timestamped output directory and a `results.json`
 containing the OpenUSD source revision, OpenStrata producer revision, artifact
 digest, destination tag, and (after publication) OCI digest.
+The producer requires a clean OpenStrata checkout so the recorded revision is
+the code that actually ran. During publication, it atomically checkpoints each
+successful tag move into `results.json`, allowing a partial multi-tag failure to
+be resumed without reconstructing already-published OCI digests.
 
 Select a subset while iterating:
 

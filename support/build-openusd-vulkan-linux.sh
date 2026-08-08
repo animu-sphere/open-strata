@@ -5,6 +5,7 @@ version="${1:?OpenUSD version is required (26.05 or 26.08)}"
 jobs="${2:?parallel job count is required}"
 output_name="${3:?output directory name is required}"
 openstrata_revision="${4:?OpenStrata revision is required}"
+expected_python_version="${5:?expected Python patch version is required}"
 
 case "${version}" in
   26.05|26.08) ;;
@@ -38,6 +39,11 @@ else
 fi
 
 source_revision="$(git -C "${source_dir}" rev-parse HEAD)"
+python_version="$(python -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+if [[ "${python_version}" != "${expected_python_version}" ]]; then
+  echo "Python ${expected_python_version} is required; found ${python_version}" >&2
+  exit 2
+fi
 cat >"${metadata_file}" <<EOF
 {
   "source": {
@@ -51,6 +57,7 @@ cat >"${metadata_file}" <<EOF
       "pipeline": "openusd-vulkan-runtime",
       "git_ref": "${tag}",
       "platform": "linux-x86_64",
+      "python": "${python_version}",
       "vulkan_sdk": "headers+utility-1.4.350+vma-3.4.0+ubuntu-24.04-loader+shaderc"
     }
   }
