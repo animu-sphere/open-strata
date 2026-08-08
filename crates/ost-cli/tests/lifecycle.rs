@@ -2341,6 +2341,85 @@ fn workspace_test_discovers_and_tests_every_bundle() {
 }
 
 #[test]
+fn workspace_graph_uses_explicit_nested_member_globs() {
+    let sb = Sandbox::new("ws-explicit-members");
+    init_and_pull(&sb);
+
+    for (name, directory) in [
+        ("hydra", "adapters/hydra2/hydra"),
+        ("schema", "plugins/schema"),
+    ] {
+        let out = sb.ost(&["plugin", "new", "usd-schema", name, "--dir", directory]);
+        assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+    }
+    let manifest = sb.work_file("openstrata.toml");
+    let source = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        manifest,
+        format!("{source}\n[workspace]\nmembers = [\".\", \"adapters/*/*\", \"plugins/*\"]\n"),
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--graph-only"]);
+    assert!(out.status.success(), "{}", out_text(&out));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["data"]["graph_only"], true);
+    assert_eq!(value["data"]["total"], 2);
+    assert_eq!(value["data"]["graph"]["nodes"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn workspace_graph_fails_when_a_descriptor_is_not_declared() {
+    let sb = Sandbox::new("ws-omitted-member");
+    init_and_pull(&sb);
+
+    for (name, directory) in [("alpha", "plugins/alpha"), ("beta", "adapters/usd/beta")] {
+        let out = sb.ost(&["plugin", "new", "usd-schema", name, "--dir", directory]);
+        assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+    }
+    let manifest = sb.work_file("openstrata.toml");
+    let source = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        manifest,
+        format!("{source}\n[workspace]\nmembers = [\"plugins/*\"]\n"),
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--graph-only"]);
+    assert_eq!(out.status.code(), Some(5), "{}", out_text(&out));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "WORKSPACE_DESCRIPTOR_NOT_DECLARED");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("adapters/usd/beta"),
+        "{value}"
+    );
+}
+
+#[test]
+fn workspace_graph_fallback_discovers_nested_descriptors() {
+    let sb = Sandbox::new("ws-recursive-fallback");
+    init_and_pull(&sb);
+    let out = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-schema",
+        "nested",
+        "--dir",
+        "adapters/hydra2/nested",
+    ]);
+    assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--graph-only"]);
+    assert!(out.status.success(), "{}", out_text(&out));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["data"]["total"], 1);
+}
+
+#[test]
 fn workspace_test_rejects_an_invalid_dependency_graph_before_bundle_tests() {
     let sb = Sandbox::new("wsgraph");
     init_and_pull(&sb);

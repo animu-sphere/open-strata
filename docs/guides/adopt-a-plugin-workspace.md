@@ -14,9 +14,8 @@ the procedure.
 
 ## 1. Lay out the workspace
 
-Place each bundle in its own directory with a plugin manifest. OpenStrata
-discovers immediate subdirectories and `plugins/*` that carry a manifest. Ordinary
-CMake libraries the bundles link live alongside them. A typical shape:
+Place each bundle in its own directory with a plugin manifest. Ordinary CMake
+libraries the bundles link live alongside them. A typical shape:
 
 ```text
 plugins/
@@ -28,6 +27,21 @@ vrmContainer/           # ordinary CMake library the bundles link
 
 You do **not** restructure your project into an OpenStrata package abstraction.
 OpenStrata adopts your existing CMake target boundaries.
+
+Declare those roots in `openstrata.toml`; globs can express nested layouts
+without hard-coding every leaf:
+
+```toml
+[workspace]
+members = ["vrmContainer", "plugins/*", "adapters/*/*", "tools/*"]
+```
+
+Use `"."` when the project root itself carries a library, plugin, or tool
+descriptor. The list is authoritative: `ost` reports a descriptor found outside
+it, an empty pattern, or a selected directory without exactly one member
+descriptor. Projects without the table retain bounded recursive discovery below
+the root for compatibility; use an explicit `"."` to opt the root descriptor
+in. An explicit list makes review and CI graph coverage clear.
 
 ## 2. Declare dependencies between bundles
 
@@ -48,14 +62,16 @@ Declared bundle dependencies define the workspace graph OpenStrata tests in orde
 ## 3. Validate the graph, then test every bundle
 
 ```sh
-ost plugin test --workspace
+ost plugin test --workspace --graph-only
 ```
 
-This validates the dependency graph first (a cycle or a missing provider fails
-fast), then tests every discovered bundle in dependency order. Scope the pyramid
-with `--up-to <level>` while iterating:
+This validates discovery and the dependency graph without requiring a runtime or
+build. A cycle, missing provider, omitted descriptor, or unreadable member fails
+fast. Then run every bundle in dependency order, scoping the pyramid with
+`--up-to <level>` while iterating:
 
 ```sh
+ost plugin test --workspace             # full configured pyramid
 ost plugin test --workspace --up-to 1   # graph + cheap levels only
 ```
 

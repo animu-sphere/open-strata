@@ -167,12 +167,13 @@ CI follow-up remains in the P1 section below.
 
 #### P1 - workspace discovery and managed provenance
 
-- **Make workspace membership explicit.** Prefer an `openstrata.toml`
-  `[workspace].members` glob list that can include layouts such as
-  `adapters/*/*`; a bounded recursive descriptor scan excluding build and
-  `.strata` directories is an acceptable fallback. A descriptor found but not
-  loaded must be reported, so a green `--graph-only` result cannot silently omit
-  a declared library and its dependency edges.
+- **Implemented 2026-08-09 — make workspace membership explicit.**
+  `openstrata.toml` accepts an authoritative `[workspace].members` list with
+  bounded component globs such as `adapters/*/*`. A compatibility fallback scans
+  recursively to depth eight while excluding hidden, state, and build trees.
+  Empty patterns, ambiguous/missing member descriptors, descriptors outside the
+  declaration, and malformed selected descriptors fail graph validation, so a
+  green `--graph-only` result cannot silently omit a library or its edges.
 - **Make root-build bundle outputs safe to package.** Either record bundle
   outputs produced by `ost build` as managed provenance for the selected target
   and runtime, or stage them away from paths consumed by `plugin package`.

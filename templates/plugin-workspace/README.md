@@ -15,6 +15,17 @@ Each command creates a self-contained bundle directory (with its own
 `openstrata.plugin.yaml` and `CMakeLists.txt`). The root `CMakeLists.txt` picks
 up root-level bundles and `plugins/<name>/` bundles automatically.
 
+Once the member layout is established, make it authoritative in
+`openstrata.toml` (list `"."` only if the root itself has a member descriptor):
+
+```toml
+[workspace]
+members = ["myfmt", "myschema", "plugins/*"]
+```
+
+Nested layouts are supported, for example `"adapters/*/*"`. A graph check fails
+if a bounded project scan finds a descriptor outside the declaration.
+
 ## Declare bundle dependencies
 
 Composition stays in each consumer's `openstrata.plugin.yaml`. For example, a
@@ -44,6 +55,7 @@ inferring or changing their build order.
 ost runtime pull cy2026 --profile usd       # or adopt one: --from-usd <path>
 ost plugin build myfmt
 ost plugin test  myfmt
+ost plugin test --workspace --graph-only
 ost plugin test --workspace --up-to 1
 ```
 
