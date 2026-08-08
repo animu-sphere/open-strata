@@ -606,25 +606,6 @@ impl HostPackages {
     pub fn is_empty(&self) -> bool {
         self.apt.is_empty() && self.brew.is_empty()
     }
-
-    /// Every declared package name, for validation.
-    fn all(&self) -> impl Iterator<Item = &String> {
-        self.apt.iter().chain(self.brew.iter())
-    }
-}
-
-/// Whether `name` is safe to interpolate into a generated shell command
-/// unquoted: a package name, not an argument, a flag, or a shell escape.
-///
-/// The rendered step word-splits the list on purpose (that is how a package
-/// manager takes several packages), so anything that could carry a metacharacter
-/// or a leading `-` is refused at parse time rather than smuggled into CI.
-fn is_package_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('-')
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
 }
 
 /// A repo-specific extra step spliced into the **source-CI** job after the
@@ -970,10 +951,24 @@ impl SupportMatrix {
                          or name at least one under 'apt' or 'brew'"
                     )));
                 }
-                if let Some(bad) = pkgs.all().find(|p| !is_package_name(p)) {
+                if let Some(bad) = pkgs
+                    .apt
+                    .iter()
+                    .find(|package| !ost_runtime::HostPackageManager::Apt.accepts_name(package))
+                {
                     return Err(Error::InvalidManifest(format!(
-                        "cell '{name}': host_packages entry '{bad}' is not a package name \
-                         (use [A-Za-z0-9._+-], no flags and no shell metacharacters)"
+                        "cell '{name}': host_packages apt entry '{bad}' is not a package name \
+                         (use one package-manager argument, no flags or shell metacharacters)"
+                    )));
+                }
+                if let Some(bad) = pkgs
+                    .brew
+                    .iter()
+                    .find(|formula| !ost_runtime::HostPackageManager::Brew.accepts_name(formula))
+                {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': host_packages brew entry '{bad}' is not a formula name \
+                         (use one package-manager argument, no flags or shell metacharacters)"
                     )));
                 }
                 if !cell.lane.is_source() {
@@ -2464,13 +2459,16 @@ cells:
     /// carry a flag or a shell metacharacter is refused at parse time.
     #[test]
     fn host_packages_reject_non_package_names() {
-        assert!(is_package_name("libx11-dev"));
-        assert!(is_package_name("g++"));
-        assert!(is_package_name("python3.13"));
-        assert!(!is_package_name("--allow-downgrades"));
-        assert!(!is_package_name("libx11-dev; rm -rf /"));
-        assert!(!is_package_name("$(id)"));
-        assert!(!is_package_name(""));
+        use ost_runtime::HostPackageManager::{Apt, Brew};
+
+        assert!(Apt.accepts_name("libx11-dev"));
+        assert!(Apt.accepts_name("g++"));
+        assert!(Apt.accepts_name("python3.13"));
+        assert!(Brew.accepts_name("python@3.13"));
+        assert!(!Apt.accepts_name("--allow-downgrades"));
+        assert!(!Apt.accepts_name("libx11-dev; rm -rf /"));
+        assert!(!Apt.accepts_name("$(id)"));
+        assert!(!Apt.accepts_name(""));
 
         let bad = valid_yaml().replace(
             "  - name: linux-usd-toy\n    runtime_artifact",

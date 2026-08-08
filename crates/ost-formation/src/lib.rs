@@ -823,6 +823,7 @@ args = ["avatar.vrm"]
             source: RuntimeSource::Artifact,
             external_prefix: None,
             runtime_deps: Vec::new(),
+            host_requirements: Vec::new(),
             artifact_digest: Some(runtime_digest.clone()),
         };
         runtime_manifest.digest = runtime_manifest.compute_digest();

@@ -14,7 +14,10 @@ mod runtime;
 mod validate;
 
 pub use env::{usd_python_dir, usd_python_dir_for, EnvOp, EnvSet, EnvVar, Shell};
-pub use manifest::{ExtensionRecord, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE};
+pub use manifest::{
+    ExtensionRecord, HostPackageManager, HostRequirement, RuntimeManifest, RuntimeSource,
+    Validation, MANIFEST_FILE,
+};
 pub use profile::{Profile, ProfileCatalog, Requires};
 pub use runtime::{python_abi_tag, python_minor, Runtime};
 pub use validate::{validate, Check, ValidationReport};

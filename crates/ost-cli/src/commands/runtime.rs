@@ -25,7 +25,8 @@ use ost_core::paths::Store;
 use ost_core::variant::Abi;
 use ost_core::{tools, Error, Host, Result, Variant};
 use ost_runtime::{
-    python_minor, ExtensionRecord, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
+    python_minor, ExtensionRecord, HostPackageManager, HostRequirement, RuntimeManifest,
+    RuntimeSource, Validation, MANIFEST_FILE,
 };
 
 use crate::commands::resolve;
@@ -84,6 +85,16 @@ pub enum RuntimeCmd {
         /// `OST_USD_DEPS` (path-separator list).
         #[arg(long)]
         deps: Vec<String>,
+        /// Native package the produced runtime leaves to its consuming host,
+        /// written as `apt:PACKAGE` (Linux) or `brew:FORMULA` (macOS).
+        /// Repeatable and recorded as compatibility identity.
+        #[arg(
+            long = "host-package",
+            value_name = "MANAGER:PACKAGE",
+            value_parser = parse_host_requirement,
+            conflicts_with = "from_artifact"
+        )]
+        host_requirements: Vec<HostRequirement>,
         /// Materialize the runtime from a registry artifact (`artifact` source):
         /// a digest reference (`sha256:<hex>` or a unique hex prefix) of an
         /// `ost runtime export`ed artifact.
@@ -173,6 +184,7 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             sdk,
             deployment_target,
             deps,
+            host_requirements,
             from_artifact,
         } => pull(
             &platform,
@@ -186,6 +198,7 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
                 sdk,
                 deployment_target,
                 deps,
+                host_requirements,
                 from_artifact,
             },
             fmt,
@@ -230,6 +243,83 @@ fn layout_dirs(python_version: &str, has_usd: bool) -> Vec<String> {
     dirs
 }
 
+/// Parse a declared native package without ever passing user input through a
+/// shell. Keeping the accepted alphabet aligned with CI's `host_packages`
+/// contract makes the runtime declaration directly renderable there.
+fn parse_host_requirement(value: &str) -> std::result::Result<HostRequirement, String> {
+    let (manager, name) = value.split_once(':').ok_or_else(|| {
+        format!("invalid host package '{value}' (expected apt:PACKAGE or brew:FORMULA)")
+    })?;
+    let manager = match manager {
+        "apt" => HostPackageManager::Apt,
+        "brew" => HostPackageManager::Brew,
+        other => {
+            return Err(format!(
+                "unknown host package manager '{other}' (expected apt or brew)"
+            ))
+        }
+    };
+    if !manager.accepts_name(name) {
+        return Err(format!(
+            "invalid {} package name '{name}' (expected one package-manager argument, no flags or shell metacharacters)",
+            manager.as_str()
+        ));
+    }
+    Ok(HostRequirement {
+        manager,
+        name: name.to_string(),
+    })
+}
+
+fn validate_host_requirement_targets(requirements: &[HostRequirement], os: Os) -> Result<()> {
+    for requirement in requirements {
+        let valid = matches!(
+            (os, requirement.manager),
+            (Os::Linux, HostPackageManager::Apt) | (Os::Macos, HostPackageManager::Brew)
+        );
+        if !valid {
+            return Err(Error::usage(format!(
+                "host package '{}:{}' does not apply to the runtime target '{}'",
+                requirement.manager.as_str(),
+                requirement.name,
+                os.as_str()
+            ))
+            .with_hint(match os {
+                Os::Linux => "declare Linux packages as --host-package apt:PACKAGE",
+                Os::Macos => "declare macOS formulae as --host-package brew:FORMULA",
+                Os::Windows => {
+                    "Windows runtime host dependencies must be provisioned on the runner image; no package manager is assumed"
+                }
+            }));
+        }
+    }
+    Ok(())
+}
+
+fn validate_embedded_host_requirement_targets(
+    requirements: &[HostRequirement],
+    os: Os,
+) -> Result<()> {
+    validate_host_requirement_targets(requirements, os).map_err(|error| {
+        Error::InvalidManifest(format!(
+            "runtime host_requirements do not match target '{}': {error}",
+            os.as_str()
+        ))
+    })
+}
+
+fn print_host_requirements(requirements: &[HostRequirement], prefix: &str) {
+    if requirements.is_empty() {
+        return;
+    }
+    let rendered = requirements
+        .iter()
+        .map(|requirement| format!("{}:{}", requirement.manager.as_str(), requirement.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("{prefix}{rendered}");
+}
+
 /// How `pull` should obtain the runtime: mock (default), adopt, or build.
 pub struct PullSource {
     /// `--from-usd <path>` (or `OST_USD_ROOT`): adopt an existing install.
@@ -246,12 +336,16 @@ pub struct PullSource {
     /// `--deps <prefix>` (or `OST_USD_DEPS`): when non-empty, build OpenUSD with
     /// CMake directly against these dependency prefixes instead of build_usd.py.
     pub deps: Vec<String>,
+    /// Host-native packages intentionally excluded from a produced runtime.
+    pub host_requirements: Vec<HostRequirement>,
     /// `--from-artifact <digest>`: materialize from the local artifact registry.
     pub from_artifact: Option<String>,
 }
 
 fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format) -> Result<()> {
     let r = resolve(platform, profile)?;
+
+    validate_host_requirement_targets(&src.host_requirements, r.runtime.variant.os)?;
 
     if r.pulled && !force {
         return Err(Error::usage(format!(
@@ -289,7 +383,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             .unwrap_or_default()
     };
 
-    let manifest = if let Some(digest_ref) = &src.from_artifact {
+    let mut manifest = if let Some(digest_ref) = &src.from_artifact {
         fetch_from_artifact(&r, digest_ref)?
     } else if let Some(usd_src) = build_src {
         let opts = BuildOpts {
@@ -307,6 +401,9 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
     } else {
         materialize_mock(&r, has_usd, extensions, created)?
     };
+    if manifest.source != RuntimeSource::Artifact {
+        manifest.set_host_requirements(src.host_requirements);
+    }
 
     let manifest_path = r.prefix.join(MANIFEST_FILE);
     let json = manifest
@@ -325,6 +422,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             "external_prefix": manifest.external_prefix,
             "layout": manifest.layout,
             "extensions": manifest.extensions,
+            "host_requirements": manifest.host_requirements,
         }));
         return Ok(());
     }
@@ -354,6 +452,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             .collect();
         println!("  extensions: {}", names.join(", "));
     }
+    print_host_requirements(&manifest.host_requirements, "  host:    ");
     println!("\nValidate with:");
     println!("  ost runtime validate {} --profile {}", platform, profile);
     Ok(())
@@ -989,6 +1088,7 @@ fn fetch_from_artifact(r: &crate::commands::Resolved, digest_ref: &str) -> Resul
         })?;
     let mut manifest: RuntimeManifest = serde_json::from_value(embedded.clone())
         .map_err(|e| Error::parse("runtime_manifest in artifact", anyhow::Error::new(e)))?;
+    validate_embedded_host_requirement_targets(&manifest.host_requirements, manifest.variant.os)?;
 
     let requested = r.runtime.id();
     if manifest.id != requested {
@@ -1003,6 +1103,8 @@ fn fetch_from_artifact(r: &crate::commands::Resolved, digest_ref: &str) -> Resul
         )
         .with_hint("check `ost artifact show <digest>` for the artifact's target/profile"));
     }
+
+    ensure_host_requirements(&record, &manifest.host_requirements)?;
 
     // Fresh materialization: never extract over a stale prefix. The extract
     // itself is digest-pinned — the store re-hashes the archive before
@@ -1029,6 +1131,109 @@ fn fetch_from_artifact(r: &crate::commands::Resolved, digest_ref: &str) -> Resul
     manifest.external_prefix = None;
     manifest.artifact_digest = Some(record.digest.clone());
     Ok(manifest)
+}
+
+/// Validate the host contract embedded in a stored runtime artifact. This is
+/// shared by low-level `artifact pull` and `runtime pull --from-artifact`, so a
+/// downloaded artifact and a locally handed-off artifact fail with the same
+/// pre-launch diagnostic.
+pub(crate) fn check_artifact_host_requirements(
+    store: &ArtifactStore,
+    record: &ost_artifact::ArtifactRecord,
+) -> Result<Vec<HostRequirement>> {
+    let requirements = artifact_host_requirements(store, record)?;
+    ensure_host_requirements(record, &requirements)?;
+    Ok(requirements)
+}
+
+pub(crate) fn artifact_host_requirements(
+    store: &ArtifactStore,
+    record: &ost_artifact::ArtifactRecord,
+) -> Result<Vec<HostRequirement>> {
+    if record.kind != ArtifactKind::Runtime {
+        return Ok(Vec::new());
+    }
+    let producer = store.producer_manifest(record)?;
+    let embedded = producer
+        .get("provenance")
+        .and_then(|value| value.get("runtime_manifest"))
+        .ok_or_else(|| {
+            Error::InvalidManifest(
+                "runtime artifact carries no provenance.runtime_manifest".to_string(),
+            )
+        })?;
+    let manifest: RuntimeManifest = serde_json::from_value(embedded.clone())
+        .map_err(|error| Error::parse("runtime_manifest in artifact", anyhow::Error::new(error)))?;
+    validate_embedded_host_requirement_targets(&manifest.host_requirements, manifest.variant.os)?;
+    Ok(manifest.host_requirements)
+}
+
+fn ensure_host_requirements(
+    record: &ost_artifact::ArtifactRecord,
+    requirements: &[HostRequirement],
+) -> Result<()> {
+    let missing: Vec<&HostRequirement> = requirements
+        .iter()
+        .filter(|requirement| !host_requirement_is_satisfied(requirement))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let selected = format!("{}:{}", record.name, record.short_digest());
+    let missing_names = missing
+        .iter()
+        .map(|requirement| format!("{}:{}", requirement.manager.as_str(), requirement.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let apt = missing
+        .iter()
+        .filter(|requirement| requirement.manager == HostPackageManager::Apt)
+        .map(|requirement| requirement.name.as_str())
+        .collect::<Vec<_>>();
+    let brew = missing
+        .iter()
+        .filter(|requirement| requirement.manager == HostPackageManager::Brew)
+        .map(|requirement| requirement.name.as_str())
+        .collect::<Vec<_>>();
+    let mut actions = Vec::new();
+    if !apt.is_empty() {
+        actions.push(format!(
+            "install with `sudo apt-get update && sudo apt-get install --no-install-recommends {}`",
+            apt.join(" ")
+        ));
+    }
+    if !brew.is_empty() {
+        actions.push(format!("install with `brew install {}`", brew.join(" ")));
+    }
+    Err(Error::coded(
+        "ARTIFACT_HOST_REQUIREMENT_MISSING",
+        ost_core::Category::Precondition,
+        format!(
+            "selected runtime artifact '{selected}' requires missing host package(s): {missing_names}"
+        ),
+    )
+    .with_hint(actions.join("; ")))
+}
+
+fn host_requirement_is_satisfied(requirement: &HostRequirement) -> bool {
+    match requirement.manager {
+        HostPackageManager::Apt => Command::new("dpkg-query")
+            .args([
+                "--show",
+                "--showformat=${db:Status-Abbrev}",
+                &requirement.name,
+            ])
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).starts_with("ii ")
+            }),
+        HostPackageManager::Brew => Command::new("brew")
+            .args(["list", "--versions", &requirement.name])
+            .output()
+            .is_ok_and(|output| output.status.success() && !output.stdout.is_empty()),
+    }
 }
 
 /// The gates a runtime must pass to be exported as a registry artifact.
@@ -1433,6 +1638,7 @@ fn runtime_artifact_manifest(
         // The producing tool names itself here so the registry can
         // record the artifact's origin instead of whoever imported it.
         "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
+        "host_requirements": manifest.host_requirements,
         "provenance": {
             "platform": manifest.platform,
             "profile": manifest.profile,
@@ -1691,6 +1897,10 @@ fn export(
         level: pack.level,
         workers,
         mtime: ost_build::source_date_epoch(),
+        // Host requirements live outside the runtime tree but are compatibility
+        // identity. Salt the tar stream with the canonical runtime digest so a
+        // metadata-only contract change receives a new immutable artifact pin.
+        identity_digest: Some(manifest.digest.clone()),
     };
     // Progress to stderr (throttled, in-place) so a long single- or
     // multi-threaded pack shows liveness; suppressed in JSON mode so the only
@@ -1899,6 +2109,7 @@ fn export(
             "files": out.record.file_count,
             "dist": dist.map(|d| d.to_string()),
             "layout_profile": if slim { "sdk" } else { "full" },
+            "host_requirements": manifest.host_requirements,
             "excluded_top_level": excluded_dirs,
             // Excluded trees the shipped CMake config still points at.
             "dropped_referenced_layout": dropped_references
@@ -2473,6 +2684,7 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     if !manifest.runtime_deps.is_empty() {
         println!("Deps:       {}", manifest.runtime_deps.join(", "));
     }
+    print_host_requirements(&manifest.host_requirements, "Host needs: ");
     println!("Capabilities:");
     for cap in &manifest.capabilities {
         println!("  - {cap}");
@@ -2699,13 +2911,14 @@ fn repair(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         .unwrap_or(0);
     // Re-derive deliberately: re-probes the layout, re-reads pxr.h, and resets
     // validation to pending — a repaired manifest still has to prove itself.
-    let (repaired, readopted_from) = match (manifest.source, &manifest.external_prefix) {
+    let (mut repaired, readopted_from) = match (manifest.source, &manifest.external_prefix) {
         (RuntimeSource::Local, Some(root)) => {
             let root = root.clone();
             (adopt_local(&r, &root, extensions, created)?, Some(root))
         }
         _ => (redetect_build(&r, extensions, &manifest, created)?, None),
     };
+    repaired.set_host_requirements(manifest.host_requirements.clone());
     let json = repaired
         .to_json()
         .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
@@ -2922,6 +3135,44 @@ mod tests {
         pending.set_validation(Validation::Pending);
         let err = check_exportable(&pending).unwrap_err();
         assert_eq!(err.code(), "EXPORT_VALIDATION_REQUIRED");
+    }
+
+    #[test]
+    fn host_package_declarations_are_bounded_and_targeted() {
+        let apt = parse_host_requirement("apt:libx11-dev").unwrap();
+        assert_eq!(apt.manager, HostPackageManager::Apt);
+        assert_eq!(apt.name, "libx11-dev");
+        assert!(parse_host_requirement("apt:--option").is_err());
+        assert!(parse_host_requirement("apt:libx11-dev;id").is_err());
+        assert!(parse_host_requirement("unknown:thing").is_err());
+
+        assert!(validate_host_requirement_targets(std::slice::from_ref(&apt), Os::Linux).is_ok());
+        assert!(validate_host_requirement_targets(&[apt], Os::Macos).is_err());
+        let brew = parse_host_requirement("brew:openimageio").unwrap();
+        assert!(validate_host_requirement_targets(&[brew], Os::Macos).is_ok());
+        assert!(parse_host_requirement("brew:python@3.13").is_ok());
+    }
+
+    #[test]
+    fn runtime_artifact_manifest_exposes_host_requirements() {
+        let mut manifest = exportable_manifest();
+        manifest.set_host_requirements(vec![HostRequirement {
+            manager: HostPackageManager::Apt,
+            name: "libx11-dev".into(),
+        }]);
+        let packed = ost_build::PackResult {
+            archive_digest: format!("sha256:{}", "ab".repeat(32)),
+            archive_size: 42,
+            total_size: 21,
+            files: Vec::new(),
+        };
+        let producer =
+            runtime_artifact_manifest(&manifest, "runtime.tar.zst", &packed, 1_760_000_000);
+        assert_eq!(producer["host_requirements"][0]["manager"], "apt");
+        assert_eq!(
+            producer["provenance"]["runtime_manifest"]["host_requirements"][0]["name"],
+            "libx11-dev"
+        );
     }
 
     #[test]

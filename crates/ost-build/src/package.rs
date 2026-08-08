@@ -84,7 +84,7 @@ pub struct SdkStageFiles {
 pub const ZSTD_LEVEL: i32 = 19;
 
 /// How [`pack_dir_with`] compresses the archive.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PackOptions {
     /// zstd compression level (1..=22). Higher trades speed for a smaller
     /// archive.
@@ -101,6 +101,11 @@ pub struct PackOptions {
     /// the files were written. Producers set this from `SOURCE_DATE_EPOCH` (see
     /// [`source_date_epoch`]); the default `0` reproduces the historical layout.
     pub mtime: u64,
+    /// Optional digest-significant compatibility identity. It is written as a
+    /// PAX header attached to the first archive entry, so it changes the archive
+    /// digest without materializing a metadata file in the extracted tree.
+    /// Values must use the canonical `sha256:<64 lowercase hex>` form.
+    pub identity_digest: Option<String>,
 }
 
 impl Default for PackOptions {
@@ -112,6 +117,7 @@ impl Default for PackOptions {
             level: ZSTD_LEVEL,
             workers: 0,
             mtime: 0,
+            identity_digest: None,
         }
     }
 }
@@ -192,6 +198,21 @@ pub fn pack_dir_with(
     }
     let encoder = encoder.auto_finish();
     let mut builder = tar::Builder::new(encoder);
+
+    if let Some(identity) = &opts.identity_digest {
+        let hex = identity.strip_prefix("sha256:").unwrap_or_default();
+        if hex.len() != 64
+            || !hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "archive identity must be sha256:<64 lowercase hex>",
+            ));
+        }
+        builder.append_pax_extensions([("OST.artifact.identity", identity.as_bytes())])?;
+    }
 
     let total = files.len();
     let mut entries = Vec::with_capacity(total);
@@ -795,7 +816,14 @@ mod tests {
         };
         let arc_a = a.join("out.tar.zst");
         let arc_b = b.join("out.tar.zst");
-        let pa = pack_dir_with(&a, &arc_a, &stage_files(&a).unwrap(), opts, &mut |_| {}).unwrap();
+        let pa = pack_dir_with(
+            &a,
+            &arc_a,
+            &stage_files(&a).unwrap(),
+            opts.clone(),
+            &mut |_| {},
+        )
+        .unwrap();
         let pb = pack_dir_with(&b, &arc_b, &stage_files(&b).unwrap(), opts, &mut |_| {}).unwrap();
         // Same staged contents + same pinned mtime => byte-identical digest,
         // independent of the files' real mtimes.
@@ -827,6 +855,60 @@ mod tests {
 
         std::fs::remove_dir_all(a.as_std_path()).ok();
         std::fs::remove_dir_all(b.as_std_path()).ok();
+    }
+
+    #[test]
+    fn pack_identity_changes_digest_without_adding_an_extracted_file() {
+        let root = tmp("pack-identity");
+        std::fs::create_dir_all(root.join("lib").as_std_path()).unwrap();
+        std::fs::write(root.join("lib/payload.bin").as_std_path(), b"runtime").unwrap();
+        let files = stage_files(&root).unwrap();
+
+        let first = root.join("first.tar.zst");
+        let first_repeat = root.join("first-repeat.tar.zst");
+        let second = root.join("second.tar.zst");
+        let opts = PackOptions {
+            identity_digest: Some(format!("sha256:{}", "ab".repeat(32))),
+            ..PackOptions::default()
+        };
+        let packed_first = pack_dir_with(&root, &first, &files, opts.clone(), &mut |_| {}).unwrap();
+        let packed_first_repeat =
+            pack_dir_with(&root, &first_repeat, &files, opts, &mut |_| {}).unwrap();
+        let packed_second = pack_dir_with(
+            &root,
+            &second,
+            &files,
+            PackOptions {
+                identity_digest: Some(format!("sha256:{}", "cd".repeat(32))),
+                ..PackOptions::default()
+            },
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(
+            packed_first.archive_digest,
+            packed_first_repeat.archive_digest
+        );
+        assert_ne!(packed_first.archive_digest, packed_second.archive_digest);
+
+        let reader =
+            zstd::stream::read::Decoder::new(File::open(second.as_std_path()).unwrap()).unwrap();
+        let names = tar::Archive::new(reader)
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["lib/payload.bin"]);
+
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[test]

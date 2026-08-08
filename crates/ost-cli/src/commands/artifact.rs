@@ -509,8 +509,10 @@ fn pull_remote(
         RemoteReference::File(_) => Box::new(FileTransport::new()),
     };
     let evidence = ost_artifact::pull(transport.as_ref(), &parsed, store, policy)?;
+    let host_requirements =
+        crate::commands::runtime::check_artifact_host_requirements(store, &evidence.record)?;
     if fmt.is_json() {
-        output::success(&pull_evidence_json(store, &evidence));
+        output::success(&pull_evidence_json(store, &evidence, &host_requirements));
         return Ok(());
     }
     let r = &evidence.record;
@@ -534,6 +536,16 @@ fn pull_remote(
         "  import:     {} ({})",
         evidence.import_status, evidence.import_path
     );
+    if !host_requirements.is_empty() {
+        println!(
+            "  host:       {}",
+            host_requirements
+                .iter()
+                .map(|requirement| format!("{}:{}", requirement.manager.as_str(), requirement.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -542,7 +554,11 @@ fn timeout(seconds: u32) -> Option<Duration> {
 }
 
 /// Pull evidence as JSON (transport plan, "Minimum JSON output").
-fn pull_evidence_json(store: &ArtifactStore, evidence: &PullEvidence) -> serde_json::Value {
+fn pull_evidence_json(
+    store: &ArtifactStore,
+    evidence: &PullEvidence,
+    host_requirements: &[ost_runtime::HostRequirement],
+) -> serde_json::Value {
     let mut verification = serde_json::Map::new();
     for (step, status) in &evidence.verification {
         verification.insert((*step).to_string(), serde_json::json!(status));
@@ -565,6 +581,7 @@ fn pull_evidence_json(store: &ArtifactStore, evidence: &PullEvidence) -> serde_j
             "store": store.root().to_string(),
         },
         "artifact": record_json(&evidence.record),
+        "host_requirements": host_requirements,
     })
 }
 
@@ -676,8 +693,16 @@ fn list(store: &ArtifactStore, kind: Option<&str>, fmt: Format) -> Result<()> {
 
 fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     let r = store.resolve(digest)?;
+    let host_requirements = crate::commands::runtime::artifact_host_requirements(store, &r)?;
     if fmt.is_json() {
-        output::success(&serde_json::json!({ "artifact": record_json(&r) }));
+        let mut artifact = record_json(&r);
+        if let Some(object) = artifact.as_object_mut() {
+            object.insert(
+                "host_requirements".into(),
+                serde_json::to_value(&host_requirements).unwrap_or_default(),
+            );
+        }
+        output::success(&serde_json::json!({ "artifact": artifact }));
         return Ok(());
     }
     println!("{} {} {}", r.kind.as_str(), r.name, r.version);
@@ -701,6 +726,16 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     }
     if let (Some(id), Some(dg)) = (&r.runtime_id, &r.runtime_digest) {
         println!("  runtime:     {id} ({dg})");
+    }
+    if !host_requirements.is_empty() {
+        println!(
+            "  host needs:  {}",
+            host_requirements
+                .iter()
+                .map(|requirement| format!("{}:{}", requirement.manager.as_str(), requirement.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     if let (Some(path), Some(digest)) = (&r.sbom, &r.sbom_digest) {
         println!("  SBOM:        {path} ({digest})");
