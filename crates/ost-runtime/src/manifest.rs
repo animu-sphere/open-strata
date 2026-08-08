@@ -36,6 +36,30 @@ impl HostPackageManager {
             HostPackageManager::Brew => "brew",
         }
     }
+
+    /// Whether `name` is safe to pass as one package-manager argument and is
+    /// representable by that manager's native package syntax.
+    pub fn accepts_name(self, name: &str) -> bool {
+        let bare = |part: &str| {
+            !part.is_empty()
+                && !part.starts_with('-')
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
+        };
+        match self {
+            HostPackageManager::Apt => bare(name),
+            // Homebrew uses `@` for versioned formulae such as python@3.13.
+            // Keep accepting only one shell-safe argv token: taps and local
+            // formula paths remain outside this declarative contract.
+            HostPackageManager::Brew => match name.split_once('@') {
+                Some((formula, version)) => {
+                    bare(formula) && bare(version) && !version.contains('@')
+                }
+                None => bare(name),
+            },
+        }
+    }
 }
 
 /// One package the artifact intentionally leaves to the consuming host.
@@ -357,6 +381,15 @@ mod tests {
         let json = m.to_json().unwrap();
         let roundtrip = RuntimeManifest::from_json(&json).unwrap();
         assert_eq!(roundtrip, m);
+    }
+
+    #[test]
+    fn package_names_follow_the_native_manager_syntax() {
+        assert!(HostPackageManager::Apt.accepts_name("libx11-dev"));
+        assert!(!HostPackageManager::Apt.accepts_name("python@3.13"));
+        assert!(HostPackageManager::Brew.accepts_name("python@3.13"));
+        assert!(!HostPackageManager::Brew.accepts_name("python@@3.13"));
+        assert!(!HostPackageManager::Brew.accepts_name("--formula"));
     }
 
     #[test]

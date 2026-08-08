@@ -701,8 +701,9 @@ ost runtime pull cy2026 --profile usd --build /src/OpenUSD \
 ost runtime export cy2026 --profile usd
 ```
 
-   Linux accepts `apt:<package>`, macOS accepts `brew:<formula>`, and Windows
-   assumes no package manager (provision dependencies on the runner image).
+   Linux accepts `apt:<package>`, macOS accepts `brew:<formula>` (including
+   versioned formulae such as `brew:python@3.13`), and Windows assumes no
+   package manager (provision dependencies on the runner image).
    Declare the same requirements per source cell with `host_packages`, keyed by
    the runner's native installer:
 

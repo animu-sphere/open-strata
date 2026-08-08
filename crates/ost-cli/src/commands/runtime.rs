@@ -259,14 +259,10 @@ fn parse_host_requirement(value: &str) -> std::result::Result<HostRequirement, S
             ))
         }
     };
-    if name.is_empty()
-        || name.starts_with('-')
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
-    {
+    if !manager.accepts_name(name) {
         return Err(format!(
-            "invalid host package name '{name}' (use [A-Za-z0-9._+-], no flags or shell metacharacters)"
+            "invalid {} package name '{name}' (expected one package-manager argument, no flags or shell metacharacters)",
+            manager.as_str()
         ));
     }
     Ok(HostRequirement {
@@ -1901,6 +1897,10 @@ fn export(
         level: pack.level,
         workers,
         mtime: ost_build::source_date_epoch(),
+        // Host requirements live outside the runtime tree but are compatibility
+        // identity. Salt the tar stream with the canonical runtime digest so a
+        // metadata-only contract change receives a new immutable artifact pin.
+        identity_digest: Some(manifest.digest.clone()),
     };
     // Progress to stderr (throttled, in-place) so a long single- or
     // multi-threaded pack shows liveness; suppressed in JSON mode so the only
@@ -3150,6 +3150,7 @@ mod tests {
         assert!(validate_host_requirement_targets(&[apt], Os::Macos).is_err());
         let brew = parse_host_requirement("brew:openimageio").unwrap();
         assert!(validate_host_requirement_targets(&[brew], Os::Macos).is_ok());
+        assert!(parse_host_requirement("brew:python@3.13").is_ok());
     }
 
     #[test]

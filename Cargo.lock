@@ -461,6 +461,7 @@ version = "0.21.0"
 dependencies = [
  "ost-artifact",
  "ost-core",
+ "ost-runtime",
  "serde",
  "serde_yaml",
  "toml",

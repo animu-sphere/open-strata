@@ -1975,8 +1975,14 @@ fn package_bundle(
     } else {
         staged.into_iter().partition(|p| !is_debug_symbol_file(p))
     };
-    let packed = pack_dir_with(&stage, &archive_path, &main_files, pack_opts, &mut |_| {})
-        .map_err(|e| Error::io(archive_path.to_string(), e))?;
+    let packed = pack_dir_with(
+        &stage,
+        &archive_path,
+        &main_files,
+        pack_opts.clone(),
+        &mut |_| {},
+    )
+    .map_err(|e| Error::io(archive_path.to_string(), e))?;
 
     let debug_name = plugin_debug_archive_name(name, version, &id);
     let debug_path = dist_dir.join(&debug_name);
@@ -2243,8 +2249,14 @@ fn package_tool(
     } else {
         staged.into_iter().partition(|p| !is_debug_symbol_file(p))
     };
-    let packed = pack_dir_with(&stage, &archive_path, &main_files, pack_opts, &mut |_| {})
-        .map_err(|e| Error::io(archive_path.to_string(), e))?;
+    let packed = pack_dir_with(
+        &stage,
+        &archive_path,
+        &main_files,
+        pack_opts.clone(),
+        &mut |_| {},
+    )
+    .map_err(|e| Error::io(archive_path.to_string(), e))?;
     let debug_name = plugin_debug_archive_name(&name, &version, &id);
     let debug_path = dist_dir.join(&debug_name);
     let debug_pack = if debug_files.is_empty() {
