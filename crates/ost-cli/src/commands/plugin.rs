@@ -4997,9 +4997,9 @@ fn validate_workspace_graph(fmt: Format) -> Result<()> {
     Ok(())
 }
 
-/// Discover the workspace's bundles and libraries and validate their dependency
-/// graph. Shared by every `--workspace` entry point so one discovery rule and
-/// one graph computation serve them all.
+/// Discover and load every workspace member, then validate the bundle/library
+/// dependency graph. Shared by every `--workspace` entry point so one discovery
+/// rule and one graph computation serve them all.
 fn load_workspace_graph() -> Result<(Vec<Bundle>, Vec<Library>, ost_plugin::WorkspaceValidation)> {
     let members = discover_workspace_members(Utf8Path::new("."))?;
     if members.bundles.is_empty() {
@@ -5019,6 +5019,12 @@ fn load_workspace_graph() -> Result<(Vec<Bundle>, Vec<Library>, ost_plugin::Work
         .iter()
         .map(|root| Library::load(root))
         .collect::<Result<Vec<_>>>()?;
+    // Tools have no dependency edges, but their descriptors are still declared
+    // workspace members. Load them before a graph-only success can be reported
+    // so an unreadable or invalid descriptor cannot disappear from the gate.
+    for root in &members.tools {
+        ost_plugin::Tool::load(root)?;
+    }
     let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
     Ok((bundles, libraries, graph))
 }
@@ -5252,6 +5258,11 @@ fn discover_workspace_members(root: &Utf8Path) -> Result<WorkspaceMembers> {
                 ));
             }
             for member_root in matches {
+                // Literal components retain the manifest's spelling. On a
+                // case-insensitive filesystem (and for Windows 8.3 aliases)
+                // that can differ from the path returned by the recursive
+                // read_dir scan even though both name the same directory.
+                let member_root = canonical_root(&member_root);
                 let kind = workspace_descriptor_kind(&member_root)?.ok_or_else(|| {
                     Error::coded(
                         "WORKSPACE_MEMBER_DESCRIPTOR_MISSING",
@@ -7808,6 +7819,25 @@ mod tests {
                 "{pattern} / {name}"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_member_identity_uses_canonical_windows_casing() {
+        let root = unique_tmp("workspace-member-casing");
+        let member = root.join("plugins").join("alpha");
+        std::fs::create_dir_all(member.as_std_path()).unwrap();
+        write_test_file(
+            &root.join(PROJECT_MANIFEST),
+            "[project]\nname = 'case-test'\n\
+             [requires]\nplatform = 'cy2026'\n\
+             [workspace]\nmembers = ['PLUGINS/*']\n",
+        );
+        write_test_file(&member.join(ost_plugin::PLUGIN_MANIFEST), "placeholder\n");
+
+        let discovered = discover_workspace_members(&root).unwrap();
+        assert_eq!(discovered.bundles, vec![canonical_root(&member)]);
+        let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 
     /// `ost build` calls this *after* the build succeeded, only to record

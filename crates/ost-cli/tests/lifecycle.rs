@@ -2400,6 +2400,52 @@ fn workspace_graph_fails_when_a_descriptor_is_not_declared() {
 }
 
 #[test]
+fn workspace_graph_rejects_an_invalid_declared_tool_descriptor() {
+    let sb = Sandbox::new("ws-invalid-tool");
+    init_and_pull(&sb);
+    let plugin = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-schema",
+        "alpha",
+        "--dir",
+        "plugins/alpha",
+    ]);
+    assert!(
+        plugin.status.success(),
+        "scaffold failed:\n{}",
+        out_text(&plugin)
+    );
+
+    let tool = sb.work_file("tools/broken/openstrata.tool.yaml");
+    std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+    std::fs::write(
+        &tool,
+        "schema: openstrata.tool/not-supported\ntool: { id: broken }\n",
+    )
+    .unwrap();
+    let manifest = sb.work_file("openstrata.toml");
+    let source = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        manifest,
+        format!("{source}\n[workspace]\nmembers = [\".\", \"plugins/*\", \"tools/*\"]\n"),
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--graph-only"]);
+    assert_eq!(out.status.code(), Some(3), "{}", out_text(&out));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["ok"], false);
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("openstrata.tool.yaml"),
+        "{value}"
+    );
+}
+
+#[test]
 fn workspace_graph_fallback_discovers_nested_descriptors() {
     let sb = Sandbox::new("ws-recursive-fallback");
     init_and_pull(&sb);

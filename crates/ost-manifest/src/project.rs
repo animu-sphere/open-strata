@@ -784,12 +784,15 @@ portability = "local-override"
     fn workspace_members_reject_unbounded_or_nonportable_patterns() {
         for (member, expected) in [
             ("", "must not be empty"),
+            (" plugins/*", "whitespace"),
             ("/plugins/*", "project-relative"),
             ("plugins\\*", "portable '/'"),
             ("plugins/**", "recursive '**'"),
+            ("plugins/", "non-empty child path components"),
             ("../plugins/*", "child path components"),
             (".cache/plugins", "generated or OpenStrata state"),
             ("target/*", "generated or OpenStrata state"),
+            ("a/b/c/d/e/f/g/h/i", "maximum workspace member depth of 8"),
         ] {
             let src = format!("{SAMPLE}\n[workspace]\nmembers = ['{member}']\n");
             let error = Project::from_toml(&src).unwrap_err().to_string();
