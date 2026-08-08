@@ -34,7 +34,7 @@ use ost_build::{
 };
 use ost_core::fs::write_atomic;
 use ost_core::host::Os;
-use ost_core::paths::{find_project_root, STATE_DIR};
+use ost_core::paths::{find_project_root, PROJECT_MANIFEST, STATE_DIR};
 use ost_core::template::SCAFFOLD_PROVENANCE;
 use ost_core::variant::{Abi, Variant};
 use ost_core::{tools, Category, Error, Host, Result};
@@ -2513,19 +2513,21 @@ fn package_workspace(
     product: bool,
     fmt: Format,
 ) -> Result<()> {
-    let roots = discover_workspace_bundles(Utf8Path::new("."))?;
-    if roots.is_empty() {
-        return Err(Error::precondition(
-            "no plugin bundles found in immediate subdirectories or plugins/*",
-        )
-        .with_hint("run from the workspace root, or pass a bundle path instead of --workspace"));
+    let members = discover_workspace_members(Utf8Path::new("."))?;
+    if members.bundles.is_empty() {
+        return Err(
+            Error::precondition("no plugin bundles found in the workspace member set").with_hint(
+                "run from the workspace root, or pass a bundle path instead of --workspace",
+            ),
+        );
     }
-    let bundles = roots
+    let bundles = members
+        .bundles
         .iter()
         .map(|root| Bundle::load(root))
         .collect::<Result<Vec<_>>>()?;
-    let library_roots = discover_workspace_libraries(Utf8Path::new("."))?;
-    let libraries = library_roots
+    let libraries = members
+        .libraries
         .iter()
         .map(|root| Library::load(root))
         .collect::<Result<Vec<_>>>()?;
@@ -2606,7 +2608,8 @@ fn package_workspace(
 
     // Tools come last: nothing in the graph depends on an executable, and a tool
     // may load the libraries the bundles just staged.
-    let tools = discover_workspace_tools(Utf8Path::new("."))?
+    let tools = members
+        .tools
         .iter()
         .map(|root| ost_plugin::Tool::load(root))
         .collect::<Result<Vec<_>>>()?;
@@ -4994,25 +4997,34 @@ fn validate_workspace_graph(fmt: Format) -> Result<()> {
     Ok(())
 }
 
-/// Discover the workspace's bundles and libraries and validate their dependency
-/// graph. Shared by every `--workspace` entry point so one discovery rule and
-/// one graph computation serve them all.
+/// Discover and load every workspace member, then validate the bundle/library
+/// dependency graph. Shared by every `--workspace` entry point so one discovery
+/// rule and one graph computation serve them all.
 fn load_workspace_graph() -> Result<(Vec<Bundle>, Vec<Library>, ost_plugin::WorkspaceValidation)> {
-    let roots = discover_workspace_bundles(Utf8Path::new("."))?;
-    if roots.is_empty() {
-        return Err(Error::precondition(
-            "no plugin bundles found in immediate subdirectories or plugins/*",
-        )
-        .with_hint("run from the workspace root, or pass a bundle path instead of --workspace"));
+    let members = discover_workspace_members(Utf8Path::new("."))?;
+    if members.bundles.is_empty() {
+        return Err(
+            Error::precondition("no plugin bundles found in the workspace member set").with_hint(
+                "run from the workspace root, or pass a bundle path instead of --workspace",
+            ),
+        );
     }
-    let bundles = roots
+    let bundles = members
+        .bundles
         .iter()
         .map(|root| Bundle::load(root))
         .collect::<Result<Vec<_>>>()?;
-    let libraries = discover_workspace_libraries(Utf8Path::new("."))?
+    let libraries = members
+        .libraries
         .iter()
         .map(|root| Library::load(root))
         .collect::<Result<Vec<_>>>()?;
+    // Tools have no dependency edges, but their descriptors are still declared
+    // workspace members. Load them before a graph-only success can be reported
+    // so an unreadable or invalid descriptor cannot disappear from the gate.
+    for root in &members.tools {
+        ost_plugin::Tool::load(root)?;
+    }
     let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
     Ok((bundles, libraries, graph))
 }
@@ -5194,29 +5206,284 @@ fn test_workspace(
     }
 }
 
-/// Bundle directories of a workspace: immediate subdirectories and
-/// `plugins/*` entries holding an `openstrata.plugin.yaml`, sorted for
-/// deterministic ordering.
-fn discover_workspace_bundles(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
-    let mut found: Vec<Utf8PathBuf> = Vec::new();
-    let scan = |dir: &Utf8Path, found: &mut Vec<Utf8PathBuf>| -> Result<()> {
-        let Ok(entries) = std::fs::read_dir(dir.as_std_path()) else {
-            return Ok(());
-        };
-        for entry in entries.flatten() {
-            let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
-                continue;
-            };
-            if path.is_dir() && path.join(ost_plugin::PLUGIN_MANIFEST).is_file() {
-                found.push(path);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceMemberKind {
+    Bundle,
+    Library,
+    Tool,
+}
+
+#[derive(Debug, Default)]
+struct WorkspaceMembers {
+    bundles: Vec<Utf8PathBuf>,
+    libraries: Vec<Utf8PathBuf>,
+    tools: Vec<Utf8PathBuf>,
+}
+
+const WORKSPACE_SCAN_EXCLUDED: &[&str] =
+    &[".git", ".strata", "target", "build", "out", "node_modules"];
+
+/// Resolve the workspace's complete declared or discovered member set.
+///
+/// `[workspace].members` is authoritative when present. Without it, a bounded
+/// recursive scan preserves legacy manifests while allowing nested layouts.
+/// In both modes descriptor roots are compared as one set, so a descriptor can
+/// never silently disappear from a green graph result.
+fn discover_workspace_members(root: &Utf8Path) -> Result<WorkspaceMembers> {
+    // `read_dir(".")` may return child paths without the leading `.` while
+    // explicit expansion starts from `./...`. Normalize once so set comparison
+    // cannot classify the same descriptor as undeclared by spelling alone.
+    let root = canonical_root(root);
+    let explicit = if root.join(PROJECT_MANIFEST).is_file() {
+        load_project(&root)?
+            .workspace
+            .map(|workspace| workspace.members)
+    } else {
+        None
+    };
+
+    let scanned = scan_workspace_descriptors(&root)?;
+    let selected = if let Some(patterns) = explicit {
+        let mut selected = BTreeMap::new();
+        for pattern in patterns {
+            let matches = expand_workspace_member_pattern(&root, &pattern)?;
+            if matches.is_empty() {
+                return Err(Error::coded(
+                    "WORKSPACE_MEMBER_PATTERN_EMPTY",
+                    Category::Validation,
+                    format!("workspace member pattern '{pattern}' matched no directories"),
+                )
+                .with_hint(
+                    "fix or remove the pattern under [workspace].members in openstrata.toml",
+                ));
+            }
+            for member_root in matches {
+                // Literal components retain the manifest's spelling. On a
+                // case-insensitive filesystem (and for Windows 8.3 aliases)
+                // that can differ from the path returned by the recursive
+                // read_dir scan even though both name the same directory.
+                let member_root = canonical_root(&member_root);
+                let kind = workspace_descriptor_kind(&member_root)?.ok_or_else(|| {
+                    Error::coded(
+                        "WORKSPACE_MEMBER_DESCRIPTOR_MISSING",
+                        Category::Validation,
+                        format!(
+                            "declared workspace member '{member_root}' has no OpenStrata member descriptor"
+                        ),
+                    )
+                    .with_hint(format!(
+                        "add {}, {}, or {}, or narrow [workspace].members",
+                        ost_plugin::PLUGIN_MANIFEST,
+                        ost_plugin::LIBRARY_MANIFEST,
+                        ost_plugin::TOOL_MANIFEST
+                    ))
+                })?;
+                selected.insert(member_root, kind);
             }
         }
-        Ok(())
+
+        let omitted = scanned
+            .keys()
+            .filter(|path| !selected.contains_key(*path))
+            .map(|path| {
+                let relative = portable(path.strip_prefix(&root).unwrap_or(path));
+                if relative.is_empty() {
+                    ".".to_string()
+                } else {
+                    relative
+                }
+            })
+            .collect::<Vec<_>>();
+        if !omitted.is_empty() {
+            return Err(Error::coded(
+                "WORKSPACE_DESCRIPTOR_NOT_DECLARED",
+                Category::Validation,
+                format!(
+                    "workspace descriptor(s) found outside [workspace].members: {}",
+                    omitted.join(", ")
+                ),
+            )
+            .with_hint(
+                "add the descriptor roots to [workspace].members or remove stale descriptors",
+            ));
+        }
+        selected
+    } else {
+        // Legacy discovery historically searched below the project root. Keep
+        // a root-level descriptor opt-in through the explicit `"."` member so
+        // adding a plugin to a scaffolded root library does not silently turn
+        // that unrelated library into source-workspace composition.
+        scanned
+            .into_iter()
+            .filter(|(path, _)| path != &root)
+            .collect()
     };
-    scan(root, &mut found)?;
-    scan(&root.join("plugins"), &mut found)?;
-    found.sort();
+
+    let mut members = WorkspaceMembers::default();
+    for (path, kind) in selected {
+        match kind {
+            WorkspaceMemberKind::Bundle => members.bundles.push(path),
+            WorkspaceMemberKind::Library => members.libraries.push(path),
+            WorkspaceMemberKind::Tool => members.tools.push(path),
+        }
+    }
+    Ok(members)
+}
+
+fn workspace_descriptor_kind(root: &Utf8Path) -> Result<Option<WorkspaceMemberKind>> {
+    let descriptors = [
+        (ost_plugin::PLUGIN_MANIFEST, WorkspaceMemberKind::Bundle),
+        (ost_plugin::LIBRARY_MANIFEST, WorkspaceMemberKind::Library),
+        (ost_plugin::TOOL_MANIFEST, WorkspaceMemberKind::Tool),
+    ]
+    .into_iter()
+    .filter(|(name, _)| root.join(name).is_file())
+    .collect::<Vec<_>>();
+    match descriptors.as_slice() {
+        [] => Ok(None),
+        [(_, kind)] => Ok(Some(*kind)),
+        _ => Err(Error::coded(
+            "WORKSPACE_MEMBER_DESCRIPTOR_AMBIGUOUS",
+            Category::Validation,
+            format!(
+                "workspace member '{root}' contains multiple member descriptors: {}",
+                descriptors
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+        .with_hint("keep exactly one OpenStrata member descriptor in each member directory")),
+    }
+}
+
+fn scan_workspace_descriptors(
+    root: &Utf8Path,
+) -> Result<BTreeMap<Utf8PathBuf, WorkspaceMemberKind>> {
+    let mut found = BTreeMap::new();
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    while let Some((directory, depth)) = pending.pop() {
+        if let Some(kind) = workspace_descriptor_kind(&directory)? {
+            found.insert(directory.clone(), kind);
+        }
+        if depth == ost_manifest::MAX_WORKSPACE_MEMBER_DEPTH {
+            continue;
+        }
+        let entries = std::fs::read_dir(directory.as_std_path())
+            .map_err(|error| Error::io(directory.to_string(), error))?;
+        let mut children = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| Error::io(directory.to_string(), error))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| Error::io(entry.path().display().to_string(), error))?;
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+            let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
+                Error::InvalidManifest(format!(
+                    "workspace contains a non-UTF-8 directory below {}: {}",
+                    directory,
+                    path.display()
+                ))
+            })?;
+            if path.file_name().is_some_and(|name| {
+                WORKSPACE_SCAN_EXCLUDED.contains(&name) || name.starts_with('.')
+            }) {
+                continue;
+            }
+            children.push(path);
+        }
+        children.sort();
+        pending.extend(children.into_iter().rev().map(|path| (path, depth + 1)));
+    }
     Ok(found)
+}
+
+fn expand_workspace_member_pattern(root: &Utf8Path, pattern: &str) -> Result<Vec<Utf8PathBuf>> {
+    if pattern == "." {
+        return Ok(vec![root.to_path_buf()]);
+    }
+    let mut candidates = vec![root.to_path_buf()];
+    for component in pattern.split('/') {
+        let mut next = Vec::new();
+        for parent in &candidates {
+            if component.contains(['*', '?']) {
+                let entries = std::fs::read_dir(parent.as_std_path())
+                    .map_err(|error| Error::io(parent.to_string(), error))?;
+                for entry in entries {
+                    let entry = entry.map_err(|error| Error::io(parent.to_string(), error))?;
+                    let file_type = entry
+                        .file_type()
+                        .map_err(|error| Error::io(entry.path().display().to_string(), error))?;
+                    if !file_type.is_dir() || file_type.is_symlink() {
+                        continue;
+                    }
+                    let name = entry.file_name();
+                    let Some(name) = name.to_str() else {
+                        continue;
+                    };
+                    if WORKSPACE_SCAN_EXCLUDED.contains(&name) || name.starts_with('.') {
+                        continue;
+                    }
+                    if wildcard_component_matches(component, name) {
+                        let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
+                            Error::InvalidManifest(format!(
+                                "workspace pattern '{pattern}' matched a non-UTF-8 path: {}",
+                                path.display()
+                            ))
+                        })?;
+                        next.push(path);
+                    }
+                }
+            } else {
+                let path = parent.join(component);
+                let is_symlink = path
+                    .symlink_metadata()
+                    .map(|metadata| metadata.file_type().is_symlink())
+                    .unwrap_or(false);
+                if path.is_dir() && !is_symlink {
+                    next.push(path);
+                }
+            }
+        }
+        next.sort();
+        next.dedup();
+        candidates = next;
+        if candidates.is_empty() {
+            break;
+        }
+    }
+    Ok(candidates)
+}
+
+fn wildcard_component_matches(pattern: &str, name: &str) -> bool {
+    let pattern = pattern.chars().collect::<Vec<_>>();
+    let name = name.chars().collect::<Vec<_>>();
+    let mut matched = vec![vec![false; name.len() + 1]; pattern.len() + 1];
+    matched[0][0] = true;
+    for index in 0..pattern.len() {
+        for offset in 0..=name.len() {
+            if !matched[index][offset] {
+                continue;
+            }
+            match pattern[index] {
+                '*' => {
+                    matched[index + 1][offset] = true;
+                    if offset < name.len() {
+                        matched[index][offset + 1] = true;
+                    }
+                }
+                '?' if offset < name.len() => matched[index + 1][offset + 1] = true,
+                literal if offset < name.len() && literal == name[offset] => {
+                    matched[index + 1][offset + 1] = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    matched[pattern.len()][name.len()]
 }
 
 /// The executables every workspace tool declares, as managed build outputs
@@ -5326,49 +5593,7 @@ fn member_relative(canonical_project_root: &Utf8Path, member_root: &Utf8Path) ->
 /// executable — so they are discovered, not resolved, and always packaged after
 /// the bundles whose libraries they may load.
 fn discover_workspace_tools(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
-    let mut found = Vec::new();
-    let scan = |directory: &Utf8Path, found: &mut Vec<Utf8PathBuf>| {
-        let Ok(entries) = std::fs::read_dir(directory.as_std_path()) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
-                continue;
-            };
-            if path.is_dir() && path.join(ost_plugin::TOOL_MANIFEST).is_file() {
-                found.push(path);
-            }
-        }
-    };
-    scan(root, &mut found);
-    scan(&root.join("tools"), &mut found);
-    found.sort();
-    found.dedup();
-    Ok(found)
-}
-
-/// Plain CMake library projects of a workspace: immediate subdirectories and
-/// `libs/*` entries holding `openstrata.library.yaml`, in deterministic order.
-fn discover_workspace_libraries(root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
-    let mut found = Vec::new();
-    let scan = |directory: &Utf8Path, found: &mut Vec<Utf8PathBuf>| {
-        let Ok(entries) = std::fs::read_dir(directory.as_std_path()) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
-                continue;
-            };
-            if path.is_dir() && path.join(ost_plugin::LIBRARY_MANIFEST).is_file() {
-                found.push(path);
-            }
-        }
-    };
-    scan(root, &mut found);
-    scan(&root.join("libs"), &mut found);
-    found.sort();
-    found.dedup();
-    Ok(found)
+    Ok(discover_workspace_members(root)?.tools)
 }
 
 #[derive(Debug)]
@@ -5403,7 +5628,9 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
         Some(parent) => parent,
         None => return Ok(None),
     };
-    let root = if parent.file_name() == Some("plugins") {
+    let project_root = find_project_root(primary.root.as_std_path())
+        .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
+    let conventional_root = if parent.file_name() == Some("plugins") {
         match parent.parent() {
             Some(root) => root,
             None => return Ok(None),
@@ -5411,12 +5638,13 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
     } else {
         parent
     };
-    let roots = discover_workspace_bundles(root)?;
-    let library_roots = discover_workspace_libraries(root)?;
-    if roots.len() < 2 && library_roots.is_empty() {
+    let root = project_root.as_deref().unwrap_or(conventional_root);
+    let members = discover_workspace_members(root)?;
+    if members.bundles.len() < 2 && members.libraries.is_empty() {
         return Ok(None);
     }
-    let loaded = roots
+    let loaded = members
+        .bundles
         .iter()
         .map(|path| Bundle::load(path))
         .collect::<Result<Vec<_>>>()?;
@@ -5424,7 +5652,8 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
         return Ok(None);
     }
 
-    let loaded_libraries = library_roots
+    let loaded_libraries = members
+        .libraries
         .iter()
         .map(|path| Library::load(path))
         .collect::<Result<Vec<_>>>()?;
@@ -7569,6 +7798,46 @@ mod tests {
             debug: RequiredProductDebug(None),
             dependencies: serde_json::Value::Null,
         }
+    }
+
+    #[test]
+    fn workspace_member_component_globs_are_segment_local() {
+        for (pattern, name) in [
+            ("*", "hydra2"),
+            ("hydra*", "hydra2"),
+            ("h?dra2", "hydra2"),
+            ("アダプタ*", "アダプタ2"),
+        ] {
+            assert!(
+                wildcard_component_matches(pattern, name),
+                "{pattern} / {name}"
+            );
+        }
+        for (pattern, name) in [("hydra?", "hydra20"), ("usd*", "hydra2"), ("?", "ab")] {
+            assert!(
+                !wildcard_component_matches(pattern, name),
+                "{pattern} / {name}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_member_identity_uses_canonical_windows_casing() {
+        let root = unique_tmp("workspace-member-casing");
+        let member = root.join("plugins").join("alpha");
+        std::fs::create_dir_all(member.as_std_path()).unwrap();
+        write_test_file(
+            &root.join(PROJECT_MANIFEST),
+            "[project]\nname = 'case-test'\n\
+             [requires]\nplatform = 'cy2026'\n\
+             [workspace]\nmembers = ['PLUGINS/*']\n",
+        );
+        write_test_file(&member.join(ost_plugin::PLUGIN_MANIFEST), "placeholder\n");
+
+        let discovered = discover_workspace_members(&root).unwrap();
+        assert_eq!(discovered.bundles, vec![canonical_root(&member)]);
+        let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 
     /// `ost build` calls this *after* the build succeeded, only to record

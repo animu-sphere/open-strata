@@ -176,6 +176,7 @@ The openstrata.toml authored at a project root.
 | `build` | object | no |  |
 | `project` | object | yes |  |
 | `requires` | object | yes |  |
+| `workspace` | object | no |  |
 
 ## `renderer-report.schema.json`
 

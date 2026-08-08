@@ -445,6 +445,7 @@ fn adopt(args: RendererAdoptArgs, fmt: Format) -> Result<()> {
             },
             build: None,
             host: None,
+            workspace: None,
         };
         let body = project.to_toml()?;
         (project, "create", Some(body))

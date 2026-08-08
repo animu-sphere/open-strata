@@ -79,6 +79,26 @@
           }
         }
       }
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["members"],
+      "additionalProperties": false,
+      "properties": {
+        "members": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "anyOf": [
+              { "const": "." },
+              { "pattern": "^(?!\\s)(?!.*\\s$)(?!.*\\\\)(?!.*\\*\\*)(?!.*[:{}\\[\\]$~%])(?!.*(?:^|/)\\.)(?!.*(?:^|/)(?:target|build|out|node_modules)(?:/|$))[^/]+(?:/[^/]+){0,7}$" }
+            ]
+          }
+        }
+      }
     }
   }
 }

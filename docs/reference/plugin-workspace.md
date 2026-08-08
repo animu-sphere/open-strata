@@ -1,11 +1,41 @@
 # Plugin workspace dependency contract
 
-`ost plugin test --workspace` discovers bundle manifests in immediate child
-directories and `plugins/*`, plus plain-library descriptors in immediate child
-directories and `libs/*`. It sorts them by path, validates their dependency
-graph, and only then resolves a runtime or runs per-bundle verification. The
-validated graph supplies each bundle's transitive runtime/test closure and
-deterministic bundle and library build order.
+`ost plugin test --workspace` resolves one complete member set, sorts it by
+path, validates its dependency graph, and only then resolves a runtime or runs
+per-bundle verification. The validated graph supplies each bundle's transitive
+runtime/test closure and deterministic bundle and library build order.
+
+Declare the authoritative member roots in the project `openstrata.toml`:
+
+```toml
+[workspace]
+members = [
+  ".",                 # the project root, only when it has a member descriptor
+  "plugins/*",         # one path component per * or ? wildcard
+  "adapters/*/*",
+  "libs/vrmContainer",
+  "tools/converter",
+]
+```
+
+Each selected directory must contain exactly one of
+`openstrata.plugin.yaml`, `openstrata.library.yaml`, or
+`openstrata.tool.yaml`. Patterns are portable project-relative paths, use `/`,
+and may contain `*` and `?` within a component. Recursive `**`, parent escapes,
+generated/state directories, and nesting deeper than eight components are
+rejected. Every pattern must match at least one directory.
+
+The declaration is fail-closed. A bounded scan of the project (at most eight
+levels, without following symlinks or entering hidden, `.strata`, `target`,
+`build`, `out`, or `node_modules` directories) reports any descriptor not covered by
+`members`. A malformed selected descriptor also fails loading. Thus a green
+`--graph-only` result cannot omit a source member or its dependency edges.
+
+Legacy projects without `[workspace]` use that bounded scan below the project
+root as a compatibility fallback; a root descriptor becomes a member only
+through an explicit `"."`. Adding the declaration is recommended whenever the
+repository has a deliberate multi-member layout, especially nested trees such
+as `adapters/*/*`.
 
 The graph check is separately askable:
 
@@ -304,6 +334,10 @@ written. Issues use stable codes:
 
 | Code | Meaning |
 | --- | --- |
+| `WORKSPACE_MEMBER_PATTERN_EMPTY` | A declared member pattern matches no directory. |
+| `WORKSPACE_MEMBER_DESCRIPTOR_MISSING` | A declared member directory has no OpenStrata member descriptor. |
+| `WORKSPACE_MEMBER_DESCRIPTOR_AMBIGUOUS` | One member directory contains more than one member descriptor kind. |
+| `WORKSPACE_DESCRIPTOR_NOT_DECLARED` | A bounded scan found a descriptor outside the authoritative member list. |
 | `WORKSPACE_BUNDLE_ID_INVALID` | A discovered plugin identity is not portable. |
 | `WORKSPACE_DUPLICATE_BUNDLE_ID` | More than one discovered bundle has the same identity. |
 | `WORKSPACE_DEPENDENCY_ID_INVALID` | A dependency id is not portable. |

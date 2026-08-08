@@ -173,6 +173,20 @@ pub const MAX_DISCOVERY_DEPTH: u8 = 4;
 /// The depth used when `[host.discovery]` declares roots but no `max_depth`.
 pub const DEFAULT_DISCOVERY_DEPTH: u8 = 2;
 
+/// `[workspace]` table — the source members OpenStrata composes.
+///
+/// Member patterns are portable, project-relative directory globs. `*` and
+/// `?` match within one path component; recursive `**` patterns are forbidden
+/// so discovery remains bounded by the declaration itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceConfig {
+    pub members: Vec<String>,
+}
+
+/// Maximum member nesting accepted by explicit and fallback workspace discovery.
+pub const MAX_WORKSPACE_MEMBER_DEPTH: usize = 8;
+
 impl Default for BuildConfig {
     fn default() -> Self {
         BuildConfig {
@@ -194,6 +208,8 @@ pub struct Project {
     pub build: Option<BuildConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<HostConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceConfig>,
 }
 
 impl Project {
@@ -214,6 +230,7 @@ impl Project {
             },
             build: None,
             host: None,
+            workspace: None,
         }
     }
 
@@ -233,11 +250,13 @@ impl Project {
         project.validate_version_source()?;
         project.validate_build_intents()?;
         project.validate_host_discovery()?;
+        project.validate_workspace()?;
         Ok(project)
     }
 
     pub fn to_toml(&self) -> Result<String> {
         self.validate_version_source()?;
+        self.validate_workspace()?;
         toml::to_string_pretty(self)
             .map_err(|e| Error::parse(PROJECT_MANIFEST, anyhow::Error::new(e)))
     }
@@ -366,6 +385,72 @@ impl Project {
         }
         Ok(())
     }
+
+    fn validate_workspace(&self) -> Result<()> {
+        let Some(workspace) = &self.workspace else {
+            return Ok(());
+        };
+        if workspace.members.is_empty() {
+            return Err(Error::InvalidManifest(
+                "workspace.members must declare at least one member pattern".into(),
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for member in &workspace.members {
+            if let Some(reason) = workspace_member_problem(member) {
+                return Err(Error::InvalidManifest(format!(
+                    "workspace.members entry '{member}' {reason}"
+                )));
+            }
+            if !seen.insert(member) {
+                return Err(Error::InvalidManifest(format!(
+                    "workspace.members entry '{member}' is duplicated"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn workspace_member_problem(member: &str) -> Option<&'static str> {
+    if member.is_empty() {
+        return Some("must not be empty");
+    }
+    if member.trim() != member {
+        return Some("must not have leading or trailing whitespace");
+    }
+    if member == "." {
+        return None;
+    }
+    if member.starts_with(['/', '\\']) || member.contains(':') {
+        return Some("must be a project-relative path");
+    }
+    if member.contains('\\') {
+        return Some("must use portable '/' separators");
+    }
+    if member.contains("**") {
+        return Some("must not use recursive '**' globs");
+    }
+    if member.contains(['[', ']', '{', '}']) {
+        return Some("may use only '*' and '?' glob metacharacters");
+    }
+    if member.contains('$') || member.contains('~') || member.contains('%') {
+        return Some("must not need shell or environment expansion");
+    }
+    if member.split('/').count() > MAX_WORKSPACE_MEMBER_DEPTH {
+        return Some("exceeds the maximum workspace member depth of 8");
+    }
+    for component in member.split('/') {
+        if component.is_empty() || matches!(component, "." | "..") {
+            return Some("must contain only non-empty child path components");
+        }
+        if component.starts_with('.')
+            || matches!(component, "target" | "build" | "out" | "node_modules")
+        {
+            return Some("must not select a generated or OpenStrata state directory");
+        }
+    }
+    None
 }
 
 /// Why a declared discovery root is unusable, or `None` when it is fine.
@@ -678,6 +763,44 @@ portability = "local-override"
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn workspace_members_parse_portable_bounded_globs() {
+        let src = format!(
+            "{SAMPLE}\n[workspace]\nmembers = [\".\", \"plugins/*\", \"adapters/*/*\", \"tools/converter\"]\n"
+        );
+        let workspace = Project::from_toml(&src)
+            .unwrap()
+            .workspace
+            .expect("workspace table");
+        assert_eq!(
+            workspace.members,
+            vec![".", "plugins/*", "adapters/*/*", "tools/converter"]
+        );
+    }
+
+    #[test]
+    fn workspace_members_reject_unbounded_or_nonportable_patterns() {
+        for (member, expected) in [
+            ("", "must not be empty"),
+            (" plugins/*", "whitespace"),
+            ("/plugins/*", "project-relative"),
+            ("plugins\\*", "portable '/'"),
+            ("plugins/**", "recursive '**'"),
+            ("plugins/", "non-empty child path components"),
+            ("../plugins/*", "child path components"),
+            (".cache/plugins", "generated or OpenStrata state"),
+            ("target/*", "generated or OpenStrata state"),
+            ("a/b/c/d/e/f/g/h/i", "maximum workspace member depth of 8"),
+        ] {
+            let src = format!("{SAMPLE}\n[workspace]\nmembers = ['{member}']\n");
+            let error = Project::from_toml(&src).unwrap_err().to_string();
+            assert!(error.contains(expected), "'{member}': {error}");
+        }
+
+        let empty = format!("{SAMPLE}\n[workspace]\nmembers = []\n");
+        assert!(Project::from_toml(&empty).is_err());
     }
 
     #[test]
