@@ -855,6 +855,7 @@ args = ["avatar.vrm"]
             provenance_size: None,
             runtime_id: None,
             runtime_digest: None,
+            openusd_compatibility: None,
         };
         let resolved = resolve(
             &declared,

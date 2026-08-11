@@ -57,6 +57,16 @@ path unless the caller explicitly claims a variant. Artifact-record
 normalization, selector generation, dependency/source identities, and
 consumer-side mismatch validation remain open below.
 
+**Implemented 2026-08-11 — artifact-record normalization slice:** runtime
+artifact records now preserve the producer's normalized OpenUSD compatibility
+identity instead of dropping it at import. Registration rejects unsupported
+compatibility schemas, unresolved compiler/native-runtime/Python/TBB versions,
+non-runtime manifests that claim the identity, and platform or OS/architecture
+bindings that contradict the producer provenance or artifact target. `artifact
+show` exposes the normalized variant, providers, exact versions, and graphics
+capabilities in both human and JSON output. Selector generation, exact
+dependency/source identities, and consumer requirement matching remain open.
+
 - Version and validate the OpenUSD artifact record, including ABI dimensions,
   capabilities, runtime providers, build/runtime requirement separation, exact
   dependency identities, and evidence digests.

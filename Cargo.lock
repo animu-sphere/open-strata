@@ -433,6 +433,7 @@ dependencies = [
  "anyhow",
  "camino",
  "ost-core",
+ "ost-platform",
  "serde",
  "serde_json",
  "tar",

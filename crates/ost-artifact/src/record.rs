@@ -15,6 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 use ost_core::{Error, Result};
+use ost_platform::ResolvedOpenUsdCompatibility;
 
 use crate::policy::TrustLevel;
 
@@ -172,6 +173,13 @@ pub struct ArtifactRecord {
     pub runtime_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_digest: Option<String>,
+    /// Normalized OpenUSD compatibility identity carried by runtime artifacts.
+    ///
+    /// This is copied from the producer manifest only after its provider
+    /// versions and its platform/target binding have been verified. Older and
+    /// non-runtime artifacts omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openusd_compatibility: Option<ResolvedOpenUsdCompatibility>,
 }
 
 impl ArtifactRecord {
@@ -260,6 +268,9 @@ impl ArtifactRecord {
         }
 
         let provenance = manifest.get("provenance");
+        let producer_platform = provenance
+            .and_then(|p| p.get("platform"))
+            .and_then(|v| v.as_str());
         let profile = provenance
             .and_then(|p| p.get("profile"))
             .and_then(|v| v.as_str())
@@ -273,6 +284,9 @@ impl ArtifactRecord {
             .and_then(|r| r.get("digest"))
             .and_then(|v| v.as_str())
             .map(str::to_string);
+        let target = require_str(manifest, "target")?;
+        let openusd_compatibility =
+            normalize_openusd_compatibility(manifest, kind, producer_platform, &target)?;
 
         // The two producers record validation differently: the plugin manifest
         // nests `{passed: bool}`, the package manifest carries the runtime's
@@ -294,7 +308,7 @@ impl ArtifactRecord {
             kind,
             name,
             version,
-            target: require_str(manifest, "target")?,
+            target,
             profile,
             digest,
             archive,
@@ -327,8 +341,72 @@ impl ArtifactRecord {
             provenance_size: None,
             runtime_id,
             runtime_digest,
+            openusd_compatibility,
         })
     }
+}
+
+/// Parse and validate the optional normalized OpenUSD identity on a producer
+/// manifest. The compatibility object is artifact identity, so accepting a
+/// partially resolved or contradictory value would make the record claim more
+/// than the produced bytes establish.
+fn normalize_openusd_compatibility(
+    manifest: &serde_json::Value,
+    kind: ArtifactKind,
+    producer_platform: Option<&str>,
+    target: &str,
+) -> Result<Option<ResolvedOpenUsdCompatibility>> {
+    let Some(value) = manifest.get("openusd_compatibility") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    if kind != ArtifactKind::Runtime {
+        return Err(Error::InvalidManifest(
+            "only runtime producer manifests may carry 'openusd_compatibility'".to_string(),
+        ));
+    }
+
+    let compatibility: ResolvedOpenUsdCompatibility = serde_json::from_value(value.clone())
+        .map_err(|error| {
+            Error::InvalidManifest(format!(
+                "producer manifest 'openusd_compatibility' is invalid: {error}"
+            ))
+        })?;
+    if compatibility.schema != 1 {
+        return Err(Error::InvalidManifest(format!(
+            "producer manifest carries unsupported OpenUSD compatibility schema {} (expected 1)",
+            compatibility.schema
+        )));
+    }
+    if !compatibility.is_verified() {
+        return Err(Error::InvalidManifest(
+            "producer manifest OpenUSD compatibility identity has unverified provider versions"
+                .to_string(),
+        ));
+    }
+    if producer_platform != Some(compatibility.platform.as_str()) {
+        return Err(Error::InvalidManifest(format!(
+            "producer manifest OpenUSD platform '{}' does not match provenance platform '{}'",
+            compatibility.platform,
+            producer_platform.unwrap_or("<missing>")
+        )));
+    }
+    let target_prefix = format!(
+        "{}-{}-",
+        compatibility.os.as_str(),
+        compatibility.arch.as_str()
+    );
+    if !target.starts_with(&target_prefix) {
+        return Err(Error::InvalidManifest(format!(
+            "producer manifest OpenUSD target {}-{} does not match artifact target '{target}'",
+            compatibility.os.as_str(),
+            compatibility.arch.as_str()
+        )));
+    }
+
+    Ok(Some(compatibility))
 }
 
 /// One archived file as listed by the producer manifest (`files[]`).
@@ -544,6 +622,47 @@ mod tests {
         })
     }
 
+    fn runtime_manifest_with_openusd() -> serde_json::Value {
+        let mut manifest = package_manifest();
+        manifest["kind"] = serde_json::json!(RUNTIME_KIND);
+        manifest["name"] = serde_json::json!("openstrata-cy2026-usd");
+        manifest["target"] = serde_json::json!("linux-x86_64-glibc228-py313");
+        manifest["openusd_compatibility"] = serde_json::json!({
+            "schema": 1,
+            "platform": "cy2026",
+            "os": "linux",
+            "arch": "x86_64",
+            "toolchain": {
+                "family": "gcc",
+                "provider": "managed",
+                "version": "14.2.0",
+                "version_constraint": "14.x",
+                "cxx_standard": "20",
+                "runtime": {
+                    "family": "glibc",
+                    "provider": "system",
+                    "version": "2.28",
+                    "version_constraint": ">=2.28"
+                }
+            },
+            "python": {
+                "family": "cpython",
+                "provider": "managed",
+                "version": "3.13.7",
+                "version_constraint": "3.13.x"
+            },
+            "tbb": {
+                "family": "onetbb",
+                "provider": "managed",
+                "version": "2022.1.0",
+                "version_constraint": "2022.x"
+            },
+            "variant": "vulkan",
+            "capabilities": ["hgi-gl", "hgi-vulkan"]
+        });
+        manifest
+    }
+
     #[test]
     fn plugin_manifest_derives_a_plugin_record() {
         let r = ArtifactRecord::from_producer_manifest(
@@ -603,6 +722,84 @@ mod tests {
             ArtifactKind::from_tag("product"),
             Some(ArtifactKind::Product)
         );
+    }
+
+    #[test]
+    fn runtime_record_preserves_verified_openusd_compatibility() {
+        let record = ArtifactRecord::from_producer_manifest(
+            &runtime_manifest_with_openusd(),
+            ArtifactSource::Imported,
+            1_760_000_000,
+            "ost test",
+        )
+        .unwrap();
+
+        let compatibility = record.openusd_compatibility.unwrap();
+        assert_eq!(compatibility.platform, "cy2026");
+        assert_eq!(
+            compatibility.variant,
+            ost_platform::OpenUsdVariantId::Vulkan
+        );
+        assert_eq!(compatibility.python.version.as_deref(), Some("3.13.7"));
+        assert_eq!(compatibility.capabilities, ["hgi-gl", "hgi-vulkan"]);
+    }
+
+    #[test]
+    fn runtime_record_rejects_unverified_or_contradictory_openusd_identity() {
+        let mut unverified = runtime_manifest_with_openusd();
+        unverified["openusd_compatibility"]["tbb"]
+            .as_object_mut()
+            .unwrap()
+            .remove("version");
+        let error = ArtifactRecord::from_producer_manifest(
+            &unverified,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unverified provider versions"));
+
+        let mut wrong_platform = runtime_manifest_with_openusd();
+        wrong_platform["openusd_compatibility"]["platform"] = serde_json::json!("cy2025");
+        let error = ArtifactRecord::from_producer_manifest(
+            &wrong_platform,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("does not match provenance platform"));
+
+        let mut wrong_target = runtime_manifest_with_openusd();
+        wrong_target["openusd_compatibility"]["os"] = serde_json::json!("windows");
+        let error = ArtifactRecord::from_producer_manifest(
+            &wrong_target,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("does not match artifact target"));
+    }
+
+    #[test]
+    fn non_runtime_record_cannot_claim_openusd_compatibility() {
+        let mut manifest = plugin_manifest();
+        manifest["openusd_compatibility"] =
+            runtime_manifest_with_openusd()["openusd_compatibility"].clone();
+        let error = ArtifactRecord::from_producer_manifest(
+            &manifest,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("only runtime producer manifests"));
     }
 
     #[test]
