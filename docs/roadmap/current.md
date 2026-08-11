@@ -53,9 +53,8 @@ refuses direct or nested CMake overrides of protected compatibility dimensions,
 and clears managed install/build trees on forced rebuilds. It records the verified
 selection in schema-5 runtime identity and the exported producer manifest.
 Targets without an approved cell retain the legacy unclassified build
-path unless the caller explicitly claims a variant. Artifact-record
-normalization, selector generation, dependency/source identities, and
-consumer-side mismatch validation remain open below.
+path unless the caller explicitly claims a variant. Exact dependency/source
+identities and consumer-side mismatch validation remain open below.
 
 **Implemented 2026-08-11 — artifact-record normalization slice:** runtime
 artifact records now preserve the producer's normalized OpenUSD compatibility
@@ -64,8 +63,20 @@ compatibility schemas, unresolved compiler/native-runtime/Python/TBB versions,
 non-runtime manifests that claim the identity, and platform or OS/architecture
 bindings that contradict the producer provenance or artifact target. `artifact
 show` exposes the normalized variant, providers, exact versions, and graphics
-capabilities in both human and JSON output. Selector generation, exact
-dependency/source identities, and consumer requirement matching remain open.
+capabilities in both human and JSON output. Exact dependency/source identities
+and consumer requirement matching remain open.
+
+**Implemented 2026-08-11 — deterministic compatibility-selector slice:** every
+verified normalized OpenUSD identity now produces one OCI-tag-safe selector.
+Its readable prefix names the platform, OS/architecture, and variant; its full
+SHA-256 suffix covers schema, toolchain and native runtime, C++ standard,
+Python and TBB families/providers/exact versions, and the sorted capability
+set. `artifact show` exposes the selector in human and JSON output. An untagged
+`artifact push` of a normalized runtime publishes that selector as its
+deterministic convenience tag while retaining the immutable OCI digest as the
+reproducible identity, and the OCI manifest repeats the selector as an
+`io.openstrata.openusd.selector` annotation. Explicit publisher tags are not
+rewritten; legacy and non-runtime artifacts retain the untagged path.
 
 - Version and validate the OpenUSD artifact record, including ABI dimensions,
   capabilities, runtime providers, build/runtime requirement separation, exact

@@ -2,7 +2,10 @@
 //! The platform manifest data model.
 
 use indexmap::IndexMap;
-use ost_core::host::{Arch, Os};
+use ost_core::{
+    digest,
+    host::{Arch, Os},
+};
 use serde::{Deserialize, Serialize};
 
 /// Provenance of a platform definition.
@@ -194,6 +197,91 @@ impl ResolvedOpenUsdCompatibility {
             && exact(&self.python.version)
             && exact(&self.tbb.version)
     }
+
+    /// A deterministic, OCI-tag-safe selector for this exact compatibility
+    /// identity.
+    ///
+    /// The readable prefix is deliberately short; the full SHA-256 suffix is
+    /// over every compatibility-critical field (including providers, exact
+    /// versions, C++ standard, and a sorted capability set). This keeps the
+    /// selector within OCI's 128-character tag limit without dropping identity
+    /// dimensions from the comparison contract.
+    pub fn selector(&self) -> Option<String> {
+        if !self.is_verified() {
+            return None;
+        }
+
+        #[derive(Serialize)]
+        struct SelectorIdentity<'a> {
+            schema: u32,
+            platform: &'a str,
+            os: Os,
+            arch: Arch,
+            toolchain: &'a ResolvedOpenUsdToolchain,
+            python: &'a ResolvedOpenUsdProvider,
+            tbb: &'a ResolvedOpenUsdProvider,
+            variant: OpenUsdVariantId,
+            capabilities: Vec<&'a str>,
+        }
+
+        let mut capabilities = self
+            .capabilities
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        capabilities.sort_unstable();
+        capabilities.dedup();
+        let identity = SelectorIdentity {
+            schema: self.schema,
+            platform: &self.platform,
+            os: self.os,
+            arch: self.arch,
+            toolchain: &self.toolchain,
+            python: &self.python,
+            tbb: &self.tbb,
+            variant: self.variant,
+            capabilities,
+        };
+        let bytes = serde_json::to_vec(&identity).expect("selector identity serializes");
+        let digest = digest::sha256_hex(&bytes);
+        let hash = digest
+            .strip_prefix("sha256:")
+            .expect("sha256 renderer includes its algorithm");
+
+        let readable = format!(
+            "openusd-{}-{}-{}-{}",
+            self.platform,
+            self.os.as_str(),
+            self.arch.as_str(),
+            self.variant.as_str()
+        );
+        let mut prefix = String::with_capacity(readable.len());
+        let mut previous_separator = false;
+        for ch in readable.chars() {
+            let normalized = if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            };
+            if normalized == '-' && previous_separator {
+                continue;
+            }
+            previous_separator = normalized == '-';
+            prefix.push(normalized);
+        }
+        let prefix = prefix.trim_matches(['.', '_', '-']);
+        let mut prefix = if prefix.is_empty() {
+            "openusd".to_string()
+        } else {
+            prefix.to_string()
+        };
+        // 63 readable bytes + '-' + 64 hex bytes = OCI's 128-byte tag limit.
+        prefix.truncate(prefix.len().min(63));
+        while prefix.ends_with(['.', '_', '-']) {
+            prefix.pop();
+        }
+        Some(format!("{prefix}-{hash}"))
+    }
 }
 
 impl Platform {
@@ -263,5 +351,71 @@ impl Platform {
 impl ost_core::catalog::Identified for Platform {
     fn id(&self) -> &str {
         &self.id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn verified_compatibility() -> ResolvedOpenUsdCompatibility {
+        let provider = |family: &str, provider: &str, version: &str, constraint: &str| {
+            ResolvedOpenUsdProvider {
+                family: family.into(),
+                provider: provider.into(),
+                version: Some(version.into()),
+                version_constraint: constraint.into(),
+            }
+        };
+        ResolvedOpenUsdCompatibility {
+            schema: 1,
+            platform: "cy2026".into(),
+            os: Os::Linux,
+            arch: Arch::X86_64,
+            toolchain: ResolvedOpenUsdToolchain {
+                family: "gcc".into(),
+                provider: "system".into(),
+                version: Some("14.2.0".into()),
+                version_constraint: "14.2".into(),
+                cxx_standard: "20".into(),
+                runtime: provider("glibc", "system", "2.39", "2.28"),
+            },
+            python: provider("cpython", "platform", "3.13.7", "3.13.x"),
+            tbb: provider("onetbb", "platform", "2022.1.0", "2022.x"),
+            variant: OpenUsdVariantId::Vulkan,
+            capabilities: vec!["usd-core".into(), "vulkan".into(), "opengl".into()],
+        }
+    }
+
+    #[test]
+    fn selector_is_deterministic_oci_tag_identity() {
+        let compatibility = verified_compatibility();
+        let selector = compatibility.selector().unwrap();
+        assert!(selector.starts_with("openusd-cy2026-linux-x86_64-vulkan-"));
+        assert!(selector.len() <= 128);
+        assert!(selector
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)));
+        assert_eq!(compatibility.selector().as_deref(), Some(selector.as_str()));
+    }
+
+    #[test]
+    fn selector_normalizes_capability_order_but_captures_providers() {
+        let compatibility = verified_compatibility();
+        let mut reordered = compatibility.clone();
+        reordered.capabilities.reverse();
+        reordered.capabilities.push("vulkan".into());
+        assert_eq!(compatibility.selector(), reordered.selector());
+
+        let mut other_provider = compatibility.clone();
+        other_provider.python.provider = "host".into();
+        assert_ne!(compatibility.selector(), other_provider.selector());
+    }
+
+    #[test]
+    fn unresolved_identity_has_no_selector() {
+        let mut compatibility = verified_compatibility();
+        compatibility.tbb.version = None;
+        assert_eq!(compatibility.selector(), None);
     }
 }

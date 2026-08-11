@@ -318,7 +318,13 @@ fn push_remote(
     plain_http: bool,
     fmt: Format,
 ) -> Result<()> {
-    let parsed = RemoteReference::parse(destination)?;
+    let record = store.resolve(digest)?;
+    let compatibility_selector = record.openusd_selector();
+    let mut parsed = RemoteReference::parse(destination)?;
+    // An untagged normalized OpenUSD runtime gets its deterministic
+    // compatibility selector. Explicit publisher tags remain authoritative,
+    // and non-runtime/legacy artifacts retain the existing untagged behavior.
+    apply_default_openusd_tag(&mut parsed, compatibility_selector.as_deref());
     let oci = match &parsed {
         RemoteReference::Oci(oci) => oci,
         RemoteReference::File(_) => {
@@ -332,7 +338,14 @@ fn push_remote(
     let transport = transport_for(&parsed, plain_http);
     let outcome = ost_artifact::push(transport.as_ref(), store, digest, &parsed)?;
     if fmt.is_json() {
-        output::success(&push_outcome_json(&outcome, policy.as_ref()));
+        let mut value = push_outcome_json(&outcome, policy.as_ref());
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "compatibility_selector".into(),
+                serde_json::to_value(&compatibility_selector).unwrap_or_default(),
+            );
+        }
+        output::success(&value);
         return Ok(());
     }
     let verb = if outcome.already_present {
@@ -344,6 +357,9 @@ fn push_remote(
     println!("  locator:      {}", outcome.locator);
     println!("  oci digest:   {}", outcome.oci_digest);
     println!("  artifact:     {}", outcome.artifact_digest);
+    if let Some(selector) = &compatibility_selector {
+        println!("  selector:     {selector}");
+    }
     println!("  auth mode:    {}", outcome.auth_mode);
     if let Some(policy) = &policy {
         println!("  policy:       {}", policy.path);
@@ -379,6 +395,14 @@ fn push_remote(
          the expected_oci_digest line needs updating after a republish."
     );
     Ok(())
+}
+
+fn apply_default_openusd_tag(reference: &mut RemoteReference, selector: Option<&str>) {
+    if let (RemoteReference::Oci(oci), Some(selector)) = (reference, selector) {
+        if oci.tag.is_none() {
+            oci.tag = Some(selector.to_string());
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -762,6 +786,9 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
         println!("  runtime:     {id} ({dg})");
     }
     if let Some(openusd) = &r.openusd_compatibility {
+        if let Some(selector) = r.openusd_selector() {
+            println!("  selector:    {selector}");
+        }
         println!(
             "  OpenUSD:     {} {}-{} {}",
             openusd.platform,
@@ -1137,5 +1164,37 @@ fn extract(store: &ArtifactStore, digest: &str, dest: &str, fmt: Format) -> Resu
 
 /// The record as JSON for envelopes (serde derives the stable field order).
 fn record_json(r: &ArtifactRecord) -> serde_json::Value {
-    serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({}))
+    let mut value = serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({}));
+    if let (Some(object), Some(selector)) = (value.as_object_mut(), r.openusd_selector()) {
+        object.insert("openusd_selector".into(), selector.into());
+    }
+    value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compatibility_selector_only_fills_an_absent_oci_tag() {
+        let selector = "openusd-cy2026-linux-x86_64-standard-deadbeef";
+        let mut untagged = RemoteReference::parse("oci://registry.example/vfx/openusd").unwrap();
+        apply_default_openusd_tag(&mut untagged, Some(selector));
+        assert_eq!(
+            untagged.locator(),
+            format!("oci://registry.example/vfx/openusd:{selector}")
+        );
+
+        let mut explicit =
+            RemoteReference::parse("oci://registry.example/vfx/openusd:release").unwrap();
+        apply_default_openusd_tag(&mut explicit, Some(selector));
+        assert_eq!(
+            explicit.locator(),
+            "oci://registry.example/vfx/openusd:release"
+        );
+
+        let mut legacy = RemoteReference::parse("oci://registry.example/vfx/openusd").unwrap();
+        apply_default_openusd_tag(&mut legacy, None);
+        assert_eq!(legacy.locator(), "oci://registry.example/vfx/openusd");
+    }
 }

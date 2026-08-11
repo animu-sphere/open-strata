@@ -196,6 +196,15 @@ impl ArtifactRecord {
         format!("sha256:{}", &hex[..hex.len().min(12)])
     }
 
+    /// Deterministic OCI-compatible selector for a normalized OpenUSD runtime.
+    /// Legacy and non-runtime records do not have enough identity to produce
+    /// one and therefore return `None`.
+    pub fn openusd_selector(&self) -> Option<String> {
+        self.openusd_compatibility
+            .as_ref()
+            .and_then(ResolvedOpenUsdCompatibility::selector)
+    }
+
     /// Reinterpret a pre-v0.18.0 record, whose `producer` field held the tool
     /// that *imported* the artifact rather than the one that produced it.
     ///
@@ -774,7 +783,8 @@ mod tests {
         )
         .unwrap();
 
-        let compatibility = record.openusd_compatibility.unwrap();
+        let selector = record.openusd_selector().unwrap();
+        let compatibility = record.openusd_compatibility.as_ref().unwrap();
         assert_eq!(compatibility.platform, "cy2026");
         assert_eq!(
             compatibility.variant,
@@ -782,6 +792,8 @@ mod tests {
         );
         assert_eq!(compatibility.python.version.as_deref(), Some("3.13.7"));
         assert_eq!(compatibility.capabilities, ["hgi-gl", "hgi-vulkan"]);
+        assert!(selector.starts_with("openusd-cy2026-linux-x86_64-vulkan-"));
+        assert_eq!(selector.rsplit_once('-').unwrap().1.len(), 64);
     }
 
     #[test]
