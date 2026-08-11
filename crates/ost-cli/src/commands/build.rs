@@ -23,9 +23,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::Args;
 
 use ost_build::{
-    BuildCompletion, BuildIntent, BuildProjectIdentity, CMakeCacheEntry, CMakeCacheType,
-    CachePathPortability, LeaseMode, RendererEvidenceBinding, Target, TargetLease, TargetLock,
-    BUILD_COMPLETION_FILE, TARGET_LEASE_FILE,
+    BuildCompletion, BuildIntent, BuildOutput, BuildProjectIdentity, CMakeCacheEntry,
+    CMakeCacheType, CachePathPortability, LeaseMode, RendererEvidenceBinding, Target, TargetLease,
+    TargetLock, BUILD_COMPLETION_FILE, TARGET_LEASE_FILE,
 };
 use ost_core::fs::write_atomic;
 use ost_core::host::Os;
@@ -338,6 +338,16 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     // 6. Generate the target's `.strata/` files now that checks have passed.
     rep.phase("Generating toolchain and presets");
     let build_dir = root.join(&relative_build);
+    // Capture package-relevant bytes before CMake runs. A workspace member can
+    // contain a valid-looking output from a bundle-local or unmanaged build;
+    // its mere presence after the root build is not proof that this invocation
+    // produced it.
+    let previous_completion = read_previous_completion(&build_dir);
+    let (outputs, _) = crate::commands::plugin::workspace_managed_outputs(&root, target.os());
+    let root_output_baseline = RootOutputBaseline {
+        outputs,
+        previous_completion,
+    };
     let renderer_reports_before =
         crate::commands::renderer::snapshot_managed_renderer_reports(&root, &build_dir)?;
     let producer_started_unix = lease
@@ -552,6 +562,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         &intent,
         lease.invocation(),
         renderer_reports,
+        &root_output_baseline,
     )?;
     for warning in &completion_warnings {
         rep.note(warning);
@@ -635,6 +646,17 @@ fn invalidate_completion(build_dir: &Utf8Path) -> Result<()> {
     }
 }
 
+fn read_previous_completion(build_dir: &Utf8Path) -> Option<BuildCompletion> {
+    let path = build_dir.join(BUILD_COMPLETION_FILE);
+    let source = std::fs::read_to_string(path.as_std_path()).ok()?;
+    serde_json::from_str(&source).ok()
+}
+
+struct RootOutputBaseline {
+    outputs: Vec<BuildOutput>,
+    previous_completion: Option<BuildCompletion>,
+}
+
 fn write_completion(
     root: &Utf8Path,
     id: &str,
@@ -642,6 +664,7 @@ fn write_completion(
     intent: &BuildIntent,
     invocation: Option<&str>,
     renderer_reports: Vec<RendererEvidenceBinding>,
+    root_output_baseline: &RootOutputBaseline,
 ) -> Result<Vec<String>> {
     let lock_path = root
         .join(STATE_DIR)
@@ -654,6 +677,7 @@ fn write_completion(
         .map_err(|error| Error::parse(lock_path.to_string(), anyhow::Error::new(error)))?;
     let project = load_project(root)?;
     let project_version = project.effective_version(root)?;
+    let project_name = project.project.name;
     let completed_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -661,22 +685,39 @@ fn write_completion(
     let completion = BuildCompletion::from_lock(
         &lock,
         BuildProjectIdentity {
-            name: project.project.name,
-            version: project_version,
+            name: project_name.clone(),
+            version: project_version.clone(),
         },
         relative_build.as_str(),
         intent.clone(),
         completed_unix,
     );
-    // Workspace members are packaged from the output trees this root build
-    // produced. Record bundle registration/library/Python bytes as well as tool
-    // executables, so a later `plugin package` can distinguish this managed
-    // producer from a plain root CMake build that overwrote the same paths. This
-    // is evidence *about* a build that already succeeded, so a member that
-    // cannot be read is a warning: the target remains built and that member is
-    // packaged honestly as `untracked`.
-    let (outputs, warnings) =
+    // A post-build scan says which package-relevant bytes exist, but not which
+    // CMake targets participated. Bind only bytes that changed during this
+    // invocation, plus exact bytes already attributed by a completion with the
+    // same validated build identity. Everything else remains honestly
+    // `untracked` instead of borrowing this root build's provenance.
+    let (outputs_after, mut warnings) =
         crate::commands::plugin::workspace_managed_outputs(root, lock.variant.os);
+    let previous_outputs = root_output_baseline
+        .previous_completion
+        .as_ref()
+        .filter(|previous| {
+            previous
+                .validate_against(&lock, &project_name, &project_version, relative_build)
+                .is_ok()
+                && previous.fingerprint() == completion.fingerprint()
+        })
+        .map(|previous| previous.outputs.as_slice())
+        .unwrap_or_default();
+    let (outputs, binding_warning) = select_root_managed_outputs(
+        &root_output_baseline.outputs,
+        outputs_after,
+        previous_outputs,
+    );
+    if let Some(warning) = binding_warning {
+        warnings.push(warning);
+    }
     // A read-only attach holds no lease and so names no owning invocation.
     let completion = match invocation {
         Some(invocation) => completion.with_invocation(invocation),
@@ -690,6 +731,41 @@ fn write_completion(
     let path = root.join(relative_build).join(BUILD_COMPLETION_FILE);
     write_atomic(path.as_std_path(), format!("{body}\n").as_bytes())?;
     Ok(warnings)
+}
+
+fn select_root_managed_outputs(
+    before: &[BuildOutput],
+    after: Vec<BuildOutput>,
+    previous: &[BuildOutput],
+) -> (Vec<BuildOutput>, Option<String>) {
+    let before = before
+        .iter()
+        .map(|output| (output.path.as_str(), output))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let previous = previous
+        .iter()
+        .map(|output| (output.path.as_str(), output))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut selected = Vec::new();
+    let mut omitted = Vec::new();
+    for output in after {
+        let changed = before.get(output.path.as_str()).copied() != Some(&output);
+        let already_attributed = previous.get(output.path.as_str()).copied() == Some(&output);
+        if changed || already_attributed {
+            selected.push(output);
+        } else {
+            omitted.push(output.path.clone());
+        }
+    }
+    let warning = (!omitted.is_empty()).then(|| {
+        let examples = omitted.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        let suffix = if omitted.len() > 3 { ", ..." } else { "" };
+        format!(
+            "warning: did not attribute {} unchanged workspace output(s) without matching prior root-build evidence: {examples}{suffix}",
+            omitted.len()
+        )
+    });
+    (selected, warning)
 }
 
 /// Confirm `build/<id>` exists and is non-empty after a successful build, so a
@@ -1159,5 +1235,40 @@ mod tests {
             .cache
             .insert("MERLIN_ENABLE_HYDRA2".into(), CMakeCacheEntry::bool(false));
         assert!(validate_completed_intent(&completed, &declared).is_err());
+    }
+
+    fn output(path: &str, digest_byte: char) -> BuildOutput {
+        BuildOutput {
+            path: path.into(),
+            sha256: format!("sha256:{}", digest_byte.to_string().repeat(64)),
+            size: 10,
+        }
+    }
+
+    #[test]
+    fn root_output_binding_rejects_unchanged_unattributed_bytes() {
+        let stale = output("plugins/stale/lib/libStale.so", 'a');
+
+        let (selected, warning) =
+            select_root_managed_outputs(std::slice::from_ref(&stale), vec![stale.clone()], &[]);
+
+        assert!(selected.is_empty());
+        assert!(warning.unwrap().contains("plugins/stale/lib/libStale.so"));
+    }
+
+    #[test]
+    fn root_output_binding_accepts_changed_or_previously_attributed_bytes() {
+        let old = output("plugins/toy/lib/libToy.so", 'a');
+        let changed = output("plugins/toy/lib/libToy.so", 'b');
+        let unchanged = output("plugins/noop/lib/libNoop.so", 'c');
+
+        let (selected, warning) = select_root_managed_outputs(
+            &[old, unchanged.clone()],
+            vec![changed.clone(), unchanged.clone()],
+            std::slice::from_ref(&unchanged),
+        );
+
+        assert_eq!(selected, vec![changed, unchanged]);
+        assert!(warning.is_none());
     }
 }

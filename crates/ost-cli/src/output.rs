@@ -92,11 +92,81 @@ pub fn error(err: &ost_core::Error, fmt: Format) {
             } else {
                 eprintln!("error[{}]{phase}: {err}", err.code());
             }
+            if let Some(data) = err.data() {
+                for line in transfer_failure_lines(data) {
+                    eprintln!("{line}");
+                }
+            }
             if let Some(hint) = err.hint() {
                 eprintln!("  hint: {hint}");
             }
         }
     }
+}
+
+fn transfer_failure_lines(data: &serde_json::Value) -> Vec<String> {
+    let Some(transfer) = data.get("transfer") else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    if let Some(manifest) = transfer
+        .get("manifest_digest")
+        .and_then(|value| value.as_str())
+    {
+        lines.push(format!("  manifest:   {manifest}"));
+    }
+    let Some(layer) = transfer.get("layer") else {
+        return lines;
+    };
+    let layer_fields = (
+        layer.get("title").and_then(|value| value.as_str()),
+        layer.get("digest").and_then(|value| value.as_str()),
+        layer.get("received_bytes").and_then(|value| value.as_u64()),
+        layer.get("expected_bytes").and_then(|value| value.as_u64()),
+    );
+    if let (Some(title), Some(digest), Some(received), Some(expected)) = layer_fields {
+        lines.push(format!(
+            "  layer:      {title} {digest} ({received}/{expected} bytes)"
+        ));
+    }
+    let Some(attempts) = layer.get("attempts").and_then(|value| value.as_array()) else {
+        return lines;
+    };
+    for attempt in attempts {
+        let fields = (
+            attempt.get("attempt").and_then(|value| value.as_u64()),
+            attempt
+                .get("resume_offset")
+                .and_then(|value| value.as_u64()),
+            attempt
+                .get("received_bytes")
+                .and_then(|value| value.as_u64()),
+            attempt.get("elapsed_ms").and_then(|value| value.as_u64()),
+            attempt.get("idle_age_ms").and_then(|value| value.as_u64()),
+            attempt.get("decision").and_then(|value| value.as_str()),
+            attempt.get("detail").and_then(|value| value.as_str()),
+        );
+        if let (
+            Some(number),
+            Some(offset),
+            Some(received),
+            Some(elapsed),
+            Some(idle),
+            Some(decision),
+            Some(detail),
+        ) = fields
+        {
+            let retry = attempt
+                .get("retry_after_ms")
+                .and_then(|value| value.as_u64())
+                .map(|milliseconds| format!(", retry in {milliseconds}ms"))
+                .unwrap_or_default();
+            lines.push(format!(
+                "    attempt {number} offset {offset} received {received} elapsed {elapsed}ms idle {idle}ms — {decision}: {detail}{retry}"
+            ));
+        }
+    }
+    lines
 }
 
 /// Print a value as pretty JSON to stdout. The low-level printer the envelope
@@ -248,5 +318,39 @@ mod tests {
             value["token_like_but_not_a_path"],
             "sk-example-not-a-real-secret"
         );
+    }
+
+    #[test]
+    fn human_transfer_failure_lines_include_terminal_attempt_evidence() {
+        let data = serde_json::json!({
+            "transfer": {
+                "manifest_digest": "sha256:manifest",
+                "layer": {
+                    "digest": "sha256:layer",
+                    "title": "artifact.tar.zst",
+                    "expected_bytes": 1024,
+                    "received_bytes": 256,
+                    "attempts": [{
+                        "attempt": 2,
+                        "resume_offset": 128,
+                        "received_bytes": 256,
+                        "elapsed_ms": 900,
+                        "idle_age_ms": 300,
+                        "decision": "stop",
+                        "detail": "retry budget exhausted"
+                    }]
+                }
+            }
+        });
+
+        let lines = transfer_failure_lines(&data);
+
+        assert_eq!(lines[0], "  manifest:   sha256:manifest");
+        assert_eq!(
+            lines[1],
+            "  layer:      artifact.tar.zst sha256:layer (256/1024 bytes)"
+        );
+        assert!(lines[2].contains("attempt 2 offset 128 received 256"));
+        assert!(lines[2].contains("stop: retry budget exhausted"));
     }
 }
