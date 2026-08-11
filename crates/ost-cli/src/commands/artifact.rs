@@ -149,6 +149,10 @@ pub enum ArtifactCmd {
         /// cy2026/linux/x86_64/vulkan.
         #[arg(long, value_name = "PLATFORM/OS/ARCH/VARIANT")]
         require_openusd: Option<String>,
+        /// Require an exact upstream OpenUSD release in addition to the
+        /// consumer cell, for example 26.05.
+        #[arg(long, value_name = "VERSION", requires = "require_openusd")]
+        require_openusd_version: Option<String>,
         /// Use plain http:// instead of https:// (fixture registries and
         /// air-gapped mirrors only).
         #[arg(long)]
@@ -228,6 +232,7 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
             require_kind,
             require_target,
             require_openusd,
+            require_openusd_version,
             plain_http,
             connect_timeout,
             response_timeout,
@@ -262,6 +267,15 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
                 require_openusd: require_openusd
                     .as_deref()
                     .map(resolve_openusd_requirement)
+                    .transpose()?,
+                require_openusd_version: require_openusd_version
+                    .map(|version| {
+                        if version.trim().is_empty() {
+                            Err(Error::usage("--require-openusd-version cannot be empty"))
+                        } else {
+                            Ok(version)
+                        }
+                    })
                     .transpose()?,
             };
             let initial_retry_backoff = Duration::from_millis(u64::from(retry_backoff));

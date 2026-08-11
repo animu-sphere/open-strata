@@ -92,14 +92,17 @@ as skipped.
 **Implemented 2026-08-11 — consumer-cell validation slice:** digest-pinned
 `artifact pull` accepts
 `--require-openusd <PLATFORM>/<OS>/<ARCH>/<VARIANT>` and resolves that value
-through the data-driven CY matrix. Before local import it compares the selected
-artifact's normalized platform/architecture, compiler and native runtime
-providers, C++ standard, exact Python and TBB versions/providers, variant, and
-capabilities with the consumer cell. Missing identity and platform, toolchain,
-Python, TBB, or graphics mismatches have dimension-specific stable validation
-codes; their JSON evidence names the requirement and selected artifact while
-the hint gives a direct selection action. Exact dependency/source identities
-and evidence requirements remain open below.
+through the data-driven CY matrix; `--require-openusd-version` additionally
+pins the exact upstream OpenUSD release. Before local import it compares the
+selected artifact's normalized release, platform/architecture, compiler and
+native runtime providers, C++ standard, exact Python and TBB versions/providers,
+variant, and capabilities with the consumer requirement. The artifact target's
+Python ABI tag is bound to the observed Python major/minor. Missing identity and
+release, platform, toolchain, Python, TBB, or graphics mismatches have
+dimension-specific stable validation codes; their JSON evidence names the
+requirement and selected artifact while the hint gives a direct selection
+action. Exact dependency/source identities and evidence requirements remain
+open below.
 
 - Version and validate the OpenUSD artifact record, including ABI dimensions,
   capabilities, runtime providers, build/runtime requirement separation, exact

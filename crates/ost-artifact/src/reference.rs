@@ -17,6 +17,20 @@ use ost_core::{Error, Result};
 
 use crate::record::is_sha256_ref;
 
+/// OCI/Docker tag grammar: the first byte is alphanumeric or `_`; remaining
+/// bytes may additionally contain `.`, and `-`, with a 128-byte ceiling.
+pub(crate) fn is_valid_oci_tag(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let Some(first) = bytes.first() else {
+        return false;
+    };
+    bytes.len() <= 128
+        && (first.is_ascii_alphanumeric() || *first == b'_')
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 /// A parsed remote artifact reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteReference {
@@ -136,12 +150,7 @@ impl OciReference {
             )));
         }
         if let Some(tag) = &tag {
-            let valid = !tag.is_empty()
-                && tag.len() <= 128
-                && tag
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
-            if !valid {
+            if !is_valid_oci_tag(tag) {
                 return Err(bad(&format!("'{tag}' is not a valid tag")));
             }
         }
@@ -289,6 +298,16 @@ mod tests {
             let err = RemoteReference::parse(input).expect_err(input);
             assert_eq!(err.code(), "INVALID_ARGUMENT", "input: {input}");
         }
+    }
+
+    #[test]
+    fn tags_must_start_with_an_alphanumeric_or_underscore() {
+        for tag in [".hidden", "-release"] {
+            let error =
+                RemoteReference::parse(&format!("oci://registry.example/repo:{tag}")).unwrap_err();
+            assert!(error.to_string().contains("is not a valid tag"));
+        }
+        assert!(RemoteReference::parse("oci://registry.example/repo:_release").is_ok());
     }
 
     #[test]

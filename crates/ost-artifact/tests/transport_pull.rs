@@ -765,6 +765,7 @@ fn digest_pinned_pull_imports_and_verifies() {
         require_kind: Some(ArtifactKind::Plugin),
         require_target: Some(TARGET.to_string()),
         require_openusd: None,
+        require_openusd_version: None,
     };
     let evidence = pull(&transport, &reference, &store, &policy).unwrap();
 
@@ -865,6 +866,7 @@ fn pull_matches_an_approved_openusd_consumer_cell_before_import() {
         &store,
         &PullPolicy {
             require_openusd: Some(required),
+            require_openusd_version: Some("26.05".into()),
             ..PullPolicy::default()
         },
     )
@@ -898,6 +900,26 @@ fn pull_reports_openusd_python_tbb_and_graphics_mismatches_by_dimension() {
     let store = ArtifactStore::at(root.join("store"));
     let transport = OciTransport::new(true);
     let reference = oci_ref(&registry, "fixtures/rt", &format!("@{}", bundle.oci_digest));
+
+    let version_error = pull(
+        &transport,
+        &reference,
+        &store,
+        &PullPolicy {
+            require_openusd: Some(standard.clone()),
+            require_openusd_version: Some("25.11".into()),
+            ..PullPolicy::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(version_error.code(), "ARTIFACT_OPENUSD_VERSION_MISMATCH");
+    assert_eq!(
+        version_error
+            .data()
+            .and_then(|data| data["dimension"].as_str()),
+        Some("openusd-version")
+    );
+    assert_store_empty(&store);
 
     let mut python = standard.clone();
     python.python.provider = "host".into();
@@ -1747,6 +1769,7 @@ fn file_transport_pulls_a_dist_dir_with_the_same_chain() {
             require_kind: Some(ArtifactKind::Plugin),
             require_target: Some(TARGET.to_string()),
             require_openusd: None,
+            require_openusd_version: None,
         },
     )
     .unwrap();

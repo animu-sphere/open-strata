@@ -77,8 +77,9 @@ as the convenience tag and also records it in the OCI manifest's
 `io.openstrata.openusd.selector` annotation. The selector starts with the
 platform, OS/architecture, and build variant and ends with a full SHA-256 over
 the normalized artifact target (including its measured ABI floor), provider,
-exact-version constraint, and capability fields. Provider versions that do not
-satisfy their declared constraints cannot receive a selector. It is
+exact-version constraint, upstream OpenUSD release, and capability fields.
+Provider versions that do not satisfy their declared constraints cannot receive
+a selector. It is
 therefore safe for exact compatibility comparison while staying within OCI's
 128-character tag limit. An explicit destination tag remains authoritative.
 In either form the tag is mutable convenience only: pin the returned
@@ -97,7 +98,8 @@ A consumer can require an approved compatibility cell during the same pull:
 
 ```bash
 ost artifact pull oci://registry.example/vfx/openusd@sha256:<digest> \
-  --require-openusd cy2026/linux/x86_64/vulkan
+  --require-openusd cy2026/linux/x86_64/vulkan \
+  --require-openusd-version 26.05
 ```
 
 The cell is resolved from the named platform manifest rather than restated on
@@ -105,10 +107,12 @@ the command line. Before local import, `ost` compares the normalized
 platform/architecture, compiler and native runtime providers, C++ standard,
 exact Python and TBB versions/providers, variant, and capability set. A producer
 version must satisfy the consumer cell's constraint; required capabilities must
-all be present. Failure evidence includes `dimension`, `requirement`, and
-`selected_artifact` objects, and the error hint tells the caller which artifact
-selection to correct. Without `--require-openusd`, legacy pull behavior remains
-unchanged and the `openusd_requirement` verification step is `skipped`.
+all be present. `--require-openusd-version` pins the exact upstream OpenUSD
+release and requires `--require-openusd`. Failure evidence includes `dimension`,
+`requirement`, and `selected_artifact` objects, and the error hint tells the
+caller which artifact selection to correct. Without `--require-openusd`, legacy
+pull behavior remains unchanged and the `openusd_requirement` verification step
+is `skipped`.
 
 For a protected destination, `ost` requests a short-lived GitHub Actions OIDC
 token directly from `https://token.actions.githubusercontent.com`, using the
@@ -186,6 +190,7 @@ See [artifact-evidence.md](artifact-evidence.md).
 | `ARTIFACT_POLICY_PUBLISHER_UNTRUSTED` | validation | No allowed publisher matched every identity claim. |
 | `ARTIFACT_OPENUSD_SELECTOR_MISMATCH` | validation | The resolved OCI selector annotation cannot be re-derived exactly from the fetched producer manifest. |
 | `ARTIFACT_OPENUSD_IDENTITY_MISSING` | validation | A consumer cell was required but the selected artifact has no normalized OpenUSD identity. |
+| `ARTIFACT_OPENUSD_VERSION_MISMATCH` | validation | The selected artifact's upstream OpenUSD release differs from the exact consumer requirement. |
 | `ARTIFACT_OPENUSD_PLATFORM_MISMATCH` | validation | The normalized platform, OS, architecture, or compatibility schema differs from the required cell. |
 | `ARTIFACT_OPENUSD_TOOLCHAIN_MISMATCH` | validation | Compiler, C++ standard, or native runtime identity does not satisfy the required cell. |
 | `ARTIFACT_OPENUSD_PYTHON_MISMATCH` | validation | Python family, provider, or exact version does not satisfy the required cell. |

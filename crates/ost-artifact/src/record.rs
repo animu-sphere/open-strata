@@ -202,7 +202,7 @@ impl ArtifactRecord {
     pub fn openusd_selector(&self) -> Option<String> {
         self.openusd_compatibility
             .as_ref()
-            .and_then(|compatibility| compatibility.selector(&self.target))
+            .and_then(|compatibility| compatibility.selector(&self.target, &self.version))
     }
 
     /// Reinterpret a pre-v0.18.0 record, whose `producer` field held the tool
@@ -442,8 +442,38 @@ fn normalize_openusd_compatibility(
             compatibility.arch.as_str()
         )));
     }
+    let python_version = compatibility
+        .python
+        .version
+        .as_deref()
+        .and_then(python_abi_token)
+        .ok_or_else(|| {
+            Error::InvalidManifest(
+                "producer manifest OpenUSD Python version cannot produce a major/minor ABI tag"
+                    .to_string(),
+            )
+        })?;
+    if !target.split('-').any(|token| token == python_version) {
+        return Err(Error::InvalidManifest(format!(
+            "producer manifest OpenUSD Python ABI '{python_version}' does not match artifact target '{target}'"
+        )));
+    }
 
     Ok(Some(compatibility))
+}
+
+fn python_abi_token(version: &str) -> Option<String> {
+    let mut parts = version.trim().split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    if major.is_empty()
+        || minor.is_empty()
+        || !major.bytes().all(|byte| byte.is_ascii_digit())
+        || !minor.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(format!("py{major}{minor}"))
 }
 
 /// One archived file as listed by the producer manifest (`files[]`).
@@ -798,6 +828,13 @@ mod tests {
         let mut different_abi = record.clone();
         different_abi.target = "linux-x86_64-glibc234-py313".into();
         assert_ne!(record.openusd_selector(), different_abi.openusd_selector());
+
+        let mut different_openusd = record.clone();
+        different_openusd.version = "25.11".into();
+        assert_ne!(
+            record.openusd_selector(),
+            different_openusd.openusd_selector()
+        );
     }
 
     #[test]
@@ -862,6 +899,17 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("does not match artifact target"));
+
+        let mut wrong_python_abi = runtime_manifest_with_openusd();
+        wrong_python_abi["target"] = serde_json::json!("linux-x86_64-glibc228-py312");
+        let error = ArtifactRecord::from_producer_manifest(
+            &wrong_python_abi,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Python ABI 'py313'"));
     }
 
     #[test]

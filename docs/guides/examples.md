@@ -467,7 +467,8 @@ ost artifact pull    oci://ghcr.io/<owner>/openstrata-runtime@sha256:<oci-digest
 # require the published runtime to satisfy the approved CY2026 Vulkan cell;
 # Python, TBB, toolchain/CRT, and graphics mismatches fail before local import
 ost artifact pull oci://ghcr.io/<owner>/openstrata-runtime@sha256:<oci-digest> \
-  --require-openusd cy2026/linux/x86_64/vulkan
+  --require-openusd cy2026/linux/x86_64/vulkan \
+  --require-openusd-version 26.05
 ```
 
 OCI layer downloads retry up to four times with bounded exponential backoff.

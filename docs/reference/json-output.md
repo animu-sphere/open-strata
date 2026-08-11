@@ -170,6 +170,7 @@ error, never a warning:
 | `ARTIFACT_SUPPORT_LINE_MISMATCH` | validation |
 | `ARTIFACT_OPENUSD_SELECTOR_MISMATCH` | validation |
 | `ARTIFACT_OPENUSD_IDENTITY_MISSING` | validation |
+| `ARTIFACT_OPENUSD_VERSION_MISMATCH` | validation |
 | `ARTIFACT_OPENUSD_PLATFORM_MISMATCH` | validation |
 | `ARTIFACT_OPENUSD_TOOLCHAIN_MISMATCH` | validation |
 | `ARTIFACT_OPENUSD_PYTHON_MISMATCH` | validation |
@@ -196,7 +197,8 @@ report it as `data.resolved.openusd_selector` and
 annotation report `skipped`. A declared selector that cannot be re-derived from
 the producer manifest fails before local import.
 
-With `artifact pull --require-openusd`, success reports
+With `artifact pull --require-openusd` and optional
+`--require-openusd-version`, success reports
 `data.verification.openusd_requirement` as `passed`; without it the status is
 `skipped`. A compatibility failure uses one of the dimension-specific codes
 above and includes `data.dimension`, `data.requirement`, and

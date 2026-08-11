@@ -117,7 +117,11 @@ pub(crate) fn verify_dist(
 
     match &policy.require_openusd {
         Some(required) => {
-            verify_openusd_requirement(&record, required)?;
+            verify_openusd_requirement(
+                &record,
+                required,
+                policy.require_openusd_version.as_deref(),
+            )?;
             steps.push(("openusd_requirement", "passed"));
         }
         None => steps.push(("openusd_requirement", "skipped")),
@@ -297,6 +301,7 @@ pub(crate) fn verify_dist(
 fn verify_openusd_requirement(
     record: &ArtifactRecord,
     required: &ResolvedOpenUsdCompatibility,
+    required_version: Option<&str>,
 ) -> Result<()> {
     let Some(selected) = &record.openusd_compatibility else {
         return Err(openusd_mismatch(
@@ -304,10 +309,27 @@ fn verify_openusd_requirement(
             "identity",
             record,
             required,
+            required_version,
             "has no verified normalized OpenUSD compatibility identity".to_string(),
             "select a normalized OpenUSD runtime artifact published for the required cell",
         ));
     };
+
+    if required_version.is_some_and(|version| record.version != version) {
+        return Err(openusd_mismatch(
+            "ARTIFACT_OPENUSD_VERSION_MISMATCH",
+            "openusd-version",
+            record,
+            required,
+            required_version,
+            format!(
+                "provides OpenUSD {}, but the consumer requires {}",
+                record.version,
+                required_version.expect("the mismatch branch has a required version")
+            ),
+            "resolve an artifact published for the required OpenUSD release",
+        ));
+    }
 
     if selected.schema != required.schema
         || selected.platform != required.platform
@@ -319,6 +341,7 @@ fn verify_openusd_requirement(
             "platform",
             record,
             required,
+            required_version,
             format!(
                 "declares {} {}/{} (schema {}), not required {} {}/{} (schema {})",
                 selected.platform,
@@ -349,6 +372,7 @@ fn verify_openusd_requirement(
             "toolchain",
             record,
             required,
+            required_version,
             format!(
                 "uses compiler {}@{} {} (C++ {}) and native runtime {}@{} {}, but the consumer requires compiler {}@{} {} (C++ {}) and native runtime {}@{} {}",
                 selected.toolchain.family,
@@ -375,6 +399,7 @@ fn verify_openusd_requirement(
         "ARTIFACT_OPENUSD_PYTHON_MISMATCH",
         record,
         required,
+        required_version,
         &selected.python,
         &required.python,
     )?;
@@ -383,6 +408,7 @@ fn verify_openusd_requirement(
         "ARTIFACT_OPENUSD_TBB_MISMATCH",
         record,
         required,
+        required_version,
         &selected.tbb,
         &required.tbb,
     )?;
@@ -404,6 +430,7 @@ fn verify_openusd_requirement(
             "graphics",
             record,
             required,
+            required_version,
             format!(
                 "provides variant '{}' with capabilities [{}], but variant '{}' with capabilities [{}] is required (missing: {missing})",
                 selected.variant.as_str(),
@@ -423,6 +450,7 @@ fn verify_provider_dimension(
     code: &'static str,
     record: &ArtifactRecord,
     required_compatibility: &ResolvedOpenUsdCompatibility,
+    required_version: Option<&str>,
     selected: &ResolvedOpenUsdProvider,
     required: &ResolvedOpenUsdProvider,
 ) -> Result<()> {
@@ -434,6 +462,7 @@ fn verify_provider_dimension(
         dimension,
         record,
         required_compatibility,
+        required_version,
         format!(
             "uses {dimension} {}@{} {}, but the consumer requires {}@{} {}",
             selected.family,
@@ -477,6 +506,7 @@ fn openusd_mismatch(
     dimension: &'static str,
     record: &ArtifactRecord,
     required: &ResolvedOpenUsdCompatibility,
+    required_version: Option<&str>,
     detail: String,
     hint: &str,
 ) -> Error {
@@ -502,6 +532,7 @@ fn openusd_mismatch(
         },
         "requirement": {
             "platform": required.platform,
+            "openusd_version": required_version,
             "os": required.os,
             "arch": required.arch,
             "variant": required.variant,

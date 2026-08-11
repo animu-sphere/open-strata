@@ -134,6 +134,10 @@ pub struct PullPolicy {
     /// approved consumer cell. Exact producer versions are checked against
     /// the consumer cell's constraints before the artifact is imported.
     pub require_openusd: Option<ResolvedOpenUsdCompatibility>,
+    /// Exact upstream OpenUSD release required by the consumer. This is kept
+    /// beside the CY cell because platform manifests intentionally do not pick
+    /// one OpenUSD release for every consumer.
+    pub require_openusd_version: Option<String>,
 }
 
 /// Status of one verification step, stable for `--json` evidence.
@@ -246,6 +250,18 @@ pub fn pull(
                 "expected artifact digest '{expected}' is not sha256:<64 hex chars>"
             )));
         }
+    }
+    if policy.require_openusd_version.is_some() && policy.require_openusd.is_none() {
+        return Err(Error::usage(
+            "an OpenUSD version requirement needs a matching OpenUSD consumer cell",
+        ));
+    }
+    if policy
+        .require_openusd_version
+        .as_ref()
+        .is_some_and(|version| version.trim().is_empty())
+    {
+        return Err(Error::usage("the required OpenUSD version cannot be empty"));
     }
 
     let resolved = transport.resolve(reference)?;
