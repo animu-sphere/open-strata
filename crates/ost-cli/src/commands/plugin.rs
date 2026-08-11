@@ -1405,6 +1405,7 @@ struct PluginBuildProvenance {
     observed_outputs: usize,
     differences: Vec<ManagedOutputDifference>,
     detail: String,
+    rebuild_command: Option<String>,
     override_accepted: bool,
 }
 
@@ -1468,6 +1469,12 @@ impl PluginBuildProvenance {
             (None, _) => self.detail.clone(),
         }
     }
+
+    fn rebuild_command(&self) -> &str {
+        self.rebuild_command
+            .as_deref()
+            .unwrap_or("ost plugin build")
+    }
 }
 
 #[cfg(test)]
@@ -1484,6 +1491,35 @@ fn assess_plugin_build_provenance(
 /// the producer manifest describes the bytes that will actually be archived,
 /// not an earlier read of mutable source outputs.
 fn assess_plugin_build_provenance_for_outputs(
+    bundle: &Bundle,
+    target: &ost_build::Target,
+    observed: Vec<BuildOutput>,
+) -> Result<PluginBuildProvenance> {
+    let local = assess_bundle_local_build_provenance(bundle, target, observed.clone())?;
+    let Some(root) = assess_root_bundle_build_provenance(bundle, target, &observed)? else {
+        return Ok(local);
+    };
+
+    // A matching producer is stronger evidence than a stale completion from a
+    // different build path. This is the ordinary root-build-after-bundle-build
+    // case the workspace contract needs to support. If neither producer matches,
+    // prefer the more recently completed managed build for the diagnostic.
+    Ok(match (local.status, root.status) {
+        (PluginBuildProvenanceStatus::Matched, _) => local,
+        (_, PluginBuildProvenanceStatus::Matched) => root,
+        (PluginBuildProvenanceStatus::Untracked, _) => root,
+        (_, PluginBuildProvenanceStatus::Untracked) => local,
+        (PluginBuildProvenanceStatus::Mismatched, PluginBuildProvenanceStatus::Mismatched) => {
+            if root.completed_unix.unwrap_or(0) >= local.completed_unix.unwrap_or(0) {
+                root
+            } else {
+                local
+            }
+        }
+    })
+}
+
+fn assess_bundle_local_build_provenance(
     bundle: &Bundle,
     target: &ost_build::Target,
     observed: Vec<BuildOutput>,
@@ -1507,6 +1543,7 @@ fn assess_plugin_build_provenance_for_outputs(
                 "{} package-relevant output(s) have no `ost plugin build` completion; treating their origin as external or unmanaged",
                 observed.len()
             ),
+            rebuild_command: None,
             override_accepted: false,
         });
     }
@@ -1521,6 +1558,7 @@ fn assess_plugin_build_provenance_for_outputs(
         observed_outputs: observed.len(),
         differences: Vec::new(),
         detail,
+        rebuild_command: Some("ost plugin build".into()),
         override_accepted: false,
     };
     if !completion_exists || !lock_exists {
@@ -1580,6 +1618,7 @@ fn assess_plugin_build_provenance_for_outputs(
             observed_outputs: observed.len(),
             differences: Vec::new(),
             detail,
+            rebuild_command: Some("ost plugin build".into()),
             override_accepted: false,
         });
     }
@@ -1597,6 +1636,7 @@ fn assess_plugin_build_provenance_for_outputs(
             detail:
                 "the build completion predates managed output digests; package output is untracked"
                     .into(),
+            rebuild_command: None,
             override_accepted: false,
         });
     }
@@ -1672,8 +1712,261 @@ fn assess_plugin_build_provenance_for_outputs(
             )
         },
         differences,
+        rebuild_command: Some("ost plugin build".into()),
         override_accepted: false,
     })
+}
+
+/// Compare bundle outputs with the completion published by `ost build` at the
+/// enclosing project root. Root CMake builds intentionally write the same
+/// discoverable bundle trees as `ost plugin build`; the member path prefix in
+/// the project completion makes those producers unambiguous.
+fn assess_root_bundle_build_provenance(
+    bundle: &Bundle,
+    target: &ost_build::Target,
+    observed: &[BuildOutput],
+) -> Result<Option<PluginBuildProvenance>> {
+    let Some(project_root) = find_project_root(bundle.root.as_std_path())
+        .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+    else {
+        return Ok(None);
+    };
+    if canonical_root(&project_root) == canonical_root(&bundle.root) {
+        return Ok(None);
+    }
+
+    let id = target.id();
+    let project = load_project(&project_root)?;
+    let project_version = project.effective_version(&project_root)?;
+    let mut declared_intents = vec![BuildIntent::default()];
+    if let Some(build) = &project.build {
+        for name in build.intents.keys() {
+            declared_intents.push(crate::commands::build::resolve_declared_intent(
+                &project_root,
+                Some(name),
+            )?);
+        }
+    }
+    let completion_candidates = declared_intents
+        .into_iter()
+        .filter_map(|intent| {
+            let build_rel = crate::commands::build::build_dir_for_intent(&id, &intent);
+            let path = project_root.join(&build_rel).join(BUILD_COMPLETION_FILE);
+            path.as_std_path()
+                .is_file()
+                .then_some((intent, build_rel, path))
+        })
+        .collect::<Vec<_>>();
+    // Configure publishes the root target lock before any build completes. It
+    // is not producer evidence by itself and must not turn an otherwise valid
+    // external/unmanaged package into a mismatch.
+    if completion_candidates.is_empty() {
+        return Ok(None);
+    }
+
+    let lock_path = target_state_dir(&project_root, &id).join("target.lock.json");
+    let lock_exists = lock_path.as_std_path().is_file();
+    let evidence_error = |detail: String,
+                          completion: Option<&BuildCompletion>,
+                          rebuild_command: String| PluginBuildProvenance {
+        status: PluginBuildProvenanceStatus::Mismatched,
+        origin: "ost-managed-root-diverged",
+        build_fingerprint: completion.map(BuildCompletion::fingerprint),
+        invocation: completion.and_then(|value| value.invocation.clone()),
+        completed_unix: completion.map(|value| value.completed_unix),
+        expected_outputs: 0,
+        observed_outputs: observed.len(),
+        differences: Vec::new(),
+        detail,
+        rebuild_command: Some(rebuild_command),
+        override_accepted: false,
+    };
+    if !lock_exists {
+        return Ok(Some(evidence_error(
+            "root managed build evidence is incomplete: completion present=true, target lock present=false"
+                .into(),
+            None,
+            "ost build".into(),
+        )));
+    }
+    let lock: TargetLock = match read_plugin_build_json(&lock_path) {
+        Ok(lock) => lock,
+        Err(detail) => {
+            return Ok(Some(evidence_error(detail, None, "ost build".into())));
+        }
+    };
+    let identity_error = if lock.target != id
+        || lock.platform != target.platform
+        || lock.profile != target.profile
+        || lock.variant != target.variant
+        || lock.runtime.id != target.runtime_id
+        || lock.runtime.digest != target.runtime_digest
+    {
+        Some(format!(
+            "last root managed build target/runtime identity does not match selected target '{id}' runtime '{}@{}'",
+            target.runtime_id, target.runtime_digest
+        ))
+    } else {
+        None
+    };
+    if let Some(detail) = identity_error {
+        return Ok(Some(evidence_error(detail, None, "ost build".into())));
+    }
+
+    let Some(member) = member_relative(&canonical_root(&project_root), &bundle.root) else {
+        return Ok(None);
+    };
+    let prefix = format!("{member}/");
+    let observed_by_path = observed
+        .iter()
+        .map(|output| (output.path.as_str(), output))
+        .collect::<BTreeMap<_, _>>();
+    let mut selected = None;
+    for (declared_intent, build_rel, completion_path) in completion_candidates {
+        let rebuild_command = if declared_intent.name == "default" {
+            "ost build".to_string()
+        } else {
+            format!("ost build --intent {}", declared_intent.name)
+        };
+        let completion: BuildCompletion = match read_plugin_build_json(&completion_path) {
+            Ok(completion) => completion,
+            Err(detail) => {
+                select_root_build_provenance(
+                    &mut selected,
+                    evidence_error(detail, None, rebuild_command),
+                );
+                continue;
+            }
+        };
+        let completion_error = completion
+            .validate_against(&lock, &project.project.name, &project_version, &build_rel)
+            .err()
+            .or_else(|| {
+                crate::commands::build::validate_completed_intent(
+                    &completion.intent,
+                    &declared_intent,
+                )
+                .err()
+            });
+        if let Some(detail) = completion_error {
+            select_root_build_provenance(
+                &mut selected,
+                evidence_error(
+                    format!("last root managed build completion is incompatible: {detail}"),
+                    Some(&completion),
+                    rebuild_command,
+                ),
+            );
+            continue;
+        }
+
+        let expected = completion
+            .outputs
+            .iter()
+            .filter_map(|output| {
+                output.path.strip_prefix(&prefix).map(|relative| {
+                    (
+                        relative.to_string(),
+                        BuildOutput {
+                            path: relative.to_string(),
+                            sha256: output.sha256.clone(),
+                            size: output.size,
+                        },
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        if expected.is_empty() {
+            continue;
+        }
+        let mut differences = Vec::new();
+        for (path, want) in &expected {
+            match observed_by_path.get(path.as_str()) {
+                None => differences.push(ManagedOutputDifference {
+                    path: path.clone(),
+                    kind: "missing",
+                    expected: Some(want.sha256.clone()),
+                    observed: None,
+                }),
+                Some(got) if got.sha256 != want.sha256 || got.size != want.size => {
+                    differences.push(ManagedOutputDifference {
+                        path: path.clone(),
+                        kind: "digest-mismatch",
+                        expected: Some(want.sha256.clone()),
+                        observed: Some(got.sha256.clone()),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        for (path, got) in &observed_by_path {
+            if !expected.contains_key(*path) {
+                differences.push(ManagedOutputDifference {
+                    path: (*path).to_string(),
+                    kind: "untracked",
+                    expected: None,
+                    observed: Some(got.sha256.clone()),
+                });
+            }
+        }
+        let status = if differences.is_empty() {
+            PluginBuildProvenanceStatus::Matched
+        } else {
+            PluginBuildProvenanceStatus::Mismatched
+        };
+        let candidate = PluginBuildProvenance {
+            status,
+            origin: if status == PluginBuildProvenanceStatus::Matched {
+                "ost-managed-root"
+            } else {
+                "ost-managed-root-diverged"
+            },
+            build_fingerprint: Some(completion.fingerprint()),
+            invocation: completion.invocation.clone(),
+            completed_unix: Some(completion.completed_unix),
+            expected_outputs: expected.len(),
+            observed_outputs: observed.len(),
+            detail: if status == PluginBuildProvenanceStatus::Matched {
+                format!(
+                    "all {} package-relevant output(s) match the root managed '{}' build",
+                    observed.len(),
+                    completion.intent.name
+                )
+            } else {
+                format!(
+                    "{} package-relevant output difference(s) from the root managed '{}' build",
+                    differences.len(),
+                    completion.intent.name
+                )
+            },
+            differences,
+            rebuild_command: Some(rebuild_command),
+            override_accepted: false,
+        };
+        select_root_build_provenance(&mut selected, candidate);
+    }
+    Ok(selected)
+}
+
+/// Prefer byte-matching root evidence, then the newest candidate for a useful
+/// mismatch diagnostic. Named intents are independent build trees, so more than
+/// one valid completion may exist for the same target/runtime.
+fn select_root_build_provenance(
+    selected: &mut Option<PluginBuildProvenance>,
+    candidate: PluginBuildProvenance,
+) {
+    let replace = match selected.as_ref() {
+        None => true,
+        Some(current) if current.status != candidate.status => {
+            candidate.status == PluginBuildProvenanceStatus::Matched
+        }
+        Some(current) => {
+            candidate.completed_unix.unwrap_or(0) >= current.completed_unix.unwrap_or(0)
+        }
+    };
+    if replace {
+        *selected = Some(candidate);
+    }
 }
 
 fn read_plugin_build_json<T: serde::de::DeserializeOwned>(
@@ -1932,9 +2225,10 @@ fn package_bundle(
                     build_provenance.mismatch_message()
                 ),
             )
-            .with_hint(
-                "rerun `ost plugin build` before packaging, or pass --allow-unmanaged-output to record an explicit external/unmanaged override",
-            ));
+            .with_hint(format!(
+                "rerun `{}` before packaging, or pass --allow-unmanaged-output to record an explicit external/unmanaged override",
+                build_provenance.rebuild_command()
+            )));
         }
     }
     if let Some(warning) = build_provenance.warning() {
@@ -2468,6 +2762,7 @@ fn assess_tool_build_provenance(
             )
         },
         differences,
+        rebuild_command: Some("ost build".into()),
         override_accepted: false,
     })
 }
@@ -2483,6 +2778,7 @@ fn untracked_build_provenance(observed: usize, detail: &str) -> PluginBuildProve
         observed_outputs: observed,
         differences: Vec::new(),
         detail: detail.to_string(),
+        rebuild_command: None,
         override_accepted: false,
     }
 }
@@ -5498,6 +5794,76 @@ fn wildcard_component_matches(pattern: &str, name: &str) -> bool {
     matched[pattern.len()][name.len()]
 }
 
+/// Package-relevant outputs for every workspace bundle and tool, relative to
+/// the project root, for `ost build` to record in its completion.
+///
+/// A root CMake build commonly writes directly into each bundle's discoverable
+/// registration/library/Python tree. Those bytes need the same attribution as
+/// a bundle-local `ost plugin build`; otherwise the old local completion makes
+/// a valid root build look like an unmanaged overwrite at package time.
+pub(crate) fn workspace_managed_outputs(
+    root: &Utf8Path,
+    os: Os,
+) -> (Vec<BuildOutput>, Vec<String>) {
+    let (tool_outputs, mut warnings) = workspace_tool_outputs(root, os);
+    let mut outputs = tool_outputs
+        .into_iter()
+        .map(|output| (output.path.clone(), output))
+        .collect::<BTreeMap<_, _>>();
+    let members = match discover_workspace_members(root) {
+        Ok(members) => members,
+        Err(error) => {
+            warnings.push(format!(
+                "warning: could not scan for workspace bundles under {root}: {error}"
+            ));
+            return (outputs.into_values().collect(), warnings);
+        }
+    };
+    let canonical_project_root = canonical_root(root);
+    for bundle_root in members.bundles {
+        let bundle = match Bundle::load(&bundle_root) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                warnings.push(format!(
+                    "warning: {bundle_root}/{} could not be read, so this build records no \
+                     provenance for it ({error})",
+                    ost_plugin::PLUGIN_MANIFEST
+                ));
+                continue;
+            }
+        };
+        let Some(member) = member_relative(&canonical_project_root, &bundle.root) else {
+            warnings.push(format!(
+                "warning: bundle '{}' at {} is not below the project root {root}, so its \
+                 outputs cannot be attributed to this build",
+                bundle.manifest.name(),
+                bundle.root
+            ));
+            continue;
+        };
+        let bundle_outputs = match collect_plugin_managed_outputs(&bundle) {
+            Ok(outputs) => outputs,
+            Err(error) => {
+                warnings.push(format!(
+                    "warning: could not digest managed outputs for bundle '{}' at {} ({error})",
+                    bundle.manifest.name(),
+                    bundle.root
+                ));
+                continue;
+            }
+        };
+        for mut output in bundle_outputs {
+            output.path = format!("{member}/{}", output.path);
+            if outputs.insert(output.path.clone(), output).is_some() {
+                warnings.push(format!(
+                    "warning: duplicate workspace managed output under member '{member}' was recorded once"
+                ));
+            }
+        }
+    }
+    (outputs.into_values().collect(), warnings)
+}
+
 /// The executables every workspace tool declares, as managed build outputs
 /// relative to the project root, for `ost build` to record in its completion.
 ///
@@ -7900,6 +8266,50 @@ mod tests {
             warnings.is_empty(),
             "not built is not a warning: {warnings:?}"
         );
+        let _ = std::fs::remove_dir_all(root.as_std_path());
+    }
+
+    #[test]
+    fn root_build_evidence_includes_workspace_bundle_outputs() {
+        let root = unique_tmp("workspace-bundle-outputs");
+        let bundle = root.join("plugins").join("toy");
+        std::fs::create_dir_all(bundle.as_std_path()).unwrap();
+        write_test_file(
+            &root.join(PROJECT_MANIFEST),
+            "[project]\nname = 'workspace'\nversion = '0.1.0'\n\
+             [requires]\nplatform = 'cy2026'\nprofile = 'usd'\n\
+             [workspace]\nmembers = ['plugins/*']\n",
+        );
+        write_test_file(
+            &bundle.join(ost_plugin::PLUGIN_MANIFEST),
+            "plugin: { name: toy, version: 0.1.0, kind: usd-fileformat }\n\
+             runtime: { openusd: '>=25.05,<26.0' }\n\
+             provides: [usd-fileformat:toy]\n\
+             usd: { plug_info: plugin/resources/toy/plugInfo.json }\n",
+        );
+        write_test_file(
+            &bundle.join("plugin/resources/toy/plugInfo.json"),
+            r#"{ "Plugins": [{ "Type": "library", "Name": "toy" }] }"#,
+        );
+        write_test_file(&bundle.join("lib/libToy.so"), "managed bytes");
+
+        let (outputs, warnings) = workspace_managed_outputs(&root, Os::Linux);
+
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        let paths = outputs
+            .iter()
+            .map(|output| output.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                "plugins/toy/lib/libToy.so",
+                "plugins/toy/plugin/resources/toy/plugInfo.json"
+            ]
+        );
+        assert!(outputs
+            .iter()
+            .all(|output| output.sha256.starts_with("sha256:") && output.size > 0));
         let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 
