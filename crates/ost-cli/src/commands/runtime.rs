@@ -635,8 +635,10 @@ fn resolve_openusd_build(
             "CMAKE_C_COMPILER",
             "CMAKE_CXX_COMPILER",
             "CMAKE_CXX_STANDARD",
+            "CMAKE_PREFIX_PATH",
             "Python_EXECUTABLE",
             "Python3_EXECUTABLE",
+            "TBB_DIR",
             "TBB_ROOT",
             "TBB_ROOT_DIR",
         ]
@@ -699,7 +701,6 @@ fn prepare_openusd_build(
     let (python, python_version) =
         find_python_for_constraint(&compatibility.python.version_constraint)?;
     compatibility.python.version = Some(python_version);
-    compatibility.python.provider = "system".into();
 
     if compatibility.toolchain.family != "gcc" || compatibility.os != Os::Linux {
         return Err(Error::coded(
@@ -718,12 +719,6 @@ fn prepare_openusd_build(
     let (cc, cxx, compiler_version) =
         find_gcc_toolchain(&compatibility.toolchain.version_constraint)?;
     compatibility.toolchain.version = Some(compiler_version);
-    compatibility.toolchain.provider = "system".into();
-    compatibility.tbb.provider = match builder {
-        OpenUsdBuilder::BuildUsd => "bundled",
-        OpenUsdBuilder::Cmake => "external-prefix",
-    }
-    .into();
 
     let pins = vec![
         format!("-DCMAKE_C_COMPILER={}", cc.as_str().replace('\\', "/")),
@@ -997,17 +992,26 @@ fn reset_managed_runtime_build(r: &crate::commands::Resolved) -> Result<()> {
 }
 
 fn reset_managed_path(store_root: &Utf8Path, target: &Utf8Path) -> Result<()> {
-    if target == store_root || !target.starts_with(store_root) {
+    if !target.as_std_path().exists() {
+        return Ok(());
+    }
+    // `Path::starts_with` is lexical: `store/cache/../../../outside` still has
+    // `store` as a prefix. Resolve both existing paths before a recursive
+    // delete so catalog-controlled runtime ids cannot escape the store through
+    // parent components (or through a directory link).
+    let canonical_root = std::fs::canonicalize(store_root.as_std_path())
+        .map_err(|error| Error::io(store_root.to_string(), error))?;
+    let canonical_target = std::fs::canonicalize(target.as_std_path())
+        .map_err(|error| Error::io(target.to_string(), error))?;
+    if canonical_target == canonical_root || !canonical_target.starts_with(&canonical_root) {
         return Err(Error::coded(
             "INTERNAL_ERROR",
             ost_core::Category::Internal,
             format!("refusing to reset managed build path outside '{store_root}': '{target}'"),
         ));
     }
-    if target.as_std_path().exists() {
-        std::fs::remove_dir_all(target.as_std_path())
-            .map_err(|error| Error::io(target.to_string(), error))?;
-    }
+    std::fs::remove_dir_all(target.as_std_path())
+        .map_err(|error| Error::io(target.to_string(), error))?;
     Ok(())
 }
 
@@ -3769,10 +3773,10 @@ mod tests {
         .unwrap();
         assert!(headless.args.iter().any(|arg| arg == "--no-imaging"));
         assert!(headless.args.iter().any(|arg| arg == "--no-tests"));
-        assert_eq!(
-            headless.compatibility.unwrap().variant,
-            OpenUsdVariantId::Headless
-        );
+        let compatibility = headless.compatibility.unwrap();
+        assert_eq!(compatibility.variant, OpenUsdVariantId::Headless);
+        assert_eq!(compatibility.python.provider, "platform");
+        assert_eq!(compatibility.tbb.provider, "platform");
 
         let vulkan = resolve_openusd_build(
             &platform,
@@ -3807,6 +3811,11 @@ mod tests {
 
         for (builder, arg) in [
             (OpenUsdBuilder::Cmake, "-DPXR_BUILD_IMAGING=OFF"),
+            (
+                OpenUsdBuilder::Cmake,
+                "-DCMAKE_PREFIX_PATH=/unverified/deps",
+            ),
+            (OpenUsdBuilder::Cmake, "-DTBB_DIR=/unverified/tbb"),
             (
                 OpenUsdBuilder::BuildUsd,
                 "--build-args=USD,-DPXR_BUILD_IMAGING=OFF",
@@ -3929,12 +3938,19 @@ mod tests {
         let store = scratch.join("store");
         let managed = store.join("runtimes/cy2026-usd");
         let outside = scratch.join("outside");
+        let traversal_parent = store.join("cache/inner");
         std::fs::create_dir_all(managed.as_std_path()).unwrap();
         std::fs::create_dir_all(outside.as_std_path()).unwrap();
+        std::fs::create_dir_all(traversal_parent.as_std_path()).unwrap();
 
         reset_managed_path(&store, &managed).unwrap();
         assert!(!managed.as_std_path().exists());
         let error = reset_managed_path(&store, &outside).unwrap_err();
+        assert_eq!(error.code(), "INTERNAL_ERROR");
+        assert!(outside.as_std_path().exists());
+
+        let traversing = traversal_parent.join("../../../outside");
+        let error = reset_managed_path(&store, &traversing).unwrap_err();
         assert_eq!(error.code(), "INTERNAL_ERROR");
         assert!(outside.as_std_path().exists());
 
