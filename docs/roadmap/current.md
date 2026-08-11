@@ -187,6 +187,16 @@ CI follow-up remains in the P1 section below.
 
 #### P1 - artifact transfer evidence and generated CI
 
+**Implemented 2026-08-11:** successful OCI pulls report the resolved manifest
+and an ordered per-layer attempt history in human and JSON output. Each attempt
+records the descriptor digest/title, expected and retained byte counts, attempt,
+resume offset, elapsed and idle age, the retry/restart/stop decision, and bounded
+backoff; terminal errors carry the same structure in `data.transfer` plus the
+direct next action. Generated source CI now splits cache restore from save,
+runs the digest/evidence verification and runtime materialization gate between
+them, removes `.partial-blobs`, and saves only a newly verified digest-keyed
+registry.
+
 - JSON and human diagnostics name the OCI manifest and layer digests, layer
   title, expected/received bytes, attempt, resume offset, elapsed and idle age,
   and the exact timeout/retry decision, with a direct next action.

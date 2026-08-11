@@ -99,7 +99,7 @@ pub trait ArtifactTransport {
         reference: &RemoteReference,
         resolved: &ResolvedRemote,
         scratch: &Utf8Path,
-    ) -> Result<Utf8PathBuf>;
+    ) -> Result<FetchOutcome>;
 
     /// Publish a store-resolved artifact to `destination`, emitting the exact
     /// OCI layout / media types [`crate::transport::oci::OciTransport::fetch`]
@@ -130,6 +130,62 @@ pub struct PullPolicy {
 /// Status of one verification step, stable for `--json` evidence.
 pub type StepStatus = (&'static str, &'static str);
 
+/// Transport-level evidence collected while fetching one remote artifact.
+///
+/// The manifest identity and every selected OCI layer are reported separately
+/// so a CI failure can distinguish resolution, response, resume, and content
+/// verification without scraping prose.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct TransferEvidence {
+    /// The resolved OCI manifest, absent for transports without an OCI object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<ManifestTransferEvidence>,
+    /// Selected OCI layers in the order they were fetched.
+    pub layers: Vec<LayerTransferEvidence>,
+}
+
+/// Evidence for the resolved OCI manifest bytes.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ManifestTransferEvidence {
+    pub digest: String,
+    pub received_bytes: u64,
+}
+
+/// Evidence for one descriptor-addressed OCI layer.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LayerTransferEvidence {
+    pub digest: String,
+    pub title: String,
+    pub expected_bytes: u64,
+    pub received_bytes: u64,
+    pub attempts: Vec<TransferAttemptEvidence>,
+}
+
+/// One bounded request attempt for an OCI layer.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TransferAttemptEvidence {
+    pub attempt: u32,
+    pub resume_offset: u64,
+    /// Total local bytes observed when this attempt made its decision. The
+    /// decision detail says when an invalid prefix was subsequently discarded.
+    pub received_bytes: u64,
+    pub elapsed_ms: u64,
+    pub idle_age_ms: u64,
+    /// Stable decision tag: `complete`, `retry`, `restart`, or `stop`.
+    pub decision: &'static str,
+    /// Why that decision was taken, including the timeout/retry policy branch.
+    pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+}
+
+/// Producer files fetched into a dist-shaped directory plus transfer evidence.
+#[derive(Debug, Clone)]
+pub struct FetchOutcome {
+    pub dist: Utf8PathBuf,
+    pub transfer: TransferEvidence,
+}
+
 /// Evidence for one completed pull (plan § "Minimum JSON output").
 #[derive(Debug, Clone)]
 pub struct PullEvidence {
@@ -137,6 +193,8 @@ pub struct PullEvidence {
     pub reference: String,
     /// The resolved remote identity.
     pub remote: ResolvedRemote,
+    /// Manifest/layer request, resume, retry, and byte-count evidence.
+    pub transfer: TransferEvidence,
     /// Ordered `(step, passed|skipped)` pairs; a failed step is an error, so
     /// evidence only exists for chains whose every step passed or was skipped.
     pub verification: Vec<StepStatus>,
@@ -196,9 +254,9 @@ pub fn pull(
         .map_err(|e| Error::io(scratch.to_string(), e))?;
 
     let result = (|| -> Result<PullEvidence> {
-        let dist = transport.fetch(reference, &resolved, &scratch)?;
-        let chain = verify::verify_dist(&dist, policy)?;
-        let outcome = store.import(&dist, ArtifactSource::Imported)?;
+        let fetched = transport.fetch(reference, &resolved, &scratch)?;
+        let chain = verify::verify_dist(&fetched.dist, policy)?;
+        let outcome = store.import(&fetched.dist, ArtifactSource::Imported)?;
 
         let mut verification: Vec<StepStatus> = Vec::new();
         verification.push((
@@ -232,6 +290,7 @@ pub fn pull(
         Ok(PullEvidence {
             reference: reference.locator(),
             remote: resolved.clone(),
+            transfer: fetched.transfer,
             verification,
             record: outcome.record,
             import_status: if outcome.already_present {

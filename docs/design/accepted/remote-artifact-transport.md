@@ -247,6 +247,24 @@ ost artifact show sha256:<digest> --provenance --json
     "registry": "ghcr.io",
     "auth_mode": "github-oidc-or-token"
   },
+  "transfer": {
+    "manifest": { "digest": "sha256:...", "received_bytes": 2048 },
+    "layers": [{
+      "digest": "sha256:...",
+      "title": "runtime.tar.zst",
+      "expected_bytes": 115343360,
+      "received_bytes": 115343360,
+      "attempts": [{
+        "attempt": 2,
+        "resume_offset": 41943040,
+        "received_bytes": 115343360,
+        "elapsed_ms": 18420,
+        "idle_age_ms": 12,
+        "decision": "complete",
+        "detail": "validated Content-Range and resumed the retained prefix; descriptor digest and size verified"
+      }]
+    }]
+  },
   "verification": {
     "archive_digest": "passed",
     "manifest_digest": "passed",
@@ -345,6 +363,9 @@ Requirements:
   artifact digest into CI evidence.
 - GitHub Actions cache may be used to reuse a validated local registry
   directory, but a cache miss falls back to the remote pull.
+- Generated workflows use separate restore and save actions. Save runs only
+  after artifact verification and runtime materialization succeed, and removes
+  resumable `.partial-blobs` before writing the cache entry.
 
 ### Cache policy
 

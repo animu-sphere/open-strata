@@ -43,8 +43,12 @@ const UPLOAD_ARTIFACT: &str =
 const DOWNLOAD_ARTIFACT: &str =
     "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8";
 
-/// `actions/cache`, pinned (SEC-004). Matches ci.yml.
-const CACHE: &str = "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0";
+/// Split `actions/cache` restore/save entry points, pinned to one commit
+/// (SEC-004). Restore runs before transport; save runs only after the pinned
+/// artifact passes the full gate.
+const CACHE_RESTORE: &str =
+    "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0";
+const CACHE_SAVE: &str = "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0";
 
 /// `actions/setup-python`, pinned (SEC-004). Installs the runtime's declared
 /// schema-tooling Python ABI on a hosted source cell that has no bundled
@@ -489,8 +493,9 @@ fn runtime_fetch_steps(bootstrap: Option<&Bootstrap>) -> String {
         out.push_str(&format!(
             "\
 \x20     - name: Restore the artifact registry cache (speed only, never correctness)
+        id: runtime-cache-restore
         if: ${{{{ matrix.hosted && vars.OST_CI_DISABLE_CACHE != 'true' }}}}
-        uses: {CACHE}
+        uses: {CACHE_RESTORE}
         with:
           path: .ost-ci-home/artifacts
           key: ost-registry-{version}-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-${{{{ matrix.name }}}}-${{{{ matrix.runtime_artifact }}}}
@@ -518,6 +523,31 @@ fn runtime_fetch_steps(bootstrap: Option<&Bootstrap>) -> String {
 ",
     );
     out
+}
+
+/// Save the hosted registry only after the pinned artifact has passed the
+/// policy/evidence gate and materialized successfully. The resumable transport
+/// directory is deliberately removed first: partial blobs are recovery state,
+/// never a cacheable artifact or a cache-hit signal.
+fn runtime_cache_save_step(bootstrap: Option<&Bootstrap>) -> String {
+    let Some(bootstrap) = bootstrap else {
+        return String::new();
+    };
+    format!(
+        "\
+\x20     - name: Remove resumable transfer state before caching
+        if: ${{{{ matrix.hosted && vars.OST_CI_DISABLE_CACHE != 'true' && steps.runtime-cache-restore.outputs.cache-hit != 'true' }}}}
+        shell: bash
+        run: rm -rf .ost-ci-home/artifacts/.partial-blobs
+      - name: Save the verified artifact registry cache
+        if: ${{{{ matrix.hosted && vars.OST_CI_DISABLE_CACHE != 'true' && steps.runtime-cache-restore.outputs.cache-hit != 'true' }}}}
+        uses: {CACHE_SAVE}
+        with:
+          path: .ost-ci-home/artifacts
+          key: ost-registry-{version}-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-${{{{ matrix.name }}}}-${{{{ matrix.runtime_artifact }}}}
+",
+        version = bootstrap.ost.version,
+    )
 }
 
 /// Render the matrix's repo-specific `source_checks` as workflow steps,
@@ -669,9 +699,11 @@ fn source_preamble(matrix: &SupportMatrix) -> String {
           printf '{{\"schema\":1,\"runtime_artifact\":\"%s\",\"source\":\"%s\"}}\\n' \"${{{{ matrix.runtime_artifact }}}}\" \"${{{{ matrix.runtime_remote != '' && 'remote-pull' || 'local-registry' }}}}\" > .ost-ci/runtime-source.json
           ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}}{policy}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
+{cache_save}\
 {prebuild}",
         checkout = checkout_preamble(matrix),
         fetch = runtime_fetch_steps(matrix.bootstrap.as_ref()),
+        cache_save = runtime_cache_save_step(matrix.bootstrap.as_ref()),
         prebuild = prebuild_steps(matrix),
     )
 }
@@ -1758,7 +1790,8 @@ mod tests {
         assert!(cache["uses"]
             .as_str()
             .unwrap()
-            .starts_with("actions/cache@"));
+            .starts_with("actions/cache/restore@"));
+        assert_eq!(cache["id"], "runtime-cache-restore");
         let key = cache["with"]["key"].as_str().unwrap();
         assert!(key.contains("0.9.0"));
         assert!(key.contains("${{ matrix.runtime_artifact }}"));
@@ -1804,6 +1837,48 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(gate.contains("${{ matrix.evidence_flags }}"));
+
+        // Save is a separate post-gate action: no failed or partial pull can
+        // populate the digest key. Recovery-only partial blobs are removed
+        // immediately before the save action.
+        let cleanup_index = steps
+            .iter()
+            .position(|step| {
+                step["name"]
+                    .as_str()
+                    .is_some_and(|name| name.contains("Remove resumable transfer state"))
+            })
+            .expect("partial cleanup step");
+        let save_index = steps
+            .iter()
+            .position(|step| {
+                step["name"]
+                    .as_str()
+                    .is_some_and(|name| name.contains("Save the verified artifact registry"))
+            })
+            .expect("cache save step");
+        let gate_index = steps
+            .iter()
+            .position(|step| {
+                step["name"]
+                    .as_str()
+                    .is_some_and(|name| name.contains("Verify and materialize"))
+            })
+            .unwrap();
+        assert!(gate_index < cleanup_index && cleanup_index < save_index);
+        assert_eq!(
+            steps[cleanup_index]["run"],
+            "rm -rf .ost-ci-home/artifacts/.partial-blobs"
+        );
+        assert!(steps[save_index]["uses"]
+            .as_str()
+            .unwrap()
+            .starts_with("actions/cache/save@"));
+        assert_eq!(steps[save_index]["with"]["key"], cache["with"]["key"]);
+        assert!(steps[save_index]["if"]
+            .as_str()
+            .unwrap()
+            .contains("steps.runtime-cache-restore.outputs.cache-hit != 'true'"));
 
         // The include entry carries the pinned remote uri; the self-hosted
         // mainline path stays possible (empty remote renders as "").
