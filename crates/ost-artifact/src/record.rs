@@ -356,17 +356,45 @@ fn normalize_openusd_compatibility(
     producer_platform: Option<&str>,
     target: &str,
 ) -> Result<Option<ResolvedOpenUsdCompatibility>> {
-    let Some(value) = manifest.get("openusd_compatibility") else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    if kind != ArtifactKind::Runtime {
+    let top_level = manifest
+        .get("openusd_compatibility")
+        .filter(|value| !value.is_null());
+    if kind != ArtifactKind::Runtime && top_level.is_some() {
         return Err(Error::InvalidManifest(
             "only runtime producer manifests may carry 'openusd_compatibility'".to_string(),
         ));
     }
+    if kind != ArtifactKind::Runtime {
+        return Ok(None);
+    }
+
+    // Runtime pull restores the embedded manifest, so it is the compatibility
+    // identity that the materialized runtime will actually use. The top-level
+    // copy exists for artifact inspection and selection; requiring exact
+    // agreement prevents those consumers from seeing a different variant than
+    // runtime pull installs.
+    let embedded = manifest
+        .pointer("/provenance/runtime_manifest/openusd_compatibility")
+        .filter(|value| !value.is_null());
+    let value = match (top_level, embedded) {
+        (None, None) => return Ok(None),
+        (Some(top_level), Some(embedded)) if top_level == embedded => embedded,
+        (Some(_), Some(_)) => {
+            return Err(Error::InvalidManifest(
+                "producer manifest top-level 'openusd_compatibility' does not match \
+                 provenance.runtime_manifest.openusd_compatibility"
+                    .to_string(),
+            ));
+        }
+        (top_level, embedded) => {
+            return Err(Error::InvalidManifest(format!(
+                "producer manifest OpenUSD compatibility identity is incomplete \
+                 (top-level present={}, embedded runtime present={})",
+                top_level.is_some(),
+                embedded.is_some()
+            )));
+        }
+    };
 
     let compatibility: ResolvedOpenUsdCompatibility = serde_json::from_value(value.clone())
         .map_err(|error| {
@@ -627,7 +655,7 @@ mod tests {
         manifest["kind"] = serde_json::json!(RUNTIME_KIND);
         manifest["name"] = serde_json::json!("openstrata-cy2026-usd");
         manifest["target"] = serde_json::json!("linux-x86_64-glibc228-py313");
-        manifest["openusd_compatibility"] = serde_json::json!({
+        let compatibility = serde_json::json!({
             "schema": 1,
             "platform": "cy2026",
             "os": "linux",
@@ -660,7 +688,19 @@ mod tests {
             "variant": "vulkan",
             "capabilities": ["hgi-gl", "hgi-vulkan"]
         });
+        manifest["openusd_compatibility"] = compatibility.clone();
+        manifest["provenance"]["runtime_manifest"] = serde_json::json!({
+            "openusd_compatibility": compatibility,
+        });
         manifest
+    }
+
+    fn update_openusd_compatibility(
+        manifest: &mut serde_json::Value,
+        update: impl Fn(&mut serde_json::Value),
+    ) {
+        update(&mut manifest["openusd_compatibility"]);
+        update(&mut manifest["provenance"]["runtime_manifest"]["openusd_compatibility"]);
     }
 
     #[test]
@@ -747,10 +787,12 @@ mod tests {
     #[test]
     fn runtime_record_rejects_unverified_or_contradictory_openusd_identity() {
         let mut unverified = runtime_manifest_with_openusd();
-        unverified["openusd_compatibility"]["tbb"]
-            .as_object_mut()
-            .unwrap()
-            .remove("version");
+        update_openusd_compatibility(&mut unverified, |compatibility| {
+            compatibility["tbb"]
+                .as_object_mut()
+                .unwrap()
+                .remove("version");
+        });
         let error = ArtifactRecord::from_producer_manifest(
             &unverified,
             ArtifactSource::Imported,
@@ -761,7 +803,9 @@ mod tests {
         assert!(error.to_string().contains("unverified provider versions"));
 
         let mut wrong_platform = runtime_manifest_with_openusd();
-        wrong_platform["openusd_compatibility"]["platform"] = serde_json::json!("cy2025");
+        update_openusd_compatibility(&mut wrong_platform, |compatibility| {
+            compatibility["platform"] = serde_json::json!("cy2025");
+        });
         let error = ArtifactRecord::from_producer_manifest(
             &wrong_platform,
             ArtifactSource::Imported,
@@ -774,7 +818,9 @@ mod tests {
             .contains("does not match provenance platform"));
 
         let mut wrong_target = runtime_manifest_with_openusd();
-        wrong_target["openusd_compatibility"]["os"] = serde_json::json!("windows");
+        update_openusd_compatibility(&mut wrong_target, |compatibility| {
+            compatibility["os"] = serde_json::json!("windows");
+        });
         let error = ArtifactRecord::from_producer_manifest(
             &wrong_target,
             ArtifactSource::Imported,
@@ -783,6 +829,50 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("does not match artifact target"));
+    }
+
+    #[test]
+    fn runtime_record_rejects_split_openusd_identity() {
+        let mut mismatched = runtime_manifest_with_openusd();
+        mismatched["openusd_compatibility"]["variant"] = serde_json::json!("headless");
+        let error = ArtifactRecord::from_producer_manifest(
+            &mismatched,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("does not match provenance.runtime_manifest"));
+
+        let mut missing_top_level = runtime_manifest_with_openusd();
+        missing_top_level
+            .as_object_mut()
+            .unwrap()
+            .remove("openusd_compatibility");
+        let error = ArtifactRecord::from_producer_manifest(
+            &missing_top_level,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("identity is incomplete"));
+
+        let mut missing_embedded = runtime_manifest_with_openusd();
+        missing_embedded["provenance"]["runtime_manifest"]
+            .as_object_mut()
+            .unwrap()
+            .remove("openusd_compatibility");
+        let error = ArtifactRecord::from_producer_manifest(
+            &missing_embedded,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("identity is incomplete"));
     }
 
     #[test]
