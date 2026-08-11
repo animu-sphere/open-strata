@@ -12,4 +12,8 @@ mod model;
 
 pub use diff::{diff, ComponentChange, PlatformDiff};
 pub use loader::{load_all, load_one, Catalog};
-pub use model::{Platform, Source, SourceKind, Status};
+pub use model::{
+    OpenUsdBuilder, OpenUsdCell, OpenUsdPolicy, OpenUsdProvider, OpenUsdToolchain, OpenUsdVariant,
+    OpenUsdVariantId, Platform, ResolvedOpenUsdCompatibility, ResolvedOpenUsdProvider,
+    ResolvedOpenUsdToolchain, Source, SourceKind, Status,
+};

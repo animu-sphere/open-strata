@@ -24,6 +24,35 @@ core:
   gcc: "14.2"
   glibc: "2.34"
 
+openusd:
+  schema: 1
+  cells:
+    - os: linux
+      arch: x86_64
+      toolchain:
+        family: gcc
+        provider: system
+        version_from: gcc
+        cxx_standard_from: cxx_standard
+        runtime: { family: glibc, provider: system, version_from: glibc }
+      python: { family: cpython, provider: platform, version_from: python }
+      tbb: { family: onetbb, provider: platform, version_from: tbb }
+      variants:
+        - id: headless
+          builders: [build-usd, cmake]
+          build_usd_args: [--no-imaging]
+          cmake_args: [-DPXR_BUILD_IMAGING=OFF, -DPXR_BUILD_USD_IMAGING=OFF]
+          capabilities: [usd-core]
+        - id: standard
+          builders: [build-usd, cmake]
+          build_usd_args: [--imaging]
+          cmake_args: [-DPXR_BUILD_IMAGING=ON, -DPXR_BUILD_USD_IMAGING=ON, -DPXR_ENABLE_VULKAN_SUPPORT=OFF]
+          capabilities: [usd-core, imaging, opengl]
+        - id: vulkan
+          builders: [cmake]
+          cmake_args: [-DPXR_BUILD_IMAGING=ON, -DPXR_BUILD_USD_IMAGING=ON, -DPXR_ENABLE_VULKAN_SUPPORT=ON]
+          capabilities: [usd-core, imaging, opengl, vulkan]
+
 notes: >
   CY2027 is an upstream draft; values track the published draft targets and
   remain provisional until the spec is ratified.

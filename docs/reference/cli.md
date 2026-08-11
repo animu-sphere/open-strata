@@ -1326,7 +1326,7 @@ Materialize a runtime into the local store
 | Option | Description |
 | --- | --- |
 | `--build <BUILD>` | Build OpenUSD from source into the store (`build` source), via the source tree's `build_scripts/build_usd.py`. Falls back to `OST_USD_SRC` when no path is given |
-| `--build-arg <BUILD_ARGS>` | Extra argument forwarded to the builder (repeatable). With build_usd.py: e.g. `--build-arg --no-imaging`. With `--deps` (CMake): e.g. `--build-arg -DPXR_BUILD_IMAGING=OFF`. Hyphen values allowed |
+| `--build-arg <BUILD_ARGS>` | Extra argument forwarded to the builder (repeatable). With build_usd.py: e.g. `--build-arg --examples`. With `--deps` (CMake): e.g. `--build-arg -DPXR_BUILD_TESTS=OFF`. Hyphen values allowed |
 | `--deployment-target <DEPLOYMENT_TARGET>` | macOS deployment target for `--build` (`CMAKE_OSX_DEPLOYMENT_TARGET`), e.g. `14.5` — the oldest macOS the produced runtime must load on |
 | `--deps <DEPS>` | Dependency prefix for a direct CMake build of `--build` (repeatable; joined into `CMAKE_PREFIX_PATH`). When given, OpenUSD is built with CMake against these deps instead of via build_usd.py. Falls back to `OST_USD_DEPS` (path-separator list) |
 | `--force` | Re-pull even if the runtime already exists |
@@ -1334,6 +1334,7 @@ Materialize a runtime into the local store
 | `--from-usd <FROM_USD>` | Adopt an existing OpenUSD install at this path instead of materializing a mock layout (`local` source). Falls back to `OST_USD_ROOT` when unset |
 | `--host-package <MANAGER:PACKAGE>` | Native package the produced runtime leaves to its consuming host, written as `apt:PACKAGE` (Linux) or `brew:FORMULA` (macOS). Repeatable and recorded as compatibility identity |
 | `--jobs <JOBS>` | Parallel build jobs for `--build` (passed to the builder as `-j`) |
+| `--openusd-variant <OPENUSD_VARIANT>` | Constrained OpenUSD build shape. Defaults to `standard` for managed source builds. The selected CY cell supplies deterministic builder arguments and becomes part of runtime identity |
 | `--profile <PROFILE>` | Profile to pull, e.g. `usd` or `lookdev` |
 | `--sdk <SDK>` | macOS SDK to build `--build` against: a full path, or a version like `15.2` resolved with `xcrun --sdk macosx<version> --show-sdk-path`. Sets `CMAKE_OSX_SYSROOT` for the whole build |
 

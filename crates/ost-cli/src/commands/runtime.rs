@@ -25,8 +25,9 @@ use ost_core::paths::Store;
 use ost_core::variant::Abi;
 use ost_core::{tools, Error, Host, Result, Variant};
 use ost_runtime::{
-    python_minor, ExtensionRecord, HostPackageManager, HostRequirement, RuntimeManifest,
-    RuntimeSource, Validation, MANIFEST_FILE,
+    python_minor, ExtensionRecord, HostPackageManager, HostRequirement, OpenUsdBuilder,
+    OpenUsdVariantId, ResolvedOpenUsdCompatibility, RuntimeManifest, RuntimeSource, Validation,
+    MANIFEST_FILE,
 };
 
 use crate::commands::resolve;
@@ -66,10 +67,15 @@ pub enum RuntimeCmd {
         #[arg(long)]
         jobs: Option<u32>,
         /// Extra argument forwarded to the builder (repeatable). With
-        /// build_usd.py: e.g. `--build-arg --no-imaging`. With `--deps` (CMake):
-        /// e.g. `--build-arg -DPXR_BUILD_IMAGING=OFF`. Hyphen values allowed.
+        /// build_usd.py: e.g. `--build-arg --examples`. With `--deps` (CMake):
+        /// e.g. `--build-arg -DPXR_BUILD_TESTS=OFF`. Hyphen values allowed.
         #[arg(long = "build-arg", allow_hyphen_values = true)]
         build_args: Vec<String>,
+        /// Constrained OpenUSD build shape. Defaults to `standard` for managed
+        /// source builds. The selected CY cell supplies deterministic builder
+        /// arguments and becomes part of runtime identity.
+        #[arg(long = "openusd-variant", value_parser = parse_openusd_variant)]
+        openusd_variant: Option<OpenUsdVariantId>,
         /// macOS SDK to build `--build` against: a full path, or a version like
         /// `15.2` resolved with `xcrun --sdk macosx<version> --show-sdk-path`.
         /// Sets `CMAKE_OSX_SYSROOT` for the whole build.
@@ -181,6 +187,7 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             build,
             jobs,
             build_args,
+            openusd_variant,
             sdk,
             deployment_target,
             deps,
@@ -195,6 +202,7 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
                 build,
                 jobs,
                 build_args,
+                openusd_variant,
                 sdk,
                 deployment_target,
                 deps,
@@ -329,6 +337,7 @@ pub struct PullSource {
     pub build: Option<String>,
     pub jobs: Option<u32>,
     pub build_args: Vec<String>,
+    pub openusd_variant: Option<OpenUsdVariantId>,
     /// `--sdk <path|version>`: the macOS SDK to build against.
     pub sdk: Option<String>,
     /// `--deployment-target <version>`: the oldest macOS the build must load on.
@@ -374,6 +383,13 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
         }
     });
 
+    if src.openusd_variant.is_some() && build_src.is_none() {
+        return Err(
+            Error::usage("--openusd-variant applies only to `runtime pull --build`")
+                .with_hint("add --build <OPENUSD_SOURCE>, or remove --openusd-variant"),
+        );
+    }
+
     // Dependency prefixes for a CMake-direct build (flag, else env list).
     let deps: Vec<String> = if !src.deps.is_empty() {
         src.deps.clone()
@@ -383,18 +399,34 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             .unwrap_or_default()
     };
 
+    let mut selected_openusd: Option<ResolvedOpenUsdCompatibility> = None;
     let mut manifest = if let Some(digest_ref) = &src.from_artifact {
         fetch_from_artifact(&r, digest_ref)?
     } else if let Some(usd_src) = build_src {
+        let platform_manifest = ost_platform::load_one(platform)?;
+        let builder = if deps.is_empty() {
+            OpenUsdBuilder::BuildUsd
+        } else {
+            OpenUsdBuilder::Cmake
+        };
+        let selection = resolve_openusd_build(
+            &platform_manifest,
+            r.runtime.variant.os,
+            r.runtime.variant.arch,
+            src.openusd_variant,
+            builder,
+            src.build_args,
+        )?;
         let opts = BuildOpts {
             jobs: src.jobs,
-            extra: src.build_args,
+            extra: selection.args,
             macos: MacosBuildOpts {
                 sdk: src.sdk,
                 deployment_target: src.deployment_target,
             },
             deps,
         };
+        selected_openusd = selection.compatibility;
         build_from_source(&r, &usd_src, &opts, extensions, created)?
     } else if let Some(usd_root) = adopt {
         adopt_local(&r, &usd_root, extensions, created)?
@@ -403,6 +435,9 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
     };
     if manifest.source != RuntimeSource::Artifact {
         manifest.set_host_requirements(src.host_requirements);
+    }
+    if selected_openusd.is_some() {
+        manifest.set_openusd_compatibility(selected_openusd);
     }
 
     let manifest_path = r.prefix.join(MANIFEST_FILE);
@@ -423,6 +458,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             "layout": manifest.layout,
             "extensions": manifest.extensions,
             "host_requirements": manifest.host_requirements,
+            "openusd_compatibility": manifest.openusd_compatibility,
         }));
         return Ok(());
     }
@@ -453,9 +489,155 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
         println!("  extensions: {}", names.join(", "));
     }
     print_host_requirements(&manifest.host_requirements, "  host:    ");
+    print_openusd_compatibility(&manifest, "  ");
     println!("\nValidate with:");
     println!("  ost runtime validate {} --profile {}", platform, profile);
     Ok(())
+}
+
+fn parse_openusd_variant(value: &str) -> std::result::Result<OpenUsdVariantId, String> {
+    match value {
+        "headless" => Ok(OpenUsdVariantId::Headless),
+        "standard" => Ok(OpenUsdVariantId::Standard),
+        "vulkan" => Ok(OpenUsdVariantId::Vulkan),
+        _ => Err(format!(
+            "unknown OpenUSD variant '{value}' (expected headless, standard, or vulkan)"
+        )),
+    }
+}
+
+#[derive(Debug)]
+struct OpenUsdBuildSelection {
+    compatibility: Option<ResolvedOpenUsdCompatibility>,
+    args: Vec<String>,
+}
+
+/// Select a declared cell without regressing legacy builds on targets that do
+/// not yet have an approved matrix cell. An explicit `--openusd-variant` is a
+/// compatibility claim and therefore fails when absent; an implicit standard
+/// selection falls back to the legacy unclassified build on those targets.
+fn resolve_openusd_build(
+    platform: &ost_platform::Platform,
+    os: Os,
+    arch: ost_core::host::Arch,
+    requested: Option<OpenUsdVariantId>,
+    builder: OpenUsdBuilder,
+    user_args: Vec<String>,
+) -> Result<OpenUsdBuildSelection> {
+    let variant_id = requested.unwrap_or(OpenUsdVariantId::Standard);
+    let Some((compatibility, variant)) = platform.resolve_openusd(os, arch, variant_id) else {
+        if requested.is_none() {
+            return Ok(OpenUsdBuildSelection {
+                compatibility: None,
+                args: user_args,
+            });
+        }
+        return Err(Error::coded(
+            "OPENUSD_BUILD_CELL_UNSUPPORTED",
+            ost_core::Category::Configuration,
+            format!(
+                "platform '{}' declares no OpenUSD '{}' cell for {}-{}",
+                platform.id,
+                variant_id.as_str(),
+                os.as_str(),
+                arch.as_str()
+            ),
+        )
+        .with_hint(
+            "select a declared platform/architecture cell or add it to the platform manifest",
+        ));
+    };
+
+    if !variant.builders.contains(&builder) {
+        return Err(Error::coded(
+            "OPENUSD_VARIANT_BUILDER_UNSUPPORTED",
+            ost_core::Category::Configuration,
+            format!(
+                "OpenUSD '{}' for '{}' does not support the {} builder",
+                variant_id.as_str(),
+                platform.id,
+                match builder {
+                    OpenUsdBuilder::BuildUsd => "build_usd.py",
+                    OpenUsdBuilder::Cmake => "CMake-direct",
+                }
+            ),
+        )
+        .with_hint(match builder {
+            OpenUsdBuilder::BuildUsd => {
+                "supply --deps to select the declared CMake-direct build cell"
+            }
+            OpenUsdBuilder::Cmake => {
+                "remove --deps to select build_usd.py, or declare CMake support in the CY cell"
+            }
+        }));
+    }
+
+    let mut args = match builder {
+        OpenUsdBuilder::BuildUsd => variant.build_usd_args.clone(),
+        OpenUsdBuilder::Cmake => variant.cmake_args.clone(),
+    };
+    let conflict = match builder {
+        OpenUsdBuilder::BuildUsd => args.iter().find_map(|declared| {
+            option_name(declared).and_then(|name| {
+                let component = name.strip_prefix("no-").unwrap_or(name);
+                user_args
+                    .iter()
+                    .find(|candidate| names_component(candidate, component))
+                    .map(|candidate| (component.to_string(), candidate.clone()))
+            })
+        }),
+        OpenUsdBuilder::Cmake => args.iter().find_map(|declared| {
+            cmake_definition_key(declared).and_then(|key| {
+                user_args
+                    .iter()
+                    .find(|candidate| cmake_definition_key(candidate) == Some(key))
+                    .map(|candidate| (key.to_string(), candidate.clone()))
+            })
+        }),
+    };
+    if let Some((dimension, supplied)) = conflict {
+        return Err(Error::coded(
+            "OPENUSD_VARIANT_OVERRIDE",
+            ost_core::Category::Configuration,
+            format!(
+                "--build-arg '{supplied}' overrides compatibility dimension '{dimension}' from OpenUSD variant '{}'",
+                variant_id.as_str()
+            ),
+        )
+        .with_hint("remove the conflicting --build-arg or select the variant that declares the required capability"));
+    }
+    args.extend(user_args);
+    Ok(OpenUsdBuildSelection {
+        compatibility: Some(compatibility),
+        args,
+    })
+}
+
+fn cmake_definition_key(arg: &str) -> Option<&str> {
+    arg.strip_prefix("-D")?
+        .split(['=', ':'])
+        .next()
+        .filter(|key| !key.is_empty())
+}
+
+fn print_openusd_compatibility(manifest: &RuntimeManifest, prefix: &str) {
+    let Some(selected) = &manifest.openusd_compatibility else {
+        return;
+    };
+    println!(
+        "{prefix}OpenUSD: {} ({} {} / C++{}, {} {} via {}, {} {} via {})",
+        selected.variant.as_str(),
+        selected.toolchain.family,
+        selected.toolchain.version,
+        selected.toolchain.cxx_standard,
+        selected.python.family,
+        selected.python.version,
+        selected.python.provider,
+        selected.tbb.family,
+        selected.tbb.version,
+        selected.tbb.provider,
+    );
+    println!("{prefix}graphics: {}", selected.capabilities.join(", "));
 }
 
 /// Resolve the profile's capabilities to concrete extensions (shared by `pull`
@@ -1639,6 +1821,7 @@ fn runtime_artifact_manifest(
         // record the artifact's origin instead of whoever imported it.
         "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
         "host_requirements": manifest.host_requirements,
+        "openusd_compatibility": manifest.openusd_compatibility,
         "provenance": {
             "platform": manifest.platform,
             "profile": manifest.profile,
@@ -2577,6 +2760,7 @@ fn list(fmt: Format) -> Result<()> {
                     "validation": m.validation,
                     "digest": m.digest,
                     "source": m.source.as_str(),
+                    "openusd_compatibility": m.openusd_compatibility,
                 })
             })
             .collect();
@@ -2685,6 +2869,7 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         println!("Deps:       {}", manifest.runtime_deps.join(", "));
     }
     print_host_requirements(&manifest.host_requirements, "Host needs: ");
+    print_openusd_compatibility(&manifest, "");
     println!("Capabilities:");
     for cap in &manifest.capabilities {
         println!("  - {cap}");
@@ -3154,6 +3339,82 @@ mod tests {
     }
 
     #[test]
+    fn declared_openusd_variants_select_deterministic_builder_args() {
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let headless = resolve_openusd_build(
+            &platform,
+            Os::Linux,
+            Arch::X86_64,
+            Some(OpenUsdVariantId::Headless),
+            OpenUsdBuilder::BuildUsd,
+            vec!["--no-tests".into()],
+        )
+        .unwrap();
+        assert!(headless.args.iter().any(|arg| arg == "--no-imaging"));
+        assert!(headless.args.iter().any(|arg| arg == "--no-tests"));
+        assert_eq!(
+            headless.compatibility.unwrap().variant,
+            OpenUsdVariantId::Headless
+        );
+
+        let vulkan = resolve_openusd_build(
+            &platform,
+            Os::Linux,
+            Arch::X86_64,
+            Some(OpenUsdVariantId::Vulkan),
+            OpenUsdBuilder::Cmake,
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(vulkan
+            .args
+            .iter()
+            .any(|arg| arg == "-DPXR_ENABLE_VULKAN_SUPPORT=ON"));
+    }
+
+    #[test]
+    fn variant_refuses_unsupported_builder_and_compatibility_override() {
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let unsupported = resolve_openusd_build(
+            &platform,
+            Os::Linux,
+            Arch::X86_64,
+            Some(OpenUsdVariantId::Vulkan),
+            OpenUsdBuilder::BuildUsd,
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(unsupported.code(), "OPENUSD_VARIANT_BUILDER_UNSUPPORTED");
+
+        let overridden = resolve_openusd_build(
+            &platform,
+            Os::Linux,
+            Arch::X86_64,
+            Some(OpenUsdVariantId::Standard),
+            OpenUsdBuilder::Cmake,
+            vec!["-DPXR_BUILD_IMAGING=OFF".into()],
+        )
+        .unwrap_err();
+        assert_eq!(overridden.code(), "OPENUSD_VARIANT_OVERRIDE");
+    }
+
+    #[test]
+    fn implicit_variant_preserves_legacy_targets_without_approved_cell() {
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let legacy = resolve_openusd_build(
+            &platform,
+            Os::Windows,
+            Arch::X86_64,
+            None,
+            OpenUsdBuilder::BuildUsd,
+            vec!["--no-tests".into()],
+        )
+        .unwrap();
+        assert!(legacy.compatibility.is_none());
+        assert_eq!(legacy.args, ["--no-tests"]);
+    }
+
+    #[test]
     fn runtime_artifact_manifest_exposes_host_requirements() {
         let mut manifest = exportable_manifest();
         manifest.set_host_requirements(vec![HostRequirement {
@@ -3172,6 +3433,29 @@ mod tests {
         assert_eq!(
             producer["provenance"]["runtime_manifest"]["host_requirements"][0]["name"],
             "libx11-dev"
+        );
+    }
+
+    #[test]
+    fn runtime_artifact_manifest_exposes_openusd_compatibility() {
+        let mut manifest = exportable_manifest();
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let (compatibility, _) = platform
+            .resolve_openusd(Os::Linux, Arch::X86_64, OpenUsdVariantId::Vulkan)
+            .unwrap();
+        manifest.set_openusd_compatibility(Some(compatibility));
+        let packed = ost_build::PackResult {
+            archive_digest: format!("sha256:{}", "ab".repeat(32)),
+            archive_size: 42,
+            total_size: 21,
+            files: Vec::new(),
+        };
+        let producer =
+            runtime_artifact_manifest(&manifest, "runtime.tar.zst", &packed, 1_760_000_000);
+        assert_eq!(producer["openusd_compatibility"]["variant"], "vulkan");
+        assert_eq!(
+            producer["openusd_compatibility"]["python"]["version"],
+            "3.13.x"
         );
     }
 

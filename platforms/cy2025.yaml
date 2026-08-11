@@ -24,6 +24,35 @@ core:
   gcc: "11.2.1"
   glibc: "2.28"
 
+openusd:
+  schema: 1
+  cells:
+    - os: linux
+      arch: x86_64
+      toolchain:
+        family: gcc
+        provider: system
+        version_from: gcc
+        cxx_standard_from: cxx_standard
+        runtime: { family: glibc, provider: system, version_from: glibc }
+      python: { family: cpython, provider: platform, version_from: python }
+      tbb: { family: onetbb, provider: platform, version_from: tbb }
+      variants:
+        - id: headless
+          builders: [build-usd, cmake]
+          build_usd_args: [--no-imaging]
+          cmake_args: [-DPXR_BUILD_IMAGING=OFF, -DPXR_BUILD_USD_IMAGING=OFF]
+          capabilities: [usd-core]
+        - id: standard
+          builders: [build-usd, cmake]
+          build_usd_args: [--imaging]
+          cmake_args: [-DPXR_BUILD_IMAGING=ON, -DPXR_BUILD_USD_IMAGING=ON, -DPXR_ENABLE_VULKAN_SUPPORT=OFF]
+          capabilities: [usd-core, imaging, opengl]
+        - id: vulkan
+          builders: [cmake]
+          cmake_args: [-DPXR_BUILD_IMAGING=ON, -DPXR_BUILD_USD_IMAGING=ON, -DPXR_ENABLE_VULKAN_SUPPORT=ON]
+          capabilities: [usd-core, imaging, opengl, vulkan]
+
 notes: >
   CY2025 standardises on the GCC 11.2.1 / C++17 toolchain and the OpenEXR 3.3
   line. Used as the prior-year baseline for diffs against CY2026.
