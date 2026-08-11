@@ -80,6 +80,16 @@ reproducible identity, and the OCI manifest repeats the selector as an
 `io.openstrata.openusd.selector` annotation. Explicit publisher tags are not
 rewritten; legacy and non-runtime artifacts retain the untagged path.
 
+**Implemented 2026-08-11 — selector resolver-validation slice:** OCI resolution
+now exposes the normalized selector annotation, and digest-pinned pull re-derives
+that selector from the fetched producer manifest before local import. Invalid
+annotation values fail as `ARTIFACT_MANIFEST_INVALID`; annotations on artifacts
+without a verified normalized OpenUSD identity and any annotation/producer
+mismatch fail with the stable `ARTIFACT_OPENUSD_SELECTOR_MISMATCH` validation
+code. Pre-selector artifacts remain readable and report the verification step
+as skipped. Partial consumer requirement matching (including dimension-specific
+Python, TBB, and graphics diagnostics) remains open below.
+
 - Version and validate the OpenUSD artifact record, including ABI dimensions,
   capabilities, runtime providers, build/runtime requirement separation, exact
   dependency identities, and evidence digests.

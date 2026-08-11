@@ -1090,12 +1090,15 @@ impl OciTransport {
 impl ArtifactTransport for OciTransport {
     fn resolve(&self, reference: &RemoteReference) -> Result<ResolvedRemote> {
         let r = self.oci(reference)?;
-        let (_, resolved_digest) = self.fetch_manifest(r)?;
+        let (manifest_bytes, resolved_digest) = self.fetch_manifest(r)?;
+        let locator = format!("oci://{}/{}@{resolved_digest}", r.registry, r.repository);
+        let manifest = parse_oci_manifest(&manifest_bytes, &locator)?;
         Ok(ResolvedRemote {
-            locator: format!("oci://{}/{}@{resolved_digest}", r.registry, r.repository),
+            locator,
             registry: r.registry.clone(),
             repository: r.repository.clone(),
             oci_digest: Some(resolved_digest),
+            openusd_selector: manifest.openusd_selector,
             auth_mode: self.auth_mode.borrow().to_string(),
         })
     }
@@ -2050,6 +2053,7 @@ fn write_unexpected(url: &str, status: u16, what: &str) -> Error {
 #[derive(Debug)]
 struct OciManifest {
     layers: Vec<Layer>,
+    openusd_selector: Option<String>,
 }
 
 #[derive(Debug)]
@@ -2123,7 +2127,33 @@ fn parse_oci_manifest(bytes: &[u8], locator: &str) -> Result<OciManifest> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(OciManifest { layers })
+    let openusd_selector = match json
+        .get("annotations")
+        .and_then(|annotations| annotations.get(OPENUSD_SELECTOR_ANNOTATION))
+    {
+        Some(value) => {
+            let selector = value.as_str().ok_or_else(|| {
+                oci_manifest_invalid(locator, "the OpenUSD selector annotation is not a string")
+            })?;
+            if selector.is_empty()
+                || selector.len() > 128
+                || !selector
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            {
+                return Err(oci_manifest_invalid(
+                    locator,
+                    "the OpenUSD selector annotation is not a valid OCI tag",
+                ));
+            }
+            Some(selector.to_string())
+        }
+        None => None,
+    };
+    Ok(OciManifest {
+        layers,
+        openusd_selector,
+    })
 }
 
 /// Parse a `WWW-Authenticate` challenge's `key="value"` parameters.
@@ -2469,6 +2499,10 @@ mod tests {
         assert_eq!(bytes, again, "manifest serialization must be deterministic");
 
         let parsed = parse_oci_manifest(&bytes, "oci://x/y").unwrap();
+        assert_eq!(
+            parsed.openusd_selector.as_deref(),
+            Some("openusd-cy2026-linux-x86_64-vulkan-deadbeef")
+        );
         let producer = parsed
             .find_layer(MEDIA_TYPE_PRODUCER_MANIFEST, |t| t == MANIFEST_FILE)
             .expect("producer layer");
@@ -2496,6 +2530,29 @@ mod tests {
             json["annotations"][OPENUSD_SELECTOR_ANNOTATION],
             "openusd-cy2026-linux-x86_64-vulkan-deadbeef"
         );
+    }
+
+    #[test]
+    fn malformed_openusd_selector_annotation_is_rejected() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "annotations": { OPENUSD_SELECTOR_ANNOTATION: ["not", "a", "tag"] },
+            "layers": [],
+        }))
+        .unwrap();
+        let error = parse_oci_manifest(&bytes, "oci://x/y").unwrap_err();
+        assert_eq!(error.code(), "ARTIFACT_MANIFEST_INVALID");
+        assert!(error.to_string().contains("not a string"));
+
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "annotations": { OPENUSD_SELECTOR_ANNOTATION: "not/a/tag" },
+            "layers": [],
+        }))
+        .unwrap();
+        let error = parse_oci_manifest(&bytes, "oci://x/y").unwrap_err();
+        assert_eq!(error.code(), "ARTIFACT_MANIFEST_INVALID");
+        assert!(error.to_string().contains("not a valid OCI tag"));
     }
 
     #[test]

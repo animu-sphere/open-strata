@@ -19,8 +19,8 @@ use ost_artifact::transport::oci::{
     MEDIA_TYPE_ARCHIVE, MEDIA_TYPE_DEBUG_ARCHIVE, MEDIA_TYPE_PRODUCER_MANIFEST,
 };
 use ost_artifact::{
-    pull, ArtifactKind, ArtifactSource, ArtifactStore, ArtifactTransport, FileTransport,
-    OciTransferPolicy, OciTransport, PullPolicy, RemoteReference,
+    pull, ArtifactKind, ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport,
+    FileTransport, OciTransferPolicy, OciTransport, PullPolicy, RemoteReference,
 };
 use ost_core::digest;
 
@@ -444,6 +444,79 @@ fn make_bundle(name: &str, content: &[u8]) -> Bundle {
     make_bundle_from_archive(name, content, archive)
 }
 
+fn make_openusd_runtime_bundle(content: &[u8]) -> (Bundle, String) {
+    let archive = tar_zst(&[("lib/libusd.so", content)]);
+    let archive_name = "openstrata-cy2026-usd.tar.zst".to_string();
+    let compatibility = serde_json::json!({
+        "schema": 1,
+        "platform": "cy2026",
+        "os": "linux",
+        "arch": "x86_64",
+        "toolchain": {
+            "family": "gcc",
+            "provider": "managed",
+            "version": "14.2.0",
+            "version_constraint": "14.x",
+            "cxx_standard": "20",
+            "runtime": {
+                "family": "glibc",
+                "provider": "system",
+                "version": "2.28",
+                "version_constraint": ">=2.28"
+            }
+        },
+        "python": {
+            "family": "cpython",
+            "provider": "managed",
+            "version": "3.13.7",
+            "version_constraint": "3.13.x"
+        },
+        "tbb": {
+            "family": "onetbb",
+            "provider": "managed",
+            "version": "2022.1.0",
+            "version_constraint": "2022.x"
+        },
+        "variant": "standard",
+        "capabilities": ["usd-core", "imaging", "opengl"]
+    });
+    let producer = serde_json::json!({
+        "schema": 1,
+        "kind": "openstrata.runtime",
+        "name": "openstrata-cy2026-usd",
+        "version": "26.05",
+        "target": "linux-x86_64-glibc228-py313",
+        "archive": archive_name,
+        "archive_digest": digest::sha256_hex(&archive),
+        "archive_size": archive.len(),
+        "total_size": content.len(),
+        "created_unix": 1_750_000_000u64,
+        "openusd_compatibility": compatibility,
+        "provenance": {
+            "platform": "cy2026",
+            "profile": "usd",
+            "validation": "passed",
+            "runtime_manifest": { "openusd_compatibility": compatibility }
+        },
+        "files": [
+            { "path": "lib/libusd.so", "sha256": digest::sha256_hex(content), "size": content.len() },
+        ],
+    });
+    let record =
+        ArtifactRecord::from_producer_manifest(&producer, ArtifactSource::Imported, 0, "test")
+            .unwrap();
+    let selector = record.openusd_selector().unwrap();
+    let producer_manifest = serde_json::to_vec_pretty(&producer).unwrap();
+    let mut bundle = finish_bundle(archive, archive_name, producer_manifest);
+    let mut oci: serde_json::Value = serde_json::from_slice(&bundle.oci_manifest).unwrap();
+    oci["annotations"] = serde_json::json!({
+        "io.openstrata.openusd.selector": selector
+    });
+    bundle.oci_manifest = serde_json::to_vec_pretty(&oci).unwrap();
+    bundle.oci_digest = digest::sha256_hex(&bundle.oci_manifest);
+    (bundle, selector)
+}
+
 fn make_bundle_with_debug(name: &str, content: &[u8], symbols: &[u8]) -> Bundle {
     let archive = tar_zst(&[("lib/payload.bin", content)]);
     let archive_name = format!("{name}-0.1.0-{TARGET}.tar.zst");
@@ -653,6 +726,7 @@ fn resolve_turns_a_tag_into_the_oci_digest() {
     );
     assert_eq!(resolved.registry, registry.host());
     assert_eq!(resolved.auth_mode, "anonymous");
+    assert!(resolved.openusd_selector.is_none());
 }
 
 #[test]
@@ -703,7 +777,7 @@ fn digest_pinned_pull_imports_and_verifies() {
     // Every required chain step passed. Evidence sidecars are optional for this
     // legacy fixture and therefore reported as skipped.
     for (step, status) in &evidence.verification {
-        let expected = if matches!(*step, "sbom" | "provenance") {
+        let expected = if matches!(*step, "openusd_selector" | "sbom" | "provenance") {
             "skipped"
         } else {
             "passed"
@@ -735,6 +809,56 @@ fn digest_pinned_pull_imports_and_verifies() {
     assert!(leftovers.is_empty(), "scratch dirs must be cleaned up");
 
     std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn pull_verifies_the_oci_selector_against_the_producer_identity() {
+    let registry = MockRegistry::start();
+    let (bundle, selector) = make_openusd_runtime_bundle(b"OpenUSD runtime bytes");
+    registry.register("fixtures/rt", "v1", &bundle);
+
+    let root = tmp_root("selector-match");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::new(true);
+    let reference = oci_ref(&registry, "fixtures/rt", &format!("@{}", bundle.oci_digest));
+
+    let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
+    assert_eq!(
+        evidence.remote.openusd_selector.as_deref(),
+        Some(selector.as_str())
+    );
+    assert!(evidence
+        .verification
+        .contains(&("openusd_selector", "passed")));
+    assert_eq!(
+        evidence.record.openusd_selector().as_deref(),
+        Some(selector.as_str())
+    );
+}
+
+#[test]
+fn pull_rejects_an_oci_selector_that_disagrees_with_the_producer() {
+    let registry = MockRegistry::start();
+    let (mut bundle, selector) = make_openusd_runtime_bundle(b"OpenUSD runtime bytes");
+    let mut manifest: serde_json::Value = serde_json::from_slice(&bundle.oci_manifest).unwrap();
+    manifest["annotations"] = serde_json::json!({
+        "io.openstrata.openusd.selector":
+            "openusd-cy2026-linux-x86_64-standard-deadbeef"
+    });
+    bundle.oci_manifest = serde_json::to_vec_pretty(&manifest).unwrap();
+    bundle.oci_digest = digest::sha256_hex(&bundle.oci_manifest);
+    registry.register("fixtures/rt", "v1", &bundle);
+
+    let root = tmp_root("selector-mismatch");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::new(true);
+    let reference = oci_ref(&registry, "fixtures/rt", &format!("@{}", bundle.oci_digest));
+
+    let error = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap_err();
+    assert_eq!(error.code(), "ARTIFACT_OPENUSD_SELECTOR_MISMATCH");
+    assert!(error.to_string().contains(&selector));
+    assert!(error.to_string().contains("standard-deadbeef"));
+    assert!(store.list().unwrap().is_empty());
 }
 
 #[test]

@@ -83,6 +83,7 @@ impl ArtifactTransport for FileTransport {
             registry: FILE_REGISTRY_ID.to_string(),
             repository: String::new(),
             oci_digest: None,
+            openusd_selector: None,
             auth_mode: "none".to_string(),
         })
     }

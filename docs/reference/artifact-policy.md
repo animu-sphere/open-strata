@@ -84,6 +84,15 @@ therefore safe for exact compatibility comparison while staying within OCI's
 In either form the tag is mutable convenience only: pin the returned
 `@sha256:...` OCI digest for reproducible consumption.
 
+`ost artifact resolve` reports the selector annotation carried by the resolved
+OCI manifest. A digest-pinned `artifact pull` treats that annotation as a claim,
+not authority: after fetching the producer manifest it re-derives the normalized
+selector and requires exact agreement before importing anything into the local
+registry. An annotation on a legacy/non-runtime artifact, an invalid OCI-tag
+value, or a selector that disagrees with the producer identity fails closed.
+Artifacts published before selector annotations existed remain consumable and
+report the `openusd_selector` verification step as `skipped`.
+
 For a protected destination, `ost` requests a short-lived GitHub Actions OIDC
 token directly from `https://token.actions.githubusercontent.com`, using the
 runner-provided request URL and bearer token. It refuses a different request
@@ -158,3 +167,4 @@ See [artifact-evidence.md](artifact-evidence.md).
 | `ARTIFACT_POLICY_IDENTITY_INVALID` | validation | The OIDC endpoint or returned issuer, audience, validity window, or claims are invalid. |
 | `ARTIFACT_POLICY_TRUST_INSUFFICIENT` | validation | Artifact trust is below `minimum_trust`. |
 | `ARTIFACT_POLICY_PUBLISHER_UNTRUSTED` | validation | No allowed publisher matched every identity claim. |
+| `ARTIFACT_OPENUSD_SELECTOR_MISMATCH` | validation | The resolved OCI selector annotation cannot be re-derived exactly from the fetched producer manifest. |

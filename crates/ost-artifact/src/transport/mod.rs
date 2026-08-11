@@ -43,6 +43,10 @@ pub struct ResolvedRemote {
     /// The resolved OCI manifest digest (`sha256:<hex>`); `None` for backends
     /// without an OCI manifest (the file backend).
     pub oci_digest: Option<String>,
+    /// Normalized OpenUSD compatibility selector declared by the resolved OCI
+    /// manifest. Pull re-derives this value from the producer manifest before
+    /// import; it is evidence, never an independently trusted identity.
+    pub openusd_selector: Option<String>,
     /// How the transport authenticated: `anonymous` / `static-token` /
     /// `token-exchange` / `basic` / `none`.
     pub auth_mode: String,
@@ -255,7 +259,8 @@ pub fn pull(
 
     let result = (|| -> Result<PullEvidence> {
         let fetched = transport.fetch(reference, &resolved, &scratch)?;
-        let chain = verify::verify_dist(&fetched.dist, policy)?;
+        let chain =
+            verify::verify_dist(&fetched.dist, policy, resolved.openusd_selector.as_deref())?;
         let outcome = store.import(&fetched.dist, ArtifactSource::Imported)?;
 
         let mut verification: Vec<StepStatus> = Vec::new();
