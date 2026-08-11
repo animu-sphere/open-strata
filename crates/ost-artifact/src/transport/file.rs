@@ -9,14 +9,14 @@
 //! remote pull, so air-gapped lanes get the same evidence trail; the bytes
 //! just never cross a network.
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
 
 use ost_core::{Category, Error, Result};
 
 use crate::record::is_sha256_ref;
 use crate::reference::RemoteReference;
 use crate::store::locate_manifest;
-use crate::transport::{ArtifactTransport, ResolvedRemote};
+use crate::transport::{ArtifactTransport, FetchOutcome, ResolvedRemote, TransferEvidence};
 
 /// Registry identity recorded in evidence for filesystem pulls.
 pub const FILE_REGISTRY_ID: &str = "local-filesystem";
@@ -92,9 +92,12 @@ impl ArtifactTransport for FileTransport {
         reference: &RemoteReference,
         _resolved: &ResolvedRemote,
         _scratch: &Utf8Path,
-    ) -> Result<Utf8PathBuf> {
+    ) -> Result<FetchOutcome> {
         // The dist dir already holds the producer files; the verification
         // chain reads them in place and import copies them into the store.
-        Ok(self.dist_dir(reference)?.to_owned())
+        Ok(FetchOutcome {
+            dist: self.dist_dir(reference)?.to_owned(),
+            transfer: TransferEvidence::default(),
+        })
     }
 }

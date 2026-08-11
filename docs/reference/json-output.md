@@ -173,6 +173,15 @@ error, never a warning:
 `ARTIFACT_KIND_MISMATCH` / `ARTIFACT_RUNTIME_MISMATCH` predate the transport
 and keep their meanings.)
 
+Successful OCI pulls include `data.transfer.manifest` and an ordered
+`data.transfer.layers[]` list. Each layer names its digest, title, expected and
+received bytes, and `attempts[]`; an attempt records `attempt`, `resume_offset`,
+`received_bytes`, `elapsed_ms`, `idle_age_ms`, `decision`, `detail`, and an
+optional `retry_after_ms`. A terminal layer failure exposes the same layer
+shape under `data.transfer.layer`, together with `manifest_digest` and
+`next_action`, while `error.code` and `error.category` remain the branching
+contract.
+
 ## Compatibility policy
 
 The `--json` contract is additive and versioned. Within a `schema` version:

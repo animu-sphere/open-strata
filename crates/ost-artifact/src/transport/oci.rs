@@ -37,7 +37,10 @@ use ost_core::{digest, Category, Error, Result};
 use crate::evidence::{record_evidence, PROVENANCE_FILE, SBOM_FILE};
 use crate::record::{is_sha256_ref, manifest_debug_archive, MANIFEST_FILE};
 use crate::reference::{OciReference, RemoteReference};
-use crate::transport::{ArtifactTransport, ResolvedRemote};
+use crate::transport::{
+    ArtifactTransport, FetchOutcome, LayerTransferEvidence, ManifestTransferEvidence,
+    ResolvedRemote, TransferAttemptEvidence, TransferEvidence,
+};
 
 /// ureq 3.x dropped its own `Response`/`Request` types for the `http` crate's;
 /// a response is now an `http::Response<Body>`. Aliased for the many signatures
@@ -563,7 +566,7 @@ impl OciTransport {
         reference: &OciReference,
         layer: &Layer,
         dest: &Utf8Path,
-    ) -> Result<()> {
+    ) -> Result<LayerTransferEvidence> {
         let url = format!(
             "{}/v2/{}/blobs/{}",
             self.base_url(&reference.registry),
@@ -592,6 +595,7 @@ impl OciTransport {
         let _lease = acquire_partial_lease(&partial)?;
 
         let max_attempts = self.transfer.max_attempts.max(1);
+        let mut attempts = Vec::new();
         for attempt in 1..=max_attempts {
             let started = Instant::now();
             let mut offset = partial_len(&partial)?;
@@ -603,11 +607,21 @@ impl OciTransport {
                 let (actual, size) = hash_file(&partial)?;
                 if actual == layer.digest && size == layer.size {
                     move_verified_blob(&partial, dest)?;
-                    return Ok(());
+                    attempts.push(transfer_attempt(
+                        attempt,
+                        offset,
+                        size,
+                        (started.elapsed(), Duration::ZERO),
+                        "complete",
+                        "verified a complete digest-keyed partial without another request",
+                        None,
+                    ));
+                    return Ok(layer_transfer_evidence(layer, attempts));
                 }
                 remove_if_present(&partial)?;
                 offset = 0;
             }
+            let requested_offset = offset;
 
             let range_headers = if offset > 0 {
                 vec![("Range", format!("bytes={offset}-"))]
@@ -624,18 +638,38 @@ impl OciTransport {
             let (resp, final_url) = match response {
                 Ok(value) => value,
                 Err(error) if retryable_transfer_error(&error) && attempt < max_attempts => {
-                    retry_delay(&self.transfer, attempt);
+                    let elapsed = started.elapsed();
+                    let delay = retry_delay(&self.transfer, attempt);
+                    attempts.push(transfer_attempt(
+                        attempt,
+                        requested_offset,
+                        requested_offset,
+                        (elapsed, elapsed),
+                        "retry",
+                        format!("transient request failure: {error}"),
+                        Some(delay),
+                    ));
                     continue;
                 }
                 Err(error) => {
-                    return Err(layer_request_error(
+                    attempts.push(transfer_attempt(
+                        attempt,
+                        requested_offset,
+                        requested_offset,
+                        (started.elapsed(), started.elapsed()),
+                        "stop",
+                        format!("request failed: {error}"),
+                        None,
+                    ));
+                    let error = layer_request_error(
                         error,
                         reference,
                         layer,
                         attempt,
                         offset,
                         started.elapsed(),
-                    ));
+                    );
+                    return Err(with_layer_transfer_data(error, reference, layer, attempts));
                 }
             };
 
@@ -643,10 +677,29 @@ impl OciTransport {
             if status == 416 {
                 remove_if_present(&partial)?;
                 if attempt < max_attempts {
-                    retry_delay(&self.transfer, attempt);
+                    let elapsed = started.elapsed();
+                    let delay = retry_delay(&self.transfer, attempt);
+                    attempts.push(transfer_attempt(
+                        attempt,
+                        requested_offset,
+                        requested_offset,
+                        (elapsed, elapsed),
+                        "restart",
+                        "registry rejected the resume range; discarded the partial",
+                        Some(delay),
+                    ));
                     continue;
                 }
-                return Err(transfer_exhausted(
+                attempts.push(transfer_attempt(
+                    attempt,
+                    requested_offset,
+                    requested_offset,
+                    (started.elapsed(), started.elapsed()),
+                    "stop",
+                    "registry rejected the resume range; discarded the partial",
+                    None,
+                ));
+                let error = transfer_exhausted(
                     reference,
                     layer,
                     attempt,
@@ -654,25 +707,40 @@ impl OciTransport {
                     started.elapsed(),
                     "registry rejected the resume range",
                     "retry the digest-pinned pull; the rejected partial was discarded",
-                ));
+                );
+                return Err(with_layer_transfer_data(error, reference, layer, attempts));
             }
 
+            let mut response_detail = "registry returned the requested representation".to_string();
             let append = if offset > 0 && status == 206 {
                 if let Err(error) = validate_content_range(&resp, &final_url, offset, layer.size) {
                     remove_if_present(&partial)?;
-                    return Err(error);
+                    attempts.push(transfer_attempt(
+                        attempt,
+                        requested_offset,
+                        requested_offset,
+                        (started.elapsed(), started.elapsed()),
+                        "stop",
+                        error.to_string(),
+                        None,
+                    ));
+                    return Err(with_layer_transfer_data(error, reference, layer, attempts));
                 }
+                response_detail = "validated Content-Range and resumed the retained prefix".into();
                 true
             } else if offset > 0 && status == 200 {
                 // A registry/CDN may ignore Range. Its full 200 response is safe
                 // to use only after truncating the old prefix.
+                response_detail =
+                    "registry ignored Range; truncated the partial and accepted the full response"
+                        .into();
                 offset = 0;
                 false
             } else if offset == 0 && status == 200 {
                 false
             } else {
                 remove_if_present(&partial)?;
-                return Err(Error::coded(
+                let error = Error::coded(
                     "ARTIFACT_RANGE_INVALID",
                     Category::Validation,
                     format!(
@@ -680,7 +748,17 @@ impl OciTransport {
                         layer.digest
                     ),
                 )
-                .with_hint("the registry returned an invalid range representation; retry from a trusted mirror"));
+                .with_hint("the registry returned an invalid range representation; retry from a trusted mirror");
+                attempts.push(transfer_attempt(
+                    attempt,
+                    requested_offset,
+                    requested_offset,
+                    (started.elapsed(), started.elapsed()),
+                    "stop",
+                    format!("HTTP {status} is invalid for resume offset {requested_offset}"),
+                    None,
+                ));
+                return Err(with_layer_transfer_data(error, reference, layer, attempts));
             };
 
             let file = OpenOptions::new()
@@ -694,6 +772,7 @@ impl OciTransport {
             let body = resp.into_body().into_reader();
             let mut reader = DeadlineReader::new(body, started, self.transfer.overall_timeout);
             let copy_result = std::io::copy(&mut reader, &mut writer);
+            let idle_age = reader.idle_age();
             let flush_result = writer.flush();
             let copied = copy_result.and(flush_result);
             let received = offset.saturating_add(writer.bytes_written());
@@ -702,12 +781,31 @@ impl OciTransport {
             if let Err(error) = copied {
                 let detail = error.to_string();
                 if attempt < max_attempts {
-                    retry_delay(&self.transfer, attempt);
+                    let elapsed = started.elapsed();
+                    let delay = retry_delay(&self.transfer, attempt);
+                    attempts.push(transfer_attempt(
+                        attempt,
+                        requested_offset,
+                        received,
+                        (elapsed, idle_age),
+                        "retry",
+                        format!("{response_detail}; body transfer failed: {detail}"),
+                        Some(delay),
+                    ));
                     continue;
                 }
                 let timed_out = detail.to_ascii_lowercase().contains("timeout")
                     || detail.to_ascii_lowercase().contains("timed out");
-                return Err(transfer_exhausted(
+                attempts.push(transfer_attempt(
+                    attempt,
+                    requested_offset,
+                    received,
+                    (started.elapsed(), idle_age),
+                    "stop",
+                    format!("{response_detail}; body transfer failed: {detail}"),
+                    None,
+                ));
+                let error = transfer_exhausted(
                     reference,
                     layer,
                     attempt,
@@ -720,13 +818,23 @@ impl OciTransport {
                         "retry the digest-pinned pull; the verified partial will be resumed"
                             .to_string()
                     },
-                ));
+                );
+                return Err(with_layer_transfer_data(error, reference, layer, attempts));
             }
 
             let (actual, size) = hash_file(&partial)?;
             if actual == layer.digest && size == layer.size {
                 move_verified_blob(&partial, dest)?;
-                return Ok(());
+                attempts.push(transfer_attempt(
+                    attempt,
+                    requested_offset,
+                    size,
+                    (started.elapsed(), idle_age),
+                    "complete",
+                    format!("{response_detail}; descriptor digest and size verified"),
+                    None,
+                ));
+                return Ok(layer_transfer_evidence(layer, attempts));
             }
 
             // A short response remains resumable. A full-sized wrong digest or
@@ -737,10 +845,39 @@ impl OciTransport {
                 remove_if_present(&partial)?;
             }
             if attempt < max_attempts {
-                retry_delay(&self.transfer, attempt);
+                let elapsed = started.elapsed();
+                let delay = retry_delay(&self.transfer, attempt);
+                attempts.push(transfer_attempt(
+                    attempt,
+                    requested_offset,
+                    size,
+                    (elapsed, idle_age),
+                    if corrupt { "restart" } else { "retry" },
+                    if corrupt {
+                        format!(
+                            "received {size} bytes with digest {actual}; discarded corrupt content"
+                        )
+                    } else {
+                        format!("short response retained {size}/{} bytes", layer.size)
+                    },
+                    Some(delay),
+                ));
                 continue;
             }
-            return Err(Error::coded(
+            attempts.push(transfer_attempt(
+                attempt,
+                requested_offset,
+                size,
+                (started.elapsed(), idle_age),
+                "stop",
+                if corrupt {
+                    format!("received {size} bytes with digest {actual}; discarded corrupt content")
+                } else {
+                    format!("incomplete response retained {size}/{} bytes", layer.size)
+                },
+                None,
+            ));
+            let error = Error::coded(
                 "ARTIFACT_OCI_DIGEST_MISMATCH",
                 Category::Validation,
                 format!(
@@ -755,7 +892,8 @@ impl OciTransport {
                 "the corrupt partial was discarded; retry from a trusted registry or mirror"
             } else {
                 "retry the digest-pinned pull; the incomplete digest-keyed partial was retained"
-            }));
+            });
+            return Err(with_layer_transfer_data(error, reference, layer, attempts));
         }
         unreachable!("max_attempts is clamped to at least one")
     }
@@ -965,7 +1103,7 @@ impl ArtifactTransport for OciTransport {
         reference: &RemoteReference,
         resolved: &ResolvedRemote,
         scratch: &Utf8Path,
-    ) -> Result<Utf8PathBuf> {
+    ) -> Result<FetchOutcome> {
         let r = self.oci(reference)?;
         let oci_digest = resolved.oci_digest.as_deref().ok_or_else(|| {
             Error::usage("fetch needs a resolved OCI digest — call resolve first")
@@ -983,6 +1121,13 @@ impl ArtifactTransport for OciTransport {
             }
         };
         let manifest = parse_oci_manifest(&manifest_bytes, &resolved.locator)?;
+        let mut transfer = TransferEvidence {
+            manifest: Some(ManifestTransferEvidence {
+                digest: oci_digest.to_string(),
+                received_bytes: manifest_bytes.len() as u64,
+            }),
+            layers: Vec::new(),
+        };
 
         // Producer manifest first: it is small and names the archive.
         let producer_layer = manifest
@@ -1005,7 +1150,9 @@ impl ArtifactTransport for OciTransport {
             ));
         }
         let producer_path = scratch.join(MANIFEST_FILE);
-        self.fetch_blob_to(r, producer_layer, &producer_path)?;
+        transfer
+            .layers
+            .push(self.fetch_blob_to(r, producer_layer, &producer_path)?);
 
         let producer: serde_json::Value = serde_json::from_slice(
             &std::fs::read(producer_path.as_std_path())
@@ -1048,7 +1195,9 @@ impl ArtifactTransport for OciTransport {
                     ),
                 )
             })?;
-        self.fetch_blob_to(r, archive_layer, &scratch.join(&archive_name))?;
+        transfer
+            .layers
+            .push(self.fetch_blob_to(r, archive_layer, &scratch.join(&archive_name))?);
 
         if let Some(debug) = manifest_debug_archive(&producer).map_err(|e| {
             Error::coded(
@@ -1081,7 +1230,11 @@ impl ArtifactTransport for OciTransport {
                     ),
                 ));
             }
-            self.fetch_blob_to(r, debug_layer, &scratch.join(&debug.archive))?;
+            transfer.layers.push(self.fetch_blob_to(
+                r,
+                debug_layer,
+                &scratch.join(&debug.archive),
+            )?);
         }
 
         for (media_type, title) in [
@@ -1089,11 +1242,16 @@ impl ArtifactTransport for OciTransport {
             (MEDIA_TYPE_PROVENANCE, PROVENANCE_FILE),
         ] {
             if let Some(layer) = manifest.find_layer(media_type, |candidate| candidate == title) {
-                self.fetch_blob_to(r, layer, &scratch.join(title))?;
+                transfer
+                    .layers
+                    .push(self.fetch_blob_to(r, layer, &scratch.join(title))?);
             }
         }
 
-        Ok(scratch.to_owned())
+        Ok(FetchOutcome {
+            dist: scratch.to_owned(),
+            transfer,
+        })
     }
 
     fn push(
@@ -1293,6 +1451,7 @@ struct CountingWriter<W> {
 struct DeadlineReader<R> {
     inner: R,
     started: Instant,
+    last_progress: Instant,
     deadline: Option<Duration>,
 }
 
@@ -1301,8 +1460,13 @@ impl<R> DeadlineReader<R> {
         Self {
             inner,
             started,
+            last_progress: started,
             deadline,
         }
+    }
+
+    fn idle_age(&self) -> Duration {
+        self.last_progress.elapsed()
     }
 
     fn check_deadline(&self) -> std::io::Result<()> {
@@ -1323,6 +1487,9 @@ impl<R: Read> Read for DeadlineReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.check_deadline()?;
         let read = self.inner.read(buf)?;
+        if read > 0 {
+            self.last_progress = Instant::now();
+        }
         self.check_deadline()?;
         Ok(read)
     }
@@ -1574,7 +1741,7 @@ fn retryable_transfer_error(error: &Error) -> bool {
     )
 }
 
-fn retry_delay(policy: &OciTransferPolicy, attempt: u32) {
+fn retry_delay(policy: &OciTransferPolicy, attempt: u32) -> Duration {
     let multiplier = 1_u32 << attempt.saturating_sub(1).min(30);
     let delay = policy
         .initial_retry_backoff
@@ -1583,6 +1750,70 @@ fn retry_delay(policy: &OciTransferPolicy, attempt: u32) {
     if !delay.is_zero() {
         std::thread::sleep(delay);
     }
+    delay
+}
+
+fn transfer_attempt(
+    attempt: u32,
+    resume_offset: u64,
+    received_bytes: u64,
+    timing: (Duration, Duration),
+    decision: &'static str,
+    detail: impl Into<String>,
+    retry_after: Option<Duration>,
+) -> TransferAttemptEvidence {
+    let (elapsed, idle_age) = timing;
+    TransferAttemptEvidence {
+        attempt,
+        resume_offset,
+        received_bytes,
+        elapsed_ms: duration_millis(elapsed),
+        idle_age_ms: duration_millis(idle_age),
+        decision,
+        detail: detail.into(),
+        retry_after_ms: retry_after.map(duration_millis),
+    }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn layer_transfer_evidence(
+    layer: &Layer,
+    attempts: Vec<TransferAttemptEvidence>,
+) -> LayerTransferEvidence {
+    let received_bytes = attempts
+        .last()
+        .map(|attempt| attempt.received_bytes)
+        .unwrap_or(0);
+    LayerTransferEvidence {
+        digest: layer.digest.clone(),
+        title: layer
+            .title
+            .clone()
+            .unwrap_or_else(|| "untitled layer".to_string()),
+        expected_bytes: layer.size,
+        received_bytes,
+        attempts,
+    }
+}
+
+fn with_layer_transfer_data(
+    error: Error,
+    reference: &OciReference,
+    layer: &Layer,
+    attempts: Vec<TransferAttemptEvidence>,
+) -> Error {
+    let next_action = error.hint().map(str::to_string);
+    let evidence = layer_transfer_evidence(layer, attempts);
+    error.with_data(serde_json::json!({
+        "transfer": {
+            "manifest_digest": reference.digest,
+            "layer": evidence,
+            "next_action": next_action,
+        }
+    }))
 }
 
 fn layer_request_error(

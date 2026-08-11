@@ -769,6 +769,23 @@ fn advancing_blob_can_outlast_the_body_idle_budget() {
 
     let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
     assert_eq!(evidence.record.digest, bundle.artifact_digest);
+    let manifest = evidence
+        .transfer
+        .manifest
+        .as_ref()
+        .expect("OCI pulls record manifest evidence");
+    assert_eq!(manifest.digest, bundle.oci_digest);
+    assert_eq!(manifest.received_bytes, bundle.oci_manifest.len() as u64);
+    let archive = evidence
+        .transfer
+        .layers
+        .iter()
+        .find(|layer| layer.digest == bundle.artifact_digest)
+        .expect("archive layer evidence");
+    assert_eq!(archive.title, bundle.archive_name);
+    assert_eq!(archive.expected_bytes, bundle.archive.len() as u64);
+    assert_eq!(archive.received_bytes, archive.expected_bytes);
+    assert_eq!(archive.attempts.last().unwrap().decision, "complete");
     std::fs::remove_dir_all(root.as_std_path()).ok();
 }
 
@@ -795,6 +812,21 @@ fn disconnected_blob_resumes_from_a_validated_range() {
 
     let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
     assert_eq!(evidence.record.digest, bundle.artifact_digest);
+    let archive = evidence
+        .transfer
+        .layers
+        .iter()
+        .find(|layer| layer.digest == bundle.artifact_digest)
+        .expect("archive layer evidence");
+    assert!(archive.attempts.len() >= 2, "{:#?}", archive.attempts);
+    assert_eq!(archive.attempts.first().unwrap().decision, "retry");
+    assert!(archive.attempts.first().unwrap().received_bytes > 0);
+    assert!(archive.attempts.last().unwrap().resume_offset > 0);
+    assert_eq!(archive.attempts.last().unwrap().decision, "complete");
+    let json = serde_json::to_value(&evidence.transfer).unwrap();
+    assert_eq!(json["layers"][1]["attempts"][0]["decision"], "retry");
+    assert!(json["layers"][1]["attempts"][0]["elapsed_ms"].is_u64());
+    assert!(json["layers"][1]["attempts"][0]["idle_age_ms"].is_u64());
     let ranges = registry.ranges_for(&archive_path);
     assert_eq!(ranges.first(), Some(&None));
     assert!(
@@ -1005,6 +1037,24 @@ fn retry_exhaustion_retains_an_invisible_partial_for_the_next_pull() {
 
     assert_eq!(error.code(), "ARTIFACT_TRANSPORT_FAILED");
     assert!(error.to_string().contains("exhausted 2 attempt"));
+    let data = error.data().expect("structured terminal transfer evidence");
+    assert_eq!(data["transfer"]["manifest_digest"], bundle.oci_digest);
+    assert_eq!(data["transfer"]["layer"]["digest"], bundle.artifact_digest);
+    assert_eq!(
+        data["transfer"]["layer"]["expected_bytes"],
+        bundle.archive.len() as u64
+    );
+    assert_eq!(
+        data["transfer"]["layer"]["attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(data["transfer"]["layer"]["attempts"][1]["decision"], "stop");
+    assert!(data["transfer"]["next_action"]
+        .as_str()
+        .is_some_and(|action| action.contains("resume")));
     assert_store_empty(&store);
     let partial = store.root().join(".partial-blobs").join(format!(
         "{}.part",
@@ -1127,6 +1177,12 @@ fn stalled_blob_reports_transfer_timeout_and_received_bytes() {
         "direct next action: {:?}",
         error.hint()
     );
+    let attempt = &error.data().unwrap()["transfer"]["layer"]["attempts"][0];
+    assert_eq!(attempt["attempt"], 1);
+    assert_eq!(attempt["resume_offset"], 0);
+    assert_eq!(attempt["decision"], "stop");
+    assert!(attempt["elapsed_ms"].is_u64());
+    assert!(attempt["idle_age_ms"].is_u64());
     std::fs::remove_dir_all(root.as_std_path()).ok();
 }
 

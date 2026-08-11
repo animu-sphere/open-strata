@@ -39,6 +39,7 @@ pub use store::{extract_archive, ArtifactStore, ImportOutcome, Index, VerifyRepo
 pub use transport::{
     file::FileTransport,
     oci::{OciTransferPolicy, OciTransport},
-    pull, push, ArtifactTransport, PullEvidence, PullPolicy, PushOutcome, PushSource,
-    ResolvedRemote,
+    pull, push, ArtifactTransport, FetchOutcome, LayerTransferEvidence, ManifestTransferEvidence,
+    PullEvidence, PullPolicy, PushOutcome, PushSource, ResolvedRemote, TransferAttemptEvidence,
+    TransferEvidence,
 };

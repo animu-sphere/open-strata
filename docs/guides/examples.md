@@ -474,6 +474,12 @@ bytes. Tune the bounded retry with
 `--max-attempts` (1–16) and `--retry-backoff` (initial milliseconds); the four
 phase timeout controls remain independent.
 
+Human pull output prints this attempt history below each selected OCI layer;
+`--json` returns it as `data.transfer`. On terminal timeout, range, or transport
+failure the failure envelope retains the terminal layer evidence under
+`data.transfer`, so CI can report exact byte progress and the retry decision
+without parsing the error message.
+
 When `openstrata-artifact-policy.toml` protects the destination, `push`
 auto-discovers it from the current directory or a parent and verifies the
 GitHub Actions OIDC publisher before contacting the registry. CI jobs need

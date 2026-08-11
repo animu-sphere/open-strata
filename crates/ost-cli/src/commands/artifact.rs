@@ -529,6 +529,7 @@ fn pull_remote(
         println!("  oci digest: {dg}");
     }
     println!("  artifact:   {}", r.digest);
+    render_transfer_evidence(&evidence);
     for (step, status) in &evidence.verification {
         println!("  {status:<7} {step}");
     }
@@ -547,6 +548,38 @@ fn pull_remote(
         );
     }
     Ok(())
+}
+
+fn render_transfer_evidence(evidence: &PullEvidence) {
+    if let Some(manifest) = &evidence.transfer.manifest {
+        println!(
+            "  manifest:   {} ({} bytes)",
+            manifest.digest, manifest.received_bytes
+        );
+    }
+    for layer in &evidence.transfer.layers {
+        println!(
+            "  layer:      {} {} ({}/{} bytes)",
+            layer.title, layer.digest, layer.received_bytes, layer.expected_bytes
+        );
+        for attempt in &layer.attempts {
+            let retry = attempt
+                .retry_after_ms
+                .map(|milliseconds| format!(", retry in {milliseconds}ms"))
+                .unwrap_or_default();
+            println!(
+                "    attempt {} offset {} received {} elapsed {}ms idle {}ms — {}: {}{}",
+                attempt.attempt,
+                attempt.resume_offset,
+                attempt.received_bytes,
+                attempt.elapsed_ms,
+                attempt.idle_age_ms,
+                attempt.decision,
+                attempt.detail,
+                retry,
+            );
+        }
+    }
 }
 
 fn timeout(seconds: u32) -> Option<Duration> {
@@ -574,6 +607,7 @@ fn pull_evidence_json(
             "repository": evidence.remote.repository,
             "auth_mode": evidence.remote.auth_mode,
         },
+        "transfer": &evidence.transfer,
         "verification": verification,
         "local_import": {
             "status": evidence.import_status,
