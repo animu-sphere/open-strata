@@ -67,10 +67,13 @@ ost runtime pull cy2026 --profile usd --build /src/OpenUSD --jobs 8
 ost runtime pull cy2026 --profile usd --build /src/OpenUSD --openusd-variant headless
 # macOS + CMake 4 bundled deps: retry with --build-arg -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
-# build (CMake-direct) — build OpenUSD against pre-provided dependency prefixes
+# build a self-contained Vulkan runtime via build_usd.py
 ost runtime pull cy2026 --profile usd \
-  --build /src/OpenUSD --deps /opt/usd-deps \
-  --openusd-variant vulkan
+  --build /src/OpenUSD --openusd-variant vulkan
+
+# CMake-direct remains available for non-exportable builds against external deps
+ost runtime pull cy2026 --profile usd \
+  --build /src/OpenUSD --deps /opt/usd-deps
 
 # artifact — materialize a prebuilt runtime from the local artifact registry
 # (an `ost runtime export`ed runtime; see the artifact section below)

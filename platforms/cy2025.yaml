@@ -49,7 +49,8 @@ openusd:
           cmake_args: [-DPXR_BUILD_IMAGING=ON, -DPXR_BUILD_USD_IMAGING=ON, -DPXR_ENABLE_VULKAN_SUPPORT=OFF]
           capabilities: [usd-core, imaging, opengl]
         - id: vulkan
-          builders: [cmake]
+          builders: [build-usd, cmake]
+          build_usd_args: [--imaging]
           cmake_args: [-DPXR_BUILD_IMAGING=ON, -DPXR_BUILD_USD_IMAGING=ON, -DPXR_ENABLE_VULKAN_SUPPORT=ON]
           capabilities: [usd-core, imaging, opengl, vulkan]
 

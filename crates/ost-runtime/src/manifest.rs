@@ -320,9 +320,18 @@ impl RuntimeManifest {
     pub fn set_openusd_compatibility(
         &mut self,
         compatibility: Option<ResolvedOpenUsdCompatibility>,
-    ) {
+    ) -> ost_core::Result<()> {
+        if compatibility
+            .as_ref()
+            .is_some_and(|value| !value.is_verified())
+        {
+            return Err(ost_core::Error::InvalidManifest(
+                "OpenUSD compatibility identity has unverified provider versions".to_string(),
+            ));
+        }
         self.openusd_compatibility = compatibility;
         self.digest = self.compute_digest();
+        Ok(())
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -416,13 +425,38 @@ mod tests {
             .unwrap();
         let mut manifest = sample();
         let before = manifest.digest.clone();
-        manifest.set_openusd_compatibility(Some(compatibility));
+        let mut compatibility = compatibility;
+        compatibility.toolchain.version = Some("14.2.0".into());
+        compatibility.toolchain.runtime.version = Some("2.28".into());
+        compatibility.python.version = Some("3.13.7".into());
+        compatibility.tbb.version = Some("2022.1.0".into());
+        manifest
+            .set_openusd_compatibility(Some(compatibility))
+            .unwrap();
         assert_ne!(manifest.digest, before);
         assert_eq!(manifest.compute_digest(), manifest.digest);
         assert_eq!(
             manifest.openusd_compatibility.as_ref().unwrap().variant,
             ost_platform::OpenUsdVariantId::Headless
         );
+    }
+
+    #[test]
+    fn unresolved_openusd_compatibility_cannot_be_stamped() {
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let (compatibility, _) = platform
+            .resolve_openusd(
+                Os::Linux,
+                Arch::X86_64,
+                ost_platform::OpenUsdVariantId::Standard,
+            )
+            .unwrap();
+        let mut manifest = sample();
+        let error = manifest
+            .set_openusd_compatibility(Some(compatibility))
+            .unwrap_err();
+        assert!(error.to_string().contains("unverified provider versions"));
+        assert!(manifest.openusd_compatibility.is_none());
     }
 
     #[test]

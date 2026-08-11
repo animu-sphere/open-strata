@@ -403,13 +403,14 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
     let mut manifest = if let Some(digest_ref) = &src.from_artifact {
         fetch_from_artifact(&r, digest_ref)?
     } else if let Some(usd_src) = build_src {
+        let usd_src = validate_openusd_source(&usd_src)?;
         let platform_manifest = ost_platform::load_one(platform)?;
         let builder = if deps.is_empty() {
             OpenUsdBuilder::BuildUsd
         } else {
             OpenUsdBuilder::Cmake
         };
-        let selection = resolve_openusd_build(
+        let mut selection = resolve_openusd_build(
             &platform_manifest,
             r.runtime.variant.os,
             r.runtime.variant.arch,
@@ -417,17 +418,35 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             builder,
             src.build_args,
         )?;
+        let prepared = selection
+            .compatibility
+            .take()
+            .map(|compatibility| prepare_openusd_build(compatibility, builder, &mut selection.args))
+            .transpose()?;
+        if force {
+            reset_managed_runtime_build(&r)?;
+        }
         let opts = BuildOpts {
             jobs: src.jobs,
             extra: selection.args,
+            python: prepared.as_ref().map(|value| value.python.clone()),
+            build_env: prepared
+                .as_ref()
+                .map(|value| value.build_env.clone())
+                .unwrap_or_default(),
             macos: MacosBuildOpts {
                 sdk: src.sdk,
                 deployment_target: src.deployment_target,
             },
             deps,
         };
-        selected_openusd = selection.compatibility;
-        build_from_source(&r, &usd_src, &opts, extensions, created)?
+        let manifest = build_from_source(&r, &usd_src, &opts, extensions, created)?;
+        selected_openusd = prepared
+            .map(|prepared| {
+                finalize_openusd_build(prepared.compatibility, builder, &r.prefix, &opts.deps)
+            })
+            .transpose()?;
+        manifest
     } else if let Some(usd_root) = adopt {
         adopt_local(&r, &usd_root, extensions, created)?
     } else {
@@ -437,7 +456,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
         manifest.set_host_requirements(src.host_requirements);
     }
     if selected_openusd.is_some() {
-        manifest.set_openusd_compatibility(selected_openusd);
+        manifest.set_openusd_compatibility(selected_openusd)?;
     }
 
     let manifest_path = r.prefix.join(MANIFEST_FILE);
@@ -576,8 +595,12 @@ fn resolve_openusd_build(
         OpenUsdBuilder::BuildUsd => variant.build_usd_args.clone(),
         OpenUsdBuilder::Cmake => variant.cmake_args.clone(),
     };
-    let conflict = match builder {
-        OpenUsdBuilder::BuildUsd => args.iter().find_map(|declared| {
+    if builder == OpenUsdBuilder::BuildUsd && !variant.cmake_args.is_empty() {
+        args.push(build_usd_cmake_arg(&variant.cmake_args));
+    }
+
+    let component_conflict = if builder == OpenUsdBuilder::BuildUsd {
+        args.iter().find_map(|declared| {
             option_name(declared).and_then(|name| {
                 let component = name.strip_prefix("no-").unwrap_or(name);
                 user_args
@@ -585,17 +608,46 @@ fn resolve_openusd_build(
                     .find(|candidate| names_component(candidate, component))
                     .map(|candidate| (component.to_string(), candidate.clone()))
             })
-        }),
-        OpenUsdBuilder::Cmake => args.iter().find_map(|declared| {
-            cmake_definition_key(declared).and_then(|key| {
-                user_args
-                    .iter()
-                    .find(|candidate| cmake_definition_key(candidate) == Some(key))
-                    .map(|candidate| (key.to_string(), candidate.clone()))
-            })
-        }),
+        })
+    } else {
+        None
     };
-    if let Some((dimension, supplied)) = conflict {
+    if let Some((dimension, supplied)) = component_conflict {
+        return Err(Error::coded(
+            "OPENUSD_VARIANT_OVERRIDE",
+            ost_core::Category::Configuration,
+            format!(
+                "--build-arg '{supplied}' overrides compatibility dimension '{dimension}' from OpenUSD variant '{}'",
+                variant_id.as_str()
+            ),
+        )
+        .with_hint("remove the conflicting --build-arg or select the variant that declares the required capability"));
+    }
+
+    let mut protected: BTreeSet<String> = variant
+        .cmake_args
+        .iter()
+        .flat_map(|arg| cmake_definition_keys(arg))
+        .collect();
+    protected.extend(
+        [
+            "CMAKE_C_COMPILER",
+            "CMAKE_CXX_COMPILER",
+            "CMAKE_CXX_STANDARD",
+            "Python_EXECUTABLE",
+            "Python3_EXECUTABLE",
+            "TBB_ROOT",
+            "TBB_ROOT_DIR",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    if let Some((dimension, supplied)) = user_args.iter().find_map(|arg| {
+        cmake_definition_keys(arg)
+            .into_iter()
+            .find(|key| protected.contains(key))
+            .map(|key| (key, arg.clone()))
+    }) {
         return Err(Error::coded(
             "OPENUSD_VARIANT_OVERRIDE",
             ost_core::Category::Configuration,
@@ -620,6 +672,365 @@ fn cmake_definition_key(arg: &str) -> Option<&str> {
         .filter(|key| !key.is_empty())
 }
 
+fn cmake_definition_keys(arg: &str) -> Vec<String> {
+    arg.split(|character: char| character == ',' || character.is_whitespace() || character == '"')
+        .filter_map(|token| token.find("-D").map(|offset| &token[offset..]))
+        .filter_map(cmake_definition_key)
+        .map(str::to_string)
+        .collect()
+}
+
+fn build_usd_cmake_arg(args: &[String]) -> String {
+    format!("--build-args=USD,{}", args.join(" "))
+}
+
+struct PreparedOpenUsdBuild {
+    compatibility: ResolvedOpenUsdCompatibility,
+    python: Utf8PathBuf,
+    build_env: Vec<(String, String)>,
+}
+
+fn prepare_openusd_build(
+    mut compatibility: ResolvedOpenUsdCompatibility,
+    builder: OpenUsdBuilder,
+    args: &mut Vec<String>,
+) -> Result<PreparedOpenUsdBuild> {
+    let (python, python_version) =
+        find_python_for_constraint(&compatibility.python.version_constraint)?;
+    compatibility.python.version = Some(python_version);
+    compatibility.python.provider = "system".into();
+
+    if compatibility.toolchain.family != "gcc" || compatibility.os != Os::Linux {
+        return Err(Error::coded(
+            "OPENUSD_TOOLCHAIN_UNSUPPORTED",
+            ost_core::Category::Configuration,
+            format!(
+                "managed compatibility verification does not support {} on {}",
+                compatibility.toolchain.family,
+                compatibility.os.as_str()
+            ),
+        )
+        .with_hint(
+            "remove the explicit variant or add a verified toolchain adapter for this cell",
+        ));
+    }
+    let (cc, cxx, compiler_version) =
+        find_gcc_toolchain(&compatibility.toolchain.version_constraint)?;
+    compatibility.toolchain.version = Some(compiler_version);
+    compatibility.toolchain.provider = "system".into();
+    compatibility.tbb.provider = match builder {
+        OpenUsdBuilder::BuildUsd => "bundled",
+        OpenUsdBuilder::Cmake => "external-prefix",
+    }
+    .into();
+
+    let pins = vec![
+        format!("-DCMAKE_C_COMPILER={}", cc.as_str().replace('\\', "/")),
+        format!("-DCMAKE_CXX_COMPILER={}", cxx.as_str().replace('\\', "/")),
+        format!(
+            "-DCMAKE_CXX_STANDARD={}",
+            compatibility.toolchain.cxx_standard
+        ),
+        format!(
+            "-DPython3_EXECUTABLE={}",
+            python.as_str().replace('\\', "/")
+        ),
+        format!("-DPython_EXECUTABLE={}", python.as_str().replace('\\', "/")),
+    ];
+    match builder {
+        OpenUsdBuilder::BuildUsd => {
+            if let Some(passthrough) = args
+                .iter_mut()
+                .find(|arg| arg.starts_with("--build-args=USD,"))
+            {
+                passthrough.push(' ');
+                passthrough.push_str(&pins.join(" "));
+            } else {
+                args.push(build_usd_cmake_arg(&pins));
+            }
+        }
+        OpenUsdBuilder::Cmake => args.extend(pins),
+    }
+
+    Ok(PreparedOpenUsdBuild {
+        compatibility,
+        python,
+        build_env: vec![
+            ("CC".into(), cc.to_string()),
+            ("CXX".into(), cxx.to_string()),
+        ],
+    })
+}
+
+fn finalize_openusd_build(
+    mut compatibility: ResolvedOpenUsdCompatibility,
+    builder: OpenUsdBuilder,
+    prefix: &Utf8Path,
+    deps: &[String],
+) -> Result<ResolvedOpenUsdCompatibility> {
+    let roots: Vec<Utf8PathBuf> = match builder {
+        OpenUsdBuilder::BuildUsd => vec![prefix.to_path_buf()],
+        OpenUsdBuilder::Cmake => deps.iter().map(Utf8PathBuf::from).collect(),
+    };
+    let tbb_version = tbb_version_from_roots(&roots).ok_or_else(|| {
+        Error::coded(
+            "OPENUSD_PROVIDER_VERSION_UNKNOWN",
+            ost_core::Category::Validation,
+            format!(
+                "could not observe oneTBB version from {} provider roots",
+                compatibility.tbb.provider
+            ),
+        )
+        .with_hint("provide a oneTBB install carrying include/oneapi/tbb/version.h or include/tbb/version.h")
+    })?;
+    ensure_version_matches(
+        "oneTBB",
+        &tbb_version,
+        &compatibility.tbb.version_constraint,
+    )?;
+    compatibility.tbb.version = Some(tbb_version);
+
+    if compatibility.toolchain.runtime.family != "glibc" {
+        return Err(Error::coded(
+            "OPENUSD_RUNTIME_BOUNDARY_UNSUPPORTED",
+            ost_core::Category::Configuration,
+            format!(
+                "managed compatibility verification does not support runtime boundary '{}'",
+                compatibility.toolchain.runtime.family
+            ),
+        ));
+    }
+    let files =
+        ost_build::stage_files(prefix).map_err(|error| Error::io(prefix.to_string(), error))?;
+    let glibc = ost_build::max_glibc_floor(files.iter().map(Utf8PathBuf::as_path))
+        .map_err(|error| Error::io(prefix.to_string(), error))?
+        .ok_or_else(|| {
+            Error::coded(
+                "OPENUSD_RUNTIME_BOUNDARY_UNKNOWN",
+                ost_core::Category::Validation,
+                format!("no glibc symbol floor could be measured under '{prefix}'"),
+            )
+        })?
+        .to_string();
+    ensure_version_matches(
+        "glibc",
+        &glibc,
+        &compatibility.toolchain.runtime.version_constraint,
+    )?;
+    compatibility.toolchain.runtime.version = Some(glibc);
+
+    if !compatibility.is_verified() {
+        return Err(Error::coded(
+            "OPENUSD_COMPATIBILITY_UNVERIFIED",
+            ost_core::Category::Validation,
+            "OpenUSD build completed without exact compatibility provider versions",
+        ));
+    }
+    Ok(compatibility)
+}
+
+fn find_python_for_constraint(constraint: &str) -> Result<(Utf8PathBuf, String)> {
+    let preferred = numeric_prefix(constraint, 2).map(|version| format!("python{version}"));
+    let mut candidates: Vec<String> = preferred.into_iter().collect();
+    candidates.extend(["python3".into(), "python".into()]);
+    candidates.dedup();
+    let mut observed = Vec::new();
+    for candidate in candidates {
+        let Some(path) = tools::which(&candidate) else {
+            continue;
+        };
+        let path = utf8_tool_path(path, &candidate)?;
+        let version = command_stdout(
+            &path,
+            &["-c", "import platform; print(platform.python_version())"],
+            "probe Python version",
+        )?;
+        if version_matches(&version, constraint) {
+            return Ok((path, version));
+        }
+        observed.push(format!("{}={version}", path.as_str()));
+    }
+    Err(provider_version_mismatch(
+        "Python",
+        constraint,
+        &observed.join(", "),
+    ))
+}
+
+fn find_gcc_toolchain(constraint: &str) -> Result<(Utf8PathBuf, Utf8PathBuf, String)> {
+    let major = numeric_prefix(constraint, 1);
+    let mut candidates = Vec::new();
+    if let Some(major) = major {
+        candidates.push((format!("gcc-{major}"), format!("g++-{major}")));
+    }
+    candidates.push(("gcc".into(), "g++".into()));
+    candidates.dedup();
+    let mut observed = Vec::new();
+    for (cc_name, cxx_name) in candidates {
+        let (Some(cc), Some(cxx)) = (tools::which(&cc_name), tools::which(&cxx_name)) else {
+            continue;
+        };
+        let cc = utf8_tool_path(cc, &cc_name)?;
+        let cxx = utf8_tool_path(cxx, &cxx_name)?;
+        let cc_version = command_stdout(
+            &cc,
+            &["-dumpfullversion", "-dumpversion"],
+            "probe GCC version",
+        )?;
+        let cxx_version = command_stdout(
+            &cxx,
+            &["-dumpfullversion", "-dumpversion"],
+            "probe G++ version",
+        )?;
+        if cc_version == cxx_version && version_matches(&cc_version, constraint) {
+            return Ok((cc, cxx, cc_version));
+        }
+        observed.push(format!("{cc_name}={cc_version}/{cxx_name}={cxx_version}"));
+    }
+    Err(provider_version_mismatch(
+        "GCC",
+        constraint,
+        &observed.join(", "),
+    ))
+}
+
+fn utf8_tool_path(path: std::path::PathBuf, label: &str) -> Result<Utf8PathBuf> {
+    Utf8PathBuf::from_path_buf(path).map_err(|_| {
+        Error::coded(
+            "INTERNAL_ERROR",
+            ost_core::Category::Internal,
+            format!("{label} path is not UTF-8"),
+        )
+    })
+}
+
+fn command_stdout(program: &Utf8Path, args: &[&str], label: &str) -> Result<String> {
+    let output = Command::new(program.as_str())
+        .args(args)
+        .output()
+        .map_err(|error| Error::io(label, error))?;
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || value.is_empty() {
+        return Err(Error::coded(
+            "OPENUSD_PROVIDER_PROBE_FAILED",
+            ost_core::Category::Precondition,
+            format!("{label} failed for '{program}'"),
+        ));
+    }
+    Ok(value)
+}
+
+fn provider_version_mismatch(provider: &str, required: &str, observed: &str) -> Error {
+    Error::coded(
+        "OPENUSD_PROVIDER_VERSION_MISMATCH",
+        ost_core::Category::Precondition,
+        format!(
+            "{provider} does not satisfy CY constraint '{required}'{}",
+            if observed.is_empty() {
+                " (no matching executable found)".to_string()
+            } else {
+                format!(" (observed {observed})")
+            }
+        ),
+    )
+    .with_hint(format!(
+        "install {provider} {required} and make its executable visible on PATH"
+    ))
+}
+
+fn ensure_version_matches(provider: &str, observed: &str, constraint: &str) -> Result<()> {
+    if version_matches(observed, constraint) {
+        return Ok(());
+    }
+    Err(provider_version_mismatch(provider, constraint, observed))
+}
+
+fn numeric_prefix(version: &str, count: usize) -> Option<String> {
+    let parts: Vec<&str> = version
+        .split('.')
+        .take(count)
+        .filter(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        .collect();
+    (parts.len() == count).then(|| parts.join("."))
+}
+
+fn version_matches(observed: &str, constraint: &str) -> bool {
+    let observed: Vec<&str> = observed.split('.').collect();
+    let required: Vec<&str> = constraint.split('.').collect();
+    if observed.is_empty() || required.is_empty() {
+        return false;
+    }
+    for (index, required) in required.iter().enumerate() {
+        if matches!(*required, "x" | "X" | "*") {
+            return true;
+        }
+        if !required.chars().all(|c| c.is_ascii_digit())
+            || observed
+                .get(index)
+                .is_none_or(|part| !part.chars().all(|c| c.is_ascii_digit()) || part != required)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn tbb_version_from_roots(roots: &[Utf8PathBuf]) -> Option<String> {
+    for root in roots {
+        for relative in ["include/oneapi/tbb/version.h", "include/tbb/version.h"] {
+            let path = root.join(relative);
+            let Ok(source) = std::fs::read_to_string(path.as_std_path()) else {
+                continue;
+            };
+            let (Some(major), Some(minor)) = (
+                cpp_define(&source, "TBB_VERSION_MAJOR"),
+                cpp_define(&source, "TBB_VERSION_MINOR"),
+            ) else {
+                continue;
+            };
+            let patch = cpp_define(&source, "TBB_VERSION_PATCH").unwrap_or("0");
+            return Some(format!("{major}.{minor}.{patch}"));
+        }
+    }
+    None
+}
+
+fn cpp_define<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    source.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        (parts.next() == Some("#define") && parts.next() == Some(name))
+            .then(|| parts.next())
+            .flatten()
+    })
+}
+
+fn reset_managed_runtime_build(r: &crate::commands::Resolved) -> Result<()> {
+    let store = Store::discover();
+    let targets = [
+        r.prefix.clone(),
+        store.cache().join("usd-build").join(r.runtime.id()),
+    ];
+    for target in targets {
+        reset_managed_path(&store.root, &target)?;
+    }
+    Ok(())
+}
+
+fn reset_managed_path(store_root: &Utf8Path, target: &Utf8Path) -> Result<()> {
+    if target == store_root || !target.starts_with(store_root) {
+        return Err(Error::coded(
+            "INTERNAL_ERROR",
+            ost_core::Category::Internal,
+            format!("refusing to reset managed build path outside '{store_root}': '{target}'"),
+        ));
+    }
+    if target.as_std_path().exists() {
+        std::fs::remove_dir_all(target.as_std_path())
+            .map_err(|error| Error::io(target.to_string(), error))?;
+    }
+    Ok(())
+}
+
 fn print_openusd_compatibility(manifest: &RuntimeManifest, prefix: &str) {
     let Some(selected) = &manifest.openusd_compatibility else {
         return;
@@ -628,13 +1039,17 @@ fn print_openusd_compatibility(manifest: &RuntimeManifest, prefix: &str) {
         "{prefix}OpenUSD: {} ({} {} / C++{}, {} {} via {}, {} {} via {})",
         selected.variant.as_str(),
         selected.toolchain.family,
-        selected.toolchain.version,
+        selected
+            .toolchain
+            .version
+            .as_deref()
+            .unwrap_or("<unverified>"),
         selected.toolchain.cxx_standard,
         selected.python.family,
-        selected.python.version,
+        selected.python.version.as_deref().unwrap_or("<unverified>"),
         selected.python.provider,
         selected.tbb.family,
-        selected.tbb.version,
+        selected.tbb.version.as_deref().unwrap_or("<unverified>"),
         selected.tbb.provider,
     );
     println!("{prefix}graphics: {}", selected.capabilities.join(", "));
@@ -967,6 +1382,10 @@ fn build_usd_args(
 pub struct BuildOpts {
     pub jobs: Option<u32>,
     pub extra: Vec<String>,
+    /// Exact interpreter verified against the selected CY cell.
+    pub python: Option<Utf8PathBuf>,
+    /// Compatibility-critical compiler environment pinned by the CY cell.
+    pub build_env: Vec<(String, String)>,
     /// macOS SDK and deployment floor for this build.
     pub macos: MacosBuildOpts,
     /// Dependency prefixes; non-empty selects the CMake-direct path.
@@ -1079,34 +1498,23 @@ fn msvc_env() -> Vec<(String, String)> {
 /// in the store with USD's own layout, so re-pull is a cache hit.
 fn build_from_source(
     r: &crate::commands::Resolved,
-    usd_src: &str,
+    src: &Utf8Path,
     opts: &BuildOpts,
     extensions: Vec<ExtensionRecord>,
     created: u64,
 ) -> Result<RuntimeManifest> {
-    if usd_src.is_empty() {
-        return Err(Error::usage(
-            "no OpenUSD source: pass `--build <path>` or set OST_USD_SRC",
-        ));
-    }
-    let src = Utf8PathBuf::from(usd_src);
-    if !src.as_std_path().is_dir() {
-        return Err(Error::usage(format!(
-            "--build source '{src}' is not a directory"
-        )));
-    }
     emit_macos_build_notes(opts);
     // Warn now on missing build-interpreter deps rather than letting build_usd.py
     // abort deep in its run (report §Dogfood): a clean Python 3.13 lacks Jinja2
     // (schema tooling) and PySide6/PyOpenGL (usdview) that the profile implies.
-    preflight_build_deps(&r.capabilities);
+    preflight_build_deps(&r.capabilities, opts.python.as_deref());
     std::fs::create_dir_all(r.prefix.as_std_path())
         .map_err(|e| Error::io(r.prefix.to_string(), e))?;
 
     if opts.deps.is_empty() {
-        build_with_script(r, &src, opts)?;
+        build_with_script(r, src, opts)?;
     } else {
-        build_with_cmake(r, &src, opts)?;
+        build_with_cmake(r, src, opts)?;
     }
 
     if !looks_like_usd(&r.prefix) {
@@ -1143,6 +1551,21 @@ fn build_from_source(
     // self-contained (deps installed into the prefix), so this stays empty.
     manifest.runtime_deps = opts.deps.iter().map(|d| d.replace('\\', "/")).collect();
     Ok(manifest)
+}
+
+fn validate_openusd_source(usd_src: &str) -> Result<Utf8PathBuf> {
+    if usd_src.is_empty() {
+        return Err(Error::usage(
+            "no OpenUSD source: pass `--build <path>` or set OST_USD_SRC",
+        ));
+    }
+    let src = Utf8PathBuf::from(usd_src);
+    if !src.as_std_path().is_dir() {
+        return Err(Error::usage(format!(
+            "--build source '{src}' is not a directory"
+        )));
+    }
+    Ok(src)
 }
 
 /// Provision the schema-gen Python deps into a runtime that bundles
@@ -2390,14 +2813,16 @@ fn build_dep_requirements(capabilities: &[String]) -> Vec<(&'static str, &'stati
 /// and warn (never fail) on the missing ones before `build_usd.py` runs. Best
 /// effort: if no interpreter or the probe itself fails, stay silent — the build
 /// step surfaces the real error, and a preflight must not cry wolf.
-fn preflight_build_deps(capabilities: &[String]) {
+fn preflight_build_deps(capabilities: &[String], selected_python: Option<&Utf8Path>) {
     let needed = build_dep_requirements(capabilities);
     if needed.is_empty() {
         return;
     }
-    let Some(python) = tools::which("python").or_else(|| tools::which("python3")) else {
-        return;
-    };
+    let python = selected_python
+        .map(|path| path.as_std_path().to_path_buf())
+        .or_else(|| tools::which("python"))
+        .or_else(|| tools::which("python3"));
+    let Some(python) = python else { return };
     let imports: Vec<&str> = needed.iter().map(|(i, _)| *i).collect();
     let list = imports
         .iter()
@@ -2582,8 +3007,14 @@ fn build_with_script(
              or pass --deps for a direct CMake build)"
         )));
     }
-    let python = tools::which("python")
-        .or_else(|| tools::which("python3"))
+    let python = opts
+        .python
+        .clone()
+        .or_else(|| {
+            tools::which("python")
+                .or_else(|| tools::which("python3"))
+                .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+        })
         .ok_or_else(|| {
             Error::coded(
                 "REQUIRED_TOOL_MISSING",
@@ -2591,13 +3022,6 @@ fn build_with_script(
                 "`python` not found — build_usd.py needs it",
             )
         })?;
-    let python = Utf8PathBuf::from_path_buf(python).map_err(|_| {
-        Error::coded(
-            "INTERNAL_ERROR",
-            ost_core::Category::Internal,
-            "python path is not UTF-8",
-        )
-    })?;
 
     let args = build_usd_args(&script, &r.prefix, opts.jobs, &opts.extra);
     // build_usd.py's component toggles are argparse mutually exclusive groups:
@@ -2622,6 +3046,7 @@ fn build_with_script(
     );
     println!("    {python} {}", args.join(" "));
     let mut env = msvc_env();
+    env.extend(opts.build_env.iter().cloned());
     env.extend(macos_build_env(&opts.macos)?);
     run_build_step(python.as_str(), &args, &env, "build_usd.py")
 }
@@ -2650,8 +3075,14 @@ fn build_with_cmake(r: &crate::commands::Resolved, src: &Utf8Path, opts: &BuildO
             "cmake path is not UTF-8",
         )
     })?;
-    let python = tools::which("python")
-        .or_else(|| tools::which("python3"))
+    let python = opts
+        .python
+        .clone()
+        .or_else(|| {
+            tools::which("python")
+                .or_else(|| tools::which("python3"))
+                .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+        })
         .ok_or_else(|| {
             Error::coded(
                 "REQUIRED_TOOL_MISSING",
@@ -2659,13 +3090,6 @@ fn build_with_cmake(r: &crate::commands::Resolved, src: &Utf8Path, opts: &BuildO
                 "`python` not found — USD needs it for bindings",
             )
         })?;
-    let python = Utf8PathBuf::from_path_buf(python).map_err(|_| {
-        Error::coded(
-            "INTERNAL_ERROR",
-            ost_core::Category::Internal,
-            "python path is not UTF-8",
-        )
-    })?;
     let ninja = tools::which("ninja").map(|p| p.display().to_string());
 
     // Keep the build tree out of the install prefix, under the store cache.
@@ -2677,6 +3101,7 @@ fn build_with_cmake(r: &crate::commands::Resolved, src: &Utf8Path, opts: &BuildO
         .map_err(|e| Error::io(build_dir.to_string(), e))?;
 
     let mut env = msvc_env();
+    env.extend(opts.build_env.iter().cloned());
     let macos = macos_build_env(&opts.macos)?;
     env.extend(macos.iter().cloned());
     let configure = cmake_configure_args(
@@ -3302,6 +3727,18 @@ mod tests {
         m
     }
 
+    fn verified_compatibility(variant: OpenUsdVariantId) -> ResolvedOpenUsdCompatibility {
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let (mut compatibility, _) = platform
+            .resolve_openusd(Os::Linux, Arch::X86_64, variant)
+            .unwrap();
+        compatibility.toolchain.version = Some("14.2.0".into());
+        compatibility.toolchain.runtime.version = Some("2.28".into());
+        compatibility.python.version = Some("3.13.7".into());
+        compatibility.tbb.version = Some("2022.1.0".into());
+        compatibility
+    }
+
     #[test]
     fn export_gates_refuse_mock_deps_and_unvalidated() {
         assert!(check_exportable(&exportable_manifest()).is_ok());
@@ -3373,9 +3810,9 @@ mod tests {
     }
 
     #[test]
-    fn variant_refuses_unsupported_builder_and_compatibility_override() {
+    fn variant_supports_self_contained_vulkan_and_refuses_compatibility_overrides() {
         let platform = ost_platform::load_one("cy2026").unwrap();
-        let unsupported = resolve_openusd_build(
+        let vulkan = resolve_openusd_build(
             &platform,
             Os::Linux,
             Arch::X86_64,
@@ -3383,19 +3820,33 @@ mod tests {
             OpenUsdBuilder::BuildUsd,
             Vec::new(),
         )
-        .unwrap_err();
-        assert_eq!(unsupported.code(), "OPENUSD_VARIANT_BUILDER_UNSUPPORTED");
+        .unwrap();
+        assert!(vulkan.args.iter().any(|arg| {
+            arg.starts_with("--build-args=USD,") && arg.contains("-DPXR_ENABLE_VULKAN_SUPPORT=ON")
+        }));
 
-        let overridden = resolve_openusd_build(
-            &platform,
-            Os::Linux,
-            Arch::X86_64,
-            Some(OpenUsdVariantId::Standard),
-            OpenUsdBuilder::Cmake,
-            vec!["-DPXR_BUILD_IMAGING=OFF".into()],
-        )
-        .unwrap_err();
-        assert_eq!(overridden.code(), "OPENUSD_VARIANT_OVERRIDE");
+        for (builder, arg) in [
+            (OpenUsdBuilder::Cmake, "-DPXR_BUILD_IMAGING=OFF"),
+            (
+                OpenUsdBuilder::BuildUsd,
+                "--build-args=USD,-DPXR_BUILD_IMAGING=OFF",
+            ),
+            (
+                OpenUsdBuilder::BuildUsd,
+                "--cmake-build-args=USD,-DPXR_BUILD_IMAGING=OFF",
+            ),
+        ] {
+            let overridden = resolve_openusd_build(
+                &platform,
+                Os::Linux,
+                Arch::X86_64,
+                Some(OpenUsdVariantId::Standard),
+                builder,
+                vec![arg.into()],
+            )
+            .unwrap_err();
+            assert_eq!(overridden.code(), "OPENUSD_VARIANT_OVERRIDE", "{arg}");
+        }
     }
 
     #[test]
@@ -3439,11 +3890,9 @@ mod tests {
     #[test]
     fn runtime_artifact_manifest_exposes_openusd_compatibility() {
         let mut manifest = exportable_manifest();
-        let platform = ost_platform::load_one("cy2026").unwrap();
-        let (compatibility, _) = platform
-            .resolve_openusd(Os::Linux, Arch::X86_64, OpenUsdVariantId::Vulkan)
+        manifest
+            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Vulkan)))
             .unwrap();
-        manifest.set_openusd_compatibility(Some(compatibility));
         let packed = ost_build::PackResult {
             archive_digest: format!("sha256:{}", "ab".repeat(32)),
             archive_size: 42,
@@ -3455,8 +3904,60 @@ mod tests {
         assert_eq!(producer["openusd_compatibility"]["variant"], "vulkan");
         assert_eq!(
             producer["openusd_compatibility"]["python"]["version"],
-            "3.13.x"
+            "3.13.7"
         );
+    }
+
+    #[test]
+    fn provider_constraints_match_exact_and_wildcard_versions() {
+        assert!(version_matches("14.2.0", "14.2"));
+        assert!(version_matches("3.13.7", "3.13.x"));
+        assert!(version_matches("2022.1.0", "2022.x"));
+        assert!(!version_matches("3.12.9", "3.13.x"));
+        assert!(!version_matches("15.0", "14.2"));
+    }
+
+    #[test]
+    fn tbb_version_probe_skips_forwarding_headers_without_version_macros() {
+        let first = temp_dir("tbb-forwarder");
+        let second = temp_dir("tbb-version");
+        std::fs::create_dir_all(first.join("include/tbb").as_std_path()).unwrap();
+        std::fs::write(
+            first.join("include/tbb/version.h").as_std_path(),
+            "#include <oneapi/tbb/version.h>\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(second.join("include/oneapi/tbb").as_std_path()).unwrap();
+        std::fs::write(
+            second.join("include/oneapi/tbb/version.h").as_std_path(),
+            "#define TBB_VERSION_MAJOR 2022\n#define TBB_VERSION_MINOR 1\n#define TBB_VERSION_PATCH 0\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            tbb_version_from_roots(&[first.clone(), second.clone()]).as_deref(),
+            Some("2022.1.0")
+        );
+        std::fs::remove_dir_all(first.as_std_path()).unwrap();
+        std::fs::remove_dir_all(second.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn managed_reset_is_bounded_to_the_store() {
+        let scratch = temp_dir("managed-reset");
+        let store = scratch.join("store");
+        let managed = store.join("runtimes/cy2026-usd");
+        let outside = scratch.join("outside");
+        std::fs::create_dir_all(managed.as_std_path()).unwrap();
+        std::fs::create_dir_all(outside.as_std_path()).unwrap();
+
+        reset_managed_path(&store, &managed).unwrap();
+        assert!(!managed.as_std_path().exists());
+        let error = reset_managed_path(&store, &outside).unwrap_err();
+        assert_eq!(error.code(), "INTERNAL_ERROR");
+        assert!(outside.as_std_path().exists());
+
+        std::fs::remove_dir_all(scratch.as_std_path()).unwrap();
     }
 
     #[test]

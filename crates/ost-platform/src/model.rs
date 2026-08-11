@@ -163,7 +163,13 @@ pub struct ResolvedOpenUsdCompatibility {
 pub struct ResolvedOpenUsdProvider {
     pub family: String,
     pub provider: String,
-    pub version: String,
+    /// Exact version observed from the selected build input or produced tree.
+    /// `None` exists only while a build cell is being prepared; a managed
+    /// runtime must not persist the compatibility selection until this is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// CY constraint the observed version was checked against.
+    pub version_constraint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,9 +177,23 @@ pub struct ResolvedOpenUsdProvider {
 pub struct ResolvedOpenUsdToolchain {
     pub family: String,
     pub provider: String,
-    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub version_constraint: String,
     pub cxx_standard: String,
     pub runtime: ResolvedOpenUsdProvider,
+}
+
+impl ResolvedOpenUsdCompatibility {
+    /// Whether every compatibility-critical provider carries a non-empty,
+    /// observed exact version rather than only its CY constraint.
+    pub fn is_verified(&self) -> bool {
+        let exact = |version: &Option<String>| version.as_ref().is_some_and(|v| !v.is_empty());
+        exact(&self.toolchain.version)
+            && exact(&self.toolchain.runtime.version)
+            && exact(&self.python.version)
+            && exact(&self.tbb.version)
+    }
 }
 
 impl Platform {
@@ -201,7 +221,8 @@ impl Platform {
         let provider = |source: &OpenUsdProvider| ResolvedOpenUsdProvider {
             family: source.family.clone(),
             provider: source.provider.clone(),
-            version: self
+            version: None,
+            version_constraint: self
                 .core
                 .get(&source.version_from)
                 .cloned()
@@ -216,7 +237,8 @@ impl Platform {
                 toolchain: ResolvedOpenUsdToolchain {
                     family: cell.toolchain.family.clone(),
                     provider: cell.toolchain.provider.clone(),
-                    version: self
+                    version: None,
+                    version_constraint: self
                         .core
                         .get(&cell.toolchain.version_from)
                         .cloned()
