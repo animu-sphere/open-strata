@@ -2640,6 +2640,7 @@ mod tests {
             provenance_size: None,
             runtime_id: Some("rt".into()),
             runtime_digest: Some("sha256:beef".into()),
+            openusd_compatibility: None,
         };
         (archive, manifest, record)
     }

@@ -761,6 +761,37 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     if let (Some(id), Some(dg)) = (&r.runtime_id, &r.runtime_digest) {
         println!("  runtime:     {id} ({dg})");
     }
+    if let Some(openusd) = &r.openusd_compatibility {
+        println!(
+            "  OpenUSD:     {} {}-{} {}",
+            openusd.platform,
+            openusd.os.as_str(),
+            openusd.arch.as_str(),
+            openusd.variant.as_str()
+        );
+        println!(
+            "  toolchain:   {} {} / {} {}",
+            openusd.toolchain.family,
+            openusd.toolchain.version.as_deref().unwrap_or("unresolved"),
+            openusd.toolchain.runtime.family,
+            openusd
+                .toolchain
+                .runtime
+                .version
+                .as_deref()
+                .unwrap_or("unresolved")
+        );
+        println!(
+            "  providers:   Python {} {} / TBB {} {}",
+            openusd.python.provider,
+            openusd.python.version.as_deref().unwrap_or("unresolved"),
+            openusd.tbb.provider,
+            openusd.tbb.version.as_deref().unwrap_or("unresolved")
+        );
+        if !openusd.capabilities.is_empty() {
+            println!("  graphics:    {}", openusd.capabilities.join(", "));
+        }
+    }
     if !host_requirements.is_empty() {
         println!(
             "  host needs:  {}",
