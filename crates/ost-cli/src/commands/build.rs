@@ -668,14 +668,15 @@ fn write_completion(
         intent.clone(),
         completed_unix,
     );
-    // A workspace-built executable is packaged from what this build produced, so
-    // the completion records its digests the way `plugin build` records a
-    // bundle's — that binding is what lets `plugin package` tell a managed tool
-    // output from one a plain CMake build overwrote. It is evidence *about* a
-    // build that already succeeded, so a tool it cannot read is a warning: the
-    // target is built either way, and the tool simply packages as `untracked`.
+    // Workspace members are packaged from the output trees this root build
+    // produced. Record bundle registration/library/Python bytes as well as tool
+    // executables, so a later `plugin package` can distinguish this managed
+    // producer from a plain root CMake build that overwrote the same paths. This
+    // is evidence *about* a build that already succeeded, so a member that
+    // cannot be read is a warning: the target remains built and that member is
+    // packaged honestly as `untracked`.
     let (outputs, warnings) =
-        crate::commands::plugin::workspace_tool_outputs(root, lock.variant.os);
+        crate::commands::plugin::workspace_managed_outputs(root, lock.variant.os);
     // A read-only attach holds no lease and so names no owning invocation.
     let completion = match invocation {
         Some(invocation) => completion.with_invocation(invocation),

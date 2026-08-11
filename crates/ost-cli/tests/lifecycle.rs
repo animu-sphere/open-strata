@@ -2114,6 +2114,59 @@ fn plugin_package_refuses_overwritten_managed_outputs_without_an_explicit_overri
         manifest["provenance"]["build_outputs"]["origin"],
         "external-or-unmanaged-override"
     );
+
+    // A later successful root `ost build` is another managed producer of the
+    // same bundle tree. Its project-relative output record must supersede the
+    // now-stale bundle-local completion without requiring a hidden
+    // `ost plugin build` immediately before packaging.
+    let project = ost_manifest::Project::from_toml(
+        &std::fs::read_to_string(sb.work_file("openstrata.toml")).unwrap(),
+    )
+    .unwrap();
+    let project_version = project
+        .effective_version(&Utf8PathBuf::from_path_buf(sb.work.clone()).unwrap())
+        .unwrap();
+    let root_build = sb.work_file(&format!("build/{target_id}"));
+    std::fs::create_dir_all(&root_build).unwrap();
+    let root_completion = ost_build::BuildCompletion::from_lock(
+        &lock,
+        ost_build::BuildProjectIdentity {
+            name: project.project.name,
+            version: project_version,
+        },
+        format!("build/{target_id}"),
+        {
+            let mut intent = ost_build::BuildIntent::default();
+            intent.cache.insert(
+                "CMAKE_BUILD_TYPE".into(),
+                ost_build::CMakeCacheEntry::string("Release"),
+            );
+            intent
+        },
+        2,
+    )
+    .with_outputs(vec![
+        managed_build_output(&sb.work, &format!("toy/{library_relative}")),
+        managed_build_output(&sb.work, "toy/plugin/resources/toy/plugInfo.json"),
+        managed_build_output(&sb.work, "toy/plugin/resources/toy/plugInfo.json.in"),
+    ]);
+    std::fs::write(
+        root_build.join(ost_build::BUILD_COMPLETION_FILE),
+        root_completion.to_json().unwrap(),
+    )
+    .unwrap();
+
+    let root_managed = sb.ost(&["--json", "plugin", "package", "toy"]);
+    assert!(root_managed.status.success(), "{}", out_text(&root_managed));
+    let root_managed: serde_json::Value = serde_json::from_slice(&root_managed.stdout).unwrap();
+    assert_eq!(
+        root_managed["data"]["build_provenance"]["status"],
+        "matched"
+    );
+    assert_eq!(
+        root_managed["data"]["build_provenance"]["origin"],
+        "ost-managed-root"
+    );
 }
 
 #[test]

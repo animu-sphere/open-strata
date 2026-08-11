@@ -175,11 +175,15 @@ CI follow-up remains in the P1 section below.
   Empty patterns, ambiguous/missing member descriptors, descriptors outside the
   declaration, and malformed selected descriptors fail graph validation, so a
   green `--graph-only` result cannot silently omit a library or its edges.
-- **Make root-build bundle outputs safe to package.** Either record bundle
-  outputs produced by `ost build` as managed provenance for the selected target
-  and runtime, or stage them away from paths consumed by `plugin package`.
-  `ost build` followed by packaging must not require a hidden per-bundle rebuild
-  order to avoid `PLUGIN_PACKAGE_OUTPUT_MISMATCH`.
+- **Implemented 2026-08-09 — make root-build bundle outputs safe to package.**
+  `ost build` records each workspace bundle's package-relevant registration,
+  library, and Python outputs in its target/runtime-bound root completion using
+  project-relative member paths. `plugin package` considers both bundle-local
+  and root managed producers, accepts the producer whose digests match the
+  staged bytes, and retains deterministic mismatch diagnostics when neither
+  matches. A successful root build can therefore follow an older bundle build
+  without requiring a hidden per-bundle rebuild order to avoid
+  `PLUGIN_PACKAGE_OUTPUT_MISMATCH`.
 
 #### P1 - artifact transfer evidence and generated CI
 

@@ -162,10 +162,12 @@ and `verify: test` share one job, since both need the same runtime.
 
 A workspace stays dual-mode: the same tree builds with `ost` and with plain
 CMake. Do not let OpenStrata-specific files break a direct `cmake` build; the
-reference projects build both ways in CI. Keep the output boundary explicit if
-both modes write to the bundle's staged `lib/`: until package-time build
-provenance is implemented, whichever build ran last is what `ost plugin package`
-will stage.
+reference projects build both ways in CI. When both modes write to a bundle's
+staged `lib/`, `ost build` records the package-relevant workspace bundle bytes
+in its managed completion. `ost plugin package` accepts those root-build digests
+or a matching bundle-local `ost plugin build` completion; a later plain CMake
+overwrite is still reported as `mismatched` and needs the explicit
+`--allow-unmanaged-output` override.
 
 ## Reference implementations
 
