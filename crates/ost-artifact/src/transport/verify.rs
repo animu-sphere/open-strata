@@ -27,7 +27,11 @@ pub(crate) struct ChainOutcome {
 }
 
 /// Verify a fetched dist directory against the pull policy.
-pub(crate) fn verify_dist(dist: &Utf8Path, policy: &PullPolicy) -> Result<ChainOutcome> {
+pub(crate) fn verify_dist(
+    dist: &Utf8Path,
+    policy: &PullPolicy,
+    remote_openusd_selector: Option<&str>,
+) -> Result<ChainOutcome> {
     let mut steps: Vec<StepStatus> = Vec::new();
 
     // Manifest schema: the producer manifest must parse and derive a record.
@@ -69,6 +73,44 @@ pub(crate) fn verify_dist(dist: &Utf8Path, policy: &PullPolicy) -> Result<ChainO
         )
     })?;
     steps.push(("manifest_schema", "passed"));
+
+    // OCI annotations are selection evidence, not authority. Recompute the
+    // normalized selector from the producer manifest and require exact
+    // agreement before fetched bytes can lead to a local import.
+    match remote_openusd_selector {
+        Some(declared) => {
+            let Some(computed) = record.openusd_selector() else {
+                return Err(Error::coded(
+                    "ARTIFACT_OPENUSD_SELECTOR_MISMATCH",
+                    Category::Validation,
+                    format!(
+                        "the resolved OCI manifest declares OpenUSD selector '{declared}', but \
+                         the producer manifest has no verified normalized OpenUSD identity"
+                    ),
+                )
+                .with_hint(
+                    "re-publish the runtime so its OCI annotation is derived from the same \
+                     producer manifest carried by the artifact",
+                ));
+            };
+            if declared != computed {
+                return Err(Error::coded(
+                    "ARTIFACT_OPENUSD_SELECTOR_MISMATCH",
+                    Category::Validation,
+                    format!(
+                        "the resolved OCI manifest declares OpenUSD selector '{declared}', but \
+                         the producer manifest resolves to '{computed}'"
+                    ),
+                )
+                .with_hint(
+                    "do not import this inconsistent bundle; resolve a correctly published \
+                     compatibility tag or re-publish upstream",
+                ));
+            }
+            steps.push(("openusd_selector", "passed"));
+        }
+        None => steps.push(("openusd_selector", "skipped")),
+    }
 
     // Archive digest: the downloaded bytes are what the manifest describes.
     let archive = dist_dir.join(&record.archive);

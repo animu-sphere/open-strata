@@ -291,6 +291,7 @@ fn resolve_remote(reference: &str, plain_http: bool, fmt: Format) -> Result<()> 
                 "registry": resolved.registry,
                 "repository": resolved.repository,
                 "oci_digest": resolved.oci_digest,
+                "openusd_selector": resolved.openusd_selector,
                 "auth_mode": resolved.auth_mode,
             },
         }));
@@ -300,6 +301,9 @@ fn resolve_remote(reference: &str, plain_http: bool, fmt: Format) -> Result<()> 
     println!("  locator:   {}", resolved.locator);
     if let Some(dg) = &resolved.oci_digest {
         println!("  digest:    {dg}");
+    }
+    if let Some(selector) = &resolved.openusd_selector {
+        println!("  selector:  {selector}");
     }
     println!("  registry:  {}", resolved.registry);
     println!("  auth mode: {}", resolved.auth_mode);
@@ -627,6 +631,7 @@ fn pull_evidence_json(
         "remote": {
             "locator": evidence.remote.locator,
             "resolved_oci_digest": evidence.remote.oci_digest,
+            "openusd_selector": evidence.remote.openusd_selector,
             "registry": evidence.remote.registry,
             "repository": evidence.remote.repository,
             "auth_mode": evidence.remote.auth_mode,

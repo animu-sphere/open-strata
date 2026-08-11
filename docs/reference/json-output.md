@@ -168,6 +168,7 @@ error, never a warning:
 | `ARTIFACT_ARCHIVE_UNSAFE` | validation |
 | `ARTIFACT_PLATFORM_MISMATCH` | validation |
 | `ARTIFACT_SUPPORT_LINE_MISMATCH` | validation |
+| `ARTIFACT_OPENUSD_SELECTOR_MISMATCH` | validation |
 
 (The local registry's own `ARTIFACT_NOT_FOUND` / `ARTIFACT_DIGEST_MISMATCH` /
 `ARTIFACT_KIND_MISMATCH` / `ARTIFACT_RUNTIME_MISMATCH` predate the transport
@@ -181,6 +182,13 @@ optional `retry_after_ms`. A terminal layer failure exposes the same layer
 shape under `data.transfer.layer`, together with `manifest_digest` and
 `next_action`, while `error.code` and `error.category` remain the branching
 contract.
+
+When an OCI manifest carries `io.openstrata.openusd.selector`, resolve and pull
+report it as `data.resolved.openusd_selector` and
+`data.remote.openusd_selector`, respectively. Pull also reports
+`data.verification.openusd_selector` as `passed`; older artifacts without the
+annotation report `skipped`. A declared selector that cannot be re-derived from
+the producer manifest fails before local import.
 
 ## Compatibility policy
 
