@@ -76,7 +76,9 @@ its OCI destination has no explicit tag, `ost artifact push` uses that selector
 as the convenience tag and also records it in the OCI manifest's
 `io.openstrata.openusd.selector` annotation. The selector starts with the
 platform, OS/architecture, and build variant and ends with a full SHA-256 over
-all normalized provider, ABI, exact-version, and capability fields. It is
+the normalized artifact target (including its measured ABI floor), provider,
+exact-version constraint, and capability fields. Provider versions that do not
+satisfy their declared constraints cannot receive a selector. It is
 therefore safe for exact compatibility comparison while staying within OCI's
 128-character tag limit. An explicit destination tag remains authoritative.
 In either form the tag is mutable convenience only: pin the returned

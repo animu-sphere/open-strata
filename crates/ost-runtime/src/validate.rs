@@ -115,7 +115,7 @@ pub fn validate(prefix: &Utf8Path, manifest: &RuntimeManifest) -> ValidationRepo
     } else {
         checks.push(Check::fail(
             "openusd-compatibility-identity",
-            "OpenUSD compatibility identity contains unverified provider versions",
+            "OpenUSD compatibility identity contains unverified or contradictory provider versions",
         ));
     }
 

@@ -202,7 +202,7 @@ impl ArtifactRecord {
     pub fn openusd_selector(&self) -> Option<String> {
         self.openusd_compatibility
             .as_ref()
-            .and_then(ResolvedOpenUsdCompatibility::selector)
+            .and_then(|compatibility| compatibility.selector(&self.target))
     }
 
     /// Reinterpret a pre-v0.18.0 record, whose `producer` field held the tool
@@ -419,7 +419,7 @@ fn normalize_openusd_compatibility(
     }
     if !compatibility.is_verified() {
         return Err(Error::InvalidManifest(
-            "producer manifest OpenUSD compatibility identity has unverified provider versions"
+            "producer manifest OpenUSD compatibility identity has unverified or contradictory provider versions"
                 .to_string(),
         ));
     }
@@ -794,6 +794,10 @@ mod tests {
         assert_eq!(compatibility.capabilities, ["hgi-gl", "hgi-vulkan"]);
         assert!(selector.starts_with("openusd-cy2026-linux-x86_64-vulkan-"));
         assert_eq!(selector.rsplit_once('-').unwrap().1.len(), 64);
+
+        let mut different_abi = record.clone();
+        different_abi.target = "linux-x86_64-glibc234-py313".into();
+        assert_ne!(record.openusd_selector(), different_abi.openusd_selector());
     }
 
     #[test]
@@ -812,7 +816,24 @@ mod tests {
             "ost test",
         )
         .unwrap_err();
-        assert!(error.to_string().contains("unverified provider versions"));
+        assert!(error
+            .to_string()
+            .contains("unverified or contradictory provider versions"));
+
+        let mut mismatched_version = runtime_manifest_with_openusd();
+        update_openusd_compatibility(&mut mismatched_version, |compatibility| {
+            compatibility["python"]["version"] = serde_json::json!("3.12.9");
+        });
+        let error = ArtifactRecord::from_producer_manifest(
+            &mismatched_version,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unverified or contradictory provider versions"));
 
         let mut wrong_platform = runtime_manifest_with_openusd();
         update_openusd_compatibility(&mut wrong_platform, |compatibility| {

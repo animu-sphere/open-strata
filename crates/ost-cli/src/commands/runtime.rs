@@ -24,6 +24,7 @@ use ost_core::host::Os;
 use ost_core::paths::Store;
 use ost_core::variant::Abi;
 use ost_core::{tools, Error, Host, Result, Variant};
+use ost_platform::version_satisfies_constraint;
 use ost_runtime::{
     python_minor, ExtensionRecord, HostPackageManager, HostRequirement, OpenUsdBuilder,
     OpenUsdVariantId, ResolvedOpenUsdCompatibility, RuntimeManifest, RuntimeSource, Validation,
@@ -845,7 +846,7 @@ fn find_python_for_constraint(constraint: &str) -> Result<(Utf8PathBuf, String)>
             &["-c", "import platform; print(platform.python_version())"],
             "probe Python version",
         )?;
-        if version_matches(&version, constraint) {
+        if version_satisfies_constraint(&version, constraint) {
             return Ok((path, version));
         }
         observed.push(format!("{}={version}", path.as_str()));
@@ -882,7 +883,7 @@ fn find_gcc_toolchain(constraint: &str) -> Result<(Utf8PathBuf, Utf8PathBuf, Str
             &["-dumpfullversion", "-dumpversion"],
             "probe G++ version",
         )?;
-        if cc_version == cxx_version && version_matches(&cc_version, constraint) {
+        if cc_version == cxx_version && version_satisfies_constraint(&cc_version, constraint) {
             return Ok((cc, cxx, cc_version));
         }
         observed.push(format!("{cc_name}={cc_version}/{cxx_name}={cxx_version}"));
@@ -939,7 +940,7 @@ fn provider_version_mismatch(provider: &str, required: &str, observed: &str) -> 
 }
 
 fn ensure_version_matches(provider: &str, observed: &str, constraint: &str) -> Result<()> {
-    if version_matches(observed, constraint) {
+    if version_satisfies_constraint(observed, constraint) {
         return Ok(());
     }
     Err(provider_version_mismatch(provider, constraint, observed))
@@ -952,27 +953,6 @@ fn numeric_prefix(version: &str, count: usize) -> Option<String> {
         .filter(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
         .collect();
     (parts.len() == count).then(|| parts.join("."))
-}
-
-fn version_matches(observed: &str, constraint: &str) -> bool {
-    let observed: Vec<&str> = observed.split('.').collect();
-    let required: Vec<&str> = constraint.split('.').collect();
-    if observed.is_empty() || required.is_empty() {
-        return false;
-    }
-    for (index, required) in required.iter().enumerate() {
-        if matches!(*required, "x" | "X" | "*") {
-            return true;
-        }
-        if !required.chars().all(|c| c.is_ascii_digit())
-            || observed
-                .get(index)
-                .is_none_or(|part| !part.chars().all(|c| c.is_ascii_digit()) || part != required)
-        {
-            return false;
-        }
-    }
-    true
 }
 
 fn tbb_version_from_roots(roots: &[Utf8PathBuf]) -> Option<String> {
@@ -3910,11 +3890,12 @@ mod tests {
 
     #[test]
     fn provider_constraints_match_exact_and_wildcard_versions() {
-        assert!(version_matches("14.2.0", "14.2"));
-        assert!(version_matches("3.13.7", "3.13.x"));
-        assert!(version_matches("2022.1.0", "2022.x"));
-        assert!(!version_matches("3.12.9", "3.13.x"));
-        assert!(!version_matches("15.0", "14.2"));
+        assert!(version_satisfies_constraint("14.2.0", "14.2"));
+        assert!(version_satisfies_constraint("3.13.7", "3.13.x"));
+        assert!(version_satisfies_constraint("2022.1.0", "2022.x"));
+        assert!(version_satisfies_constraint("2.39", ">=2.28"));
+        assert!(!version_satisfies_constraint("3.12.9", "3.13.x"));
+        assert!(!version_satisfies_constraint("15.0", "14.2"));
     }
 
     #[test]

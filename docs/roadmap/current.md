@@ -60,18 +60,20 @@ identities and consumer-side mismatch validation remain open below.
 artifact records now preserve the producer's normalized OpenUSD compatibility
 identity instead of dropping it at import. Registration rejects unsupported
 compatibility schemas, unresolved compiler/native-runtime/Python/TBB versions,
-non-runtime manifests that claim the identity, and platform or OS/architecture
-bindings that contradict the producer provenance or artifact target. `artifact
-show` exposes the normalized variant, providers, exact versions, and graphics
-capabilities in both human and JSON output. Exact dependency/source identities
-and consumer requirement matching remain open.
+exact versions that contradict their declared CY constraints, non-runtime
+manifests that claim the identity, and platform or OS/architecture bindings that
+contradict the producer provenance or artifact target. `artifact show` exposes
+the normalized variant, providers, exact versions, and graphics capabilities in
+both human and JSON output. Exact dependency/source identities and consumer
+requirement matching remain open.
 
 **Implemented 2026-08-11 — deterministic compatibility-selector slice:** every
 verified normalized OpenUSD identity now produces one OCI-tag-safe selector.
 Its readable prefix names the platform, OS/architecture, and variant; its full
-SHA-256 suffix covers schema, toolchain and native runtime, C++ standard,
-Python and TBB families/providers/exact versions, and the sorted capability
-set. `artifact show` exposes the selector in human and JSON output. An untagged
+SHA-256 suffix covers schema, the normalized artifact target and measured ABI
+floor, toolchain and native runtime, C++ standard, Python and TBB
+families/providers/exact versions, and the sorted capability set. `artifact
+show` exposes the selector in human and JSON output. An untagged
 `artifact push` of a normalized runtime publishes that selector as its
 deterministic convenience tag while retaining the immutable OCI digest as the
 reproducible identity, and the OCI manifest repeats the selector as an

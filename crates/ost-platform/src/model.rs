@@ -187,15 +187,117 @@ pub struct ResolvedOpenUsdToolchain {
     pub runtime: ResolvedOpenUsdProvider,
 }
 
+/// Whether one observed numeric version satisfies a CY compatibility
+/// constraint. Plain dotted constraints are prefix matches (`14.2` accepts
+/// `14.2.0`), `x`/`X`/`*` are trailing wildcards, and the usual comparison
+/// prefixes are supported for runtime floors such as `>=2.28`.
+pub fn version_satisfies_constraint(observed: &str, constraint: &str) -> bool {
+    let Some(observed) = numeric_version(observed) else {
+        return false;
+    };
+    let constraint = constraint.trim();
+    if constraint.is_empty() {
+        return false;
+    }
+
+    for operator in [">=", "<=", ">", "<", "="] {
+        let Some(required) = constraint.strip_prefix(operator) else {
+            continue;
+        };
+        let Some(required) = numeric_version(required) else {
+            return false;
+        };
+        let ordering = compare_numeric_versions(&observed, &required);
+        return match operator {
+            ">=" => matches!(
+                ordering,
+                std::cmp::Ordering::Greater | std::cmp::Ordering::Equal
+            ),
+            "<=" => matches!(
+                ordering,
+                std::cmp::Ordering::Less | std::cmp::Ordering::Equal
+            ),
+            ">" => ordering == std::cmp::Ordering::Greater,
+            "<" => ordering == std::cmp::Ordering::Less,
+            "=" => ordering == std::cmp::Ordering::Equal,
+            _ => unreachable!("the operator table is exhaustive"),
+        };
+    }
+
+    let parts = constraint.split('.').collect::<Vec<_>>();
+    if parts.is_empty() {
+        return false;
+    }
+    for (index, required) in parts.iter().enumerate() {
+        if matches!(*required, "x" | "X" | "*") {
+            return parts[index..]
+                .iter()
+                .all(|part| matches!(*part, "x" | "X" | "*"));
+        }
+        let Ok(required) = required.parse::<u64>() else {
+            return false;
+        };
+        if observed.get(index) != Some(&required) {
+            return false;
+        }
+    }
+    true
+}
+
+fn numeric_version(value: &str) -> Option<Vec<u64>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    value
+        .split('.')
+        .map(|part| {
+            if !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()) {
+                part.parse::<u64>().ok()
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn compare_numeric_versions(left: &[u64], right: &[u64]) -> std::cmp::Ordering {
+    let length = left.len().max(right.len());
+    (0..length)
+        .map(|index| {
+            left.get(index)
+                .copied()
+                .unwrap_or_default()
+                .cmp(&right.get(index).copied().unwrap_or_default())
+        })
+        .find(|ordering| *ordering != std::cmp::Ordering::Equal)
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+fn provider_is_verified(provider: &ResolvedOpenUsdProvider) -> bool {
+    !provider.family.trim().is_empty()
+        && !provider.provider.trim().is_empty()
+        && !provider.version_constraint.trim().is_empty()
+        && provider.version.as_ref().is_some_and(|version| {
+            version_satisfies_constraint(version, &provider.version_constraint)
+        })
+}
+
 impl ResolvedOpenUsdCompatibility {
-    /// Whether every compatibility-critical provider carries a non-empty,
-    /// observed exact version rather than only its CY constraint.
+    /// Whether every compatibility-critical provider carries an observed exact
+    /// version that satisfies its non-empty CY constraint.
     pub fn is_verified(&self) -> bool {
-        let exact = |version: &Option<String>| version.as_ref().is_some_and(|v| !v.is_empty());
-        exact(&self.toolchain.version)
-            && exact(&self.toolchain.runtime.version)
-            && exact(&self.python.version)
-            && exact(&self.tbb.version)
+        !self.platform.trim().is_empty()
+            && !self.toolchain.family.trim().is_empty()
+            && !self.toolchain.provider.trim().is_empty()
+            && !self.toolchain.version_constraint.trim().is_empty()
+            && !self.toolchain.cxx_standard.trim().is_empty()
+            && self.toolchain.version.as_ref().is_some_and(|version| {
+                version_satisfies_constraint(version, &self.toolchain.version_constraint)
+            })
+            && provider_is_verified(&self.toolchain.runtime)
+            && provider_is_verified(&self.python)
+            && provider_is_verified(&self.tbb)
     }
 
     /// A deterministic, OCI-tag-safe selector for this exact compatibility
@@ -206,8 +308,8 @@ impl ResolvedOpenUsdCompatibility {
     /// versions, C++ standard, and a sorted capability set). This keeps the
     /// selector within OCI's 128-character tag limit without dropping identity
     /// dimensions from the comparison contract.
-    pub fn selector(&self) -> Option<String> {
-        if !self.is_verified() {
+    pub fn selector(&self, artifact_target: &str) -> Option<String> {
+        if !self.is_verified() || artifact_target.trim().is_empty() {
             return None;
         }
 
@@ -217,6 +319,7 @@ impl ResolvedOpenUsdCompatibility {
             platform: &'a str,
             os: Os,
             arch: Arch,
+            artifact_target: &'a str,
             toolchain: &'a ResolvedOpenUsdToolchain,
             python: &'a ResolvedOpenUsdProvider,
             tbb: &'a ResolvedOpenUsdProvider,
@@ -236,6 +339,7 @@ impl ResolvedOpenUsdCompatibility {
             platform: &self.platform,
             os: self.os,
             arch: self.arch,
+            artifact_target,
             toolchain: &self.toolchain,
             python: &self.python,
             tbb: &self.tbb,
@@ -378,7 +482,7 @@ mod tests {
                 version: Some("14.2.0".into()),
                 version_constraint: "14.2".into(),
                 cxx_standard: "20".into(),
-                runtime: provider("glibc", "system", "2.39", "2.28"),
+                runtime: provider("glibc", "system", "2.28", "2.28"),
             },
             python: provider("cpython", "platform", "3.13.7", "3.13.x"),
             tbb: provider("onetbb", "platform", "2022.1.0", "2022.x"),
@@ -390,13 +494,17 @@ mod tests {
     #[test]
     fn selector_is_deterministic_oci_tag_identity() {
         let compatibility = verified_compatibility();
-        let selector = compatibility.selector().unwrap();
+        let target = "linux-x86_64-glibc228-py313";
+        let selector = compatibility.selector(target).unwrap();
         assert!(selector.starts_with("openusd-cy2026-linux-x86_64-vulkan-"));
         assert!(selector.len() <= 128);
         assert!(selector
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)));
-        assert_eq!(compatibility.selector().as_deref(), Some(selector.as_str()));
+        assert_eq!(
+            compatibility.selector(target).as_deref(),
+            Some(selector.as_str())
+        );
     }
 
     #[test]
@@ -405,17 +513,60 @@ mod tests {
         let mut reordered = compatibility.clone();
         reordered.capabilities.reverse();
         reordered.capabilities.push("vulkan".into());
-        assert_eq!(compatibility.selector(), reordered.selector());
+        let target = "linux-x86_64-glibc228-py313";
+        assert_eq!(compatibility.selector(target), reordered.selector(target));
 
         let mut other_provider = compatibility.clone();
         other_provider.python.provider = "host".into();
-        assert_ne!(compatibility.selector(), other_provider.selector());
+        assert_ne!(
+            compatibility.selector(target),
+            other_provider.selector(target)
+        );
+
+        assert_ne!(
+            compatibility.selector(target),
+            compatibility.selector("linux-x86_64-glibc234-py313")
+        );
     }
 
     #[test]
     fn unresolved_identity_has_no_selector() {
         let mut compatibility = verified_compatibility();
         compatibility.tbb.version = None;
-        assert_eq!(compatibility.selector(), None);
+        assert_eq!(compatibility.selector("linux-x86_64-glibc228-py313"), None);
+    }
+
+    #[test]
+    fn exact_versions_must_satisfy_their_constraints() {
+        let mut compatibility = verified_compatibility();
+        compatibility.python.version = Some("3.12.9".into());
+        assert!(!compatibility.is_verified());
+        assert_eq!(compatibility.selector("linux-x86_64-glibc228-py313"), None);
+
+        compatibility.python.version = Some("   ".into());
+        assert!(!compatibility.is_verified());
+    }
+
+    #[test]
+    fn numeric_constraints_support_prefix_wildcard_and_floor_forms() {
+        for (observed, constraint) in [
+            ("14.2.0", "14.2"),
+            ("3.13.7", "3.13.x"),
+            ("2022.1.0", "2022.*"),
+            ("2.39", ">=2.28"),
+            ("2.28.0", "=2.28"),
+            ("2.27", "<2.28"),
+        ] {
+            assert!(version_satisfies_constraint(observed, constraint));
+        }
+        for (observed, constraint) in [
+            ("3.12.9", "3.13.x"),
+            ("2.27", ">=2.28"),
+            (" ", "3.13.x"),
+            ("3.13.7", " "),
+            ("3.13rc1", "3.13.x"),
+        ] {
+            assert!(!version_satisfies_constraint(observed, constraint));
+        }
     }
 }

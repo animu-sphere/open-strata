@@ -326,7 +326,8 @@ impl RuntimeManifest {
             .is_some_and(|value| !value.is_verified())
         {
             return Err(ost_core::Error::InvalidManifest(
-                "OpenUSD compatibility identity has unverified provider versions".to_string(),
+                "OpenUSD compatibility identity has unverified or contradictory provider versions"
+                    .to_string(),
             ));
         }
         self.openusd_compatibility = compatibility;
@@ -455,7 +456,9 @@ mod tests {
         let error = manifest
             .set_openusd_compatibility(Some(compatibility))
             .unwrap_err();
-        assert!(error.to_string().contains("unverified provider versions"));
+        assert!(error
+            .to_string()
+            .contains("unverified or contradictory provider versions"));
         assert!(manifest.openusd_compatibility.is_none());
     }
 
