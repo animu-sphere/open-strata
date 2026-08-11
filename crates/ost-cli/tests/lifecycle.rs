@@ -2167,6 +2167,90 @@ fn plugin_package_refuses_overwritten_managed_outputs_without_an_explicit_overri
         root_managed["data"]["build_provenance"]["origin"],
         "ost-managed-root"
     );
+
+    // Named intents use isolated build trees, and a root build may use a
+    // non-Ninja generator even though `plugin package` has no generator flag.
+    // Both are properties of the recorded producer, not package-time defaults.
+    let project_manifest = sb.work_file("openstrata.toml");
+    let mut project_source = std::fs::read_to_string(&project_manifest).unwrap();
+    project_source.push_str(
+        "\n[build.intents.materialx.cache.FEATURE]\n\
+         type = \"BOOL\"\n\
+         value = true\n",
+    );
+    std::fs::write(&project_manifest, project_source).unwrap();
+    let project =
+        ost_manifest::Project::from_toml(&std::fs::read_to_string(&project_manifest).unwrap())
+            .unwrap();
+    let project_version = project
+        .effective_version(&Utf8PathBuf::from_path_buf(sb.work.clone()).unwrap())
+        .unwrap();
+    let mut named_intent = ost_build::BuildIntent {
+        name: "materialx".into(),
+        ..ost_build::BuildIntent::default()
+    };
+    named_intent.cache.insert(
+        "CMAKE_BUILD_TYPE".into(),
+        ost_build::CMakeCacheEntry::string("Release"),
+    );
+    named_intent
+        .cache
+        .insert("FEATURE".into(), ost_build::CMakeCacheEntry::bool(true));
+    let mut custom_generator_lock = lock.clone();
+    custom_generator_lock.generator = "Visual Studio 17 2022".into();
+    std::fs::write(
+        project_target.join("target.lock.json"),
+        custom_generator_lock.to_json().unwrap(),
+    )
+    .unwrap();
+    let named_build = sb.work_file(&format!("build/{target_id}--materialx"));
+    std::fs::create_dir_all(&named_build).unwrap();
+    let named_completion = ost_build::BuildCompletion::from_lock(
+        &custom_generator_lock,
+        ost_build::BuildProjectIdentity {
+            name: project.project.name,
+            version: project_version,
+        },
+        format!("build/{target_id}--materialx"),
+        named_intent,
+        3,
+    )
+    .with_outputs(vec![
+        managed_build_output(&sb.work, &format!("toy/{library_relative}")),
+        managed_build_output(&sb.work, "toy/plugin/resources/toy/plugInfo.json"),
+        managed_build_output(&sb.work, "toy/plugin/resources/toy/plugInfo.json.in"),
+    ]);
+    std::fs::write(
+        named_build.join(ost_build::BUILD_COMPLETION_FILE),
+        named_completion.to_json().unwrap(),
+    )
+    .unwrap();
+
+    let named_root = sb.ost(&["--json", "plugin", "package", "toy"]);
+    assert!(named_root.status.success(), "{}", out_text(&named_root));
+    let named_root: serde_json::Value = serde_json::from_slice(&named_root.stdout).unwrap();
+    assert_eq!(
+        named_root["data"]["build_provenance"]["origin"],
+        "ost-managed-root"
+    );
+    assert_eq!(
+        named_root["data"]["build_provenance"]["build"]["fingerprint"],
+        named_completion.fingerprint()
+    );
+
+    std::fs::write(&library, b"plain CMake after named root build").unwrap();
+    let named_refusal = sb.ost(&["--json", "plugin", "package", "toy"]);
+    assert_eq!(
+        named_refusal.status.code(),
+        Some(5),
+        "{}",
+        out_text(&named_refusal)
+    );
+    assert!(
+        out_text(&named_refusal).contains("rerun `ost build --intent materialx`"),
+        "{}",
+        out_text(&named_refusal)
+    );
 }
 
 #[test]
