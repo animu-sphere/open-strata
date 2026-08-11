@@ -102,6 +102,7 @@ A machine-readable VFX Reference Platform calendar-year definition.
 | `core` | object | yes | Component -> version constraint map. |
 | `id` | string | yes | Calendar-year id, e.g. cy2026. |
 | `notes` | string | no |  |
+| `openusd` | — | no |  |
 | `source` | object | yes |  |
 
 ## `plugin-activation.schema.json`

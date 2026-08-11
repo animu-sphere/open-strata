@@ -11,6 +11,7 @@ use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
 use ost_core::{digest, Variant};
+use ost_platform::ResolvedOpenUsdCompatibility;
 
 use crate::runtime::Runtime;
 
@@ -157,6 +158,7 @@ struct Canonical {
     layout: Vec<String>,
     extensions: Vec<ExtensionRecord>,
     host_requirements: Vec<HostRequirement>,
+    openusd_compatibility: Option<ResolvedOpenUsdCompatibility>,
 }
 
 /// A written runtime manifest.
@@ -199,6 +201,12 @@ pub struct RuntimeManifest {
     /// requirement changes the runtime digest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub host_requirements: Vec<HostRequirement>,
+    /// Exact CY cell and constrained OpenUSD build variant selected for a
+    /// managed source build. Absent for legacy, mock, and adopted runtimes,
+    /// where OpenStrata cannot honestly claim those inputs controlled the
+    /// produced bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openusd_compatibility: Option<ResolvedOpenUsdCompatibility>,
     /// For an `artifact`-sourced runtime, the registry digest (`sha256:<hex>`)
     /// of the artifact it was materialized from. Provenance, not identity (the
     /// canonical `digest` above still describes the runtime itself).
@@ -206,10 +214,11 @@ pub struct RuntimeManifest {
     pub artifact_digest: Option<String>,
 }
 
-// Bumped to 4 when host-side package requirements became compatibility
-// identity. Older manifests deserialize with an empty list, but the schema gate
-// still requires an explicit re-pull/repair before they can be republished.
-const SCHEMA: u32 = 4;
+// Bumped to 5 when the exact OpenUSD CY cell and build variant became
+// compatibility identity. Older manifests deserialize without that selection,
+// but the schema gate still requires an explicit rebuild before publication as
+// a normalized v0.22 artifact.
+const SCHEMA: u32 = 5;
 
 impl RuntimeManifest {
     /// Build a manifest for a resolved runtime, computing the digest.
@@ -234,6 +243,7 @@ impl RuntimeManifest {
             layout,
             extensions,
             host_requirements: Vec::new(),
+            openusd_compatibility: None,
         };
         // Serialization of a fixed-field struct is deterministic.
         let bytes = serde_json::to_vec(&canonical).expect("canonical serializes");
@@ -256,6 +266,7 @@ impl RuntimeManifest {
             external_prefix: None,
             runtime_deps: Vec::new(),
             host_requirements: Vec::new(),
+            openusd_compatibility: None,
             artifact_digest: None,
         }
     }
@@ -286,6 +297,7 @@ impl RuntimeManifest {
             layout: self.layout.clone(),
             extensions: self.extensions.clone(),
             host_requirements: self.host_requirements.clone(),
+            openusd_compatibility: self.openusd_compatibility.clone(),
         };
         let bytes = serde_json::to_vec(&canonical).expect("canonical serializes");
         digest::sha256_hex(&bytes)
@@ -302,6 +314,24 @@ impl RuntimeManifest {
         requirements.dedup();
         self.host_requirements = requirements;
         self.digest = self.compute_digest();
+    }
+
+    /// Bind a resolved OpenUSD cell/variant to runtime identity.
+    pub fn set_openusd_compatibility(
+        &mut self,
+        compatibility: Option<ResolvedOpenUsdCompatibility>,
+    ) -> ost_core::Result<()> {
+        if compatibility
+            .as_ref()
+            .is_some_and(|value| !value.is_verified())
+        {
+            return Err(ost_core::Error::InvalidManifest(
+                "OpenUSD compatibility identity has unverified provider versions".to_string(),
+            ));
+        }
+        self.openusd_compatibility = compatibility;
+        self.digest = self.compute_digest();
+        Ok(())
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -381,6 +411,52 @@ mod tests {
         let json = m.to_json().unwrap();
         let roundtrip = RuntimeManifest::from_json(&json).unwrap();
         assert_eq!(roundtrip, m);
+    }
+
+    #[test]
+    fn openusd_compatibility_is_digest_significant() {
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let (compatibility, _) = platform
+            .resolve_openusd(
+                Os::Linux,
+                Arch::X86_64,
+                ost_platform::OpenUsdVariantId::Headless,
+            )
+            .unwrap();
+        let mut manifest = sample();
+        let before = manifest.digest.clone();
+        let mut compatibility = compatibility;
+        compatibility.toolchain.version = Some("14.2.0".into());
+        compatibility.toolchain.runtime.version = Some("2.28".into());
+        compatibility.python.version = Some("3.13.7".into());
+        compatibility.tbb.version = Some("2022.1.0".into());
+        manifest
+            .set_openusd_compatibility(Some(compatibility))
+            .unwrap();
+        assert_ne!(manifest.digest, before);
+        assert_eq!(manifest.compute_digest(), manifest.digest);
+        assert_eq!(
+            manifest.openusd_compatibility.as_ref().unwrap().variant,
+            ost_platform::OpenUsdVariantId::Headless
+        );
+    }
+
+    #[test]
+    fn unresolved_openusd_compatibility_cannot_be_stamped() {
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let (compatibility, _) = platform
+            .resolve_openusd(
+                Os::Linux,
+                Arch::X86_64,
+                ost_platform::OpenUsdVariantId::Standard,
+            )
+            .unwrap();
+        let mut manifest = sample();
+        let error = manifest
+            .set_openusd_compatibility(Some(compatibility))
+            .unwrap_err();
+        assert!(error.to_string().contains("unverified provider versions"));
+        assert!(manifest.openusd_compatibility.is_none());
     }
 
     #[test]

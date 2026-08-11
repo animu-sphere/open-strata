@@ -106,6 +106,19 @@ pub fn validate(prefix: &Utf8Path, manifest: &RuntimeManifest) -> ValidationRepo
         ));
     }
 
+    if manifest
+        .openusd_compatibility
+        .as_ref()
+        .is_none_or(ost_platform::ResolvedOpenUsdCompatibility::is_verified)
+    {
+        checks.push(Check::pass("openusd-compatibility-identity"));
+    } else {
+        checks.push(Check::fail(
+            "openusd-compatibility-identity",
+            "OpenUSD compatibility identity contains unverified provider versions",
+        ));
+    }
+
     // 3. Every declared layout directory exists on disk.
     let missing: Vec<&str> = manifest
         .layout
@@ -335,6 +348,31 @@ mod tests {
         // The real-runtime checks must not even be emitted for a mock backend.
         assert_eq!(named(&report, "usdcat-present"), None);
         assert_eq!(named(&report, "pxr-package"), None);
+
+        std::fs::remove_dir_all(prefix.as_std_path()).ok();
+    }
+
+    #[test]
+    fn unresolved_openusd_identity_fails_its_named_check() {
+        let prefix = tmp_dir("unresolved-openusd");
+        std::fs::create_dir_all(prefix.join("bin").as_std_path()).unwrap();
+        std::fs::create_dir_all(prefix.join("lib").as_std_path()).unwrap();
+        let mut m = manifest(RuntimeSource::Mock, vec!["bin".into(), "lib".into()]);
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let (compatibility, _) = platform
+            .resolve_openusd(
+                Os::Linux,
+                Arch::X86_64,
+                ost_platform::OpenUsdVariantId::Standard,
+            )
+            .unwrap();
+        m.openusd_compatibility = Some(compatibility);
+
+        let report = validate(&prefix, &m);
+        assert_eq!(
+            named(&report, "openusd-compatibility-identity"),
+            Some(false)
+        );
 
         std::fs::remove_dir_all(prefix.as_std_path()).ok();
     }

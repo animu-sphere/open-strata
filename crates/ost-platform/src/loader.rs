@@ -54,7 +54,66 @@ impl Catalog {
 }
 
 fn parse(label: &str, src: &str) -> Result<Platform> {
-    serde_yaml::from_str(src).map_err(|e| Error::parse(format!("platform '{label}'"), e))
+    let platform: Platform =
+        serde_yaml::from_str(src).map_err(|e| Error::parse(format!("platform '{label}'"), e))?;
+    validate_openusd(&platform)?;
+    Ok(platform)
+}
+
+fn validate_openusd(platform: &Platform) -> Result<()> {
+    let Some(policy) = &platform.openusd else {
+        return Ok(());
+    };
+    if policy.schema != 1 {
+        return Err(Error::InvalidManifest(format!(
+            "platform '{}' has unsupported openusd schema {} (expected 1)",
+            platform.id, policy.schema
+        )));
+    }
+    let mut cells = std::collections::BTreeSet::new();
+    for cell in &policy.cells {
+        let key = (cell.os.as_str(), cell.arch.as_str());
+        if !cells.insert(key) {
+            return Err(Error::InvalidManifest(format!(
+                "platform '{}' has duplicate OpenUSD cell {}-{}",
+                platform.id, key.0, key.1
+            )));
+        }
+        for reference in [
+            &cell.toolchain.version_from,
+            &cell.toolchain.cxx_standard_from,
+            &cell.toolchain.runtime.version_from,
+            &cell.python.version_from,
+            &cell.tbb.version_from,
+        ] {
+            if !platform.core.contains_key(reference) {
+                return Err(Error::InvalidManifest(format!(
+                    "platform '{}' OpenUSD cell references missing core component '{}'",
+                    platform.id, reference
+                )));
+            }
+        }
+        let mut variants = std::collections::BTreeSet::new();
+        for variant in &cell.variants {
+            if !variants.insert(variant.id.as_str()) {
+                return Err(Error::InvalidManifest(format!(
+                    "platform '{}' OpenUSD cell {}-{} repeats variant '{}'",
+                    platform.id,
+                    key.0,
+                    key.1,
+                    variant.id.as_str()
+                )));
+            }
+            if variant.builders.is_empty() {
+                return Err(Error::InvalidManifest(format!(
+                    "platform '{}' OpenUSD variant '{}' declares no supported builder",
+                    platform.id,
+                    variant.id.as_str()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Convenience: load the whole catalog.
@@ -65,4 +124,52 @@ pub fn load_all() -> Result<Catalog> {
 /// Convenience: load a single platform by id.
 pub fn load_one(id: &str) -> Result<Platform> {
     Catalog::load()?.get(id).cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{OpenUsdBuilder, OpenUsdVariantId};
+    use ost_core::host::{Arch, Os};
+
+    #[test]
+    fn cy2026_resolves_exact_standard_compatibility() {
+        let platform = parse("cy2026", BUILTINS[1].1).unwrap();
+        let (resolved, variant) = platform
+            .resolve_openusd(Os::Linux, Arch::X86_64, OpenUsdVariantId::Standard)
+            .unwrap();
+        assert_eq!(resolved.toolchain.family, "gcc");
+        assert_eq!(resolved.toolchain.version, None);
+        assert_eq!(resolved.toolchain.version_constraint, "14.2");
+        assert_eq!(resolved.toolchain.cxx_standard, "20");
+        assert_eq!(resolved.toolchain.runtime.version, None);
+        assert_eq!(resolved.toolchain.runtime.version_constraint, "2.28");
+        assert_eq!(resolved.python.version, None);
+        assert_eq!(resolved.python.version_constraint, "3.13.x");
+        assert_eq!(resolved.tbb.version, None);
+        assert_eq!(resolved.tbb.version_constraint, "2022.x");
+        assert_eq!(resolved.variant, OpenUsdVariantId::Standard);
+        assert_eq!(resolved.capabilities, ["usd-core", "imaging", "opengl"]);
+        assert!(variant.builders.contains(&OpenUsdBuilder::BuildUsd));
+        assert!(variant.builders.contains(&OpenUsdBuilder::Cmake));
+    }
+
+    #[test]
+    fn missing_core_reference_is_rejected() {
+        let invalid = BUILTINS[1]
+            .1
+            .replace("version_from: tbb", "version_from: missing-tbb");
+        let error = parse("bad", &invalid).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("missing core component 'missing-tbb'"));
+    }
+
+    #[test]
+    fn undeclared_cartesian_cell_does_not_resolve() {
+        let platform = parse("cy2026", BUILTINS[1].1).unwrap();
+        assert!(platform
+            .resolve_openusd(Os::Windows, Arch::X86_64, OpenUsdVariantId::Standard)
+            .is_none());
+    }
 }

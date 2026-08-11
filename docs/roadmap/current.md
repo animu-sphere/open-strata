@@ -38,6 +38,25 @@ before process launch rather than at import or `dlopen` time.
 
 #### P0 - schema, profiles, and deterministic variants
 
+**Implemented 2026-08-11 — first profile/variant slice:** CY platform manifests
+now carry schema-1 OpenUSD compatibility cells. A cell declares compiler,
+C++ standard, native runtime boundary, Python, and oneTBB constraints from the CY
+`core` map together with their provider policy. Managed builds pin matching
+Python and GCC executables, then record the observed exact compiler, Python,
+oneTBB, and glibc versions; an unresolved declaration cannot be stamped as
+artifact identity. The approved Linux x86_64 cells
+declare `headless`, `standard`, and `vulkan` variants, their supported builder
+paths, exact builder arguments, and resulting graphics capabilities.
+`runtime pull --build` selects `standard` by default where an approved cell
+exists, accepts `--openusd-variant`, supports a self-contained Vulkan build,
+refuses direct or nested CMake overrides of protected compatibility dimensions,
+and clears managed install/build trees on forced rebuilds. It records the verified
+selection in schema-5 runtime identity and the exported producer manifest.
+Targets without an approved cell retain the legacy unclassified build
+path unless the caller explicitly claims a variant. Artifact-record
+normalization, selector generation, dependency/source identities, and
+consumer-side mismatch validation remain open below.
+
 - Version and validate the OpenUSD artifact record, including ABI dimensions,
   capabilities, runtime providers, build/runtime requirement separation, exact
   dependency identities, and evidence digests.
