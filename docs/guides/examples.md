@@ -463,6 +463,12 @@ ost artifact push 3fa9c1 oci://ghcr.io/<owner>/openstrata-runtime --json   # eve
 # pull one back anywhere: resolve the tag to a digest, then pull the pin
 ost artifact resolve oci://ghcr.io/<owner>/openstrata-runtime:usd-26.05-linux-x86_64
 ost artifact pull    oci://ghcr.io/<owner>/openstrata-runtime@sha256:<oci-digest>
+
+# require the published runtime to satisfy the approved CY2026 Vulkan cell;
+# Python, TBB, toolchain/CRT, and graphics mismatches fail before local import
+ost artifact pull oci://ghcr.io/<owner>/openstrata-runtime@sha256:<oci-digest> \
+  --require-openusd cy2026/linux/x86_64/vulkan \
+  --require-openusd-version 26.05
 ```
 
 OCI layer downloads retry up to four times with bounded exponential backoff.

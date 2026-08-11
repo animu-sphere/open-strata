@@ -454,7 +454,7 @@ fn make_openusd_runtime_bundle(content: &[u8]) -> (Bundle, String) {
         "arch": "x86_64",
         "toolchain": {
             "family": "gcc",
-            "provider": "managed",
+            "provider": "system",
             "version": "14.2.0",
             "version_constraint": "14.x",
             "cxx_standard": "20",
@@ -467,13 +467,13 @@ fn make_openusd_runtime_bundle(content: &[u8]) -> (Bundle, String) {
         },
         "python": {
             "family": "cpython",
-            "provider": "managed",
+            "provider": "platform",
             "version": "3.13.7",
             "version_constraint": "3.13.x"
         },
         "tbb": {
             "family": "onetbb",
-            "provider": "managed",
+            "provider": "platform",
             "version": "2022.1.0",
             "version_constraint": "2022.x"
         },
@@ -764,6 +764,8 @@ fn digest_pinned_pull_imports_and_verifies() {
         expected_artifact_digest: Some(bundle.artifact_digest.clone()),
         require_kind: Some(ArtifactKind::Plugin),
         require_target: Some(TARGET.to_string()),
+        require_openusd: None,
+        require_openusd_version: None,
     };
     let evidence = pull(&transport, &reference, &store, &policy).unwrap();
 
@@ -777,7 +779,10 @@ fn digest_pinned_pull_imports_and_verifies() {
     // Every required chain step passed. Evidence sidecars are optional for this
     // legacy fixture and therefore reported as skipped.
     for (step, status) in &evidence.verification {
-        let expected = if matches!(*step, "openusd_selector" | "sbom" | "provenance") {
+        let expected = if matches!(
+            *step,
+            "openusd_selector" | "openusd_requirement" | "sbom" | "provenance"
+        ) {
             "skipped"
         } else {
             "passed"
@@ -834,6 +839,137 @@ fn pull_verifies_the_oci_selector_against_the_producer_identity() {
         evidence.record.openusd_selector().as_deref(),
         Some(selector.as_str())
     );
+}
+
+#[test]
+fn pull_matches_an_approved_openusd_consumer_cell_before_import() {
+    let registry = MockRegistry::start();
+    let (bundle, _) = make_openusd_runtime_bundle(b"OpenUSD runtime bytes");
+    registry.register("fixtures/rt", "v1", &bundle);
+
+    let platform = ost_platform::load_one("cy2026").unwrap();
+    let (required, _) = platform
+        .resolve_openusd(
+            ost_core::host::Os::Linux,
+            ost_core::host::Arch::X86_64,
+            ost_platform::OpenUsdVariantId::Standard,
+        )
+        .unwrap();
+    let root = tmp_root("openusd-requirement-match");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::new(true);
+    let reference = oci_ref(&registry, "fixtures/rt", &format!("@{}", bundle.oci_digest));
+
+    let evidence = pull(
+        &transport,
+        &reference,
+        &store,
+        &PullPolicy {
+            require_openusd: Some(required),
+            require_openusd_version: Some("26.05".into()),
+            ..PullPolicy::default()
+        },
+    )
+    .unwrap();
+    assert!(evidence
+        .verification
+        .contains(&("openusd_requirement", "passed")));
+}
+
+#[test]
+fn pull_reports_openusd_python_tbb_and_graphics_mismatches_by_dimension() {
+    let registry = MockRegistry::start();
+    let (bundle, _) = make_openusd_runtime_bundle(b"OpenUSD runtime bytes");
+    registry.register("fixtures/rt", "v1", &bundle);
+    let platform = ost_platform::load_one("cy2026").unwrap();
+    let (standard, _) = platform
+        .resolve_openusd(
+            ost_core::host::Os::Linux,
+            ost_core::host::Arch::X86_64,
+            ost_platform::OpenUsdVariantId::Standard,
+        )
+        .unwrap();
+    let (vulkan, _) = platform
+        .resolve_openusd(
+            ost_core::host::Os::Linux,
+            ost_core::host::Arch::X86_64,
+            ost_platform::OpenUsdVariantId::Vulkan,
+        )
+        .unwrap();
+    let root = tmp_root("openusd-requirement-mismatch");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::new(true);
+    let reference = oci_ref(&registry, "fixtures/rt", &format!("@{}", bundle.oci_digest));
+
+    let version_error = pull(
+        &transport,
+        &reference,
+        &store,
+        &PullPolicy {
+            require_openusd: Some(standard.clone()),
+            require_openusd_version: Some("25.11".into()),
+            ..PullPolicy::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(version_error.code(), "ARTIFACT_OPENUSD_VERSION_MISMATCH");
+    assert_eq!(
+        version_error
+            .data()
+            .and_then(|data| data["dimension"].as_str()),
+        Some("openusd-version")
+    );
+    assert_store_empty(&store);
+
+    let mut python = standard.clone();
+    python.python.provider = "host".into();
+    let mut platform_mismatch = standard.clone();
+    platform_mismatch.platform = "cy2025".into();
+    let mut toolchain = standard.clone();
+    toolchain.toolchain.provider = "managed".into();
+    let cases = [
+        (
+            platform_mismatch,
+            "ARTIFACT_OPENUSD_PLATFORM_MISMATCH",
+            "platform",
+        ),
+        (
+            toolchain,
+            "ARTIFACT_OPENUSD_TOOLCHAIN_MISMATCH",
+            "toolchain",
+        ),
+        (python, "ARTIFACT_OPENUSD_PYTHON_MISMATCH", "python"),
+        (
+            {
+                let mut tbb = standard;
+                tbb.tbb.version_constraint = "2021.x".into();
+                tbb
+            },
+            "ARTIFACT_OPENUSD_TBB_MISMATCH",
+            "tbb",
+        ),
+        (vulkan, "ARTIFACT_OPENUSD_GRAPHICS_MISMATCH", "graphics"),
+    ];
+    for (required, code, dimension) in cases {
+        let error = pull(
+            &transport,
+            &reference,
+            &store,
+            &PullPolicy {
+                require_openusd: Some(required),
+                ..PullPolicy::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), code);
+        assert_eq!(
+            error.data().and_then(|data| data["dimension"].as_str()),
+            Some(dimension)
+        );
+        assert!(error.to_string().contains("selected artifact"));
+        assert!(error.hint().is_some());
+        assert_store_empty(&store);
+    }
 }
 
 #[test]
@@ -1632,6 +1768,8 @@ fn file_transport_pulls_a_dist_dir_with_the_same_chain() {
             expected_artifact_digest: Some(bundle.artifact_digest.clone()),
             require_kind: Some(ArtifactKind::Plugin),
             require_target: Some(TARGET.to_string()),
+            require_openusd: None,
+            require_openusd_version: None,
         },
     )
     .unwrap();

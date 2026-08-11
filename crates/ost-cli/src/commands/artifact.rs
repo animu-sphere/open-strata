@@ -144,6 +144,15 @@ pub enum ArtifactCmd {
         /// Require the artifact's target id to match exactly.
         #[arg(long, value_name = "TARGET")]
         require_target: Option<String>,
+        /// Require an approved normalized OpenUSD consumer cell. The value is
+        /// PLATFORM/OS/ARCH/VARIANT, for example
+        /// cy2026/linux/x86_64/vulkan.
+        #[arg(long, value_name = "PLATFORM/OS/ARCH/VARIANT")]
+        require_openusd: Option<String>,
+        /// Require an exact upstream OpenUSD release in addition to the
+        /// consumer cell, for example 26.05.
+        #[arg(long, value_name = "VERSION", requires = "require_openusd")]
+        require_openusd_version: Option<String>,
         /// Use plain http:// instead of https:// (fixture registries and
         /// air-gapped mirrors only).
         #[arg(long)]
@@ -222,6 +231,8 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
             expect_artifact,
             require_kind,
             require_target,
+            require_openusd,
+            require_openusd_version,
             plain_http,
             connect_timeout,
             response_timeout,
@@ -253,6 +264,19 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
                     })
                     .transpose()?,
                 require_target,
+                require_openusd: require_openusd
+                    .as_deref()
+                    .map(resolve_openusd_requirement)
+                    .transpose()?,
+                require_openusd_version: require_openusd_version
+                    .map(|version| {
+                        if version.trim().is_empty() {
+                            Err(Error::usage("--require-openusd-version cannot be empty"))
+                        } else {
+                            Ok(version)
+                        }
+                    })
+                    .transpose()?,
             };
             let initial_retry_backoff = Duration::from_millis(u64::from(retry_backoff));
             let transfer = OciTransferPolicy {
@@ -612,6 +636,58 @@ fn render_transfer_evidence(evidence: &PullEvidence) {
 
 fn timeout(seconds: u32) -> Option<Duration> {
     (seconds > 0).then(|| Duration::from_secs(seconds.into()))
+}
+
+fn resolve_openusd_requirement(value: &str) -> Result<ost_platform::ResolvedOpenUsdCompatibility> {
+    let parts = value.split('/').collect::<Vec<_>>();
+    if parts.len() != 4 || parts.iter().any(|part| part.is_empty()) {
+        return Err(Error::usage(format!(
+            "invalid OpenUSD requirement '{value}' (expected PLATFORM/OS/ARCH/VARIANT, for example cy2026/linux/x86_64/vulkan)"
+        )));
+    }
+    let os = match parts[1] {
+        "linux" => ost_core::host::Os::Linux,
+        "macos" => ost_core::host::Os::Macos,
+        "windows" => ost_core::host::Os::Windows,
+        other => {
+            return Err(Error::usage(format!(
+                "unknown OpenUSD requirement OS '{other}' (expected linux, macos, or windows)"
+            )))
+        }
+    };
+    let arch = match parts[2] {
+        "x86_64" => ost_core::host::Arch::X86_64,
+        "arm64" => ost_core::host::Arch::Arm64,
+        other => {
+            return Err(Error::usage(format!(
+                "unknown OpenUSD requirement architecture '{other}' (expected x86_64 or arm64)"
+            )))
+        }
+    };
+    let variant = match parts[3] {
+        "headless" => ost_platform::OpenUsdVariantId::Headless,
+        "standard" => ost_platform::OpenUsdVariantId::Standard,
+        "vulkan" => ost_platform::OpenUsdVariantId::Vulkan,
+        other => {
+            return Err(Error::usage(format!(
+                "unknown OpenUSD requirement variant '{other}' (expected headless, standard, or vulkan)"
+            )))
+        }
+    };
+    let platform = ost_platform::load_one(parts[0])?;
+    platform
+        .resolve_openusd(os, arch, variant)
+        .map(|(compatibility, _)| compatibility)
+        .ok_or_else(|| {
+            Error::usage(format!(
+                "platform '{}' declares no approved OpenUSD {}/{} '{}' cell",
+                platform.id,
+                os.as_str(),
+                arch.as_str(),
+                variant.as_str(),
+            ))
+            .with_hint("choose a cell declared in the platform manifest's openusd matrix")
+        })
 }
 
 /// Pull evidence as JSON (transport plan, "Minimum JSON output").
@@ -1179,6 +1255,18 @@ fn record_json(r: &ArtifactRecord) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openusd_requirement_resolves_only_declared_platform_cells() {
+        let required = resolve_openusd_requirement("cy2026/linux/x86_64/vulkan").unwrap();
+        assert_eq!(required.platform, "cy2026");
+        assert_eq!(required.variant, ost_platform::OpenUsdVariantId::Vulkan);
+        assert_eq!(required.python.version_constraint, "3.13.x");
+        assert!(required.capabilities.iter().any(|value| value == "vulkan"));
+
+        let error = resolve_openusd_requirement("cy2026/windows/x86_64/vulkan").unwrap_err();
+        assert!(error.to_string().contains("declares no approved OpenUSD"));
+    }
 
     #[test]
     fn compatibility_selector_only_fills_an_absent_oci_tag() {

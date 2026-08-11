@@ -305,11 +305,14 @@ impl ResolvedOpenUsdCompatibility {
     ///
     /// The readable prefix is deliberately short; the full SHA-256 suffix is
     /// over every compatibility-critical field (including providers, exact
-    /// versions, C++ standard, and a sorted capability set). This keeps the
-    /// selector within OCI's 128-character tag limit without dropping identity
-    /// dimensions from the comparison contract.
-    pub fn selector(&self, artifact_target: &str) -> Option<String> {
-        if !self.is_verified() || artifact_target.trim().is_empty() {
+    /// versions, the OpenUSD release, C++ standard, and a sorted capability
+    /// set). This keeps the selector within OCI's 128-character tag limit
+    /// without dropping identity dimensions from the comparison contract.
+    pub fn selector(&self, artifact_target: &str, openusd_version: &str) -> Option<String> {
+        if !self.is_verified()
+            || artifact_target.trim().is_empty()
+            || openusd_version.trim().is_empty()
+        {
             return None;
         }
 
@@ -320,6 +323,7 @@ impl ResolvedOpenUsdCompatibility {
             os: Os,
             arch: Arch,
             artifact_target: &'a str,
+            openusd_version: &'a str,
             toolchain: &'a ResolvedOpenUsdToolchain,
             python: &'a ResolvedOpenUsdProvider,
             tbb: &'a ResolvedOpenUsdProvider,
@@ -340,6 +344,7 @@ impl ResolvedOpenUsdCompatibility {
             os: self.os,
             arch: self.arch,
             artifact_target,
+            openusd_version,
             toolchain: &self.toolchain,
             python: &self.python,
             tbb: &self.tbb,
@@ -495,14 +500,14 @@ mod tests {
     fn selector_is_deterministic_oci_tag_identity() {
         let compatibility = verified_compatibility();
         let target = "linux-x86_64-glibc228-py313";
-        let selector = compatibility.selector(target).unwrap();
+        let selector = compatibility.selector(target, "26.05").unwrap();
         assert!(selector.starts_with("openusd-cy2026-linux-x86_64-vulkan-"));
         assert!(selector.len() <= 128);
         assert!(selector
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)));
         assert_eq!(
-            compatibility.selector(target).as_deref(),
+            compatibility.selector(target, "26.05").as_deref(),
             Some(selector.as_str())
         );
     }
@@ -514,18 +519,25 @@ mod tests {
         reordered.capabilities.reverse();
         reordered.capabilities.push("vulkan".into());
         let target = "linux-x86_64-glibc228-py313";
-        assert_eq!(compatibility.selector(target), reordered.selector(target));
+        assert_eq!(
+            compatibility.selector(target, "26.05"),
+            reordered.selector(target, "26.05")
+        );
 
         let mut other_provider = compatibility.clone();
         other_provider.python.provider = "host".into();
         assert_ne!(
-            compatibility.selector(target),
-            other_provider.selector(target)
+            compatibility.selector(target, "26.05"),
+            other_provider.selector(target, "26.05")
         );
 
         assert_ne!(
-            compatibility.selector(target),
-            compatibility.selector("linux-x86_64-glibc234-py313")
+            compatibility.selector(target, "26.05"),
+            compatibility.selector("linux-x86_64-glibc234-py313", "26.05")
+        );
+        assert_ne!(
+            compatibility.selector(target, "26.05"),
+            compatibility.selector(target, "25.11")
         );
     }
 
@@ -533,7 +545,10 @@ mod tests {
     fn unresolved_identity_has_no_selector() {
         let mut compatibility = verified_compatibility();
         compatibility.tbb.version = None;
-        assert_eq!(compatibility.selector("linux-x86_64-glibc228-py313"), None);
+        assert_eq!(
+            compatibility.selector("linux-x86_64-glibc228-py313", "26.05"),
+            None
+        );
     }
 
     #[test]
@@ -541,7 +556,10 @@ mod tests {
         let mut compatibility = verified_compatibility();
         compatibility.python.version = Some("3.12.9".into());
         assert!(!compatibility.is_verified());
-        assert_eq!(compatibility.selector("linux-x86_64-glibc228-py313"), None);
+        assert_eq!(
+            compatibility.selector("linux-x86_64-glibc228-py313", "26.05"),
+            None
+        );
 
         compatibility.python.version = Some("   ".into());
         assert!(!compatibility.is_verified());

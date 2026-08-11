@@ -36,7 +36,7 @@ use ost_core::{digest, Category, Error, Result};
 
 use crate::evidence::{record_evidence, PROVENANCE_FILE, SBOM_FILE};
 use crate::record::{is_sha256_ref, manifest_debug_archive, MANIFEST_FILE};
-use crate::reference::{OciReference, RemoteReference};
+use crate::reference::{is_valid_oci_tag, OciReference, RemoteReference};
 use crate::transport::{
     ArtifactTransport, FetchOutcome, LayerTransferEvidence, ManifestTransferEvidence,
     ResolvedRemote, TransferAttemptEvidence, TransferEvidence,
@@ -2135,12 +2135,7 @@ fn parse_oci_manifest(bytes: &[u8], locator: &str) -> Result<OciManifest> {
             let selector = value.as_str().ok_or_else(|| {
                 oci_manifest_invalid(locator, "the OpenUSD selector annotation is not a string")
             })?;
-            if selector.is_empty()
-                || selector.len() > 128
-                || !selector
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-            {
+            if !is_valid_oci_tag(selector) {
                 return Err(oci_manifest_invalid(
                     locator,
                     "the OpenUSD selector annotation is not a valid OCI tag",
@@ -2553,6 +2548,18 @@ mod tests {
         let error = parse_oci_manifest(&bytes, "oci://x/y").unwrap_err();
         assert_eq!(error.code(), "ARTIFACT_MANIFEST_INVALID");
         assert!(error.to_string().contains("not a valid OCI tag"));
+
+        for selector in [".hidden", "-release"] {
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 2,
+                "annotations": { OPENUSD_SELECTOR_ANNOTATION: selector },
+                "layers": [],
+            }))
+            .unwrap();
+            let error = parse_oci_manifest(&bytes, "oci://x/y").unwrap_err();
+            assert_eq!(error.code(), "ARTIFACT_MANIFEST_INVALID");
+            assert!(error.to_string().contains("not a valid OCI tag"));
+        }
     }
 
     #[test]
