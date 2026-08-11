@@ -13,7 +13,7 @@ mod model;
 pub use diff::{diff, ComponentChange, PlatformDiff};
 pub use loader::{load_all, load_one, Catalog};
 pub use model::{
-    OpenUsdBuilder, OpenUsdCell, OpenUsdPolicy, OpenUsdProvider, OpenUsdToolchain, OpenUsdVariant,
-    OpenUsdVariantId, Platform, ResolvedOpenUsdCompatibility, ResolvedOpenUsdProvider,
-    ResolvedOpenUsdToolchain, Source, SourceKind, Status,
+    version_satisfies_constraint, OpenUsdBuilder, OpenUsdCell, OpenUsdPolicy, OpenUsdProvider,
+    OpenUsdToolchain, OpenUsdVariant, OpenUsdVariantId, Platform, ResolvedOpenUsdCompatibility,
+    ResolvedOpenUsdProvider, ResolvedOpenUsdToolchain, Source, SourceKind, Status,
 };

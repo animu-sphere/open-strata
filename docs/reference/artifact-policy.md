@@ -71,6 +71,19 @@ explicit policy, which is recommended for automation that may run outside the
 project tree. If no policy is found, destinations retain the existing
 unprotected push behavior.
 
+A normalized OpenUSD runtime has a deterministic compatibility selector. When
+its OCI destination has no explicit tag, `ost artifact push` uses that selector
+as the convenience tag and also records it in the OCI manifest's
+`io.openstrata.openusd.selector` annotation. The selector starts with the
+platform, OS/architecture, and build variant and ends with a full SHA-256 over
+the normalized artifact target (including its measured ABI floor), provider,
+exact-version constraint, and capability fields. Provider versions that do not
+satisfy their declared constraints cannot receive a selector. It is
+therefore safe for exact compatibility comparison while staying within OCI's
+128-character tag limit. An explicit destination tag remains authoritative.
+In either form the tag is mutable convenience only: pin the returned
+`@sha256:...` OCI digest for reproducible consumption.
+
 For a protected destination, `ost` requests a short-lived GitHub Actions OIDC
 token directly from `https://token.actions.githubusercontent.com`, using the
 runner-provided request URL and bearer token. It refuses a different request

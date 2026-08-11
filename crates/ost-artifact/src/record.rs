@@ -196,6 +196,15 @@ impl ArtifactRecord {
         format!("sha256:{}", &hex[..hex.len().min(12)])
     }
 
+    /// Deterministic OCI-compatible selector for a normalized OpenUSD runtime.
+    /// Legacy and non-runtime records do not have enough identity to produce
+    /// one and therefore return `None`.
+    pub fn openusd_selector(&self) -> Option<String> {
+        self.openusd_compatibility
+            .as_ref()
+            .and_then(|compatibility| compatibility.selector(&self.target))
+    }
+
     /// Reinterpret a pre-v0.18.0 record, whose `producer` field held the tool
     /// that *imported* the artifact rather than the one that produced it.
     ///
@@ -410,7 +419,7 @@ fn normalize_openusd_compatibility(
     }
     if !compatibility.is_verified() {
         return Err(Error::InvalidManifest(
-            "producer manifest OpenUSD compatibility identity has unverified provider versions"
+            "producer manifest OpenUSD compatibility identity has unverified or contradictory provider versions"
                 .to_string(),
         ));
     }
@@ -774,7 +783,8 @@ mod tests {
         )
         .unwrap();
 
-        let compatibility = record.openusd_compatibility.unwrap();
+        let selector = record.openusd_selector().unwrap();
+        let compatibility = record.openusd_compatibility.as_ref().unwrap();
         assert_eq!(compatibility.platform, "cy2026");
         assert_eq!(
             compatibility.variant,
@@ -782,6 +792,12 @@ mod tests {
         );
         assert_eq!(compatibility.python.version.as_deref(), Some("3.13.7"));
         assert_eq!(compatibility.capabilities, ["hgi-gl", "hgi-vulkan"]);
+        assert!(selector.starts_with("openusd-cy2026-linux-x86_64-vulkan-"));
+        assert_eq!(selector.rsplit_once('-').unwrap().1.len(), 64);
+
+        let mut different_abi = record.clone();
+        different_abi.target = "linux-x86_64-glibc234-py313".into();
+        assert_ne!(record.openusd_selector(), different_abi.openusd_selector());
     }
 
     #[test]
@@ -800,7 +816,24 @@ mod tests {
             "ost test",
         )
         .unwrap_err();
-        assert!(error.to_string().contains("unverified provider versions"));
+        assert!(error
+            .to_string()
+            .contains("unverified or contradictory provider versions"));
+
+        let mut mismatched_version = runtime_manifest_with_openusd();
+        update_openusd_compatibility(&mut mismatched_version, |compatibility| {
+            compatibility["python"]["version"] = serde_json::json!("3.12.9");
+        });
+        let error = ArtifactRecord::from_producer_manifest(
+            &mismatched_version,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unverified or contradictory provider versions"));
 
         let mut wrong_platform = runtime_manifest_with_openusd();
         update_openusd_compatibility(&mut wrong_platform, |compatibility| {

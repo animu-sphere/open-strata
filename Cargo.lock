@@ -568,6 +568,7 @@ dependencies = [
  "indexmap",
  "ost-core",
  "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror",
 ]

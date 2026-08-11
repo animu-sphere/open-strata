@@ -76,6 +76,8 @@ const EMPTY_CONFIG_BYTES: &[u8] = b"{}";
 
 /// OCI annotation carrying a layer's original filename.
 const TITLE_ANNOTATION: &str = "org.opencontainers.image.title";
+/// Exact normalized OpenUSD compatibility selector for runtime manifests.
+const OPENUSD_SELECTOR_ANNOTATION: &str = "io.openstrata.openusd.selector";
 
 /// Accepted OCI manifest media types on resolve.
 const MANIFEST_ACCEPT: &str =
@@ -1352,8 +1354,13 @@ impl ArtifactTransport for OciTransport {
             size: manifest_size,
             title: Some(MANIFEST_FILE),
         });
-        let oci_manifest =
-            build_oci_manifest(&layers, &config_digest, EMPTY_CONFIG_BYTES.len() as u64);
+        let openusd_selector = source.record.openusd_selector();
+        let oci_manifest = build_oci_manifest(
+            &layers,
+            &config_digest,
+            EMPTY_CONFIG_BYTES.len() as u64,
+            openusd_selector.as_deref(),
+        );
         let oci_digest = digest::sha256_hex(&oci_manifest);
 
         // A digest-pinned destination asserts the resulting OCI digest; refuse
@@ -1987,6 +1994,7 @@ fn build_oci_manifest(
     layers: &[LayerDescriptor],
     config_digest: &str,
     config_size: u64,
+    openusd_selector: Option<&str>,
 ) -> Vec<u8> {
     let layer_json = |l: &LayerDescriptor| {
         let mut obj = serde_json::Map::new();
@@ -2001,7 +2009,7 @@ fn build_oci_manifest(
         }
         serde_json::Value::Object(obj)
     };
-    let manifest = serde_json::json!({
+    let mut manifest = serde_json::json!({
         "schemaVersion": 2,
         "mediaType": OCI_IMAGE_MANIFEST_MEDIA_TYPE,
         "artifactType": OCI_ARTIFACT_TYPE,
@@ -2012,6 +2020,12 @@ fn build_oci_manifest(
         },
         "layers": layers.iter().map(layer_json).collect::<Vec<_>>(),
     });
+    if let (Some(object), Some(selector)) = (manifest.as_object_mut(), openusd_selector) {
+        object.insert(
+            "annotations".into(),
+            serde_json::json!({ OPENUSD_SELECTOR_ANNOTATION: selector }),
+        );
+    }
     // Compact, deterministic bytes (serde_json orders object keys stably), so
     // the digest we compute equals the one the registry stores and pull re-derives.
     serde_json::to_vec(&manifest).expect("OCI manifest value serializes")
@@ -2438,10 +2452,20 @@ mod tests {
                 title: Some(MANIFEST_FILE),
             },
         ];
-        let bytes = build_oci_manifest(&layers, &config_digest, EMPTY_CONFIG_BYTES.len() as u64);
+        let bytes = build_oci_manifest(
+            &layers,
+            &config_digest,
+            EMPTY_CONFIG_BYTES.len() as u64,
+            Some("openusd-cy2026-linux-x86_64-vulkan-deadbeef"),
+        );
 
         // Deterministic: same inputs, same bytes (so the OCI digest is stable).
-        let again = build_oci_manifest(&layers, &config_digest, EMPTY_CONFIG_BYTES.len() as u64);
+        let again = build_oci_manifest(
+            &layers,
+            &config_digest,
+            EMPTY_CONFIG_BYTES.len() as u64,
+            Some("openusd-cy2026-linux-x86_64-vulkan-deadbeef"),
+        );
         assert_eq!(bytes, again, "manifest serialization must be deterministic");
 
         let parsed = parse_oci_manifest(&bytes, "oci://x/y").unwrap();
@@ -2468,6 +2492,10 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["artifactType"], OCI_ARTIFACT_TYPE);
         assert_eq!(json["config"]["mediaType"], MEDIA_TYPE_EMPTY_CONFIG);
+        assert_eq!(
+            json["annotations"][OPENUSD_SELECTOR_ANNOTATION],
+            "openusd-cy2026-linux-x86_64-vulkan-deadbeef"
+        );
     }
 
     #[test]
