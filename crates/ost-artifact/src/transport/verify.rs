@@ -14,6 +14,9 @@ use std::fs::File;
 use camino::Utf8Path;
 
 use ost_core::{digest, Category, Error, Result};
+use ost_platform::{
+    version_satisfies_constraint, ResolvedOpenUsdCompatibility, ResolvedOpenUsdProvider,
+};
 
 use crate::record::{manifest_debug_archive, manifest_files, ArtifactRecord};
 use crate::store::{compare_archive_files, locate_manifest, walk_archive};
@@ -110,6 +113,14 @@ pub(crate) fn verify_dist(
             steps.push(("openusd_selector", "passed"));
         }
         None => steps.push(("openusd_selector", "skipped")),
+    }
+
+    match &policy.require_openusd {
+        Some(required) => {
+            verify_openusd_requirement(&record, required)?;
+            steps.push(("openusd_requirement", "passed"));
+        }
+        None => steps.push(("openusd_requirement", "skipped")),
     }
 
     // Archive digest: the downloaded bytes are what the manifest describes.
@@ -281,4 +292,223 @@ pub(crate) fn verify_dist(
     steps.push(("trust_policy", "passed"));
 
     Ok(ChainOutcome { steps })
+}
+
+fn verify_openusd_requirement(
+    record: &ArtifactRecord,
+    required: &ResolvedOpenUsdCompatibility,
+) -> Result<()> {
+    let Some(selected) = &record.openusd_compatibility else {
+        return Err(openusd_mismatch(
+            "ARTIFACT_OPENUSD_IDENTITY_MISSING",
+            "identity",
+            record,
+            required,
+            "has no verified normalized OpenUSD compatibility identity".to_string(),
+            "select a normalized OpenUSD runtime artifact published for the required cell",
+        ));
+    };
+
+    if selected.schema != required.schema
+        || selected.platform != required.platform
+        || selected.os != required.os
+        || selected.arch != required.arch
+    {
+        return Err(openusd_mismatch(
+            "ARTIFACT_OPENUSD_PLATFORM_MISMATCH",
+            "platform",
+            record,
+            required,
+            format!(
+                "declares {} {}/{} (schema {}), not required {} {}/{} (schema {})",
+                selected.platform,
+                selected.os.as_str(),
+                selected.arch.as_str(),
+                selected.schema,
+                required.platform,
+                required.os.as_str(),
+                required.arch.as_str(),
+                required.schema,
+            ),
+            "resolve an artifact tag for the required platform and architecture",
+        ));
+    }
+
+    let compiler_ok = selected.toolchain.family == required.toolchain.family
+        && selected.toolchain.provider == required.toolchain.provider
+        && selected.toolchain.cxx_standard == required.toolchain.cxx_standard
+        && version_matches(
+            selected.toolchain.version.as_deref(),
+            required.toolchain.version.as_deref(),
+            &required.toolchain.version_constraint,
+        );
+    let runtime_ok = provider_matches(&selected.toolchain.runtime, &required.toolchain.runtime);
+    if !compiler_ok || !runtime_ok {
+        return Err(openusd_mismatch(
+            "ARTIFACT_OPENUSD_TOOLCHAIN_MISMATCH",
+            "toolchain",
+            record,
+            required,
+            format!(
+                "uses compiler {}@{} {} (C++ {}) and native runtime {}@{} {}, but the consumer requires compiler {}@{} {} (C++ {}) and native runtime {}@{} {}",
+                selected.toolchain.family,
+                selected.toolchain.provider,
+                selected.toolchain.version.as_deref().unwrap_or("unresolved"),
+                selected.toolchain.cxx_standard,
+                selected.toolchain.runtime.family,
+                selected.toolchain.runtime.provider,
+                selected.toolchain.runtime.version.as_deref().unwrap_or("unresolved"),
+                required.toolchain.family,
+                required.toolchain.provider,
+                required.toolchain.version.as_deref().unwrap_or(&required.toolchain.version_constraint),
+                required.toolchain.cxx_standard,
+                required.toolchain.runtime.family,
+                required.toolchain.runtime.provider,
+                required.toolchain.runtime.version.as_deref().unwrap_or(&required.toolchain.runtime.version_constraint),
+            ),
+            "resolve an artifact built with the required compiler and native runtime providers",
+        ));
+    }
+
+    verify_provider_dimension(
+        "python",
+        "ARTIFACT_OPENUSD_PYTHON_MISMATCH",
+        record,
+        required,
+        &selected.python,
+        &required.python,
+    )?;
+    verify_provider_dimension(
+        "tbb",
+        "ARTIFACT_OPENUSD_TBB_MISMATCH",
+        record,
+        required,
+        &selected.tbb,
+        &required.tbb,
+    )?;
+
+    let missing = required
+        .capabilities
+        .iter()
+        .filter(|capability| !selected.capabilities.iter().any(|have| have == *capability))
+        .cloned()
+        .collect::<Vec<_>>();
+    if selected.variant != required.variant || !missing.is_empty() {
+        let missing = if missing.is_empty() {
+            "none".to_string()
+        } else {
+            missing.join(", ")
+        };
+        return Err(openusd_mismatch(
+            "ARTIFACT_OPENUSD_GRAPHICS_MISMATCH",
+            "graphics",
+            record,
+            required,
+            format!(
+                "provides variant '{}' with capabilities [{}], but variant '{}' with capabilities [{}] is required (missing: {missing})",
+                selected.variant.as_str(),
+                selected.capabilities.join(", "),
+                required.variant.as_str(),
+                required.capabilities.join(", "),
+            ),
+            "resolve the compatibility tag for the required OpenUSD variant and graphics capabilities",
+        ));
+    }
+
+    Ok(())
+}
+
+fn verify_provider_dimension(
+    dimension: &'static str,
+    code: &'static str,
+    record: &ArtifactRecord,
+    required_compatibility: &ResolvedOpenUsdCompatibility,
+    selected: &ResolvedOpenUsdProvider,
+    required: &ResolvedOpenUsdProvider,
+) -> Result<()> {
+    if provider_matches(selected, required) {
+        return Ok(());
+    }
+    Err(openusd_mismatch(
+        code,
+        dimension,
+        record,
+        required_compatibility,
+        format!(
+            "uses {dimension} {}@{} {}, but the consumer requires {}@{} {}",
+            selected.family,
+            selected.provider,
+            selected.version.as_deref().unwrap_or("unresolved"),
+            required.family,
+            required.provider,
+            required.version.as_deref().unwrap_or(&required.version_constraint),
+        ),
+        &format!(
+            "resolve an artifact whose {dimension} provider and exact version satisfy the required cell"
+        ),
+    ))
+}
+
+fn provider_matches(
+    selected: &ResolvedOpenUsdProvider,
+    required: &ResolvedOpenUsdProvider,
+) -> bool {
+    selected.family == required.family
+        && selected.provider == required.provider
+        && version_matches(
+            selected.version.as_deref(),
+            required.version.as_deref(),
+            &required.version_constraint,
+        )
+}
+
+fn version_matches(selected: Option<&str>, exact: Option<&str>, constraint: &str) -> bool {
+    let Some(selected) = selected else {
+        return false;
+    };
+    match exact {
+        Some(exact) => selected == exact,
+        None => version_satisfies_constraint(selected, constraint),
+    }
+}
+
+fn openusd_mismatch(
+    code: &'static str,
+    dimension: &'static str,
+    record: &ArtifactRecord,
+    required: &ResolvedOpenUsdCompatibility,
+    detail: String,
+    hint: &str,
+) -> Error {
+    Error::coded(
+        code,
+        Category::Validation,
+        format!(
+            "selected artifact {} ({} {}) {detail}",
+            record.short_digest(),
+            record.name,
+            record.version
+        ),
+    )
+    .with_hint(hint)
+    .with_data(serde_json::json!({
+        "dimension": dimension,
+        "selected_artifact": {
+            "digest": record.digest,
+            "name": record.name,
+            "version": record.version,
+            "selector": record.openusd_selector(),
+            "openusd": record.openusd_compatibility,
+        },
+        "requirement": {
+            "platform": required.platform,
+            "os": required.os,
+            "arch": required.arch,
+            "variant": required.variant,
+            "toolchain": required.toolchain,
+            "python": required.python,
+            "tbb": required.tbb,
+            "capabilities": required.capabilities,
+        },
+    }))
 }

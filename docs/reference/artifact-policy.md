@@ -93,6 +93,23 @@ value, or a selector that disagrees with the producer identity fails closed.
 Artifacts published before selector annotations existed remain consumable and
 report the `openusd_selector` verification step as `skipped`.
 
+A consumer can require an approved compatibility cell during the same pull:
+
+```bash
+ost artifact pull oci://registry.example/vfx/openusd@sha256:<digest> \
+  --require-openusd cy2026/linux/x86_64/vulkan
+```
+
+The cell is resolved from the named platform manifest rather than restated on
+the command line. Before local import, `ost` compares the normalized
+platform/architecture, compiler and native runtime providers, C++ standard,
+exact Python and TBB versions/providers, variant, and capability set. A producer
+version must satisfy the consumer cell's constraint; required capabilities must
+all be present. Failure evidence includes `dimension`, `requirement`, and
+`selected_artifact` objects, and the error hint tells the caller which artifact
+selection to correct. Without `--require-openusd`, legacy pull behavior remains
+unchanged and the `openusd_requirement` verification step is `skipped`.
+
 For a protected destination, `ost` requests a short-lived GitHub Actions OIDC
 token directly from `https://token.actions.githubusercontent.com`, using the
 runner-provided request URL and bearer token. It refuses a different request
@@ -168,3 +185,9 @@ See [artifact-evidence.md](artifact-evidence.md).
 | `ARTIFACT_POLICY_TRUST_INSUFFICIENT` | validation | Artifact trust is below `minimum_trust`. |
 | `ARTIFACT_POLICY_PUBLISHER_UNTRUSTED` | validation | No allowed publisher matched every identity claim. |
 | `ARTIFACT_OPENUSD_SELECTOR_MISMATCH` | validation | The resolved OCI selector annotation cannot be re-derived exactly from the fetched producer manifest. |
+| `ARTIFACT_OPENUSD_IDENTITY_MISSING` | validation | A consumer cell was required but the selected artifact has no normalized OpenUSD identity. |
+| `ARTIFACT_OPENUSD_PLATFORM_MISMATCH` | validation | The normalized platform, OS, architecture, or compatibility schema differs from the required cell. |
+| `ARTIFACT_OPENUSD_TOOLCHAIN_MISMATCH` | validation | Compiler, C++ standard, or native runtime identity does not satisfy the required cell. |
+| `ARTIFACT_OPENUSD_PYTHON_MISMATCH` | validation | Python family, provider, or exact version does not satisfy the required cell. |
+| `ARTIFACT_OPENUSD_TBB_MISMATCH` | validation | TBB family, provider, or exact version does not satisfy the required cell. |
+| `ARTIFACT_OPENUSD_GRAPHICS_MISMATCH` | validation | The selected variant or capability set does not satisfy the required cell. |

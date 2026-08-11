@@ -26,6 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use camino::{Utf8Path, Utf8PathBuf};
 
 use ost_core::{Category, Error, Result};
+use ost_platform::ResolvedOpenUsdCompatibility;
 
 use crate::record::{manifest_debug_archive, ArtifactKind, ArtifactRecord, ArtifactSource};
 use crate::reference::RemoteReference;
@@ -129,6 +130,10 @@ pub struct PullPolicy {
     pub require_kind: Option<ArtifactKind>,
     /// Require the artifact's target id to match (platform / ABI pin).
     pub require_target: Option<String>,
+    /// Require the runtime's normalized OpenUSD identity to satisfy one
+    /// approved consumer cell. Exact producer versions are checked against
+    /// the consumer cell's constraints before the artifact is imported.
+    pub require_openusd: Option<ResolvedOpenUsdCompatibility>,
 }
 
 /// Status of one verification step, stable for `--json` evidence.

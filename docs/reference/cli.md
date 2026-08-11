@@ -140,6 +140,7 @@ Pull a digest-pinned artifact from a remote source, verify it, and import it int
 | `--overall-timeout <SECONDS>` | End-to-end timeout for each HTTP exchange; 0 disables it |
 | `--plain-http` | Use plain http:// instead of https:// (fixture registries and air-gapped mirrors only) |
 | `--require-kind <KIND>` | Require the artifact kind: runtime \| plugin \| product \| package |
+| `--require-openusd <PLATFORM/OS/ARCH/VARIANT>` | Require an approved normalized OpenUSD consumer cell. The value is PLATFORM/OS/ARCH/VARIANT, for example cy2026/linux/x86_64/vulkan |
 | `--require-target <TARGET>` | Require the artifact's target id to match exactly |
 | `--response-timeout <SECONDS>` | Response-header timeout in seconds; 0 disables it |
 | `--retry-backoff <MILLISECONDS>` | Initial retry delay in milliseconds; later delays double to 30s |

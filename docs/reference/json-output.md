@@ -169,6 +169,12 @@ error, never a warning:
 | `ARTIFACT_PLATFORM_MISMATCH` | validation |
 | `ARTIFACT_SUPPORT_LINE_MISMATCH` | validation |
 | `ARTIFACT_OPENUSD_SELECTOR_MISMATCH` | validation |
+| `ARTIFACT_OPENUSD_IDENTITY_MISSING` | validation |
+| `ARTIFACT_OPENUSD_PLATFORM_MISMATCH` | validation |
+| `ARTIFACT_OPENUSD_TOOLCHAIN_MISMATCH` | validation |
+| `ARTIFACT_OPENUSD_PYTHON_MISMATCH` | validation |
+| `ARTIFACT_OPENUSD_TBB_MISMATCH` | validation |
+| `ARTIFACT_OPENUSD_GRAPHICS_MISMATCH` | validation |
 
 (The local registry's own `ARTIFACT_NOT_FOUND` / `ARTIFACT_DIGEST_MISMATCH` /
 `ARTIFACT_KIND_MISMATCH` / `ARTIFACT_RUNTIME_MISMATCH` predate the transport
@@ -189,6 +195,14 @@ report it as `data.resolved.openusd_selector` and
 `data.verification.openusd_selector` as `passed`; older artifacts without the
 annotation report `skipped`. A declared selector that cannot be re-derived from
 the producer manifest fails before local import.
+
+With `artifact pull --require-openusd`, success reports
+`data.verification.openusd_requirement` as `passed`; without it the status is
+`skipped`. A compatibility failure uses one of the dimension-specific codes
+above and includes `data.dimension`, `data.requirement`, and
+`data.selected_artifact` in the failure envelope. The latter carries the exact
+artifact digest and normalized selector/identity so automation can select a
+replacement without parsing prose.
 
 ## Compatibility policy
 
