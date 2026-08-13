@@ -344,6 +344,13 @@ ost plugin test toy --up-to 3          # stop after usdcat read
 ost plugin test toy --json
 ost plugin test --workspace --up-to 1  # graph preflight, then every discovered bundle
 
+# A strict source format can attach SdfFileFormat arguments to its smoke path:
+# tests:
+#   smoke:
+#     - path: tests/fixtures/basic.ply
+#       file_format_arguments: { epsg: "4978" }
+# The same identifier reaches usdcat, Usd.Stage.Open(), flatten, and usdview.
+
 # launch any command inside the composed runtime session (real runtime)
 ost plugin run toy --target cy2026 --profile usd -- usdcat tests/fixtures/basic.toy
 ost plugin run toy --with ./plugins/other --target cy2026 --profile usd -- usdcat tests/fixtures/basic.toy

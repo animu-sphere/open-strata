@@ -84,6 +84,14 @@ pub enum RendererCmd {
         /// Override the renderer display name read from installed plugInfo.json.
         #[arg(long)]
         renderer: Option<String>,
+
+        /// Managed configure timeout in seconds; 0 disables it.
+        #[arg(long, default_value_t = 600)]
+        configure_timeout: u64,
+
+        /// Managed build timeout in seconds; 0 disables it.
+        #[arg(long, default_value_t = 7200)]
+        build_timeout: u64,
     },
 
     /// Build and launch the standalone native viewport adapter.
@@ -113,6 +121,14 @@ pub enum RendererCmd {
         /// then stop before configuring or building.
         #[arg(long)]
         preflight: bool,
+
+        /// Managed configure timeout in seconds; 0 disables it.
+        #[arg(long, default_value_t = 600)]
+        configure_timeout: u64,
+
+        /// Managed build timeout in seconds; 0 disables it.
+        #[arg(long, default_value_t = 7200)]
+        build_timeout: u64,
 
         /// Arguments passed to the viewport executable after `--`, e.g.
         /// `ost renderer viewport -- --frames 8 --hidden`.
@@ -245,6 +261,8 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
             profile,
             camera,
             renderer,
+            configure_timeout,
+            build_timeout,
         } => view(
             ViewArgs {
                 scene,
@@ -256,6 +274,8 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
                 profile,
                 camera,
                 renderer,
+                configure_timeout,
+                build_timeout,
             },
             fmt,
         ),
@@ -266,6 +286,8 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
             target,
             profile,
             preflight,
+            configure_timeout,
+            build_timeout,
             args,
         } => viewport(
             ViewportArgs {
@@ -275,6 +297,8 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
                 target,
                 profile,
                 preflight,
+                configure_timeout,
+                build_timeout,
                 args,
             },
             fmt,
@@ -363,6 +387,8 @@ struct ViewportArgs {
     target: Option<String>,
     profile: Option<String>,
     preflight: bool,
+    configure_timeout: u64,
+    build_timeout: u64,
     args: Vec<String>,
 }
 
@@ -376,6 +402,8 @@ struct ViewArgs {
     profile: Option<String>,
     camera: Option<String>,
     renderer: Option<String>,
+    configure_timeout: u64,
+    build_timeout: u64,
 }
 
 fn adopt(args: RendererAdoptArgs, fmt: Format) -> Result<()> {
@@ -947,6 +975,8 @@ fn view(args: ViewArgs, fmt: Format) -> Result<()> {
             &args.config,
             args.generator,
             args.intent,
+            args.configure_timeout,
+            args.build_timeout,
             &runtime,
             &runtime_manifest.digest,
             fmt,
@@ -1063,6 +1093,10 @@ fn view(args: ViewArgs, fmt: Format) -> Result<()> {
         "target": platform,
         "profile": profile,
         "config": args.config,
+        "timeouts": {
+            "configure_seconds": args.configure_timeout,
+            "build_seconds": args.build_timeout,
+        },
         "build_dir": build_dir,
         "renderer": renderer,
         "scene": scene,
@@ -1181,6 +1215,7 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
             args.generator.clone(),
             args.config.clone(),
         )
+        .timeouts(args.configure_timeout, args.build_timeout)
         .machine_quiet(fmt.is_json()),
         fmt,
         intent.clone(),
@@ -1195,6 +1230,8 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
             &intent,
             &preflight,
             &args.args,
+            args.configure_timeout,
+            args.build_timeout,
             viewport_started_unix,
         )?));
     }
@@ -1222,6 +1259,7 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
                     args.generator,
                     args.config.clone(),
                 )
+                .timeouts(args.configure_timeout, args.build_timeout)
                 .machine_quiet(fmt.is_json()),
                 fmt,
                 intent.clone(),
@@ -1236,6 +1274,8 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
                     &intent,
                     &preflight,
                     &args.args,
+                    args.configure_timeout,
+                    args.build_timeout,
                     viewport_started_unix,
                 )?));
             }
@@ -1318,6 +1358,10 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         "target": platform,
         "profile": profile,
         "config": args.config,
+        "timeouts": {
+            "configure_seconds": args.configure_timeout,
+            "build_seconds": args.build_timeout,
+        },
         "build_dir": build_dir,
         "intent": intent,
         "preflight": preflight,
@@ -1388,6 +1432,8 @@ fn write_viewport_build_failure_record(
     intent: &BuildIntent,
     preflight: &Value,
     args: &[String],
+    configure_timeout: u64,
+    build_timeout: u64,
     started_unix: u64,
 ) -> Result<Value> {
     let record_path = root
@@ -1402,6 +1448,10 @@ fn write_viewport_build_failure_record(
         "target": platform,
         "profile": profile,
         "config": config,
+        "timeouts": {
+            "configure_seconds": configure_timeout,
+            "build_seconds": build_timeout,
+        },
         "build_dir": build_dir,
         "intent": intent,
         "preflight": preflight,
@@ -1646,6 +1696,8 @@ fn managed_hydra_build(
     config: &str,
     generator: Option<String>,
     selected_intent: Option<String>,
+    configure_timeout: u64,
+    build_timeout: u64,
     runtime: &Resolved,
     runtime_digest: &str,
     fmt: Format,
@@ -1694,6 +1746,7 @@ fn managed_hydra_build(
             generator.clone(),
             config.to_string(),
         )
+        .timeouts(configure_timeout, build_timeout)
         .machine_quiet(fmt.is_json()),
         fmt,
         intent.clone(),
@@ -1718,6 +1771,7 @@ fn managed_hydra_build(
                     generator,
                     config.to_string(),
                 )
+                .timeouts(configure_timeout, build_timeout)
                 .machine_quiet(fmt.is_json()),
                 fmt,
                 intent,

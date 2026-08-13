@@ -10,7 +10,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use ost_core::{Error, Result};
 
-use crate::model::{PluginManifest, PLUGIN_MANIFEST, PLUGIN_SCHEMA};
+use crate::model::{PluginManifest, SmokeFixture, PLUGIN_MANIFEST, PLUGIN_SCHEMA};
 
 /// A loaded plugin bundle: its manifest plus the root it was loaded from.
 #[derive(Debug, Clone)]
@@ -85,6 +85,9 @@ impl Bundle {
         check_safe_relative("usd.plug_info", &manifest.usd.plug_info)?;
         for fixture in manifest.all_fixtures() {
             check_safe_relative("test fixture", fixture)?;
+        }
+        for fixture in &manifest.tests.smoke {
+            check_file_format_arguments(fixture)?;
         }
         for dir in &manifest.requires.runtime_libs {
             check_safe_relative("requires.runtime_libs", dir)?;
@@ -182,6 +185,33 @@ impl Bundle {
             None => (self.path("schema.usda"), false),
         }
     }
+}
+
+/// OpenUSD currently encodes file-format arguments without escaping as
+/// `:SDF_FORMAT_ARGS:key=value&...`. Reject values that would decode as a
+/// different map instead of silently testing the wrong contract.
+fn check_file_format_arguments(fixture: &SmokeFixture) -> Result<()> {
+    for (key, value) in fixture.file_format_arguments() {
+        if key.is_empty() {
+            return Err(Error::config(format!(
+                "tests.smoke file_format_arguments for '{}' contains an empty key",
+                fixture.path()
+            )));
+        }
+        if key.contains(['&', '=']) || key.contains('\0') {
+            return Err(Error::config(format!(
+                "tests.smoke file_format_arguments key '{key}' for '{}' cannot contain '&', '=', or NUL",
+                fixture.path()
+            )));
+        }
+        if value.contains('&') || value.contains('\0') {
+            return Err(Error::config(format!(
+                "tests.smoke file_format_arguments value for '{key}' in '{}' cannot contain '&' or NUL",
+                fixture.path()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Reject a manifest-declared path that is not a safe, bundle-relative path.
@@ -359,6 +389,33 @@ mod tests {
         let err = Bundle::load(&root).expect_err("escaping notices must be rejected");
         assert_eq!(err.code(), "INVALID_CONFIG");
         std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn load_rejects_ambiguous_file_format_arguments() {
+        for arguments in [
+            "{ 'bad&key': value }",
+            "{ 'bad=key': value }",
+            "{ key: 'bad&value' }",
+        ] {
+            let root = write_bundle("resources/plugInfo.json");
+            let manifest_path = root.join(PLUGIN_MANIFEST);
+            let manifest = std::fs::read_to_string(manifest_path.as_std_path()).unwrap();
+            std::fs::write(
+                manifest_path.as_std_path(),
+                format!(
+                    "{manifest}tests:\n  smoke:\n    - path: tests/fixtures/strict.ply\n      file_format_arguments: {arguments}\n"
+                ),
+            )
+            .unwrap();
+            let error = Bundle::load(&root).expect_err("ambiguous arguments must fail closed");
+            assert_eq!(error.code(), "INVALID_CONFIG");
+            assert!(
+                error.to_string().contains("file_format_arguments"),
+                "{error}"
+            );
+            std::fs::remove_dir_all(root.as_std_path()).ok();
+        }
     }
 
     #[test]

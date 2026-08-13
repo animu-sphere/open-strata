@@ -159,6 +159,15 @@ impl BuildArgs {
         }
     }
 
+    /// Apply the caller-visible phase budgets to an internal managed build.
+    /// Domain workflows expose these under their own command rather than
+    /// hiding the ordinary build service's defaults.
+    pub(crate) fn timeouts(mut self, configure_timeout: u64, build_timeout: u64) -> Self {
+        self.configure_timeout = configure_timeout;
+        self.build_timeout = build_timeout;
+        self
+    }
+
     pub(crate) fn machine_quiet(mut self, quiet: bool) -> Self {
         self.quiet = quiet;
         self
@@ -1209,6 +1218,14 @@ mod tests {
         assert!(generator_uses_ninja("Ninja Multi-Config"));
         assert!(generator_uses_ninja("ninja multi-config"));
         assert!(!generator_uses_ninja("Visual Studio 17 2022"));
+    }
+
+    #[test]
+    fn managed_build_accepts_caller_visible_phase_timeouts() {
+        let args = BuildArgs::managed("cy2026".into(), "core".into(), None, "Release".into())
+            .timeouts(7, 11);
+        assert_eq!(args.configure_timeout, 7);
+        assert_eq!(args.build_timeout, 11);
     }
 
     #[test]

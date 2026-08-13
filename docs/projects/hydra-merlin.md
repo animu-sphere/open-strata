@@ -97,6 +97,13 @@ The Windows managed-view acceptance is recorded in the
 Reports are linked as evidence, not copied; the downstream index is in the
 [delivery reports](../reports/README.md).
 
+The v0.22.0 recheck on 2026-08-14 also completed the downstream report-11
+managed viewport gap: `viewport-usd` opened the repository's
+`usdview-smoke.usda` through Hydra in hidden one-frame mode, retained its
+explicit configure/build budgets in the successful launch record, and then
+passed `ost validate` for build, renderer evidence, viewport launch, and runtime
+compatibility. The assertions remained bound to the completed managed producer.
+
 ## Current limitations
 
 - Renderer skeleton promotion and applying the contract to a second independent

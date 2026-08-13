@@ -79,6 +79,28 @@ Each dependency requires a portable bundle `id` and a numeric dotted-version
 range. `contract` is allowed only when the provider is a `usd-schema` bundle.
 Dependency entries reject unknown keys.
 
+## Smoke fixtures with file-format arguments
+
+`tests.smoke` keeps its path-only form for existing bundles and also accepts a
+structured entry for formats that require explicit `SdfFileFormat` arguments:
+
+```yaml
+tests:
+  smoke:
+    - tests/fixtures/basic.las
+    - path: tests/fixtures/strict.ply
+      file_format_arguments:
+        epsg: "4978"
+```
+
+The first smoke entry drives the execution pyramid. OST passes one normalized
+layer identifier to L3 `usdcat`, L5's smoke-to-roundtrip fallback, and L6
+`usdview`; L4 builds the same identity with
+`Sdf.Layer.CreateIdentifier(path, arguments)` before `Usd.Stage.Open()`. Keys
+are ordered deterministically. Paths remain bundle-relative, and keys/values
+that OpenUSD's current unescaped identifier syntax cannot represent are rejected
+when the bundle loads. `tests.roundtrip` and `tests.negative` remain path-only.
+
 A schema provider declares its authored-data contract separately from its
 semantic implementation version:
 

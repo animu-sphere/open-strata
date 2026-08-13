@@ -296,18 +296,28 @@ registry.
 
 #### Renderer workflow and evidence acceptance
 
-- Expose configure/build timeout controls on managed `renderer view` and
-  `renderer viewport`, or document and test how they inherit project build
-  timeout policy, so recovery can be exercised without waiting for an implicit
-  default.
+**Implemented 2026-08-14 — managed renderer timeout controls:** `renderer view`
+and `renderer viewport` expose `--configure-timeout` and `--build-timeout`, use
+the ordinary managed-build defaults (600s/7200s), preserve zero as disabled, and
+apply the selected budgets to both the standard and adopted-project retry build.
+Successful and failed launch records retain the budgets, so recovery can be
+reproduced without waiting for an implicit boundary.
+
 - Add an upstream fixture that completes both managed launch paths and asserts
   their persisted success and failure JSON envelopes independently of a
   downstream compiler environment.
 - Add a negative managed-evidence fixture proving that a stale or separately
   produced renderer report cannot be promoted by copying or attaching a newer
   successful completion record.
-- Complete the carried hdMerlin acceptance pass with one successful managed
-  launch that demonstrates the durable viewport record and producer binding.
+
+**Implemented 2026-08-14 — carried hdMerlin acceptance:** the report-11
+`usdview-smoke.usda` scene completed the real `viewport-usd` managed workflow on
+Windows in hidden one-frame mode. Preflight applied `usd-stage-read`, the
+configure/build/launch completed in about 70 seconds under explicit 120s/1200s
+budgets, and the durable launch record reports success with those exact values.
+The following `ost validate --profile usd --intent viewport-usd` passed
+configured, built, renderer evidence, renderer viewport, and runtime
+compatibility; renderer assertions name the completed managed build producer.
 
 ### v0.22.0 point-cloud dogfooding intake (2026-08-11)
 
@@ -326,13 +336,14 @@ carried forward.
 
 #### P2 - smoke fixtures can declare file-format arguments
 
-- Extend the manifest's current string smoke-fixture entry with an optional
-  structured form containing a relative `path` and `file_format_arguments`.
-- Apply those arguments consistently to `usdcat`, Python `Usd.Stage.Open()`, and
-  future verification levels that open or flatten the fixture.
-- Preserve the string form for existing manifests. Until this lands, a checked-in
-  USD wrapper remains the supported workaround for strict source formats such as
-  PLY that cannot embed required metadata.
+**Implemented 2026-08-14:** `tests.smoke` preserves its string form and accepts
+a strict structured form with a bundle-relative `path` and string
+`file_format_arguments`. OST renders the deterministic OpenUSD layer identifier
+for `usdcat`, the L5 flatten fallback, and `usdview`; Python checks use
+`Sdf.Layer.CreateIdentifier` before `Usd.Stage.Open()`. Unsafe paths and argument
+maps that OpenUSD's unescaped identifier syntax would decode ambiguously fail at
+bundle load. Direct PLY smoke fixtures can now supply `epsg` without a USDA
+wrapper.
 
 ## v0.23.0 - DCC host adapters and matrix
 
