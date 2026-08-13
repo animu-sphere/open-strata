@@ -1306,7 +1306,7 @@ Export a pulled real runtime into the local artifact registry
 
 | Option | Description |
 | --- | --- |
-| `--build-metadata <BUILD_METADATA>` | JSON file describing what produced this artifact, so a producer that is not GitHub Actions can still emit provenance. Requires a non-empty `source.repository`, `source.revision`, `builder.id`, and a populated `builder.identity` object. Optional `dependencies` entries require an exact name, version, and source repository/revision |
+| `--build-metadata <BUILD_METADATA>` | JSON file describing what produced this artifact, so a producer that is not GitHub Actions can still emit provenance. Requires a non-empty `source.repository`, `source.revision`, `builder.id`, and a populated `builder.identity` object. Optional `dependencies` entries require an exact name, version, and source repository/revision. A managed `build_usd.py` runtime inserts its automatically captured closure when omitted and rejects conflicting source/dependency claims. A managed build from a non-Git source requires this file to identify its source. Captured entries also carry a canonical `archive_digest` |
 | `--dist <DIST>` | Also keep the producer output (archive + manifest.json + SHA256SUMS) in this directory instead of a temporary staging dir |
 | `--jobs <JOBS>` | zstd worker threads for compression. Defaults to the host's available parallelism, or the byte-stable single-threaded encoder when SOURCE_DATE_EPOCH is set; `--jobs 0` also forces it explicitly |
 | `--level <LEVEL>` | zstd compression level (1–22). Lower is faster; the default (19) favors a small artifact, packed once and pulled many times |
