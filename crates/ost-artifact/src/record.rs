@@ -15,7 +15,9 @@
 use serde::{Deserialize, Serialize};
 
 use ost_core::{Error, Result};
-use ost_platform::ResolvedOpenUsdCompatibility;
+use ost_platform::{
+    ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility, ResolvedSourceIdentity,
+};
 
 use crate::policy::TrustLevel;
 
@@ -180,6 +182,17 @@ pub struct ArtifactRecord {
     /// non-runtime artifacts omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openusd_compatibility: Option<ResolvedOpenUsdCompatibility>,
+    /// Exact upstream repository and revision declared by the producer.
+    ///
+    /// The archive digest remains the immutable artifact identity; this field
+    /// explains which source revision contributed those bytes and is included
+    /// in the deterministic OpenUSD compatibility selector when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_identity: Option<ResolvedSourceIdentity>,
+    /// Exact resolved dependency versions and source revisions declared by the
+    /// producer, sorted by name for deterministic records and selectors.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependency_identities: Vec<ResolvedDependencyIdentity>,
 }
 
 impl ArtifactRecord {
@@ -202,7 +215,14 @@ impl ArtifactRecord {
     pub fn openusd_selector(&self) -> Option<String> {
         self.openusd_compatibility
             .as_ref()
-            .and_then(|compatibility| compatibility.selector(&self.target, &self.version))
+            .and_then(|compatibility| {
+                compatibility.selector(
+                    &self.target,
+                    &self.version,
+                    self.source_identity.as_ref(),
+                    &self.dependency_identities,
+                )
+            })
     }
 
     /// Reinterpret a pre-v0.18.0 record, whose `producer` field held the tool
@@ -296,6 +316,8 @@ impl ArtifactRecord {
         let target = require_str(manifest, "target")?;
         let openusd_compatibility =
             normalize_openusd_compatibility(manifest, kind, producer_platform, &target)?;
+        let source_identity = normalize_source_identity(manifest)?;
+        let dependency_identities = normalize_dependency_identities(manifest)?;
 
         // The two producers record validation differently: the plugin manifest
         // nests `{passed: bool}`, the package manifest carries the runtime's
@@ -351,8 +373,94 @@ impl ArtifactRecord {
             runtime_id,
             runtime_digest,
             openusd_compatibility,
+            source_identity,
+            dependency_identities,
         })
     }
+}
+
+/// Normalize the exact producer source revision when build metadata is present.
+/// A partial identity is rejected instead of being silently dropped: once a
+/// producer emits `build.source`, consumers must be able to rely on both fields.
+fn normalize_source_identity(
+    manifest: &serde_json::Value,
+) -> Result<Option<ResolvedSourceIdentity>> {
+    let Some(build) = manifest.get("build").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let source = build.get("source").ok_or_else(|| {
+        Error::InvalidManifest("producer manifest build metadata is missing 'source'".to_string())
+    })?;
+    let repository = source
+        .get("repository")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty() && *value == value.trim())
+        .ok_or_else(|| {
+            Error::InvalidManifest(
+                "producer manifest build source is missing an exact, whitespace-normalized 'repository'"
+                    .to_string(),
+            )
+        })?;
+    let revision = source
+        .get("revision")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty() && *value == value.trim())
+        .ok_or_else(|| {
+            Error::InvalidManifest(
+                "producer manifest build source is missing an exact, whitespace-normalized 'revision'"
+                    .to_string(),
+            )
+        })?;
+    Ok(Some(ResolvedSourceIdentity {
+        repository: repository.to_string(),
+        revision: revision.to_string(),
+    }))
+}
+
+/// Normalize exact dependency versions and revisions from producer build
+/// metadata. Duplicate names are rejected because a selector cannot explain
+/// which of two conflicting identities a single dependency name means.
+fn normalize_dependency_identities(
+    manifest: &serde_json::Value,
+) -> Result<Vec<ResolvedDependencyIdentity>> {
+    let Some(values) = manifest
+        .pointer("/build/dependencies")
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(Vec::new());
+    };
+    let values = values.as_array().ok_or_else(|| {
+        Error::InvalidManifest("producer manifest build dependencies must be an array".to_string())
+    })?;
+    let mut dependencies = values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let dependency: ResolvedDependencyIdentity = serde_json::from_value(value.clone())
+                .map_err(|error| {
+                    Error::InvalidManifest(format!(
+                        "producer manifest build dependency {index} is invalid: {error}"
+                    ))
+                })?;
+            if !dependency.is_verified() {
+                return Err(Error::InvalidManifest(format!(
+                    "producer manifest build dependency {index} has a blank name, version, repository, or revision"
+                )));
+            }
+            Ok(dependency)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    dependencies.sort_unstable();
+    if let Some(pair) = dependencies
+        .windows(2)
+        .find(|pair| pair[0].name == pair[1].name)
+    {
+        return Err(Error::InvalidManifest(format!(
+            "producer manifest build dependencies repeat name '{}'",
+            pair[0].name
+        )));
+    }
+    Ok(dependencies)
 }
 
 /// Parse and validate the optional normalized OpenUSD identity on a producer
@@ -805,8 +913,25 @@ mod tests {
 
     #[test]
     fn runtime_record_preserves_verified_openusd_compatibility() {
+        let mut manifest = runtime_manifest_with_openusd();
+        manifest["build"] = serde_json::json!({
+            "source": {
+                "repository": "github.com/PixarAnimationStudios/OpenUSD",
+                "revision": "v26.05"
+            },
+            "dependencies": [
+                {
+                    "name": "onetbb",
+                    "version": "2022.1.0",
+                    "source": {
+                        "repository": "github.com/uxlfoundation/oneTBB",
+                        "revision": "v2022.1.0"
+                    }
+                }
+            ]
+        });
         let record = ArtifactRecord::from_producer_manifest(
-            &runtime_manifest_with_openusd(),
+            &manifest,
             ArtifactSource::Imported,
             1_760_000_000,
             "ost test",
@@ -822,6 +947,8 @@ mod tests {
         );
         assert_eq!(compatibility.python.version.as_deref(), Some("3.13.7"));
         assert_eq!(compatibility.capabilities, ["hgi-gl", "hgi-vulkan"]);
+        assert_eq!(record.source_identity.as_ref().unwrap().revision, "v26.05");
+        assert_eq!(record.dependency_identities[0].name, "onetbb");
         assert!(selector.starts_with("openusd-cy2026-linux-x86_64-vulkan-"));
         assert_eq!(selector.rsplit_once('-').unwrap().1.len(), 64);
 
@@ -835,6 +962,122 @@ mod tests {
             record.openusd_selector(),
             different_openusd.openusd_selector()
         );
+
+        let mut different_source = record.clone();
+        different_source.source_identity.as_mut().unwrap().revision = "v26.08".into();
+        assert_ne!(
+            record.openusd_selector(),
+            different_source.openusd_selector()
+        );
+
+        let mut different_dependency = record.clone();
+        different_dependency.dependency_identities[0]
+            .source
+            .revision = "v2022.2.0".into();
+        assert_ne!(
+            record.openusd_selector(),
+            different_dependency.openusd_selector()
+        );
+    }
+
+    #[test]
+    fn producer_build_source_is_exact_or_rejected() {
+        let mut complete = package_manifest();
+        complete["build"] = serde_json::json!({
+            "source": { "repository": "owner/repo", "revision": "deadbeef" }
+        });
+        let record = ArtifactRecord::from_producer_manifest(
+            &complete,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap();
+        assert_eq!(
+            record.source_identity,
+            Some(ResolvedSourceIdentity {
+                repository: "owner/repo".into(),
+                revision: "deadbeef".into(),
+            })
+        );
+
+        for (field, source) in [
+            ("repository", serde_json::json!({ "revision": "deadbeef" })),
+            (
+                "revision",
+                serde_json::json!({ "repository": "owner/repo" }),
+            ),
+        ] {
+            let mut incomplete = package_manifest();
+            incomplete["build"] = serde_json::json!({ "source": source });
+            let error = ArtifactRecord::from_producer_manifest(
+                &incomplete,
+                ArtifactSource::Imported,
+                0,
+                "ost test",
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(field), "{error}");
+        }
+    }
+
+    #[test]
+    fn producer_build_dependencies_are_exact_sorted_and_unique() {
+        let dependency = |name: &str, version: &str| {
+            serde_json::json!({
+                "name": name,
+                "version": version,
+                "source": {
+                    "repository": format!("github.com/example/{name}"),
+                    "revision": format!("v{version}")
+                }
+            })
+        };
+        let mut manifest = package_manifest();
+        manifest["build"] = serde_json::json!({
+            "source": { "repository": "owner/repo", "revision": "deadbeef" },
+            "dependencies": [dependency("zlib", "1.3.1"), dependency("onetbb", "2022.1.0")]
+        });
+        let record = ArtifactRecord::from_producer_manifest(
+            &manifest,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap();
+        assert_eq!(
+            record
+                .dependency_identities
+                .iter()
+                .map(|dependency| dependency.name.as_str())
+                .collect::<Vec<_>>(),
+            ["onetbb", "zlib"]
+        );
+
+        manifest["build"]["dependencies"] =
+            serde_json::json!([dependency("zlib", "1.3.1"), dependency("zlib", "1.3.2")]);
+        let error = ArtifactRecord::from_producer_manifest(
+            &manifest,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("repeat name 'zlib'"), "{error}");
+
+        manifest["build"]["dependencies"] = serde_json::json!([{
+            "name": "zlib",
+            "version": "",
+            "source": { "repository": "zlib/zlib", "revision": "v1.3.1" }
+        }]);
+        let error = ArtifactRecord::from_producer_manifest(
+            &manifest,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("blank name, version"), "{error}");
     }
 
     #[test]

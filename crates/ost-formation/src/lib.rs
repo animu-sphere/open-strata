@@ -856,6 +856,8 @@ args = ["avatar.vrm"]
             runtime_id: None,
             runtime_digest: None,
             openusd_compatibility: None,
+            source_identity: None,
+            dependency_identities: Vec::new(),
         };
         let resolved = resolve(
             &declared,

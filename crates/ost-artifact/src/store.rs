@@ -181,7 +181,11 @@ impl ArtifactStore {
         let debug = manifest_debug_archive(&manifest)?;
         let sbom = evidence_in_dist(&dist_dir, SBOM_FILE)?;
         if let Some(evidence) = &sbom {
-            verify_sbom(&dist_dir.join(SBOM_FILE), &record.digest)?;
+            verify_sbom(
+                &dist_dir.join(SBOM_FILE),
+                &record.digest,
+                &record.dependency_identities,
+            )?;
             record.sbom = Some(evidence.path.clone());
             record.sbom_digest = Some(evidence.digest.clone());
             record.sbom_size = Some(evidence.size);
@@ -251,6 +255,65 @@ impl ArtifactStore {
             // one on disk; the evidence path below can still make it so, and
             // SHA256SUMS must describe whichever manifest wins.
             let mut manifest_committed = stored_manifest == manifest_bytes;
+            let incoming_evidence = sbom.is_some() || provenance.is_some();
+            let source_conflict = match (&existing.source_identity, &record.source_identity) {
+                (Some(stored), Some(incoming)) => stored != incoming,
+                (Some(_), None) => incoming_evidence,
+                _ => false,
+            };
+            let dependency_conflict = if existing.dependency_identities.is_empty() {
+                false
+            } else if record.dependency_identities.is_empty() {
+                incoming_evidence
+            } else {
+                existing.dependency_identities != record.dependency_identities
+            };
+            let openusd_conflict = match (
+                &existing.openusd_compatibility,
+                &record.openusd_compatibility,
+            ) {
+                (Some(stored), Some(incoming)) => stored != incoming,
+                (Some(_), None) => incoming_evidence,
+                _ => false,
+            };
+            if source_conflict || dependency_conflict || openusd_conflict {
+                return Err(Error::coded(
+                    "ARTIFACT_IDENTITY_CONFLICT",
+                    Category::Validation,
+                    format!(
+                        "artifact {} is already stored with different source, dependency, or OpenUSD compatibility identity",
+                        existing.short_digest()
+                    ),
+                )
+                .with_hint(
+                    "the same archive digest cannot carry two producer identities; verify the producer manifest and evidence",
+                ));
+            }
+
+            // A byte-identical re-import can enrich a record written before
+            // these normalized fields existed. Differing manifests need
+            // subject-bound provenance before their stronger identity replaces
+            // an absent legacy value.
+            let can_enrich_identity = manifest_committed || provenance.is_some();
+            let mut identity_enriched = false;
+            if can_enrich_identity {
+                if existing.source_identity.is_none() && record.source_identity.is_some() {
+                    existing.source_identity = record.source_identity.clone();
+                    identity_enriched = true;
+                }
+                if existing.dependency_identities.is_empty()
+                    && !record.dependency_identities.is_empty()
+                {
+                    existing.dependency_identities = record.dependency_identities.clone();
+                    identity_enriched = true;
+                }
+                if existing.openusd_compatibility.is_none()
+                    && record.openusd_compatibility.is_some()
+                {
+                    existing.openusd_compatibility = record.openusd_compatibility.clone();
+                    identity_enriched = true;
+                }
+            }
             if manifest_committed {
                 if let Some(debug) = &debug {
                     materialize_debug_archive(&object_dir, &dist_dir, debug)?;
@@ -306,7 +369,10 @@ impl ArtifactStore {
             // is identical either way, so both manifests describe these exact
             // bytes; the incoming one is the half of the pair that agrees with
             // the sidecar we just accepted.
-            if evidence_attached.iter().any(|name| name == PROVENANCE_FILE) && !manifest_committed {
+            if (evidence_attached.iter().any(|name| name == PROVENANCE_FILE)
+                || (identity_enriched && provenance.is_some()))
+                && !manifest_committed
+            {
                 // Committing the incoming manifest also commits its promises:
                 // materialize the debug archive it names first, so the object
                 // directory is never described by a manifest it disagrees with.
@@ -320,7 +386,7 @@ impl ArtifactStore {
                 manifest_committed = true;
             }
 
-            if !evidence_attached.is_empty() {
+            if !evidence_attached.is_empty() || identity_enriched {
                 if sbom.is_some() {
                     existing.sbom = record.sbom.clone();
                     existing.sbom_digest = record.sbom_digest.clone();
@@ -1610,6 +1676,11 @@ mod tests {
         assert!(second.evidence_skipped.is_empty());
         assert_eq!(second.record.sbom.as_deref(), Some(SBOM_FILE));
         assert_eq!(second.record.provenance.as_deref(), Some(PROVENANCE_FILE));
+        assert_eq!(
+            second.record.source_identity.as_ref().unwrap().revision,
+            "deadbeef",
+            "subject-bound provenance enriches a legacy record's missing identity"
+        );
 
         // The attach is durable: re-reading the store sees the evidence, and
         // the sidecars verify against the stored archive.
@@ -1629,6 +1700,41 @@ mod tests {
             vec![SBOM_FILE.to_string(), PROVENANCE_FILE.to_string()]
         );
 
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn same_digest_cannot_replace_an_exact_producer_identity() {
+        let root = tmp_root("identity-conflict");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+        add_evidence(&dist);
+        let first = store.import(&dist, ArtifactSource::Imported).unwrap();
+        assert_eq!(
+            first.record.source_identity.as_ref().unwrap().revision,
+            "deadbeef"
+        );
+
+        let manifest_path = dist.join(MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest_path.as_std_path()).unwrap()).unwrap();
+        manifest["build"]["source"]["revision"] = serde_json::json!("substituted");
+        crate::generate_evidence(&dist, &mut manifest).unwrap();
+        std::fs::write(
+            manifest_path.as_std_path(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let error = store
+            .import(&dist, ArtifactSource::Imported)
+            .expect_err("one archive digest cannot replace its producer identity");
+        assert_eq!(error.code(), "ARTIFACT_IDENTITY_CONFLICT");
+        let reread = store.resolve(&first.record.digest).unwrap();
+        assert_eq!(
+            reread.source_identity.as_ref().unwrap().revision,
+            "deadbeef"
+        );
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

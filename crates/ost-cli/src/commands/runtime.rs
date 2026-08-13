@@ -137,7 +137,8 @@ pub enum RuntimeCmd {
         /// JSON file describing what produced this artifact, so a producer that
         /// is not GitHub Actions can still emit provenance. Requires a non-empty
         /// `source.repository`, `source.revision`, `builder.id`, and a populated
-        /// `builder.identity` object.
+        /// `builder.identity` object. Optional `dependencies` entries require an
+        /// exact name, version, and source repository/revision.
         #[arg(long)]
         build_metadata: Option<Utf8PathBuf>,
     },

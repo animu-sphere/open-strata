@@ -304,7 +304,11 @@ pub(crate) fn verify_dist(
     match &sbom {
         Some(evidence) => {
             verify_evidence_digest(&dist_dir, evidence)?;
-            verify_sbom(&dist_dir.join(SBOM_FILE), &record.digest)?;
+            verify_sbom(
+                &dist_dir.join(SBOM_FILE),
+                &record.digest,
+                &record.dependency_identities,
+            )?;
             steps.push(("sbom", "passed"));
         }
         None if policy.require_sbom => {

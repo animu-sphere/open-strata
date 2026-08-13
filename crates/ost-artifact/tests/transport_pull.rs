@@ -492,6 +492,20 @@ fn make_openusd_runtime_bundle(content: &[u8]) -> (Bundle, String) {
         "archive_size": archive.len(),
         "total_size": content.len(),
         "created_unix": 1_750_000_000u64,
+        "build": {
+            "source": {
+                "repository": "github.com/PixarAnimationStudios/OpenUSD",
+                "revision": "v26.05"
+            },
+            "dependencies": [{
+                "name": "onetbb",
+                "version": "2022.1.0",
+                "source": {
+                    "repository": "github.com/uxlfoundation/oneTBB",
+                    "revision": "v2022.1.0"
+                }
+            }]
+        },
         "openusd_compatibility": compatibility,
         "provenance": {
             "platform": "cy2026",
@@ -910,6 +924,11 @@ fn pull_verifies_the_oci_selector_against_the_producer_identity() {
         evidence.record.openusd_selector().as_deref(),
         Some(selector.as_str())
     );
+    assert_eq!(
+        evidence.record.source_identity.as_ref().unwrap().revision,
+        "v26.05"
+    );
+    assert_eq!(evidence.record.dependency_identities[0].name, "onetbb");
 }
 
 #[test]

@@ -14,6 +14,7 @@ pub use diff::{diff, ComponentChange, PlatformDiff};
 pub use loader::{load_all, load_one, Catalog};
 pub use model::{
     version_satisfies_constraint, OpenUsdBuilder, OpenUsdCell, OpenUsdPolicy, OpenUsdProvider,
-    OpenUsdToolchain, OpenUsdVariant, OpenUsdVariantId, Platform, ResolvedOpenUsdCompatibility,
-    ResolvedOpenUsdProvider, ResolvedOpenUsdToolchain, Source, SourceKind, Status,
+    OpenUsdToolchain, OpenUsdVariant, OpenUsdVariantId, Platform, ResolvedDependencyIdentity,
+    ResolvedOpenUsdCompatibility, ResolvedOpenUsdProvider, ResolvedOpenUsdToolchain,
+    ResolvedSourceIdentity, Source, SourceKind, Status,
 };
