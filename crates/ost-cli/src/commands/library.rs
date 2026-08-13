@@ -29,6 +29,7 @@ use crate::output::{self, Format};
 const LIBRARY_BUILD_SCHEMA: &str = "openstrata.library-build/v1";
 const LIBRARY_BUILD_FILE: &str = "library-build.json";
 const LIBRARY_TEST_FILE: &str = "library-test.json";
+const LIBRARY_JUNIT_FILE: &str = ".ost-library-test-results.xml";
 
 #[derive(Debug, Subcommand)]
 pub enum LibraryCmd {
@@ -257,7 +258,7 @@ fn test(
     let (platform, profile) = selection(target, profile)?;
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
-    let record = validated_build_record(&library, &id, &target.runtime_id, &resolved.prefix)?;
+    validated_build_record(&library, &id, &target.runtime_id, &resolved.prefix)?;
     let ctest = ctest
         .map(Utf8PathBuf::from)
         .or_else(|| tools::which("ctest").and_then(|path| Utf8PathBuf::from_path_buf(path).ok()))
@@ -268,11 +269,14 @@ fn test(
                 "`ctest` not found on PATH",
             )
         })?;
-    let build_dir = Utf8PathBuf::from(&record.build_dir);
+    let build_dir = plugin::target_build_dir(&library.root, &id);
+    let junit_path = build_dir.join(LIBRARY_JUNIT_FILE);
     let mut args = vec![
         "--test-dir".to_string(),
         build_dir.to_string(),
         "--output-on-failure".to_string(),
+        "--output-junit".to_string(),
+        junit_path.to_string(),
     ];
     if timeout > 0 {
         args.extend(["--timeout".into(), timeout.to_string()]);
@@ -295,6 +299,13 @@ fn test(
         return Ok(());
     }
 
+    for stale in [&junit_path, &test_record_path(&library, &id)] {
+        match std::fs::remove_file(stale.as_std_path()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(Error::io(stale.to_string(), error)),
+        }
+    }
     let started_unix = unix_now();
     let mut command = Command::new(ctest.as_std_path());
     command.args(&args).current_dir(library.root.as_std_path());
@@ -302,6 +313,14 @@ fn test(
     let status = command
         .status()
         .map_err(|error| Error::io(format!("run {ctest}"), error))?;
+    let Some(totals) =
+        crate::commands::test::read_totals(&junit_path).filter(|totals| totals.total > 0)
+    else {
+        return Err(
+            Error::external_tool(format!("no tests ran for library '{}'", library.id()))
+                .with_hint("register tests with add_test() in CMake, or relax --filter"),
+        );
+    };
     let evidence = serde_json::json!({
         "schema": "openstrata.library-test/v1",
         "library": {"id": library.id(), "version": library.version()},
@@ -311,6 +330,7 @@ fn test(
         "completed_unix": unix_now(),
         "exit_code": status.code(),
         "outcome": if status.success() { "success" } else { "failure" },
+        "tests": totals,
     });
     write_value(&test_record_path(&library, &target.id()), &evidence)?;
     if !status.success() {
@@ -347,7 +367,7 @@ fn package(
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
     let record = validated_build_record(&library, &id, &target.runtime_id, &resolved.prefix)?;
-    let prefix = Utf8PathBuf::from(&record.install_prefix);
+    let prefix = isolated_prefix(&library, &id);
     let staged = stage_files(&prefix).map_err(stage_error(&prefix))?;
     let dist = library
         .root
@@ -473,13 +493,17 @@ fn validated_build_record(
     })?;
     let runtime = runtime_identity(runtime_prefix, runtime_id)?;
     let expected_descriptor = descriptor_digest(library)?;
-    let observed_files = snapshot_files(Utf8Path::new(&record.install_prefix))?;
+    let expected_build_dir = plugin::target_build_dir(&library.root, target_id);
+    let expected_prefix = isolated_prefix(library, target_id);
+    let observed_files = snapshot_files(&expected_prefix)?;
     if record.schema != LIBRARY_BUILD_SCHEMA
         || record.library.id != library.id()
         || record.library.version != library.version()
         || record.target != target_id
         || record.runtime != runtime
         || record.descriptor_sha256 != expected_descriptor
+        || !recorded_path_matches(&record.build_dir, &expected_build_dir)
+        || !recorded_path_matches(&record.install_prefix, &expected_prefix)
         || record.files != observed_files
     {
         return Err(Error::precondition(format!(
@@ -572,6 +596,18 @@ fn portable(path: &Utf8Path) -> String {
     path.as_str().replace('\\', "/")
 }
 
+fn recorded_path_matches(recorded: &str, expected: &Utf8Path) -> bool {
+    let recorded = recorded.replace('\\', "/");
+    let recorded = recorded.trim_end_matches('/');
+    let expected = portable(expected);
+    let expected = expected.trim_end_matches('/');
+    if cfg!(windows) {
+        recorded.eq_ignore_ascii_case(expected)
+    } else {
+        recorded == expected
+    }
+}
+
 fn render_command(program: &Utf8Path, args: &[String]) -> String {
     std::iter::once(program.as_str())
         .chain(args.iter().map(String::as_str))
@@ -632,5 +668,18 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(first[0].path, "lib/adapter.bin");
         std::fs::remove_dir_all(root.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn recorded_paths_must_match_the_current_managed_tree() {
+        let expected = Utf8Path::new("C:/checkout/library/.strata/targets/example/library-prefix");
+        assert!(recorded_path_matches(
+            "C:\\checkout\\library\\.strata\\targets\\example\\library-prefix/",
+            expected
+        ));
+        assert!(!recorded_path_matches(
+            "C:/other/library/.strata/targets/example/library-prefix",
+            expected
+        ));
     }
 }

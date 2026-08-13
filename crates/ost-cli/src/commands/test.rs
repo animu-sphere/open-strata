@@ -489,7 +489,7 @@ fn ctest_args(
 /// Only the `<testsuite>` element's own attributes are read; that is where CTest
 /// puts the run totals, and reading them beats re-deriving counts from the
 /// individual cases.
-fn read_totals(junit_path: &Utf8Path) -> Option<TestTotals> {
+pub(crate) fn read_totals(junit_path: &Utf8Path) -> Option<TestTotals> {
     let xml = std::fs::read_to_string(junit_path.as_std_path()).ok()?;
     let open = xml.find("<testsuite")?;
     let end = xml[open..].find('>')? + open;

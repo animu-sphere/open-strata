@@ -400,6 +400,32 @@ fn build_dry_run_writes_nothing_and_plans_commands() {
 }
 
 #[test]
+fn library_build_dry_run_writes_nothing() {
+    let sb = Sandbox::new("library-dryrun-no-writes");
+    init_and_pull(&sb);
+
+    let before_work = snapshot(&sb.work);
+    let before_home = snapshot(&sb.home);
+    let out = sb.ost(&["library", "build", ".", "--dry-run"]);
+
+    assert!(
+        out.status.success(),
+        "library dry-run should succeed:\n{}",
+        out_text(&out)
+    );
+    assert_eq!(
+        before_work,
+        snapshot(&sb.work),
+        "ost library build --dry-run must not modify the library tree"
+    );
+    assert_eq!(
+        before_home,
+        snapshot(&sb.home),
+        "ost library build --dry-run must not modify the runtime store"
+    );
+}
+
+#[test]
 fn named_build_intent_dry_run_is_typed_isolated_and_side_effect_free() {
     let sb = Sandbox::new("named-intent-dryrun");
     init_and_pull(&sb);
@@ -1046,6 +1072,13 @@ fn library_scoped_build_test_package_uses_only_its_install_tree() {
     let sb = Sandbox::new("library-scoped-lifecycle");
     init_and_pull(&sb);
 
+    let cmake_path = sb.work_file("CMakeLists.txt");
+    let mut cmake = std::fs::read_to_string(&cmake_path).unwrap();
+    cmake.push_str(
+        "\nenable_testing()\nadd_test(NAME library-managed-smoke COMMAND ${CMAKE_COMMAND} -E true)\n",
+    );
+    std::fs::write(&cmake_path, cmake).unwrap();
+
     let build = sb.ost(&["library", "build", "."]);
     assert!(
         build.status.success(),
@@ -1061,6 +1094,28 @@ fn library_scoped_build_test_package_uses_only_its_install_tree() {
     let prefix = PathBuf::from(record["install_prefix"].as_str().unwrap());
     assert!(prefix.is_dir(), "isolated install prefix is missing");
 
+    let no_match = sb.ost(&[
+        "library",
+        "test",
+        ".",
+        "--filter",
+        "definitely-no-such-test",
+    ]);
+    assert!(
+        !no_match.status.success(),
+        "an empty filtered run must fail:\n{}",
+        out_text(&no_match)
+    );
+    assert!(
+        out_text(&no_match).contains("no tests ran"),
+        "empty test diagnostic should be actionable:\n{}",
+        out_text(&no_match)
+    );
+    assert!(
+        !target.join("library-test.json").exists(),
+        "an empty test run must not publish success evidence"
+    );
+
     let test = sb.ost(&["library", "test", "."]);
     assert!(
         test.status.success(),
@@ -1068,6 +1123,26 @@ fn library_scoped_build_test_package_uses_only_its_install_tree() {
         out_text(&test)
     );
     assert!(target.join("library-test.json").is_file());
+
+    let mut relocated = record.clone();
+    relocated["build_dir"] = serde_json::Value::String(
+        sb.work_file("foreign-build-tree")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    std::fs::write(&record_path, serde_json::to_vec_pretty(&relocated).unwrap()).unwrap();
+    let refused = sb.ost(&["library", "package", "."]);
+    assert!(
+        !refused.status.success(),
+        "a relocated build record must not package:\n{}",
+        out_text(&refused)
+    );
+    assert!(
+        out_text(&refused).contains("no longer matches"),
+        "relocated evidence diagnostic should be actionable:\n{}",
+        out_text(&refused)
+    );
+    std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
 
     let package = sb.ost(&["--json", "library", "package", "."]);
     assert!(
