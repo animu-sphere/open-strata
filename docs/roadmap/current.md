@@ -309,6 +309,31 @@ registry.
 - Complete the carried hdMerlin acceptance pass with one successful managed
   launch that demonstrates the durable viewport record and producer binding.
 
+### v0.22.0 point-cloud dogfooding intake (2026-08-11)
+
+Source: USD Point Cloud Plugins report
+[01](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/01-2026-08-11-v0.22.0-ply-fileformat-ci.md).
+The run used the pinned `ost 0.21.0` toolchain while preparing for v0.22.0; it
+does not claim validation against an unreleased v0.22.0 binary.
+
+Adding PLY to the generated 24-cell source-CI matrix found two downstream
+integration gaps: the standalone PLY CMake project omitted two transitive
+library targets, and a direct PLY smoke fixture could not supply the format's
+required explicit CRS. The project completed its dependency registration and
+used a USDA reference with `SDF_FORMAT_ARGS:epsg=4978`, after which the Windows,
+macOS arm64, and Linux PLY cells passed. No runtime or hosted-runner defect is
+carried forward.
+
+#### P2 - smoke fixtures can declare file-format arguments
+
+- Extend the manifest's current string smoke-fixture entry with an optional
+  structured form containing a relative `path` and `file_format_arguments`.
+- Apply those arguments consistently to `usdcat`, Python `Usd.Stage.Open()`, and
+  future verification levels that open or flatten the fixture.
+- Preserve the string form for existing manifests. Until this lands, a checked-in
+  USD wrapper remains the supported workaround for strict source formats such as
+  PLY that cannot embed required metadata.
+
 ## v0.23.0 - DCC host adapters and matrix
 
 **Status:** ⬜ follows v0.22.0; moved from v0.22.0 on 2026-08-09 · **Depends

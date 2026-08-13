@@ -63,6 +63,12 @@ boundaries:
   the OpenStrata scaffold, a bundle-to-library dependency, OpenUSD 26.05
   Gaussian schema authoring, three-OS generated CI, package-origin validation,
   and reproducibility dogfooding.
+- [**USD Point Cloud Plugins**](https://github.com/animu-sphere/usd-pointcloud-plugins)
+  — LAS, LAZ, COPC, and PLY `SdfFileFormat` bundles backed by shared
+  point-cloud authoring and tiling libraries. It demonstrates a four-format
+  OpenUSD 26.08 workspace, digest-pinned generated CI across three operating
+  systems, and strict file-format argument handling in the generic verification
+  pyramid.
 - [**USD VRM Plugins**](https://github.com/animu-sphere/usd-vrm-plugins) — a
   multi-bundle OpenUSD plugin workspace (typed schemas, a VRM file-format plugin,
   a package resolver, a shared container library). It demonstrates workspace
@@ -74,8 +80,8 @@ boundaries:
   evidence, capability-aware validation, runtime artifact adoption, and the
   managed `usdview` workflow.
 
-Together they exercise distinct plugin-workspace shapes and the renderer side
-of the ecosystem, including the cross-repository **Formation** composition
+Together they exercise three distinct plugin-workspace shapes and the renderer
+side of the ecosystem, including the cross-repository **Formation** composition
 surface shipped in v0.19.0 and extended in v0.20.0. See
 [docs/projects/](docs/projects/README.md).
 
