@@ -20,8 +20,8 @@ use ost_artifact::transport::oci::{
 };
 use ost_artifact::{
     generate_evidence, pull, ArtifactKind, ArtifactPolicy, ArtifactRecord, ArtifactSource,
-    ArtifactStore, ArtifactTransport, FileTransport, OciTransferPolicy, OciTransport, PullPolicy,
-    RemoteReference, TrustLevel,
+    ArtifactStore, ArtifactTransport, FetchOutcome, FileTransport, OciTransferPolicy, OciTransport,
+    PullPolicy, RemoteReference, ResolvedRemote, TrustLevel,
 };
 use ost_core::digest;
 
@@ -684,6 +684,28 @@ fn assert_store_empty(store: &ArtifactStore) {
         store.list().unwrap().is_empty(),
         "a failed pull must never leave a usable artifact"
     );
+}
+
+struct RemoveFileSourceAfterFetch {
+    source: Utf8PathBuf,
+}
+
+impl ArtifactTransport for RemoveFileSourceAfterFetch {
+    fn resolve(&self, reference: &RemoteReference) -> ost_core::Result<ResolvedRemote> {
+        FileTransport::new().resolve(reference)
+    }
+
+    fn fetch(
+        &self,
+        reference: &RemoteReference,
+        resolved: &ResolvedRemote,
+        scratch: &Utf8Path,
+    ) -> ost_core::Result<FetchOutcome> {
+        let fetched = FileTransport::new().fetch(reference, resolved, scratch)?;
+        std::fs::remove_dir_all(self.source.as_std_path())
+            .map_err(|error| ost_core::Error::io(self.source.to_string(), error))?;
+        Ok(fetched)
+    }
 }
 
 fn write_dist(root: &Utf8Path, bundle: &Bundle, with_provenance: bool) -> Utf8PathBuf {
@@ -1834,8 +1856,41 @@ fn file_transport_pulls_a_dist_dir_with_the_same_chain() {
         .any(|(step, status)| *step == "oci_digest" && *status == "skipped"));
     assert!(store.verify(&bundle.artifact_digest).unwrap().passed());
 
-    // The source dist dir is untouched (fetch reads in place, import copies).
+    // The source dist dir is untouched (fetch snapshots it, import copies the snapshot).
     assert!(dist.join(&bundle.archive_name).as_std_path().is_file());
+
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn file_pull_imports_the_same_snapshot_that_passed_trust_validation() {
+    let root = tmp_root("file-evidence-snapshot");
+    let bundle = make_bundle("toy", b"plugin bytes");
+    let dist = write_dist(&root, &bundle, true);
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = RemoveFileSourceAfterFetch {
+        source: dist.clone(),
+    };
+    let reference = RemoteReference::parse(&format!("file://{dist}")).unwrap();
+
+    let evidence = pull(
+        &transport,
+        &reference,
+        &store,
+        &PullPolicy {
+            require_sbom: true,
+            require_provenance: true,
+            minimum_trust: Some(TrustLevel::Attested),
+            ..PullPolicy::default()
+        },
+    )
+    .unwrap();
+
+    assert!(!dist.as_std_path().exists());
+    assert_eq!(evidence.effective_trust, TrustLevel::Attested);
+    assert!(evidence.verification.contains(&("sbom", "passed")));
+    assert!(evidence.verification.contains(&("provenance", "passed")));
+    assert!(store.verify(&bundle.artifact_digest).unwrap().passed());
 
     std::fs::remove_dir_all(root.as_std_path()).ok();
 }
