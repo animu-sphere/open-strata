@@ -136,11 +136,14 @@ ost runtime export   cy2026 --profile usd --level 12  # faster pack, larger arch
 A managed `runtime pull --build` records the exact Git-backed OpenUSD checkout
 and every source archive actually selected by `build_usd.py`. The sorted closure
 is visible in `runtime show` and automatically enters `record.json`, the OpenUSD
-selector hash, provenance, and the generated SPDX SBOM at export.
+selector hash, provenance, and the generated SPDX SBOM at export. Each captured
+archive carries its SHA-256 in the dependency identity and as an SPDX checksum.
 
 Outside GitHub Actions, `--build-metadata build.json` supplies the builder
 identity. It may omit `dependencies` for a managed build; OST inserts the
 captured closure and rejects source or dependency claims that disagree with it.
+An archive/non-Git OpenUSD source must supply this file because a local path is
+not an exact, portable source identity.
 For adopted or externally built runtimes, optional dependency entries still
 require all of `name`, `version`, `source.repository`, and `source.revision`, and
 names must be unique:
@@ -158,7 +161,8 @@ names must be unique:
       "source": {
         "repository": "https://github.com/uxlfoundation/oneTBB",
         "revision": "v2022.1.0"
-      }
+      },
+      "archive_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   ],
   "builder": {
@@ -168,8 +172,9 @@ names must be unique:
 }
 ```
 
-Omit `dependencies` rather than guessing when OST did not capture the closure;
-an incomplete or contradictory entry is rejected before runtime packing begins.
+Omit `dependencies` when OST captured the closure, or when no exact closure is
+available; never guess. An incomplete or contradictory entry is rejected before
+runtime packing begins.
 
 ```bash
 ost runtime list                          # what's in the store (+ SOURCE column)

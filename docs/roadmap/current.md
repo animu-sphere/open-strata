@@ -142,9 +142,10 @@ publisher. Build/link/render state separation remains open below.
 artifact record whenever build metadata is present; a partial or blank source
 identity is rejected instead of silently disappearing. The exact source is
 visible in human and JSON `artifact show` output. Optional
-`build.dependencies` entries add a unique dependency name, exact version, and
-source repository/revision; incomplete, unknown-field, and duplicate-name
-entries fail before export packing and again at artifact import. Source and the
+`build.dependencies` entries add a unique dependency name, exact version,
+source repository/revision, and optional canonical archive digest; incomplete,
+unknown-field, malformed-digest, and duplicate-name entries fail before export
+packing and again at artifact import. Source and the
 sorted dependency closure contribute to the full OpenUSD compatibility-selector
 hash, appear in artifact inspection, and become SPDX packages with `DEPENDS_ON`
 relationships. OCI pull re-derives and checks that source/dependency-bound
@@ -159,18 +160,21 @@ Build/link/render state separation remains open below.
 **Implemented 2026-08-14 — automatic managed dependency-capture slice:** managed
 `build_usd.py` execution now observes each source archive that the upstream
 script actually selects after platform, variant, option, and mirror-fallback
-resolution. It records the dependency name, successful source URL, and archive
-SHA-256 without editing the OpenUSD checkout; GitHub, GitLab, and Boost archive
-locations normalize to exact repository/revision/version identities, while an
-unknown archive origin remains bound by its URL and SHA-256. A Git-backed OpenUSD
-checkout contributes its normalized origin and exact commit. The sorted closure
-and source are digest-significant schema-6 runtime identity, survive runtime
-repair, appear in human/JSON runtime inspection, and flow automatically into
-artifact build metadata, selector hashing, provenance, and SPDX dependency
-packages. Explicit export metadata may omit dependencies to consume the captured
-closure; conflicting source or dependency claims fail before packing. Managed
-local exports without external builder metadata identify the `ost runtime pull`
-builder rather than dropping the captured closure.
+resolution. It records the dependency name, credential-free source URL, and
+archive SHA-256 without editing the OpenUSD checkout; GitHub, GitLab, and Boost
+archive locations normalize to repository/revision/version identities bound to
+the downloaded archive digest, while an unknown archive origin remains bound by
+its sanitized URL and SHA-256. A clean Git-backed OpenUSD checkout contributes
+its normalized origin and exact commit; a dirty checkout is rejected. The
+sorted closure and source are digest-significant schema-6 runtime identity,
+survive runtime repair, appear in human/JSON runtime inspection, and flow
+automatically into artifact build metadata, selector hashing, provenance, and
+SPDX dependency packages. Explicit export metadata may omit dependencies to consume the captured
+closure; conflicting source or dependency claims fail before packing. A managed
+non-Git source requires explicit export metadata to provide a portable source
+identity rather than dropping the captured closure or substituting an ambient
+repository. Partial dependency capture survives a failed build and merges into
+an identical retry before the successful manifest is written.
 
 - Every published artifact carries or references its source revision, resolved
   dependencies, workflow identity, third-party attribution, SBOM, evidence

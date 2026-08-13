@@ -902,13 +902,20 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
             "  dependencies: {}",
             r.dependency_identities
                 .iter()
-                .map(|dependency| format!(
-                    "{} {} ({}@{})",
-                    dependency.name,
-                    dependency.version,
-                    dependency.source.repository,
-                    dependency.source.revision
-                ))
+                .map(|dependency| {
+                    let archive = dependency
+                        .archive_digest
+                        .as_deref()
+                        .map(|digest| format!(", archive {digest}"))
+                        .unwrap_or_default();
+                    format!(
+                        "{} {} ({}@{}{archive})",
+                        dependency.name,
+                        dependency.version,
+                        dependency.source.repository,
+                        dependency.source.revision
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         );

@@ -287,7 +287,7 @@ fn spdx_document(manifest: &serde_json::Value) -> Result<serde_json::Value> {
         .flatten()
         .enumerate()
         .map(|(index, dependency)| {
-            serde_json::json!({
+            let mut package = serde_json::json!({
                 "name": dependency["name"],
                 "SPDXID": format!("SPDXRef-Dependency-{index:06}"),
                 "versionInfo": dependency["version"],
@@ -300,7 +300,17 @@ fn spdx_document(manifest: &serde_json::Value) -> Result<serde_json::Value> {
                     "revision {}",
                     dependency["source"]["revision"].as_str().unwrap_or("unknown")
                 ),
-            })
+            });
+            if let Some(digest) = dependency["archive_digest"]
+                .as_str()
+                .and_then(|value| value.strip_prefix("sha256:"))
+            {
+                package["checksums"] = serde_json::json!([{
+                    "algorithm": "SHA256",
+                    "checksumValue": digest,
+                }]);
+            }
+            package
         })
         .collect::<Vec<_>>();
     let dependency_relationships = dependency_packages
@@ -510,6 +520,22 @@ pub fn verify_sbom(
         let matches = |dependency: &ResolvedDependencyIdentity| {
             let expected_source = format!("revision {}", dependency.source.revision);
             declared.iter().any(|package| {
+                let archive_matches = dependency.archive_digest.as_deref().is_none_or(|digest| {
+                    let expected = digest.strip_prefix("sha256:").unwrap_or(digest);
+                    package
+                        .get("checksums")
+                        .and_then(|value| value.as_array())
+                        .into_iter()
+                        .flatten()
+                        .any(|checksum| {
+                            checksum.get("algorithm").and_then(|value| value.as_str())
+                                == Some("SHA256")
+                                && checksum
+                                    .get("checksumValue")
+                                    .and_then(|value| value.as_str())
+                                    == Some(expected)
+                        })
+                });
                 package.get("name").and_then(|value| value.as_str())
                     == Some(dependency.name.as_str())
                     && package.get("versionInfo").and_then(|value| value.as_str())
@@ -520,6 +546,7 @@ pub fn verify_sbom(
                         == Some(dependency.source.repository.as_str())
                     && package.get("sourceInfo").and_then(|value| value.as_str())
                         == Some(expected_source.as_str())
+                    && archive_matches
             })
         };
         if declared.len() != dependencies.len() || dependencies.iter().any(|value| !matches(value))
@@ -810,7 +837,8 @@ mod tests {
                     "source": {
                         "repository": "github.com/uxlfoundation/oneTBB",
                         "revision": "v2022.1.0"
-                    }
+                    },
+                    "archive_digest": format!("sha256:{}", "ef".repeat(32))
                 }],
                 "builder": {
                     "id": "https://github.com/owner/repo/.github/workflows/release.yml@refs/tags/v1",
@@ -863,13 +891,15 @@ mod tests {
             package["name"] == "onetbb"
                 && package["versionInfo"] == "2022.1.0"
                 && package["sourceInfo"] == "revision v2022.1.0"
+                && package["checksums"][0]["algorithm"] == "SHA256"
+                && package["checksums"][0]["checksumValue"] == "ef".repeat(32)
         }));
         assert!(sbom["relationships"]
             .as_array()
             .unwrap()
             .iter()
             .any(|relationship| relationship["relationshipType"] == "DEPENDS_ON"));
-        sbom["packages"][1]["sourceInfo"] = serde_json::json!("revision substituted");
+        sbom["packages"][1]["checksums"][0]["checksumValue"] = serde_json::json!("00".repeat(32));
         write_json(&root.join(SBOM_FILE), &sbom).unwrap();
         let error = verify_sbom(
             &root.join(SBOM_FILE),

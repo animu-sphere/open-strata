@@ -530,6 +530,7 @@ mod tests {
                             repository: "https://github.com/uxlfoundation/oneTBB".into(),
                             revision: "v2022.1.0".into(),
                         },
+                        archive_digest: None,
                     },
                     ResolvedDependencyIdentity {
                         name: "MaterialX".into(),
@@ -539,6 +540,7 @@ mod tests {
                                 .into(),
                             revision: "v1.39.5".into(),
                         },
+                        archive_digest: None,
                     },
                 ],
             )
@@ -563,6 +565,7 @@ mod tests {
                 repository: "https://github.com/uxlfoundation/oneTBB".into(),
                 revision: "v2022.1.0".into(),
             },
+            archive_digest: None,
         };
         let mut manifest = sample();
         assert!(manifest

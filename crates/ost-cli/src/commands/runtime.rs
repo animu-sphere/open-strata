@@ -138,7 +138,11 @@ pub enum RuntimeCmd {
         /// is not GitHub Actions can still emit provenance. Requires a non-empty
         /// `source.repository`, `source.revision`, `builder.id`, and a populated
         /// `builder.identity` object. Optional `dependencies` entries require an
-        /// exact name, version, and source repository/revision.
+        /// exact name, version, and source repository/revision. A managed
+        /// `build_usd.py` runtime inserts its automatically captured closure when
+        /// omitted and rejects conflicting source/dependency claims. A managed
+        /// build from a non-Git source requires this file to identify its source.
+        /// Captured entries also carry a canonical `archive_digest`.
         #[arg(long)]
         build_metadata: Option<Utf8PathBuf>,
     },
@@ -1053,8 +1057,13 @@ fn print_build_identities(manifest: &RuntimeManifest, prefix: &str) {
     if !manifest.build_dependencies.is_empty() {
         println!("{prefix}build dependencies:");
         for dependency in &manifest.build_dependencies {
+            let archive = dependency
+                .archive_digest
+                .as_deref()
+                .map(|digest| format!(", archive {digest}"))
+                .unwrap_or_default();
             println!(
-                "{prefix}  - {} {} ({}@{})",
+                "{prefix}  - {} {} ({}@{}{archive})",
                 dependency.name,
                 dependency.version,
                 dependency.source.repository,
@@ -1513,6 +1522,10 @@ fn build_from_source(
     created: u64,
 ) -> Result<RuntimeManifest> {
     emit_macos_build_notes(opts);
+    // Resolve and validate source identity before a multi-hour build. A dirty
+    // checkout cannot be represented by HEAD and must never produce an artifact
+    // that claims the clean commit's identity.
+    let build_source = git_source_identity(src)?;
     // Warn now on missing build-interpreter deps rather than letting build_usd.py
     // abort deep in its run (report §Dogfood): a clean Python 3.13 lacks Jinja2
     // (schema tooling) and PySide6/PyOpenGL (usdview) that the profile implies.
@@ -1560,43 +1573,111 @@ fn build_from_source(
     // session env can expose their runtime libraries. build_usd.py is
     // self-contained (deps installed into the prefix), so this stays empty.
     manifest.runtime_deps = opts.deps.iter().map(|d| d.replace('\\', "/")).collect();
-    manifest.set_build_identities(git_source_identity(src), build_dependencies)?;
+    manifest.set_build_identities(build_source, build_dependencies)?;
     Ok(manifest)
 }
 
 /// Capture a source checkout when it is Git-backed. Source archives remain a
 /// supported input and can still supply their exact identity at export through
 /// `--build-metadata`; an ambient repository must never be substituted for it.
-fn git_source_identity(src: &Utf8Path) -> Option<ResolvedSourceIdentity> {
-    let git = tools::which("git")?;
+fn git_source_identity(src: &Utf8Path) -> Result<Option<ResolvedSourceIdentity>> {
+    let Some(git) = tools::which("git") else {
+        return Ok(None);
+    };
+    let inside = Command::new(&git)
+        .args(["-C", src.as_str(), "rev-parse", "--is-inside-work-tree"])
+        .output()
+        .map_err(|error| Error::io("inspect OpenUSD source repository", error))?;
+    if !inside.status.success() || String::from_utf8_lossy(&inside.stdout).trim() != "true" {
+        return Ok(None);
+    }
+    let status = Command::new(&git)
+        .args([
+            "-C",
+            src.as_str(),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ])
+        .output()
+        .map_err(|error| Error::io("inspect OpenUSD source worktree", error))?;
+    if !status.status.success() {
+        return Err(Error::coded(
+            "OPENUSD_SOURCE_IDENTITY_FAILED",
+            ost_core::Category::ExternalTool,
+            "git could not inspect the OpenUSD source worktree",
+        ));
+    }
+    if !status.stdout.is_empty() {
+        return Err(Error::coded(
+            "OPENUSD_SOURCE_DIRTY",
+            ost_core::Category::Precondition,
+            "the OpenUSD source checkout has tracked or untracked changes, so HEAD is not its exact identity",
+        )
+        .with_hint("commit, stash, or remove the source-tree changes before building"));
+    }
     let revision = Command::new(&git)
         .args(["-C", src.as_str(), "rev-parse", "HEAD"])
         .output()
-        .ok()
-        .filter(|output| output.status.success())?;
+        .map_err(|error| Error::io("read OpenUSD source revision", error))?;
+    if !revision.status.success() {
+        return Ok(None);
+    }
     let repository = Command::new(&git)
         .args(["-C", src.as_str(), "remote", "get-url", "origin"])
         .output()
-        .ok()
-        .filter(|output| output.status.success())?;
+        .map_err(|error| Error::io("read OpenUSD source origin", error))?;
+    if !repository.status.success() {
+        return Ok(None);
+    }
     let revision = String::from_utf8_lossy(&revision.stdout).trim().to_string();
     let repository = normalize_git_repository(String::from_utf8_lossy(&repository.stdout).trim());
     let identity = ResolvedSourceIdentity {
         repository,
         revision,
     };
-    identity.is_verified().then_some(identity)
+    Ok(identity.is_verified().then_some(identity))
 }
 
 fn normalize_git_repository(value: &str) -> String {
-    let value = value.trim().trim_end_matches('/').trim_end_matches(".git");
+    let value = value.trim();
     if let Some(rest) = value.strip_prefix("git@github.com:") {
-        return format!("https://github.com/{rest}");
+        return sanitize_source_url(&format!("https://github.com/{rest}"));
     }
     if let Some(rest) = value.strip_prefix("ssh://git@github.com/") {
-        return format!("https://github.com/{rest}");
+        return sanitize_source_url(&format!("https://github.com/{rest}"));
     }
-    value.to_string()
+    sanitize_source_url(value)
+}
+
+/// Keep stable source location components while preventing credentials or
+/// expiring query parameters from entering runtime manifests and provenance.
+fn sanitize_source_url(value: &str) -> String {
+    let value = value
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(value)
+        .trim_end_matches('/');
+    let sanitized = if let Some((scheme, rest)) = value.split_once("://") {
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let authority = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        if path.is_empty() {
+            format!("{scheme}://{authority}")
+        } else {
+            format!("{scheme}://{authority}/{path}")
+        }
+    } else if let Some((_, remote)) = value.split_once('@') {
+        if let Some((host, path)) = remote.split_once(':') {
+            format!("https://{host}/{path}")
+        } else {
+            remote.to_string()
+        }
+    } else {
+        value.to_string()
+    };
+    sanitized.trim_end_matches(".git").to_string()
 }
 
 fn validate_openusd_source(usd_src: &str) -> Result<Utf8PathBuf> {
@@ -2812,6 +2893,19 @@ fn artifact_build_metadata(
     if manifest.build_source.is_none() && manifest.build_dependencies.is_empty() {
         return Ok(supplied);
     }
+    if manifest.build_source.is_none()
+        && !manifest.build_dependencies.is_empty()
+        && !supplied_explicitly
+    {
+        return Err(Error::coded(
+            "BUILD_METADATA_SOURCE_REQUIRED",
+            ost_core::Category::Precondition,
+            "a managed runtime built from a non-Git source needs explicit source identity before export",
+        )
+        .with_hint(
+            "pass --build-metadata with the source repository/revision and builder identity; omit dependencies to reuse the captured closure",
+        ));
+    }
 
     let mut build = supplied
         .or_else(ost_artifact::github_build_metadata)
@@ -3160,6 +3254,9 @@ import sys as _ost_sys
 
 _ost_script = _ost_sys.argv[1]
 _ost_sys.argv = _ost_sys.argv[1:]
+_ost_script_dir = _ost_os.path.dirname(_ost_os.path.abspath(_ost_script))
+if _ost_script_dir not in _ost_sys.path:
+    _ost_sys.path.insert(0, _ost_script_dir)
 with open(_ost_script, "r", encoding="utf-8") as _ost_file:
     _ost_source = _ost_file.read()
 _ost_marker = "try:\n    # Download and install 3rd-Party dependencies"
@@ -3265,12 +3362,19 @@ fn build_with_script(
         r.prefix
     );
     println!("    {python} {}", script_args.join(" "));
-    let capture_path = r.prefix.join(".ost-build-usd-dependencies.jsonl");
-    if let Err(error) = std::fs::remove_file(capture_path.as_std_path()) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(Error::io(capture_path.to_string(), error));
-        }
-    }
+    // Preserve partial capture across a failed build. build_usd.py skips deps it
+    // already installed on retry, so discarding this ledger would make the next
+    // successful manifest record only the remaining suffix of the closure. The
+    // key isolates retries by exact script contents and argv.
+    let capture_key = ost_core::digest::sha256_hex(
+        serde_json::to_string(&(&script_source, &script_args))
+            .expect("build_usd capture identity serializes")
+            .as_bytes(),
+    );
+    let capture_path = r.prefix.join(format!(
+        ".ost-build-usd-dependencies-{}.jsonl",
+        capture_key.trim_start_matches("sha256:")
+    ));
     let mut args = vec!["-c".to_string(), BUILD_USD_CAPTURE_RUNNER.to_string()];
     args.extend(script_args);
     let mut env = msvc_env();
@@ -3282,13 +3386,14 @@ fn build_with_script(
     ));
     let build_result = run_build_step(python.as_str(), &args, &env, "build_usd.py");
     let capture_result = read_build_usd_dependencies(&capture_path);
+    build_result?;
+    let dependencies = capture_result?;
     if let Err(error) = std::fs::remove_file(capture_path.as_std_path()) {
-        if error.kind() != std::io::ErrorKind::NotFound && build_result.is_ok() {
+        if error.kind() != std::io::ErrorKind::NotFound {
             return Err(Error::io(capture_path.to_string(), error));
         }
     }
-    build_result?;
-    capture_result
+    Ok(dependencies)
 }
 
 fn read_build_usd_dependencies(path: &Utf8Path) -> Result<Vec<ResolvedDependencyIdentity>> {
@@ -3307,29 +3412,30 @@ fn read_build_usd_dependencies(path: &Utf8Path) -> Result<Vec<ResolvedDependency
         })?;
         dependencies.push(dependency_identity_from_download(download)?);
     }
-    dependencies.sort_by(|left, right| left.name.cmp(&right.name));
-    if dependencies
-        .windows(2)
-        .any(|pair| pair[0].name == pair[1].name)
-    {
-        return Err(Error::coded(
-            "OPENUSD_DEPENDENCY_CAPTURE_INVALID",
-            ost_core::Category::Validation,
-            "build_usd.py downloaded more than one source archive for the same dependency",
-        ));
+    dependencies.sort();
+    for pair in dependencies.windows(2) {
+        if pair[0].name == pair[1].name && pair[0] != pair[1] {
+            return Err(Error::coded(
+                "OPENUSD_DEPENDENCY_CAPTURE_INVALID",
+                ost_core::Category::Validation,
+                "build_usd.py downloaded conflicting source archives for the same dependency",
+            ));
+        }
     }
+    dependencies.dedup();
     Ok(dependencies)
 }
 
 fn dependency_identity_from_download(
     download: BuildUsdDownload,
 ) -> Result<ResolvedDependencyIdentity> {
+    let sanitized_url = sanitize_source_url(&download.url);
     let (repository, revision) = source_identity_from_download_url(
         &download.dependency,
-        &download.url,
+        &sanitized_url,
         &download.archive_sha256,
     );
-    let version = dependency_version(&revision, &download.url, &download.archive_sha256);
+    let version = dependency_version(&revision, &sanitized_url, &download.archive_sha256);
     let identity = ResolvedDependencyIdentity {
         name: download.dependency,
         version,
@@ -3337,13 +3443,14 @@ fn dependency_identity_from_download(
             repository,
             revision,
         },
+        archive_digest: Some(format!("sha256:{}", download.archive_sha256)),
     };
     if !identity.is_verified() {
         return Err(Error::coded(
             "OPENUSD_DEPENDENCY_CAPTURE_INVALID",
             ost_core::Category::Validation,
             format!(
-                "build_usd.py dependency '{}' has an incomplete source identity",
+                "build_usd.py dependency '{}' has an incomplete or invalid source identity",
                 identity.name
             ),
         ));
@@ -3356,6 +3463,7 @@ fn source_identity_from_download_url(
     url: &str,
     archive_sha256: &str,
 ) -> (String, String) {
+    let url = sanitize_source_url(url);
     if let Some(rest) = url.strip_prefix("https://github.com/") {
         let mut parts = rest.split('/');
         if let (Some(owner), Some(repository)) = (parts.next(), parts.next()) {
@@ -3402,7 +3510,7 @@ fn source_identity_from_download_url(
             format!("boost-{version}"),
         );
     }
-    (url.to_string(), format!("sha256:{archive_sha256}"))
+    (url, format!("sha256:{archive_sha256}"))
 }
 
 fn dependency_version(revision: &str, url: &str, archive_sha256: &str) -> String {
@@ -4594,10 +4702,15 @@ mod tests {
             ),
         ];
         for (download, repository, revision, version) in cases {
+            let archive_digest = format!("sha256:{}", download.archive_sha256);
             let identity = dependency_identity_from_download(download).unwrap();
             assert_eq!(identity.source.repository, repository);
             assert_eq!(identity.source.revision, revision);
             assert_eq!(identity.version, version);
+            assert_eq!(
+                identity.archive_digest.as_deref(),
+                Some(archive_digest.as_str())
+            );
         }
     }
 
@@ -4617,6 +4730,12 @@ mod tests {
         assert_eq!(dependencies[0].name, "MaterialX");
         assert_eq!(dependencies[0].version, "1.39.4");
         assert_eq!(dependencies[1].name, "oneTBB");
+
+        // A retry may download the same dependency again. Identical ledger
+        // entries merge; only a conflicting source/digest is ambiguous.
+        let identical = std::fs::read_to_string(capture.as_std_path()).unwrap();
+        std::fs::write(capture.as_std_path(), format!("{identical}{identical}")).unwrap();
+        assert_eq!(read_build_usd_dependencies(&capture).unwrap().len(), 2);
 
         std::fs::write(
             capture.as_std_path(),
@@ -4642,8 +4761,16 @@ mod tests {
         let script = scratch.join("build_usd.py");
         let capture = scratch.join("dependencies.jsonl");
         std::fs::write(
+            scratch.join("apple_utils.py").as_std_path(),
+            "SIBLING_IMPORT_WORKED = True\n",
+        )
+        .unwrap();
+        std::fs::write(
             script.as_std_path(),
             r#"import os
+import apple_utils
+
+assert apple_utils.SIBLING_IMPORT_WORKED
 
 def DownloadURL(url, context, force, extractDir=None, dontExtract=None, destFileName=None, expectedSHA256=None):
     filename = destFileName or url.split("/")[-1]
@@ -4677,6 +4804,7 @@ except Exception:
         assert_eq!(dependencies.len(), 1);
         assert_eq!(dependencies[0].name, "oneTBB");
         assert_eq!(dependencies[0].version, "2021.12.0");
+        assert!(dependencies[0].archive_digest.is_some());
         assert_eq!(
             dependencies[0].source.repository,
             "https://github.com/oneapi-src/oneTBB"
@@ -4700,6 +4828,7 @@ except Exception:
                         repository: "https://github.com/oneapi-src/oneTBB".into(),
                         revision: "v2021.12.0".into(),
                     },
+                    archive_digest: None,
                 }],
             )
             .unwrap();
@@ -4732,6 +4861,92 @@ except Exception:
                 .code(),
             "BUILD_METADATA_SOURCE_MISMATCH"
         );
+
+        let mut archive_manifest = exportable_manifest();
+        archive_manifest
+            .set_build_identities(None, manifest.build_dependencies.clone())
+            .unwrap();
+        assert_eq!(
+            artifact_build_metadata(&archive_manifest, None, false)
+                .unwrap_err()
+                .code(),
+            "BUILD_METADATA_SOURCE_REQUIRED"
+        );
+        let supplied = serde_json::json!({
+            "source": {
+                "repository": "https://downloads.example/openusd",
+                "revision": "sha256:source-tree"
+            },
+            "builder": {
+                "id": "https://build.example/openusd",
+                "identity": { "host": "builder-01" }
+            }
+        });
+        let metadata = artifact_build_metadata(&archive_manifest, Some(supplied), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata["dependencies"][0]["name"], "oneTBB");
+    }
+
+    #[test]
+    fn source_urls_are_sanitized_before_identity_storage() {
+        assert_eq!(
+            normalize_git_repository(
+                "https://secret-token@github.com/PixarAnimationStudios/OpenUSD.git?access=secret#fragment"
+            ),
+            "https://github.com/PixarAnimationStudios/OpenUSD"
+        );
+        let identity = dependency_identity_from_download(BuildUsdDownload {
+            dependency: "custom".into(),
+            url: "https://user:secret@example.invalid/source-1.0.zip?token=secret".into(),
+            archive_sha256: "dd".repeat(32),
+        })
+        .unwrap();
+        assert_eq!(
+            identity.source.repository,
+            "https://example.invalid/source-1.0.zip"
+        );
+        assert!(!identity.version.contains("secret"));
+    }
+
+    #[test]
+    fn dirty_git_source_is_rejected_before_build() {
+        let Some(git) = tools::which("git") else {
+            return;
+        };
+        let scratch = temp_dir("dirty-openusd-source");
+        let run = |args: &[&str]| {
+            let status = Command::new(&git)
+                .args(args)
+                .current_dir(scratch.as_std_path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git command failed: {args:?}");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.name", "OpenStrata Test"]);
+        run(&["config", "user.email", "test@openstrata.invalid"]);
+        std::fs::write(scratch.join("source.cpp").as_std_path(), "clean\n").unwrap();
+        run(&["add", "source.cpp"]);
+        run(&["commit", "-q", "-m", "source"]);
+        run(&[
+            "remote",
+            "add",
+            "origin",
+            "https://token@github.com/PixarAnimationStudios/OpenUSD.git",
+        ]);
+
+        let identity = git_source_identity(&scratch).unwrap().unwrap();
+        assert_eq!(
+            identity.repository,
+            "https://github.com/PixarAnimationStudios/OpenUSD"
+        );
+        std::fs::write(scratch.join("untracked.py").as_std_path(), "dirty\n").unwrap();
+        assert_eq!(
+            git_source_identity(&scratch).unwrap_err().code(),
+            "OPENUSD_SOURCE_DIRTY"
+        );
+        std::fs::remove_dir_all(scratch.as_std_path()).unwrap();
     }
 
     #[test]

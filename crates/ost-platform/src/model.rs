@@ -212,6 +212,11 @@ pub struct ResolvedDependencyIdentity {
     pub name: String,
     pub version: String,
     pub source: ResolvedSourceIdentity,
+    /// Digest of the exact source archive consumed by the producer, when the
+    /// dependency was resolved from an archive rather than a content-addressed
+    /// source repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_digest: Option<String>,
 }
 
 impl ResolvedDependencyIdentity {
@@ -219,7 +224,20 @@ impl ResolvedDependencyIdentity {
         exact_identity_component(&self.name)
             && exact_identity_component(&self.version)
             && self.source.is_verified()
+            && self
+                .archive_digest
+                .as_deref()
+                .is_none_or(is_canonical_sha256)
     }
+}
+
+fn is_canonical_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 fn exact_identity_component(value: &str) -> bool {
@@ -615,13 +633,44 @@ mod tests {
                 repository: "github.com/uxlfoundation/oneTBB".into(),
                 revision: "v2022.1.0".into(),
             },
+            archive_digest: None,
         };
         let mut other_dependency = dependency.clone();
         other_dependency.source.revision = "v2022.2.0".into();
         assert_ne!(
-            compatibility.selector(target, "26.05", Some(&source), &[dependency]),
-            compatibility.selector(target, "26.05", Some(&source), &[other_dependency])
+            compatibility.selector(
+                target,
+                "26.05",
+                Some(&source),
+                std::slice::from_ref(&dependency),
+            ),
+            compatibility.selector(
+                target,
+                "26.05",
+                Some(&source),
+                std::slice::from_ref(&other_dependency),
+            )
         );
+
+        let mut archived_dependency = dependency.clone();
+        archived_dependency.archive_digest = Some(format!("sha256:{}", "ab".repeat(32)));
+        assert_ne!(
+            compatibility.selector(
+                target,
+                "26.05",
+                Some(&source),
+                std::slice::from_ref(&dependency),
+            ),
+            compatibility.selector(
+                target,
+                "26.05",
+                Some(&source),
+                std::slice::from_ref(&archived_dependency),
+            )
+        );
+        let mut malformed_dependency = archived_dependency;
+        malformed_dependency.archive_digest = Some("sha256:not-a-digest".into());
+        assert!(!malformed_dependency.is_verified());
     }
 
     #[test]
