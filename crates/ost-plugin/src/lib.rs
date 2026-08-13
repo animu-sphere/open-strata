@@ -32,15 +32,15 @@ mod workspace;
 
 pub use bundle::Bundle;
 pub use doctor::{diagnose, Diagnostic, DoctorReport, RuntimeContext, Status};
-pub use levels::{run_levels, usdview_check, Probe, Session, ToolOutput};
+pub use levels::{fixture_identifier, run_levels, usdview_check, Probe, Session, ToolOutput};
 pub use library::{
     Library, LibraryCmake, LibraryIdentity, LibraryManifest, LibraryRequires, LibraryRuntime,
     LIBRARY_MANIFEST, LIBRARY_SCHEMA,
 };
 pub use model::{
     BundleDependency, CxxAbi, LibraryDependency, PluginIdentity, PluginKind, PluginManifest,
-    PluginManifestHeader, Requires, RuntimeReq, SchemaSection, Tests, UsdSection, PLUGIN_MANIFEST,
-    PLUGIN_SCHEMA,
+    PluginManifestHeader, Requires, RuntimeReq, SchemaSection, SmokeFixture,
+    StructuredSmokeFixture, Tests, UsdSection, PLUGIN_MANIFEST, PLUGIN_SCHEMA,
 };
 pub use plug_info::{
     contains_template_token, library_plugin_names, library_plugin_paths, merge_schema_types,

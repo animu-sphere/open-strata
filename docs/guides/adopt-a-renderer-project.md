@@ -76,6 +76,18 @@ ost renderer view scene.usda --profile usd     # managed usdview session
 ost renderer viewport -- --frames 8 --hidden   # standalone native viewport
 ```
 
+Both managed launch paths use the ordinary build service's phase budgets: 600
+seconds for configure and 7200 seconds for build. Override either while
+reproducing recovery without waiting for the default boundary; zero disables
+that phase's timeout:
+
+```sh
+ost renderer view scene.usda --configure-timeout 30 --build-timeout 120
+ost renderer viewport --configure-timeout 30 --build-timeout 120 -- --hidden
+```
+
+The selected budgets are retained in successful and failed launch records.
+
 Before paying the configure/build cost, resolve the named intent and
 scene/runtime capabilities:
 

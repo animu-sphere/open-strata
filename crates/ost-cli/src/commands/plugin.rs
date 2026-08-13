@@ -39,10 +39,10 @@ use ost_core::template::SCAFFOLD_PROVENANCE;
 use ost_core::variant::{Abi, Variant};
 use ost_core::{tools, Category, Error, Host, Result};
 use ost_plugin::{
-    adjacent_golden, default_template_id, diagnose, run_levels, scaffold_with_template_inputs,
-    session_env_with, usdview_check, Bundle, CxxAbi, DoctorReport, ExecTemplateInputs, Library,
-    PluginKind, PluginVerification, Probe, RuntimeContext, Session, Status, ToolOutput,
-    PLUGIN_VERIFICATION, PLUGIN_VERIFICATION_SCHEMA,
+    adjacent_golden, default_template_id, diagnose, fixture_identifier, run_levels,
+    scaffold_with_template_inputs, session_env_with, usdview_check, Bundle, CxxAbi, DoctorReport,
+    ExecTemplateInputs, Library, PluginKind, PluginVerification, Probe, RuntimeContext, Session,
+    Status, ToolOutput, PLUGIN_VERIFICATION, PLUGIN_VERIFICATION_SCHEMA,
 };
 use ost_runtime::{EnvSet, ProfileCatalog, RuntimeManifest, MANIFEST_FILE};
 
@@ -6544,7 +6544,7 @@ fn view(
                 "usdview not found in the runtime (build/adopt one with usdview enabled)",
             )
         })?;
-    let fixture_path = bundle.path(fixture); // absolute passes through; else under the bundle
+    let fixture_identifier = fixture_identifier(&bundle, fixture);
 
     let mut contributing = Vec::with_capacity(with_bundles.len() + 1);
     contributing.push(&bundle);
@@ -6560,7 +6560,7 @@ fn view(
         host.os,
     );
     let mut cmd = Command::new(&usdview);
-    cmd.arg(fixture_path.as_str());
+    cmd.arg(&fixture_identifier);
     session.apply(&mut cmd); // overlay the session env, no global mutation
     let status = cmd
         .status()

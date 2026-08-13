@@ -1221,8 +1221,10 @@ Open a scene in usdview with the built Hydra renderer selected
 | Option | Description |
 | --- | --- |
 | `--build-dir <BUILD_DIR>` | External/prebuilt Hydra CMake tree. Omit for an OST-managed build |
+| `--build-timeout <BUILD_TIMEOUT>` | Managed build timeout in seconds; 0 disables it |
 | `--camera <CAMERA>` | Camera prim to view through. Omitted by default: the scene is inspected and a camera is used only if one is actually there, otherwise usdview opens on its free camera |
 | `--config <CONFIG>` | CMake configuration to install and inspect |
+| `--configure-timeout <CONFIGURE_TIMEOUT>` | Managed configure timeout in seconds; 0 disables it |
 | `--generator <GENERATOR>` | CMake generator for the managed build. Ninja remains the default |
 | `--intent <INTENT>` | Project-declared build intent to combine with the Hydra workflow |
 | `--profile <PROFILE>` | Runtime profile. Auto-selects a unique pulled usdview runtime |
@@ -1245,7 +1247,9 @@ Build and launch the standalone native viewport adapter
 
 | Option | Description |
 | --- | --- |
+| `--build-timeout <BUILD_TIMEOUT>` | Managed build timeout in seconds; 0 disables it |
 | `--config <CONFIG>` | CMake configuration to build |
+| `--configure-timeout <CONFIGURE_TIMEOUT>` | Managed configure timeout in seconds; 0 disables it |
 | `--generator <GENERATOR>` | CMake generator for the managed build. Ninja remains the default |
 | `--intent <INTENT>` | Project-declared build intent to combine with the viewport workflow |
 | `--preflight` | Resolve the intent, runtime profile, adapter, and scene capabilities, then stop before configuring or building |

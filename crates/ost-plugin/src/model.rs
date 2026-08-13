@@ -245,11 +245,52 @@ pub struct SchemaSection {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tests {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub smoke: Vec<String>,
+    pub smoke: Vec<SmokeFixture>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roundtrip: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub negative: Vec<String>,
+}
+
+/// A smoke fixture may retain the legacy path-only form or attach the
+/// `SdfFileFormat::FileFormatArguments` required to open a strict source
+/// format. The structured form remains bundle-relative; [`crate::Bundle::load`]
+/// validates the path and the identifier-safe argument encoding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SmokeFixture {
+    Path(String),
+    Structured(StructuredSmokeFixture),
+}
+
+impl SmokeFixture {
+    pub fn path(&self) -> &str {
+        match self {
+            SmokeFixture::Path(path) => path,
+            SmokeFixture::Structured(fixture) => &fixture.path,
+        }
+    }
+
+    pub fn file_format_arguments(&self) -> &IndexMap<String, String> {
+        match self {
+            SmokeFixture::Path(_) => empty_file_format_arguments(),
+            SmokeFixture::Structured(fixture) => &fixture.file_format_arguments,
+        }
+    }
+}
+
+fn empty_file_format_arguments() -> &'static IndexMap<String, String> {
+    static EMPTY: std::sync::OnceLock<IndexMap<String, String>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(IndexMap::new)
+}
+
+/// The additive structured smoke-fixture form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StructuredSmokeFixture {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub file_format_arguments: IndexMap<String, String>,
 }
 
 /// The full `openstrata.plugin.yaml` document.
@@ -324,15 +365,14 @@ impl PluginManifest {
     /// All fixtures referenced across every test level, deduplicated in order.
     pub fn all_fixtures(&self) -> Vec<&str> {
         let mut seen = Vec::new();
-        for f in self
-            .tests
-            .smoke
-            .iter()
-            .chain(&self.tests.roundtrip)
-            .chain(&self.tests.negative)
-        {
-            if !seen.contains(&f.as_str()) {
-                seen.push(f.as_str());
+        for fixture in &self.tests.smoke {
+            if !seen.contains(&fixture.path()) {
+                seen.push(fixture.path());
+            }
+        }
+        for fixture in self.tests.roundtrip.iter().chain(&self.tests.negative) {
+            if !seen.contains(&fixture.as_str()) {
+                seen.push(fixture.as_str());
             }
         }
         seen
@@ -411,6 +451,45 @@ tests:
                 "tests/fixtures/invalid.lumagraph"
             ]
         );
+    }
+
+    #[test]
+    fn smoke_fixtures_accept_legacy_and_structured_forms() {
+        let source = SAMPLE.replace(
+            "smoke: [tests/fixtures/basic.lumagraph]",
+            "smoke:\n    - tests/fixtures/basic.lumagraph\n    - path: tests/fixtures/strict.ply\n      file_format_arguments: { epsg: \"4978\", mode: points }",
+        );
+        let manifest = PluginManifest::parse(&source).expect("both smoke forms parse");
+        assert_eq!(
+            manifest.tests.smoke[0].path(),
+            "tests/fixtures/basic.lumagraph"
+        );
+        assert!(manifest.tests.smoke[0].file_format_arguments().is_empty());
+        assert_eq!(manifest.tests.smoke[1].path(), "tests/fixtures/strict.ply");
+        assert_eq!(
+            manifest.tests.smoke[1]
+                .file_format_arguments()
+                .get("epsg")
+                .map(String::as_str),
+            Some("4978")
+        );
+        assert_eq!(
+            manifest.all_fixtures(),
+            vec![
+                "tests/fixtures/basic.lumagraph",
+                "tests/fixtures/strict.ply",
+                "tests/fixtures/invalid.lumagraph"
+            ]
+        );
+    }
+
+    #[test]
+    fn structured_smoke_fixture_rejects_unknown_fields() {
+        let source = SAMPLE.replace(
+            "smoke: [tests/fixtures/basic.lumagraph]",
+            "smoke: [{ path: tests/fixtures/basic.lumagraph, arguments: { epsg: \"4978\" } }]",
+        );
+        assert!(PluginManifest::parse(&source).is_err());
     }
 
     #[test]

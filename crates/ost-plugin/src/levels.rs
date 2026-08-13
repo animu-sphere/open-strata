@@ -48,7 +48,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::bundle::Bundle;
 use crate::doctor::Diagnostic;
-use crate::model::PluginKind;
+use crate::model::{PluginKind, SmokeFixture};
 use crate::verification::{adjacent_golden, PluginVerification, PLUGIN_VERIFICATION};
 
 /// The captured result of running one tool.
@@ -240,6 +240,13 @@ pub fn usdview_check(bundle: &Bundle, session: &Session, fixture: Option<&str>) 
     level6_usdview(bundle, session, fixture)
 }
 
+/// Resolve an explicit fixture path to the same OpenUSD layer identifier used
+/// by the verification pyramid. If the path names a structured smoke fixture,
+/// its file-format arguments are retained for interactive callers as well.
+pub fn fixture_identifier(bundle: &Bundle, fixture: &str) -> String {
+    explicit_fixture(bundle, fixture).identifier()
+}
+
 /// The file extension this fileformat plugin registers, from `provides`
 /// (`usd-fileformat:<ext>`) with the first declared fixture as a fallback.
 fn fileformat_ext(bundle: &Bundle) -> Option<String> {
@@ -257,32 +264,97 @@ fn fileformat_ext(bundle: &Bundle) -> Option<String> {
         })
 }
 
-/// The first smoke fixture (or any declared fixture) as a path under the bundle.
-fn smoke_fixture(bundle: &Bundle) -> Option<Utf8PathBuf> {
-    let rel = bundle
-        .manifest
-        .tests
-        .smoke
-        .first()
-        .map(String::as_str)
-        .or_else(|| bundle.manifest.all_fixtures().first().copied())?;
-    Some(bundle.path(rel))
+/// A fixture resolved under its bundle together with the arguments that form
+/// its OpenUSD layer identifier.
+struct ResolvedFixture<'a> {
+    relative: &'a str,
+    path: Utf8PathBuf,
+    source: Option<&'a SmokeFixture>,
+}
+
+impl ResolvedFixture<'_> {
+    fn file_format_arguments(&self) -> &indexmap::IndexMap<String, String> {
+        match self.source {
+            Some(source) => source.file_format_arguments(),
+            None => empty_file_format_arguments(),
+        }
+    }
+
+    /// Match `SdfLayer::CreateIdentifier`: std::map orders keys and OpenUSD
+    /// currently joins the entries without escaping.
+    fn identifier(&self) -> String {
+        let arguments = self.file_format_arguments();
+        if arguments.is_empty() {
+            return self.path.to_string();
+        }
+        let mut entries = arguments.iter().collect::<Vec<_>>();
+        entries.sort_by_key(|(key, _)| *key);
+        let encoded = entries
+            .into_iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        format!("{}:SDF_FORMAT_ARGS:{encoded}", self.path)
+    }
+}
+
+fn empty_file_format_arguments() -> &'static indexmap::IndexMap<String, String> {
+    static EMPTY: std::sync::OnceLock<indexmap::IndexMap<String, String>> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(indexmap::IndexMap::new)
+}
+
+/// The first smoke fixture (or any declared fixture) resolved under the bundle.
+fn smoke_fixture(bundle: &Bundle) -> Option<ResolvedFixture<'_>> {
+    if let Some(source) = bundle.manifest.tests.smoke.first() {
+        return Some(ResolvedFixture {
+            relative: source.path(),
+            path: bundle.path(source.path()),
+            source: Some(source),
+        });
+    }
+    let relative = bundle.manifest.all_fixtures().first().copied()?;
+    Some(ResolvedFixture {
+        relative,
+        path: bundle.path(relative),
+        source: None,
+    })
+}
+
+/// Resolve a caller-selected fixture back to its manifest declaration when
+/// possible. Canonical comparison covers an absolute spelling of the same
+/// bundle-relative fixture and normalizes platform-specific path details.
+fn explicit_fixture<'a>(bundle: &'a Bundle, fixture: &'a str) -> ResolvedFixture<'a> {
+    let path = bundle.path(fixture);
+    let source = bundle.manifest.tests.smoke.iter().find(|candidate| {
+        if candidate.path() == fixture {
+            return true;
+        }
+        let candidate_path = bundle.path(candidate.path());
+        if candidate_path == path {
+            return true;
+        }
+        match (
+            std::fs::canonicalize(candidate_path.as_std_path()),
+            std::fs::canonicalize(path.as_std_path()),
+        ) {
+            (Ok(candidate), Ok(selected)) => candidate == selected,
+            _ => false,
+        }
+    });
+    ResolvedFixture {
+        relative: fixture,
+        path,
+        source,
+    }
 }
 
 /// The fixtures L5 should flatten. Every explicitly declared round-trip fixture
 /// is a verification claim; the single smoke fallback exists only for legacy
 /// manifests that predate `tests.roundtrip`.
-fn roundtrip_fixtures(bundle: &Bundle) -> Vec<(&str, Utf8PathBuf)> {
+fn roundtrip_fixtures(bundle: &Bundle) -> Vec<ResolvedFixture<'_>> {
     if bundle.manifest.tests.roundtrip.is_empty() {
-        return bundle
-            .manifest
-            .tests
-            .smoke
-            .first()
-            .map(String::as_str)
-            .or_else(|| bundle.manifest.all_fixtures().first().copied())
-            .map(|rel| vec![(rel, bundle.path(rel))])
-            .unwrap_or_default();
+        return smoke_fixture(bundle).into_iter().collect();
     }
 
     let mut seen = Vec::new();
@@ -292,7 +364,11 @@ fn roundtrip_fixtures(bundle: &Bundle) -> Vec<(&str, Utf8PathBuf)> {
             continue;
         }
         seen.push(rel.as_str());
-        fixtures.push((rel.as_str(), bundle.path(rel)));
+        fixtures.push(ResolvedFixture {
+            relative: rel,
+            path: bundle.path(rel),
+            source: None,
+        });
     }
     fixtures
 }
@@ -401,11 +477,16 @@ fn level2_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnosti
     let Some(fixture) = smoke_fixture(bundle) else {
         return Diagnostic::skip(ID, 2, "no smoke fixture declared");
     };
-    if !fixture.as_std_path().is_file() {
-        return Diagnostic::fail(ID, 2, format!("fixture '{fixture}' is missing"), vec![]);
+    if !fixture.path.as_std_path().is_file() {
+        return Diagnostic::fail(
+            ID,
+            2,
+            format!("fixture '{}' is missing", fixture.path),
+            vec![],
+        );
     }
 
-    let path = fixture.to_string().replace('\\', "/");
+    let path = fixture.path.to_string().replace('\\', "/");
     let uri = format!("{scheme}:{path}");
     let uri_literal = serde_json::to_string(&uri).unwrap_or_else(|_| "\"\"".into());
     let script = format!(
@@ -655,8 +736,13 @@ fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnost
     let Some(fixture) = smoke_fixture(bundle) else {
         return Diagnostic::skip(ID, 4, "no smoke fixture declared");
     };
-    if !fixture.as_std_path().is_file() {
-        return Diagnostic::fail(ID, 4, format!("fixture '{fixture}' is missing"), vec![]);
+    if !fixture.path.as_std_path().is_file() {
+        return Diagnostic::fail(
+            ID,
+            4,
+            format!("fixture '{}' is missing", fixture.path),
+            vec![],
+        );
     }
 
     // Open the fixture, find a prim with one of the schema APIs applied, snapshot
@@ -664,10 +750,14 @@ fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnost
     // still applied and the attribute values are unchanged. `__NAMES__`/
     // `__FIXTURE__` are substituted (not `format!`-interpolated) so the script's
     // Python dict/set literals keep their braces.
-    let path = fixture.to_string().replace('\\', "/");
+    let path = serde_json::to_string(&fixture.path.to_string().replace('\\', "/"))
+        .unwrap_or_else(|_| "\"\"".into());
+    let arguments =
+        serde_json::to_string(fixture.file_format_arguments()).unwrap_or_else(|_| "{}".into());
+    let identifier = format!("Sdf.Layer.CreateIdentifier({path}, {arguments})");
     let script = SCHEMA_ROUNDTRIP_PY
         .replace("__NAMES__", &py_name_list(&names))
-        .replace("__FIXTURE__", &format!("'{path}'"));
+        .replace("__FIXTURE__", &identifier);
     let out = session
         .probe
         .run(python, &["-c", &with_dll_preamble(&script)]);
@@ -696,7 +786,7 @@ fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnost
 /// Python for L4: apply-and-round-trip. Markers are substituted before running.
 const SCHEMA_ROUNDTRIP_PY: &str = r#"
 import sys
-from pxr import Usd
+from pxr import Sdf, Usd
 names = __NAMES__
 stage = Usd.Stage.Open(__FIXTURE__)
 if not stage:
@@ -812,16 +902,17 @@ fn level3_usdcat(bundle: &Bundle, session: &Session) -> Diagnostic {
     let Some(fixture) = smoke_fixture(bundle) else {
         return Diagnostic::skip(ID, 3, "no smoke fixture declared");
     };
-    if !fixture.as_std_path().is_file() {
+    if !fixture.path.as_std_path().is_file() {
         return Diagnostic::fail(
             ID,
             3,
-            format!("fixture '{fixture}' is missing"),
+            format!("fixture '{}' is missing", fixture.path),
             vec!["add the fixture or fix `tests.smoke`".into()],
         );
     }
 
-    let out = session.probe.run(usdcat, &[fixture.as_str()]);
+    let identifier = fixture.identifier();
+    let out = session.probe.run(usdcat, &[&identifier]);
     if out.unspawned() {
         return Diagnostic::fail(ID, 3, format!("could not run usdcat ({usdcat})"), vec![]);
     }
@@ -831,7 +922,7 @@ fn level3_usdcat(bundle: &Bundle, session: &Session) -> Diagnostic {
             3,
             format!(
                 "usdcat read '{}' and emitted USDA",
-                fixture.file_name().unwrap_or("")
+                fixture.path.file_name().unwrap_or("")
             ),
         )
     } else {
@@ -852,14 +943,24 @@ fn level4_stage_open(bundle: &Bundle, session: &Session) -> Diagnostic {
     let Some(fixture) = smoke_fixture(bundle) else {
         return Diagnostic::skip(ID, 4, "no smoke fixture declared");
     };
-    if !fixture.as_std_path().is_file() {
-        return Diagnostic::fail(ID, 4, format!("fixture '{fixture}' is missing"), vec![]);
+    if !fixture.path.as_std_path().is_file() {
+        return Diagnostic::fail(
+            ID,
+            4,
+            format!("fixture '{}' is missing", fixture.path),
+            vec![],
+        );
     }
 
-    // Forward-slash the path so it embeds cleanly in the Python string literal.
-    let path = fixture.to_string().replace('\\', "/");
-    let script =
-        format!("import sys\nfrom pxr import Usd\nsys.exit(0 if Usd.Stage.Open('{path}') else 8)");
+    // Use USD's own identifier helper in Python so this path stays aligned with
+    // its file-format argument contract even if the encoding evolves.
+    let path = serde_json::to_string(&fixture.path.to_string().replace('\\', "/"))
+        .unwrap_or_else(|_| "\"\"".into());
+    let arguments =
+        serde_json::to_string(fixture.file_format_arguments()).unwrap_or_else(|_| "{}".into());
+    let script = format!(
+        "import sys\nfrom pxr import Sdf, Usd\nidentifier = Sdf.Layer.CreateIdentifier({path}, {arguments})\nsys.exit(0 if Usd.Stage.Open(identifier) else 8)"
+    );
     let out = session
         .probe
         .run(python, &["-c", &with_dll_preamble(&script)]);
@@ -905,10 +1006,10 @@ fn level5_golden(bundle: &Bundle, session: &Session) -> Diagnostic {
 
     let mut results = fixtures
         .into_iter()
-        .map(|(fixture_rel, fixture)| {
-            let diagnostic =
-                level5_golden_fixture(bundle, session, contract.as_ref(), fixture_rel, &fixture);
-            (fixture_rel, diagnostic)
+        .map(|fixture| {
+            let relative = fixture.relative;
+            let diagnostic = level5_golden_fixture(bundle, session, contract.as_ref(), &fixture);
+            (relative, diagnostic)
         })
         .collect::<Vec<_>>();
     if results.len() == 1 {
@@ -981,10 +1082,10 @@ fn level5_golden_fixture(
     bundle: &Bundle,
     session: &Session,
     contract: Option<&PluginVerification>,
-    fixture_rel: &str,
-    fixture: &Utf8Path,
+    fixture: &ResolvedFixture<'_>,
 ) -> Diagnostic {
     const ID: &str = "golden.roundtrip";
+    let fixture_rel = fixture.relative;
     let declared = contract.and_then(|contract| contract.oracle_for(fixture_rel));
     if let Some(entry) = declared {
         if let Err(error) = entry.verify(&bundle.root) {
@@ -1007,10 +1108,11 @@ fn level5_golden_fixture(
         // A bare "no golden file" leaves the author guessing the exact name, that
         // it must be the *flattened* stage, and how to produce it. Name all three.
         let golden_name = golden.file_name().unwrap_or(golden.as_str());
-        let fixture_name = fixture.file_name().unwrap_or(fixture.as_str());
+        let fixture_name = fixture.path.file_name().unwrap_or(fixture.path.as_str());
+        let identifier = fixture.identifier();
         let recipe = format!(
             "generate it: ost plugin run {} -- usdcat --flatten {} --out {}",
-            bundle.root, fixture, golden,
+            bundle.root, identifier, golden,
         );
         return Diagnostic::skip_with_actions(
             ID,
@@ -1027,9 +1129,10 @@ fn level5_golden_fixture(
     };
 
     let output = flatten_capture_path();
+    let identifier = fixture.identifier();
     let out = session
         .probe
-        .run_to_file(usdcat, &["--flatten", fixture.as_str()], &output);
+        .run_to_file(usdcat, &["--flatten", &identifier], &output);
     if out.unspawned() {
         let _ = std::fs::remove_file(output.as_std_path());
         return Diagnostic::fail(ID, 5, format!("could not run usdcat ({usdcat})"), vec![]);
@@ -1110,23 +1213,29 @@ fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> 
     if !session.has_display {
         return Diagnostic::skip(ID, 6, "no display available for usdview");
     };
-    let path = match fixture {
-        Some(f) => bundle.path(f),
+    let selected = match fixture {
+        Some(relative) => explicit_fixture(bundle, relative),
         None => match smoke_fixture(bundle) {
-            Some(p) => p,
+            Some(fixture) => fixture,
             None => return Diagnostic::skip(ID, 6, "no fixture to open"),
         },
     };
-    if !path.as_std_path().is_file() {
-        return Diagnostic::fail(ID, 6, format!("fixture '{path}' is missing"), vec![]);
+    if !selected.path.as_std_path().is_file() {
+        return Diagnostic::fail(
+            ID,
+            6,
+            format!("fixture '{}' is missing", selected.path),
+            vec![],
+        );
     }
 
     // `--quitAfterStartup` opens the stage in usdview then exits: a non-interactive
     // launch probe. The exit code is the signal — usdview prints many benign
     // warnings (e.g. no numpy) on stderr even on a clean startup.
+    let identifier = selected.identifier();
     let out = session
         .probe
-        .run(usdview, &[path.as_str(), "--quitAfterStartup"]);
+        .run(usdview, &[&identifier, "--quitAfterStartup"]);
     if out.unspawned() {
         return Diagnostic::fail(ID, 6, format!("could not run usdview ({usdview})"), vec![]);
     }
@@ -1136,7 +1245,7 @@ fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> 
             6,
             format!(
                 "usdview opened '{}' and exited cleanly",
-                path.file_name().unwrap_or("")
+                selected.path.file_name().unwrap_or("")
             ),
         )
     } else {
@@ -1769,6 +1878,95 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         assert_eq!(by_id("plugin.discovery"), Status::Pass);
         assert_eq!(by_id("usdcat.read"), Status::Pass);
         assert_eq!(by_id("python.stage_open"), Status::Pass);
+    }
+
+    #[test]
+    fn structured_smoke_arguments_reach_every_stage_opening_level() {
+        let (_dir, mut bundle) = bundle_with_fixture();
+        let structured = PluginManifest::parse(
+            r#"
+plugin: { name: toy, version: 0.1.0, kind: usd-fileformat }
+runtime: { openusd: ">=25.05,<26.0" }
+provides: ["usd-fileformat:toy"]
+usd: { plug_info: plugin/resources/toy/plugInfo.json }
+tests:
+  smoke:
+    - path: tests/fixtures/basic.toy
+      file_format_arguments: { mode: points, epsg: "4978" }
+"#,
+        )
+        .unwrap();
+        bundle.manifest.tests.smoke = structured.tests.smoke;
+        std::fs::write(
+            bundle
+                .path("tests/fixtures/basic.toy.golden.usda")
+                .as_std_path(),
+            "#usda 1.0\n",
+        )
+        .unwrap();
+
+        let probe = FakeProbe::new()
+            .on("python", Some(0), "", "")
+            .on("usdcat", Some(0), "#usda 1.0\n", "")
+            .on("usdview", Some(0), "", "");
+        let session = Session {
+            probe: &probe,
+            usdcat: Some("usdcat".into()),
+            python: Some("python".into()),
+            usdview: Some("usdview".into()),
+            has_display: true,
+        };
+
+        let diagnostics = run_levels(&bundle, &session, 6);
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.status == Status::Pass));
+
+        let identifier = format!(
+            "{}:SDF_FORMAT_ARGS:epsg=4978&mode=points",
+            bundle.path("tests/fixtures/basic.toy")
+        );
+        let calls = probe.calls.borrow();
+        assert!(
+            calls
+                .iter()
+                .any(|call| call == &format!("usdcat {identifier}")),
+            "{calls:#?}"
+        );
+        assert!(
+            calls.iter().any(|call| {
+                call.starts_with("python -c ")
+                    && call.contains("Sdf.Layer.CreateIdentifier(")
+                    && call.contains(r#"{"mode":"points","epsg":"4978"}"#)
+                    && call.contains("Usd.Stage.Open(identifier)")
+            }),
+            "{calls:#?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| { call.starts_with(&format!("usdcat --flatten {identifier} --out ")) }),
+            "{calls:#?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call == &format!("usdview {identifier} --quitAfterStartup")),
+            "{calls:#?}"
+        );
+        drop(calls);
+
+        probe.calls.borrow_mut().clear();
+        let diagnostic = usdview_check(&bundle, &session, Some("tests/fixtures/basic.toy"));
+        assert_eq!(diagnostic.status, Status::Pass);
+        assert_eq!(
+            probe.calls.borrow().as_slice(),
+            [format!("usdview {identifier} --quitAfterStartup")]
+        );
+        assert_eq!(
+            fixture_identifier(&bundle, bundle.path("tests/fixtures/basic.toy").as_str()),
+            identifier
+        );
     }
 
     #[test]

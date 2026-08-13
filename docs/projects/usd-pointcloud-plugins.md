@@ -111,11 +111,11 @@ format's required `epsg` argument. A small USDA reference carrying
 `SDF_FORMAT_ARGS:epsg=4978` preserved the strict PLY contract and made all three
 hosted PLY cells pass.
 
-The remaining upstream P2 ask is tracked in the
-[v0.22.0 roadmap](../roadmap/current.md): allow a smoke fixture to declare both
-its path and file-format arguments, and apply those arguments consistently at
-every verification level that opens the fixture. The current wrapper is a valid
-workaround; this is a usability improvement, not a release-blocking defect.
+**Implemented for v0.22.0:** a smoke fixture may now declare both its path and
+`file_format_arguments`. OST gives the normalized identifier to `usdcat`,
+`Usd.Stage.Open()`, the smoke-to-roundtrip flatten fallback, and `usdview`, while
+the legacy string form remains valid. The checked-in USDA wrapper remains a
+portable option but is no longer required solely to supply `epsg`.
 
 The report used the pinned `ost 0.21.0` available to the workspace while
 preparing for v0.22.0. It intentionally does not claim validation against an
@@ -128,7 +128,8 @@ unreleased v0.22.0 binary.
 - The plugins import and author point-cloud data; they do not provide a renderer
   or claim that a particular Hydra implementation renders the result.
 - PLY has no embedded CRS in the implemented contract and therefore requires an
-  explicit `epsg` file-format argument when opened directly.
+  explicit `epsg` file-format argument when opened directly; a structured OST
+  smoke fixture can now supply it.
 - Broader real-world dataset measurement and future format expansion remain
   downstream roadmap work, not OpenStrata platform promises.
 
