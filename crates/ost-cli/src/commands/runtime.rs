@@ -4840,10 +4840,18 @@ except Exception:
             "2095fafafd033fa23386d7ec6d58c7cc33974518"
         );
         assert_eq!(metadata["dependencies"][0]["name"], "oneTBB");
-        assert_eq!(
-            metadata["builder"]["id"],
-            "https://openstrata.dev/builders/ost/runtime-pull"
-        );
+        // GitHub Actions is itself the producer when its complete ambient
+        // identity is available; otherwise a managed local export uses OST's
+        // runtime-pull builder. Keep this test deterministic in both contexts.
+        let expected_builder = ost_artifact::github_build_metadata()
+            .and_then(|build| {
+                build
+                    .pointer("/builder/id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "https://openstrata.dev/builders/ost/runtime-pull".to_string());
+        assert_eq!(metadata["builder"]["id"], expected_builder);
 
         let supplied = serde_json::json!({
             "source": {
