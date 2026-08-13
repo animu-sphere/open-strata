@@ -343,10 +343,14 @@ registry.
 
 #### P2 - library/tool operability and migration diagnostics
 
-- Add a library-scoped `build|test|package` path, either as `ost library ...` or
-  an explicit library selector on existing verbs. Packaging must produce a
-  descriptor-named archive from one library's install tree so an optional
-  adapter can ship outside the aggregate product.
+**Implemented 2026-08-14 — descriptor-scoped library lifecycle:** `ost library
+build|test|package` now operates on one `openstrata.library.yaml`. Build reuses
+the workspace library toolchain while installing into a target-specific private
+prefix and binding the descriptor, runtime identity, and every installed byte
+in a versioned completion record. Test consumes that exact build; package fails
+closed on descriptor/runtime/install-tree drift and produces the
+descriptor-named archive, manifest, checksums, SBOM, and available provenance
+outside the aggregate workspace product.
 
 **Implemented 2026-08-14 — managed workspace-tool staging:** a root `ost build`
 snapshots matching build-tree files before CMake and promotes only executables
@@ -383,9 +387,11 @@ upstream host-neutral fixture asserts both paths persist their selected timeout,
 target/profile, outcome, and `build-failure` state without a downstream renderer
 compiler environment.
 
-- Add an upstream fixture that completes both managed launch paths and asserts
-  their persisted success JSON envelopes independently of a downstream compiler
-  environment. Failure envelopes are covered above.
+**Implemented 2026-08-14 — positive managed renderer evidence fixture:** the
+view and viewport success-envelope constructors are shared by the live launch
+paths and an upstream fixture that persists both without a downstream renderer
+compiler or GPU environment. Success now carries the same explicit
+`outcome`/`exit` state shape as durable build and child failures.
 
 **Implemented 2026-08-14 — negative managed renderer evidence:** build/test
 completions bind each changed renderer report by build-directory-relative path,

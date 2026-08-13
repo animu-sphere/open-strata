@@ -163,6 +163,23 @@ It validates the dependency graph, runs `ost build`, then runs the workspace's
 own CTest suite — the members the bundle verbs never reach. Source lanes only; a
 workspace cell names no bundle and publishes nothing.
 
+When one plain-library member must ship independently (for example, an optional
+input adapter), use its descriptor-scoped lifecycle instead of packaging the
+aggregate workspace:
+
+```sh
+ost library build adapters/ply
+ost library test adapters/ply
+ost library package adapters/ply
+```
+
+The build installs only that descriptor into a target-specific private prefix
+and records the descriptor, runtime, and every installed byte. `test` consumes
+that exact record. `package` refuses descriptor/runtime/install-tree drift and
+writes `dist/<id>/<version>/<target>/<id>-<version>-<target>.tar.zst` with its
+manifest, checksums, SBOM, and available provenance. Re-run `ost library build`
+after changing the descriptor, runtime, or installed output.
+
 `verify: graph` is the cheap early PR gate, and it gets a job of its own
 (`pr-workspace-graph`) that stops after the checkout: the graph alone, with
 nothing built and no runtime fetched, verified, or materialized. `verify: build`

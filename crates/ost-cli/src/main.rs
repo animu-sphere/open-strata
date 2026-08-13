@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 
 use commands::{
     artifact, build, ci, configure, devshell, doctor, env, extension, external, formation, host,
-    init, internal, lock, package, platform, plugin, presets, renderer, runtime, test, uv,
+    init, internal, library, lock, package, platform, plugin, presets, renderer, runtime, test, uv,
     validate,
 };
 
@@ -89,6 +89,10 @@ enum Command {
     #[command(subcommand)]
     Plugin(plugin::PluginCmd),
 
+    /// Build, test, and package one descriptor-owned plain CMake library.
+    #[command(subcommand)]
+    Library(library::LibraryCmd),
+
     /// Inspect renderer projects in host applications.
     #[command(subcommand)]
     Renderer(renderer::RendererCmd),
@@ -142,6 +146,7 @@ fn main() -> std::process::ExitCode {
         Command::External(cmd) => external::run(cmd, fmt),
         Command::Extension(cmd) => extension::run(cmd, fmt),
         Command::Plugin(cmd) => plugin::run(cmd, fmt),
+        Command::Library(cmd) => library::run(cmd, fmt),
         Command::Renderer(cmd) => renderer::run(cmd, fmt),
         Command::Artifact(cmd) => artifact::run(cmd, fmt),
         Command::Formation(cmd) => formation::run(cmd, fmt),

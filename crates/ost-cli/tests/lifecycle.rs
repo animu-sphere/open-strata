@@ -1038,6 +1038,85 @@ fn full_lifecycle_init_build_package() {
 }
 
 #[test]
+fn library_scoped_build_test_package_uses_only_its_install_tree() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping library_scoped_lifecycle: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("library-scoped-lifecycle");
+    init_and_pull(&sb);
+
+    let build = sb.ost(&["library", "build", "."]);
+    assert!(
+        build.status.success(),
+        "library build failed:\n{}",
+        out_text(&build)
+    );
+    let target = single_target_dir(&sb.work);
+    let record_path = target.join("library-build.json");
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
+    assert_eq!(record["schema"], "openstrata.library-build/v1");
+    assert_eq!(record["library"]["id"], "work");
+    let prefix = PathBuf::from(record["install_prefix"].as_str().unwrap());
+    assert!(prefix.is_dir(), "isolated install prefix is missing");
+
+    let test = sb.ost(&["library", "test", "."]);
+    assert!(
+        test.status.success(),
+        "library test failed:\n{}",
+        out_text(&test)
+    );
+    assert!(target.join("library-test.json").is_file());
+
+    let package = sb.ost(&["--json", "library", "package", "."]);
+    assert!(
+        package.status.success(),
+        "library package failed:\n{}",
+        out_text(&package)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&package.stdout).unwrap();
+    let archive = PathBuf::from(value["data"]["archive"].as_str().unwrap());
+    assert!(archive.is_file());
+    assert!(
+        archive
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("work-0.1.0-"),
+        "archive should be descriptor-named: {}",
+        archive.display()
+    );
+    let manifest = find_first(&sb.work.join("dist/work"), "manifest.json").unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+    assert_eq!(manifest["component"]["kind"], "library");
+    assert_eq!(
+        manifest["component"]["descriptor"],
+        "openstrata.library.yaml"
+    );
+
+    let installed = prefix.join(
+        snapshot(&prefix)
+            .into_keys()
+            .next()
+            .expect("library install contains at least one file"),
+    );
+    std::fs::write(&installed, b"changed after managed build").unwrap();
+    let refused = sb.ost(&["library", "package", "."]);
+    assert!(
+        !refused.status.success(),
+        "modified install tree must not package:\n{}",
+        out_text(&refused)
+    );
+    assert!(
+        out_text(&refused).contains("no longer matches"),
+        "drift diagnostic should be actionable:\n{}",
+        out_text(&refused)
+    );
+}
+
+#[test]
 fn multi_config_package_uses_the_completed_configuration_and_generator() {
     if let Err(reason) = native_lifecycle_ready() {
         eprintln!("skipping multi_config_package: {reason}");

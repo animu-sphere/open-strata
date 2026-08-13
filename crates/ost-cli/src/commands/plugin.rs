@@ -808,7 +808,7 @@ fn build(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_library_one(
+pub(crate) fn build_library_one(
     library: &Library,
     target: Option<String>,
     profile: Option<String>,
@@ -8145,7 +8145,10 @@ fn report_package(outcome: &PackageOutcome, fmt: Format) {
 
 /// Determine platform+profile from explicit flags or the enclosing project.
 /// Returns `None` when neither is available.
-fn selection(target: Option<String>, profile: Option<String>) -> Option<(String, String)> {
+pub(crate) fn selection(
+    target: Option<String>,
+    profile: Option<String>,
+) -> Option<(String, String)> {
     if let Some(t) = target {
         return Some((t, profile.unwrap_or_else(|| "core".to_string())));
     }
@@ -8527,13 +8530,13 @@ fn invalidate_plugin_build_tree_if_compiler_changed(
 
 /// Per-target toolchain/state directory inside a bundle: `.strata/targets/<id>/`.
 /// Keyed by target id so each platform/profile/runtime keeps its own toolchain.
-fn target_state_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
+pub(crate) fn target_state_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
     root.join(STATE_DIR).join("targets").join(id)
 }
 
 /// Per-target CMake build tree inside a bundle: `build/<id>`. Keeping the build
 /// tree under the target id prevents one target reusing another's CMake cache.
-fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
+pub(crate) fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
     root.join("build").join(id)
 }
 
