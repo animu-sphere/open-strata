@@ -114,6 +114,26 @@ caller which artifact selection to correct. Without `--require-openusd`, legacy
 pull behavior remains unchanged and the `openusd_requirement` verification step
 is `skipped`.
 
+The same pull can make trust evidence a pre-import requirement:
+
+```bash
+ost artifact pull oci://registry.example/vfx/openusd@sha256:<digest> \
+  --require-sbom --require-provenance \
+  --minimum-trust verified \
+  --policy openstrata-artifact-policy.toml
+```
+
+Every fetched SBOM or provenance sidecar is digest- and subject-validated even
+when optional. `--require-sbom` and `--require-provenance` additionally reject
+absence. The effective trust is derived for this pull only: valid provenance
+establishes `attested`; provenance matching an allowed publisher plus a valid
+SBOM can establish that publisher's higher trust. The required floor is the
+stricter of `--minimum-trust` and the policy's `minimum_trust`. Failed evidence
+or trust validation happens before local import and leaves no usable artifact
+behind. Successful human and JSON output name the effective and required trust
+levels and any matched publisher; the stored record remains conservatively
+classified by its transport rather than receiving sticky evidence trust.
+
 For a protected destination, `ost` requests a short-lived GitHub Actions OIDC
 token directly from `https://token.actions.githubusercontent.com`, using the
 runner-provided request URL and bearer token. It refuses a different request
@@ -196,3 +216,5 @@ See [artifact-evidence.md](artifact-evidence.md).
 | `ARTIFACT_OPENUSD_PYTHON_MISMATCH` | validation | Python family, provider, or exact version does not satisfy the required cell. |
 | `ARTIFACT_OPENUSD_TBB_MISMATCH` | validation | TBB family, provider, or exact version does not satisfy the required cell. |
 | `ARTIFACT_OPENUSD_GRAPHICS_MISMATCH` | validation | The selected variant or capability set does not satisfy the required cell. |
+| `ARTIFACT_SBOM_REQUIRED` | validation | Pull or verify required a subject-bound SPDX SBOM, but none was present. |
+| `ARTIFACT_PROVENANCE_REQUIRED` | validation | Pull or verify required subject-bound SLSA/in-toto provenance, but none was present. |

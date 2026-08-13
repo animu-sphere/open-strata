@@ -153,6 +153,21 @@ pub enum ArtifactCmd {
         /// consumer cell, for example 26.05.
         #[arg(long, value_name = "VERSION", requires = "require_openusd")]
         require_openusd_version: Option<String>,
+        /// Enforce minimum trust and allowed provenance publishers from an
+        /// artifact policy TOML file before local import.
+        #[arg(long, value_name = "FILE")]
+        policy: Option<Utf8PathBuf>,
+        /// Enforce an explicit trust floor before local import. When --policy
+        /// is also present, the stricter requirement wins.
+        #[arg(long, value_name = "LEVEL")]
+        minimum_trust: Option<TrustLevel>,
+        /// Fail unless a valid SPDX SBOM accompanies the fetched artifact.
+        #[arg(long)]
+        require_sbom: bool,
+        /// Fail unless valid SLSA/in-toto provenance accompanies the fetched
+        /// artifact.
+        #[arg(long)]
+        require_provenance: bool,
         /// Use plain http:// instead of https:// (fixture registries and
         /// air-gapped mirrors only).
         #[arg(long)]
@@ -233,6 +248,10 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
             require_target,
             require_openusd,
             require_openusd_version,
+            policy,
+            minimum_trust,
+            require_sbom,
+            require_provenance,
             plain_http,
             connect_timeout,
             response_timeout,
@@ -276,6 +295,13 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
                             Ok(version)
                         }
                     })
+                    .transpose()?,
+                require_sbom,
+                require_provenance,
+                minimum_trust,
+                artifact_policy: policy
+                    .as_deref()
+                    .map(ArtifactPolicy::load)
                     .transpose()?,
             };
             let initial_retry_backoff = Duration::from_millis(u64::from(retry_backoff));
@@ -581,6 +607,13 @@ fn pull_remote(
         println!("  oci digest: {dg}");
     }
     println!("  artifact:   {}", r.digest);
+    println!(
+        "  trust:      {} (required {})",
+        evidence.effective_trust, evidence.required_trust
+    );
+    if let Some(publisher) = &evidence.matched_publisher {
+        println!("  publisher:  {publisher}");
+    }
     render_transfer_evidence(&evidence);
     for (step, status) in &evidence.verification {
         println!("  {status:<7} {step}");
@@ -714,6 +747,11 @@ fn pull_evidence_json(
         },
         "transfer": &evidence.transfer,
         "verification": verification,
+        "trust": {
+            "effective": evidence.effective_trust,
+            "required": evidence.required_trust,
+            "matched_publisher": evidence.matched_publisher,
+        },
         "local_import": {
             "status": evidence.import_status,
             "path": evidence.import_path.to_string(),

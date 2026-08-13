@@ -206,6 +206,15 @@ above and includes `data.dimension`, `data.requirement`, and
 artifact digest and normalized selector/identity so automation can select a
 replacement without parsing prose.
 
+Evidence-gated pulls report `data.verification.sbom`,
+`data.verification.provenance`, and `data.verification.trust_policy` as
+`passed` or `skipped`, plus `data.trust.effective`, `required`, and
+`matched_publisher`. `--require-sbom` and `--require-provenance` fail with
+`ARTIFACT_SBOM_REQUIRED` and `ARTIFACT_PROVENANCE_REQUIRED` before local import
+when a sidecar is absent. An unmet explicit or policy trust floor fails with
+`ARTIFACT_POLICY_TRUST_INSUFFICIENT`; its error data includes effective and
+required trust, publisher match, and evidence-presence booleans.
+
 ## Compatibility policy
 
 The `--json` contract is additive and versioned. Within a `schema` version:

@@ -137,11 +137,15 @@ Pull a digest-pinned artifact from a remote source, verify it, and import it int
 | `--connect-timeout <SECONDS>` | Connection timeout in seconds; 0 disables it |
 | `--expect-artifact <sha256:<hex>>` | Require the pulled OpenStrata artifact digest to equal this pin (the support line / lockfile contract) |
 | `--max-attempts <COUNT>` | Maximum attempts for each OCI layer, including the first request |
+| `--minimum-trust <LEVEL>` | Enforce an explicit trust floor before local import. When --policy is also present, the stricter requirement wins |
 | `--overall-timeout <SECONDS>` | End-to-end timeout for each HTTP exchange; 0 disables it |
 | `--plain-http` | Use plain http:// instead of https:// (fixture registries and air-gapped mirrors only) |
+| `--policy <FILE>` | Enforce minimum trust and allowed provenance publishers from an artifact policy TOML file before local import |
 | `--require-kind <KIND>` | Require the artifact kind: runtime \| plugin \| product \| package |
 | `--require-openusd <PLATFORM/OS/ARCH/VARIANT>` | Require an approved normalized OpenUSD consumer cell. The value is PLATFORM/OS/ARCH/VARIANT, for example cy2026/linux/x86_64/vulkan |
 | `--require-openusd-version <VERSION>` | Require an exact upstream OpenUSD release in addition to the consumer cell, for example 26.05 |
+| `--require-provenance` | Fail unless valid SLSA/in-toto provenance accompanies the fetched artifact |
+| `--require-sbom` | Fail unless a valid SPDX SBOM accompanies the fetched artifact |
 | `--require-target <TARGET>` | Require the artifact's target id to match exactly |
 | `--response-timeout <SECONDS>` | Response-header timeout in seconds; 0 disables it |
 | `--retry-backoff <MILLISECONDS>` | Initial retry delay in milliseconds; later delays double to 30s |

@@ -28,6 +28,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use ost_core::{Category, Error, Result};
 use ost_platform::ResolvedOpenUsdCompatibility;
 
+use crate::policy::{ArtifactPolicy, TrustLevel};
 use crate::record::{manifest_debug_archive, ArtifactKind, ArtifactRecord, ArtifactSource};
 use crate::reference::RemoteReference;
 use crate::store::ArtifactStore;
@@ -138,6 +139,18 @@ pub struct PullPolicy {
     /// beside the CY cell because platform manifests intentionally do not pick
     /// one OpenUSD release for every consumer.
     pub require_openusd_version: Option<String>,
+    /// Fail unless a valid, subject-bound SPDX SBOM is fetched with the
+    /// artifact. Optional evidence is still validated whenever it is present.
+    pub require_sbom: bool,
+    /// Fail unless valid, subject-bound SLSA/in-toto provenance is fetched with
+    /// the artifact. When a policy is supplied, its publisher allow-list also
+    /// validates the recorded builder identity.
+    pub require_provenance: bool,
+    /// Explicit assurance floor. The effective requirement is the stricter of
+    /// this value and `artifact_policy.minimum_trust`.
+    pub minimum_trust: Option<TrustLevel>,
+    /// Optional trust and publisher policy applied before local import.
+    pub artifact_policy: Option<ArtifactPolicy>,
 }
 
 /// Status of one verification step, stable for `--json` evidence.
@@ -211,6 +224,13 @@ pub struct PullEvidence {
     /// Ordered `(step, passed|skipped)` pairs; a failed step is an error, so
     /// evidence only exists for chains whose every step passed or was skipped.
     pub verification: Vec<StepStatus>,
+    /// Assurance derived from subject-bound evidence for this pull. It is
+    /// intentionally non-sticky: the imported record retains transport trust.
+    pub effective_trust: TrustLevel,
+    /// The stricter of the explicit and policy-declared trust floors.
+    pub required_trust: TrustLevel,
+    /// Allowed publisher matched by provenance, when policy matching applied.
+    pub matched_publisher: Option<String>,
     /// The imported artifact's registry record.
     pub record: ArtifactRecord,
     /// `imported` or `already-present` (same digest was already stored).
@@ -294,22 +314,6 @@ pub fn pull(
             },
         ));
         verification.extend(chain.steps);
-        verification.push((
-            "sbom",
-            if outcome.record.sbom.is_some() {
-                "passed"
-            } else {
-                "skipped"
-            },
-        ));
-        verification.push((
-            "provenance",
-            if outcome.record.provenance.is_some() {
-                "passed"
-            } else {
-                "skipped"
-            },
-        ));
         verification.push(("local_import", "passed"));
 
         let import_path = store.object_dir(outcome.record.digest_hex());
@@ -318,6 +322,9 @@ pub fn pull(
             remote: resolved.clone(),
             transfer: fetched.transfer,
             verification,
+            effective_trust: chain.effective_trust,
+            required_trust: chain.required_trust,
+            matched_publisher: chain.matched_publisher,
             record: outcome.record,
             import_status: if outcome.already_present {
                 "already-present"

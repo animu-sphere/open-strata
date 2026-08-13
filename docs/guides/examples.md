@@ -468,7 +468,10 @@ ost artifact pull    oci://ghcr.io/<owner>/openstrata-runtime@sha256:<oci-digest
 # Python, TBB, toolchain/CRT, and graphics mismatches fail before local import
 ost artifact pull oci://ghcr.io/<owner>/openstrata-runtime@sha256:<oci-digest> \
   --require-openusd cy2026/linux/x86_64/vulkan \
-  --require-openusd-version 26.05
+  --require-openusd-version 26.05 \
+  --require-sbom --require-provenance \
+  --minimum-trust verified \
+  --policy openstrata-artifact-policy.toml
 ```
 
 OCI layer downloads retry up to four times with bounded exponential backoff.
