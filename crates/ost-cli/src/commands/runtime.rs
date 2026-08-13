@@ -26,10 +26,10 @@ use ost_core::variant::Abi;
 use ost_core::{tools, Error, Host, Result, Variant};
 use ost_platform::version_satisfies_constraint;
 use ost_runtime::{
-    python_minor, ExtensionRecord, HostPackageManager, HostRequirement, OpenUsdBuilder,
-    OpenUsdVariantId, OpenUsdVerification, ResolvedDependencyIdentity,
-    ResolvedOpenUsdCompatibility, ResolvedSourceIdentity, RuntimeManifest, RuntimeSource,
-    Validation, MANIFEST_FILE,
+    graphics_loader_status, probe_graphics_loaders, python_minor, ExtensionRecord, GraphicsApi,
+    HostPackageManager, HostRequirement, OpenUsdBuilder, OpenUsdVariantId, OpenUsdVerification,
+    OpenUsdVerificationStatus, ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility,
+    ResolvedSourceIdentity, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
 };
 
 use crate::commands::resolve;
@@ -2036,7 +2036,40 @@ fn check_exportable(manifest: &RuntimeManifest) -> Result<()> {
         )
         .with_hint("run `ost runtime validate <platform> --profile <profile>` first"));
     }
+    let requires_graphics_loader =
+        manifest
+            .openusd_compatibility
+            .as_ref()
+            .is_some_and(|compatibility| {
+                compatibility
+                    .capabilities
+                    .iter()
+                    .any(|capability| matches!(capability.as_str(), "opengl" | "vulkan"))
+            });
+    if requires_graphics_loader
+        && manifest.openusd_verification.loader != OpenUsdVerificationStatus::Passed
+    {
+        return Err(Error::coded(
+            "EXPORT_OPENUSD_LOADER_VERIFICATION_REQUIRED",
+            ost_core::Category::Validation,
+            format!(
+                "runtime '{}' requires a graphics loader but its OpenUSD loader verification is {}",
+                manifest.id,
+                manifest.openusd_verification.loader.as_str()
+            ),
+        )
+        .with_hint(
+            "run `ost runtime validate <platform> --profile <profile>` on the publishing host",
+        ));
+    }
     Ok(())
+}
+
+struct CurrentValidation {
+    report: ost_runtime::ValidationReport,
+    /// `None` means no normalized graphics loader was required or the state
+    /// schema was unsupported. It must remain `not-run`, not become `passed`.
+    loader_status: Option<OpenUsdVerificationStatus>,
 }
 
 /// Build the same validation report `ost runtime validate` would show for this
@@ -2047,7 +2080,7 @@ fn current_validation_report(
     artifact_prefix: &Utf8Path,
     platform: &str,
     profile: &str,
-) -> ost_runtime::ValidationReport {
+) -> CurrentValidation {
     let mut report = ost_runtime::validate(artifact_prefix, manifest);
     if let Some((recorded, real)) = openusd_version_drift(manifest, artifact_prefix) {
         let fix = drift_repair_command(manifest, platform, profile);
@@ -2064,7 +2097,50 @@ fn current_validation_report(
     if let Some(check) = consumer_configure_check(artifact_prefix, manifest) {
         report.checks.push(check);
     }
-    report
+    let loader_status = append_graphics_loader_checks(&mut report, manifest);
+    CurrentValidation {
+        report,
+        loader_status,
+    }
+}
+
+/// Observe the host loaders required by the normalized OpenUSD cell.
+///
+/// This establishes only the loader field. Physical-device enumeration and a
+/// rendered frame remain independent work and are never inferred here.
+fn append_graphics_loader_checks(
+    report: &mut ost_runtime::ValidationReport,
+    manifest: &RuntimeManifest,
+) -> Option<OpenUsdVerificationStatus> {
+    if !manifest.openusd_verification.is_supported() {
+        return None;
+    }
+    let Some(compatibility) = &manifest.openusd_compatibility else {
+        return None;
+    };
+    let probes = probe_graphics_loaders(&compatibility.capabilities);
+    if probes.is_empty() {
+        report.checks.push(ost_runtime::Check::skip(
+            "openusd-graphics-loader",
+            "the normalized OpenUSD cell requires no OpenGL or Vulkan loader",
+        ));
+        return None;
+    }
+
+    let status = graphics_loader_status(&probes);
+    report.checks.extend(probes.into_iter().map(|probe| {
+        let name = match probe.api {
+            GraphicsApi::OpenGl => "openusd-opengl-loader",
+            GraphicsApi::Vulkan => "openusd-vulkan-loader",
+        };
+        ost_runtime::Check {
+            name,
+            passed: probe.passed,
+            skipped: false,
+            detail: Some(probe.detail),
+        }
+    }));
+    status
 }
 
 /// Configure a trivial `find_package(pxr)` consumer against the materialized
@@ -2336,8 +2412,8 @@ fn check_current_export_validation(
     platform: &str,
     profile: &str,
 ) -> Result<()> {
-    let report = current_validation_report(manifest, artifact_prefix, platform, profile);
-    if report.passed() {
+    let current = current_validation_report(manifest, artifact_prefix, platform, profile);
+    if current.report.passed() {
         return Ok(());
     }
     Err(Error::coded(
@@ -2346,7 +2422,7 @@ fn check_current_export_validation(
         format!(
             "runtime '{}' no longer passes validation: {}",
             manifest.id,
-            failed_validation_summary(&report)
+            failed_validation_summary(&current.report)
         ),
     )
     .with_hint(format!(
@@ -3855,8 +3931,14 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
 
     // Validate against the effective artifact prefix (the external USD root for
     // an adopted runtime; the store prefix otherwise).
-    let report = current_validation_report(&manifest, &r.artifact_prefix, &platform, &profile);
-    let passed = report.passed();
+    let current = current_validation_report(&manifest, &r.artifact_prefix, &platform, &profile);
+    let passed = current.report.passed();
+
+    if let Some(loader) = current.loader_status {
+        let mut verification = manifest.openusd_verification.clone();
+        verification.loader = loader;
+        manifest.set_openusd_verification(verification)?;
+    }
 
     // Record the outcome back into the manifest (digest is unaffected).
     manifest.set_validation(if passed {
@@ -3871,7 +3953,8 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         .map_err(|e| Error::io(manifest_path.to_string(), e))?;
 
     if fmt.is_json() {
-        let checks: Vec<_> = report
+        let checks: Vec<_> = current
+            .report
             .checks
             .iter()
             .map(|c| {
@@ -3894,7 +3977,7 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
         );
     } else {
         println!("Validating {}", manifest.id);
-        for c in &report.checks {
+        for c in &current.report.checks {
             let mark = match (c.passed, c.skipped) {
                 (_, true) => "skip",
                 (true, false) => "ok  ",
@@ -4264,6 +4347,61 @@ mod tests {
         pending.set_validation(Validation::Pending);
         let err = check_exportable(&pending).unwrap_err();
         assert_eq!(err.code(), "EXPORT_VALIDATION_REQUIRED");
+    }
+
+    #[test]
+    fn graphics_runtime_export_requires_persisted_loader_evidence() {
+        let mut standard = exportable_manifest();
+        standard
+            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Standard)))
+            .unwrap();
+
+        let error = check_exportable(&standard).unwrap_err();
+        assert_eq!(error.code(), "EXPORT_OPENUSD_LOADER_VERIFICATION_REQUIRED");
+        assert!(error.to_string().contains("not-run"));
+
+        let mut verification = standard.openusd_verification.clone();
+        verification.loader = OpenUsdVerificationStatus::Passed;
+        standard.set_openusd_verification(verification).unwrap();
+        assert!(check_exportable(&standard).is_ok());
+
+        let mut headless = exportable_manifest();
+        headless
+            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Headless)))
+            .unwrap();
+        assert_eq!(
+            headless.openusd_verification.loader,
+            OpenUsdVerificationStatus::NotRun
+        );
+        assert!(check_exportable(&headless).is_ok());
+    }
+
+    #[test]
+    fn headless_loader_validation_skips_without_inferring_later_states() {
+        let mut manifest = exportable_manifest();
+        manifest
+            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Headless)))
+            .unwrap();
+        let mut report = ost_runtime::ValidationReport { checks: Vec::new() };
+
+        let status = append_graphics_loader_checks(&mut report, &manifest);
+
+        assert_eq!(status, None);
+        assert_eq!(report.checks.len(), 1);
+        assert_eq!(report.checks[0].name, "openusd-graphics-loader");
+        assert!(report.checks[0].skipped);
+        assert_eq!(
+            manifest.openusd_verification.loader,
+            OpenUsdVerificationStatus::NotRun
+        );
+        assert_eq!(
+            manifest.openusd_verification.physical_device,
+            OpenUsdVerificationStatus::NotRun
+        );
+        assert_eq!(
+            manifest.openusd_verification.render,
+            OpenUsdVerificationStatus::NotRun
+        );
     }
 
     #[test]

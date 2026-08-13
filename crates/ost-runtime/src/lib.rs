@@ -8,12 +8,16 @@
 //! `ost env <platform> --profile <p>` produces correct shell output today.
 
 mod env;
+mod graphics;
 mod manifest;
 mod profile;
 mod runtime;
 mod validate;
 
 pub use env::{usd_python_dir, usd_python_dir_for, EnvOp, EnvSet, EnvVar, Shell};
+pub use graphics::{
+    graphics_loader_status, probe_graphics_loaders, GraphicsApi, GraphicsLoaderProbe,
+};
 pub use manifest::{
     ExtensionRecord, HostPackageManager, HostRequirement, RuntimeManifest, RuntimeSource,
     Validation, MANIFEST_FILE,

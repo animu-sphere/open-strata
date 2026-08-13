@@ -169,6 +169,16 @@ runtime with exact agreement required at import. Legacy records remain readable
 with absent artifact state, while unsupported or split state fails before
 registration. Loader/device/render probes remain in P2 below.
 
+**Implemented 2026-08-14 — host graphics-loader probe slice:** `runtime
+validate` now loads every host graphics API required by the normalized OpenUSD
+cell directly through the operating-system dynamic loader. Standard cells check
+OpenGL; Vulkan cells check both OpenGL and Vulkan; headless cells report a skip
+and retain `loader: not-run`. Per-API pass/fail detail appears in human and JSON
+validation output, the aggregate result is persisted only to the independent
+`loader` field, and export refuses a graphics runtime without a persisted
+passing loader observation. The probe needs no Vulkan SDK utility and never
+infers physical-device or render success.
+
 **Implemented 2026-08-14 — automatic managed dependency-capture slice:** managed
 `build_usd.py` execution now observes each source archive that the upstream
 script actually selects after platform, variant, option, and mirror-fallback
@@ -191,15 +201,16 @@ an identical retry before the successful manifest is written.
 - Every published artifact carries or references its source revision, resolved
   dependencies, workflow identity, third-party attribution, SBOM, evidence
   digests, and SLSA-compatible provenance.
-- Extend the separated state contract with loader, physical-device, and render
-  probes; no probe may infer a later state from compile/link success.
+- Extend the separated state contract with physical-device and render probes;
+  no probe may infer a later state from compile/link or loader success.
 
 #### P2 - artifact diagnostics
 
 - Inspection reports the selected profile, ABI/provider choices, graphics
   capabilities, tag, digest, evidence status, and split OpenUSD verification
-  state. Add the OpenGL/Vulkan loader/device checks needed to explain whether
-  the host can consume an artifact; DCC-specific probing waits for v0.23.0.
+  state. The OpenGL/Vulkan loader checks are implemented above; add the physical
+  device checks needed to explain whether the host can consume an artifact.
+  DCC-specific probing waits for v0.23.0.
 
 ### Artifact-policy exit criteria
 
