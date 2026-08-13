@@ -133,11 +133,17 @@ ost runtime export   cy2026 --profile usd --level 12  # faster pack, larger arch
 # or a runtime that has not passed validation
 ```
 
-Outside GitHub Actions, `--build-metadata build.json` supplies the exact source,
-builder, and optional resolved dependency closure. Each dependency needs all of
-`name`, `version`, `source.repository`, and `source.revision`; names must be
-unique. These identities enter `record.json`, the OpenUSD selector hash, and the
-generated SPDX SBOM:
+A managed `runtime pull --build` records the exact Git-backed OpenUSD checkout
+and every source archive actually selected by `build_usd.py`. The sorted closure
+is visible in `runtime show` and automatically enters `record.json`, the OpenUSD
+selector hash, provenance, and the generated SPDX SBOM at export.
+
+Outside GitHub Actions, `--build-metadata build.json` supplies the builder
+identity. It may omit `dependencies` for a managed build; OST inserts the
+captured closure and rejects source or dependency claims that disagree with it.
+For adopted or externally built runtimes, optional dependency entries still
+require all of `name`, `version`, `source.repository`, and `source.revision`, and
+names must be unique:
 
 ```json
 {
@@ -162,8 +168,8 @@ generated SPDX SBOM:
 }
 ```
 
-Omit `dependencies` rather than guessing when a builder cannot resolve the
-closure yet; an incomplete entry is rejected before runtime packing begins.
+Omit `dependencies` rather than guessing when OST did not capture the closure;
+an incomplete or contradictory entry is rejected before runtime packing begins.
 
 ```bash
 ost runtime list                          # what's in the store (+ SOURCE column)

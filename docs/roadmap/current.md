@@ -51,10 +51,10 @@ paths, exact builder arguments, and resulting graphics capabilities.
 exists, accepts `--openusd-variant`, supports a self-contained Vulkan build,
 refuses direct or nested CMake overrides of protected compatibility dimensions,
 and clears managed install/build trees on forced rebuilds. It records the verified
-selection in schema-5 runtime identity and the exported producer manifest.
+selection in schema-6 runtime identity and the exported producer manifest.
 Targets without an approved cell retain the legacy unclassified build
-path unless the caller explicitly claims a variant. Automatic resolved-dependency
-capture and consumer-side mismatch validation remain open below.
+path unless the caller explicitly claims a variant. Verification-state
+separation remains open below.
 
 **Implemented 2026-08-11 — artifact-record normalization slice:** runtime
 artifact records now preserve the producer's normalized OpenUSD compatibility
@@ -64,8 +64,7 @@ exact versions that contradict their declared CY constraints, non-runtime
 manifests that claim the identity, and platform or OS/architecture bindings that
 contradict the producer provenance or artifact target. `artifact show` exposes
 the normalized variant, providers, exact versions, and graphics capabilities in
-both human and JSON output. Automatic resolved-dependency capture and consumer
-requirement matching remain open.
+both human and JSON output. Verification-state separation remains open.
 
 **Implemented 2026-08-11 — deterministic compatibility-selector slice:** every
 verified normalized OpenUSD identity now produces one OCI-tag-safe selector.
@@ -101,7 +100,7 @@ Python ABI tag is bound to the observed Python major/minor. Missing identity and
 release, platform, toolchain, Python, TBB, or graphics mismatches have
 dimension-specific stable validation codes; their JSON evidence names the
 requirement and selected artifact while the hint gives a direct selection
-action. Resolved-dependency capture and evidence requirements remain open below.
+action. Verification-state separation remains open below.
 
 - Version and validate the OpenUSD artifact record, including ABI dimensions,
   capabilities, runtime providers, build/runtime requirement separation, exact
@@ -136,8 +135,7 @@ provenance against the policy's publisher identities, derives the non-sticky
 effective trust level, and enforces the stricter explicit/policy floor. Missing,
 invalid, untrusted, or insufficient evidence leaves no usable artifact behind;
 human and JSON success output report effective/required trust and the matched
-publisher. Automatic resolved-dependency capture and build/link/render state
-separation remain open below.
+publisher. Build/link/render state separation remains open below.
 
 **Implemented 2026-08-14 — exact artifact source/dependency identity slice:** producer
 `build.source.repository` and `build.source.revision` now normalize into the
@@ -155,9 +153,24 @@ mark selector schema 2; unmarked immutable artifacts retain validation against
 the pre-source/dependency selector. Re-import may enrich a legacy record only
 when provenance binds a new source and the SBOM binds a new dependency closure;
 OpenUSD compatibility still requires the original producer manifest. The same
-archive digest cannot replace an already normalized producer identity. Automatic
-capture of every dependency resolved internally by `build_usd.py` and
-build/link/render state separation remain open below.
+archive digest cannot replace an already normalized producer identity.
+Build/link/render state separation remains open below.
+
+**Implemented 2026-08-14 — automatic managed dependency-capture slice:** managed
+`build_usd.py` execution now observes each source archive that the upstream
+script actually selects after platform, variant, option, and mirror-fallback
+resolution. It records the dependency name, successful source URL, and archive
+SHA-256 without editing the OpenUSD checkout; GitHub, GitLab, and Boost archive
+locations normalize to exact repository/revision/version identities, while an
+unknown archive origin remains bound by its URL and SHA-256. A Git-backed OpenUSD
+checkout contributes its normalized origin and exact commit. The sorted closure
+and source are digest-significant schema-6 runtime identity, survive runtime
+repair, appear in human/JSON runtime inspection, and flow automatically into
+artifact build metadata, selector hashing, provenance, and SPDX dependency
+packages. Explicit export metadata may omit dependencies to consume the captured
+closure; conflicting source or dependency claims fail before packing. Managed
+local exports without external builder metadata identify the `ost runtime pull`
+builder rather than dropping the captured closure.
 
 - Every published artifact carries or references its source revision, resolved
   dependencies, workflow identity, third-party attribution, SBOM, evidence

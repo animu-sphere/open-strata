@@ -11,7 +11,9 @@ use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
 use ost_core::{digest, Variant};
-use ost_platform::ResolvedOpenUsdCompatibility;
+use ost_platform::{
+    ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility, ResolvedSourceIdentity,
+};
 
 use crate::runtime::Runtime;
 
@@ -159,6 +161,8 @@ struct Canonical {
     extensions: Vec<ExtensionRecord>,
     host_requirements: Vec<HostRequirement>,
     openusd_compatibility: Option<ResolvedOpenUsdCompatibility>,
+    build_source: Option<ResolvedSourceIdentity>,
+    build_dependencies: Vec<ResolvedDependencyIdentity>,
 }
 
 /// A written runtime manifest.
@@ -207,6 +211,15 @@ pub struct RuntimeManifest {
     /// produced bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openusd_compatibility: Option<ResolvedOpenUsdCompatibility>,
+    /// Exact source checkout used by a managed OpenUSD build. This is captured
+    /// from Git rather than inferred later from the machine exporting it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_source: Option<ResolvedSourceIdentity>,
+    /// Exact source archives that `build_usd.py` selected and installed. The
+    /// sorted closure is runtime identity and is forwarded into artifact build
+    /// metadata, selector hashing, provenance, and the SPDX SBOM.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_dependencies: Vec<ResolvedDependencyIdentity>,
     /// For an `artifact`-sourced runtime, the registry digest (`sha256:<hex>`)
     /// of the artifact it was materialized from. Provenance, not identity (the
     /// canonical `digest` above still describes the runtime itself).
@@ -214,11 +227,11 @@ pub struct RuntimeManifest {
     pub artifact_digest: Option<String>,
 }
 
-// Bumped to 5 when the exact OpenUSD CY cell and build variant became
-// compatibility identity. Older manifests deserialize without that selection,
-// but the schema gate still requires an explicit rebuild before publication as
-// a normalized v0.22 artifact.
-const SCHEMA: u32 = 5;
+// Bumped to 6 when the managed OpenUSD source and build_usd.py dependency
+// closure became compatibility identity. Older manifests deserialize without
+// those fields, but the schema gate still requires an explicit rebuild before
+// publication as a normalized v0.22 artifact.
+const SCHEMA: u32 = 6;
 
 impl RuntimeManifest {
     /// Build a manifest for a resolved runtime, computing the digest.
@@ -244,6 +257,8 @@ impl RuntimeManifest {
             extensions,
             host_requirements: Vec::new(),
             openusd_compatibility: None,
+            build_source: None,
+            build_dependencies: Vec::new(),
         };
         // Serialization of a fixed-field struct is deterministic.
         let bytes = serde_json::to_vec(&canonical).expect("canonical serializes");
@@ -267,6 +282,8 @@ impl RuntimeManifest {
             runtime_deps: Vec::new(),
             host_requirements: Vec::new(),
             openusd_compatibility: None,
+            build_source: None,
+            build_dependencies: Vec::new(),
             artifact_digest: None,
         }
     }
@@ -298,6 +315,8 @@ impl RuntimeManifest {
             extensions: self.extensions.clone(),
             host_requirements: self.host_requirements.clone(),
             openusd_compatibility: self.openusd_compatibility.clone(),
+            build_source: self.build_source.clone(),
+            build_dependencies: self.build_dependencies.clone(),
         };
         let bytes = serde_json::to_vec(&canonical).expect("canonical serializes");
         digest::sha256_hex(&bytes)
@@ -331,6 +350,36 @@ impl RuntimeManifest {
             ));
         }
         self.openusd_compatibility = compatibility;
+        self.digest = self.compute_digest();
+        Ok(())
+    }
+
+    /// Bind the exact managed source and dependency closure to runtime
+    /// identity. Dependency order follows names, not download order, so two
+    /// equivalent builds serialize identically.
+    pub fn set_build_identities(
+        &mut self,
+        source: Option<ResolvedSourceIdentity>,
+        mut dependencies: Vec<ResolvedDependencyIdentity>,
+    ) -> ost_core::Result<()> {
+        if source.as_ref().is_some_and(|value| !value.is_verified())
+            || dependencies.iter().any(|value| !value.is_verified())
+        {
+            return Err(ost_core::Error::InvalidManifest(
+                "managed build source or dependency identity is incomplete".to_string(),
+            ));
+        }
+        dependencies.sort_by(|left, right| left.name.cmp(&right.name));
+        if dependencies
+            .windows(2)
+            .any(|pair| pair[0].name == pair[1].name)
+        {
+            return Err(ost_core::Error::InvalidManifest(
+                "managed build dependency names must be unique".to_string(),
+            ));
+        }
+        self.build_source = source;
+        self.build_dependencies = dependencies;
         self.digest = self.compute_digest();
         Ok(())
     }
@@ -460,6 +509,74 @@ mod tests {
             .to_string()
             .contains("unverified or contradictory provider versions"));
         assert!(manifest.openusd_compatibility.is_none());
+    }
+
+    #[test]
+    fn managed_build_identities_are_sorted_and_digest_significant() {
+        let mut manifest = sample();
+        let before = manifest.digest.clone();
+        let source = ResolvedSourceIdentity {
+            repository: "https://github.com/PixarAnimationStudios/OpenUSD".into(),
+            revision: "2095fafafd033fa23386d7ec6d58c7cc33974518".into(),
+        };
+        manifest
+            .set_build_identities(
+                Some(source.clone()),
+                vec![
+                    ResolvedDependencyIdentity {
+                        name: "oneTBB".into(),
+                        version: "2022.1.0".into(),
+                        source: ResolvedSourceIdentity {
+                            repository: "https://github.com/uxlfoundation/oneTBB".into(),
+                            revision: "v2022.1.0".into(),
+                        },
+                    },
+                    ResolvedDependencyIdentity {
+                        name: "MaterialX".into(),
+                        version: "1.39.5".into(),
+                        source: ResolvedSourceIdentity {
+                            repository: "https://github.com/AcademySoftwareFoundation/MaterialX"
+                                .into(),
+                            revision: "v1.39.5".into(),
+                        },
+                    },
+                ],
+            )
+            .unwrap();
+
+        assert_ne!(manifest.digest, before);
+        assert_eq!(manifest.build_source, Some(source));
+        assert_eq!(manifest.build_dependencies[0].name, "MaterialX");
+        assert_eq!(manifest.compute_digest(), manifest.digest);
+        assert_eq!(
+            RuntimeManifest::from_json(&manifest.to_json().unwrap()).unwrap(),
+            manifest
+        );
+    }
+
+    #[test]
+    fn managed_build_identities_reject_duplicates_and_blanks() {
+        let dependency = ResolvedDependencyIdentity {
+            name: "oneTBB".into(),
+            version: "2022.1.0".into(),
+            source: ResolvedSourceIdentity {
+                repository: "https://github.com/uxlfoundation/oneTBB".into(),
+                revision: "v2022.1.0".into(),
+            },
+        };
+        let mut manifest = sample();
+        assert!(manifest
+            .set_build_identities(None, vec![dependency.clone(), dependency])
+            .is_err());
+        assert!(manifest
+            .set_build_identities(
+                Some(ResolvedSourceIdentity {
+                    repository: "".into(),
+                    revision: "revision".into(),
+                }),
+                Vec::new(),
+            )
+            .is_err());
     }
 
     #[test]

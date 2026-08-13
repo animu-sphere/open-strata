@@ -27,8 +27,8 @@ use ost_core::{tools, Error, Host, Result, Variant};
 use ost_platform::version_satisfies_constraint;
 use ost_runtime::{
     python_minor, ExtensionRecord, HostPackageManager, HostRequirement, OpenUsdBuilder,
-    OpenUsdVariantId, ResolvedOpenUsdCompatibility, RuntimeManifest, RuntimeSource, Validation,
-    MANIFEST_FILE,
+    OpenUsdVariantId, ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility,
+    ResolvedSourceIdentity, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
 };
 
 use crate::commands::resolve;
@@ -480,6 +480,8 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             "extensions": manifest.extensions,
             "host_requirements": manifest.host_requirements,
             "openusd_compatibility": manifest.openusd_compatibility,
+            "build_source": manifest.build_source,
+            "build_dependencies": manifest.build_dependencies,
         }));
         return Ok(());
     }
@@ -511,6 +513,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
     }
     print_host_requirements(&manifest.host_requirements, "  host:    ");
     print_openusd_compatibility(&manifest, "  ");
+    print_build_identities(&manifest, "  ");
     println!("\nValidate with:");
     println!("  ost runtime validate {} --profile {}", platform, profile);
     Ok(())
@@ -1040,6 +1043,27 @@ fn print_openusd_compatibility(manifest: &RuntimeManifest, prefix: &str) {
     println!("{prefix}graphics: {}", selected.capabilities.join(", "));
 }
 
+fn print_build_identities(manifest: &RuntimeManifest, prefix: &str) {
+    if let Some(source) = &manifest.build_source {
+        println!(
+            "{prefix}source:   {}@{}",
+            source.repository, source.revision
+        );
+    }
+    if !manifest.build_dependencies.is_empty() {
+        println!("{prefix}build dependencies:");
+        for dependency in &manifest.build_dependencies {
+            println!(
+                "{prefix}  - {} {} ({}@{})",
+                dependency.name,
+                dependency.version,
+                dependency.source.repository,
+                dependency.source.revision
+            );
+        }
+    }
+}
+
 /// Resolve the profile's capabilities to concrete extensions (shared by `pull`
 /// and `repair`, so both record the same provenance `runtime explain` shows).
 fn resolve_extensions(r: &crate::commands::Resolved) -> Result<(bool, Vec<ExtensionRecord>)> {
@@ -1496,11 +1520,12 @@ fn build_from_source(
     std::fs::create_dir_all(r.prefix.as_std_path())
         .map_err(|e| Error::io(r.prefix.to_string(), e))?;
 
-    if opts.deps.is_empty() {
-        build_with_script(r, src, opts)?;
+    let build_dependencies = if opts.deps.is_empty() {
+        build_with_script(r, src, opts)?
     } else {
         build_with_cmake(r, src, opts)?;
-    }
+        Vec::new()
+    };
 
     if !looks_like_usd(&r.prefix) {
         return Err(Error::validation(format!(
@@ -1535,7 +1560,43 @@ fn build_from_source(
     // session env can expose their runtime libraries. build_usd.py is
     // self-contained (deps installed into the prefix), so this stays empty.
     manifest.runtime_deps = opts.deps.iter().map(|d| d.replace('\\', "/")).collect();
+    manifest.set_build_identities(git_source_identity(src), build_dependencies)?;
     Ok(manifest)
+}
+
+/// Capture a source checkout when it is Git-backed. Source archives remain a
+/// supported input and can still supply their exact identity at export through
+/// `--build-metadata`; an ambient repository must never be substituted for it.
+fn git_source_identity(src: &Utf8Path) -> Option<ResolvedSourceIdentity> {
+    let git = tools::which("git")?;
+    let revision = Command::new(&git)
+        .args(["-C", src.as_str(), "rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let repository = Command::new(&git)
+        .args(["-C", src.as_str(), "remote", "get-url", "origin"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let revision = String::from_utf8_lossy(&revision.stdout).trim().to_string();
+    let repository = normalize_git_repository(String::from_utf8_lossy(&repository.stdout).trim());
+    let identity = ResolvedSourceIdentity {
+        repository,
+        revision,
+    };
+    identity.is_verified().then_some(identity)
+}
+
+fn normalize_git_repository(value: &str) -> String {
+    let value = value.trim().trim_end_matches('/').trim_end_matches(".git");
+    if let Some(rest) = value.strip_prefix("git@github.com:") {
+        return format!("https://github.com/{rest}");
+    }
+    if let Some(rest) = value.strip_prefix("ssh://git@github.com/") {
+        return format!("https://github.com/{rest}");
+    }
+    value.to_string()
 }
 
 fn validate_openusd_source(usd_src: &str) -> Result<Utf8PathBuf> {
@@ -1641,6 +1702,11 @@ fn redetect_build(
     // A CMake-direct build linked against external dep prefixes; carry them
     // forward so the session env still exposes their runtime libraries.
     manifest.runtime_deps = previous.runtime_deps.clone();
+    manifest.set_openusd_compatibility(previous.openusd_compatibility.clone())?;
+    manifest.set_build_identities(
+        previous.build_source.clone(),
+        previous.build_dependencies.clone(),
+    )?;
     Ok(manifest)
 }
 
@@ -2333,7 +2399,8 @@ fn export(
 ) -> Result<()> {
     // Read and validate before packing: a malformed metadata file should fail
     // in the first second, not after compressing a multi-gigabyte runtime.
-    let build_metadata = build_metadata
+    let explicit_build_metadata = build_metadata.is_some();
+    let mut build_metadata = build_metadata
         .map(|path| {
             let source = std::fs::read_to_string(path.as_std_path())
                 .map_err(|error| Error::io(path.to_string(), error))?;
@@ -2357,6 +2424,7 @@ fn export(
         .map_err(|e| Error::io(manifest_path.to_string(), e))?;
     let manifest = RuntimeManifest::from_json(&src)
         .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
+    build_metadata = artifact_build_metadata(&manifest, build_metadata, explicit_build_metadata)?;
 
     check_exportable(&manifest)?;
 
@@ -2732,6 +2800,97 @@ fn export(
     Ok(())
 }
 
+/// Combine builder identity with the exact identities observed at managed
+/// runtime build time. Explicit source/dependency claims are checked instead of
+/// silently overwritten; ambient GitHub metadata contributes the workflow but
+/// its repository is replaced by the OpenUSD checkout that produced the bytes.
+fn artifact_build_metadata(
+    manifest: &RuntimeManifest,
+    supplied: Option<serde_json::Value>,
+    supplied_explicitly: bool,
+) -> Result<Option<serde_json::Value>> {
+    if manifest.build_source.is_none() && manifest.build_dependencies.is_empty() {
+        return Ok(supplied);
+    }
+
+    let mut build = supplied
+        .or_else(ost_artifact::github_build_metadata)
+        .or_else(|| {
+            manifest.build_source.as_ref().map(|source| {
+                serde_json::json!({
+                    "source": source,
+                    "builder": {
+                        "id": "https://openstrata.dev/builders/ost/runtime-pull",
+                        "identity": {
+                            "tool": "ost",
+                            "version": env!("CARGO_PKG_VERSION"),
+                            "runtime": manifest.id,
+                            "runtime_digest": manifest.digest,
+                        }
+                    }
+                })
+            })
+        });
+    let Some(build) = build.as_mut() else {
+        return Ok(None);
+    };
+
+    if let Some(source) = &manifest.build_source {
+        if supplied_explicitly {
+            let declared: ResolvedSourceIdentity = serde_json::from_value(build["source"].clone())
+                .map_err(|error| {
+                    Error::coded(
+                        "BUILD_METADATA_SOURCE_MISMATCH",
+                        ost_core::Category::Validation,
+                        format!("build metadata source cannot be compared with the managed source: {error}"),
+                    )
+                })?;
+            if &declared != source {
+                return Err(Error::coded(
+                    "BUILD_METADATA_SOURCE_MISMATCH",
+                    ost_core::Category::Validation,
+                    format!(
+                        "build metadata source {}@{} differs from managed source {}@{}",
+                        declared.repository, declared.revision, source.repository, source.revision
+                    ),
+                )
+                .with_hint(
+                    "export with metadata for the exact checkout used by `runtime pull --build`",
+                ));
+            }
+        }
+        build["source"] = serde_json::to_value(source)
+            .map_err(|error| Error::parse("managed build source", anyhow::Error::new(error)))?;
+    }
+
+    if !manifest.build_dependencies.is_empty() {
+        if let Some(declared) = build.get("dependencies") {
+            let mut declared: Vec<ResolvedDependencyIdentity> =
+                serde_json::from_value(declared.clone()).map_err(|error| {
+                    Error::coded(
+                        "BUILD_METADATA_DEPENDENCY_MISMATCH",
+                        ost_core::Category::Validation,
+                        format!("build metadata dependencies cannot be compared with the managed closure: {error}"),
+                    )
+                })?;
+            declared.sort_by(|left, right| left.name.cmp(&right.name));
+            if declared != manifest.build_dependencies {
+                return Err(Error::coded(
+                    "BUILD_METADATA_DEPENDENCY_MISMATCH",
+                    ost_core::Category::Validation,
+                    "build metadata dependencies differ from the closure captured from build_usd.py",
+                )
+                .with_hint("omit metadata dependencies to use the automatically captured closure"));
+            }
+        }
+        build["dependencies"] =
+            serde_json::to_value(&manifest.build_dependencies).map_err(|error| {
+                Error::parse("managed build dependencies", anyhow::Error::new(error))
+            })?;
+    }
+    Ok(Some(build.clone()))
+}
+
 /// Excluded top-level directories that the exported CMake package configs still
 /// refer to, as `(directory, config file name)`.
 ///
@@ -2981,18 +3140,92 @@ fn emit_macos_build_notes(opts: &BuildOpts) {
     }
 }
 
-/// Drive the source tree's `build_scripts/build_usd.py` (handles dependencies).
+#[derive(Debug, serde::Deserialize)]
+struct BuildUsdDownload {
+    dependency: String,
+    url: String,
+    archive_sha256: String,
+}
+
+// Execute the upstream script from its original path and replace only its
+// DownloadURL binding after dependency selection, immediately before installs
+// begin. Installer functions resolve that global at call time, so this records
+// the URL that actually won platform/option/fallback selection without editing
+// the checkout or maintaining a second dependency catalog in Rust.
+const BUILD_USD_CAPTURE_RUNNER: &str = r#"
+import hashlib as _ost_hashlib
+import json as _ost_json
+import os as _ost_os
+import sys as _ost_sys
+
+_ost_script = _ost_sys.argv[1]
+_ost_sys.argv = _ost_sys.argv[1:]
+with open(_ost_script, "r", encoding="utf-8") as _ost_file:
+    _ost_source = _ost_file.read()
+_ost_marker = "try:\n    # Download and install 3rd-Party dependencies"
+_ost_hook = r'''
+import hashlib as _ost_hashlib
+import json as _ost_json
+import os as _ost_os
+_ost_original_download_url = DownloadURL
+def DownloadURL(*args, **kwargs):
+    result = _ost_original_download_url(*args, **kwargs)
+    url = args[0]
+    context = args[1]
+    dep = globals().get("dep")
+    name = getattr(dep, "name", "")
+    if name and name != "USD":
+        destination = kwargs.get("destFileName")
+        if destination is None and len(args) > 5:
+            destination = args[5]
+        if destination is None:
+            destination = url.split("/")[-1]
+        archive = _ost_os.path.join(context.srcDir, destination)
+        digest = _ost_hashlib.sha256()
+        with open(archive, "rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        with open(_ost_os.environ["OST_BUILD_USD_DEPENDENCY_CAPTURE"], "a", encoding="utf-8") as capture:
+            capture.write(_ost_json.dumps({
+                "dependency": name,
+                "url": url,
+                "archive_sha256": digest.hexdigest(),
+            }, sort_keys=True) + "\n")
+    return result
+'''
+if _ost_source.count(_ost_marker) != 1:
+    raise RuntimeError("build_usd.py install marker changed; dependency capture cannot run safely")
+_ost_source = _ost_source.replace(_ost_marker, _ost_hook + "\n" + _ost_marker, 1)
+exec(compile(_ost_source, _ost_script, "exec"), {"__file__": _ost_script, "__name__": "__main__"})
+"#;
+
+const BUILD_USD_INSTALL_MARKER: &str = "try:\n    # Download and install 3rd-Party dependencies";
+
+/// Drive the source tree's `build_scripts/build_usd.py` and return the exact
+/// source archives its selected dependency installers consumed.
 fn build_with_script(
     r: &crate::commands::Resolved,
     src: &Utf8Path,
     opts: &BuildOpts,
-) -> Result<()> {
+) -> Result<Vec<ResolvedDependencyIdentity>> {
     let script = src.join("build_scripts").join("build_usd.py");
     if !script.as_std_path().is_file() {
         return Err(Error::usage(format!(
             "no build_scripts/build_usd.py under '{src}' (point --build at an OpenUSD checkout, \
              or pass --deps for a direct CMake build)"
         )));
+    }
+    let script_source = std::fs::read_to_string(script.as_std_path())
+        .map_err(|error| Error::io(script.to_string(), error))?;
+    if script_source.matches(BUILD_USD_INSTALL_MARKER).count() != 1 {
+        return Err(Error::coded(
+            "OPENUSD_DEPENDENCY_CAPTURE_UNSUPPORTED",
+            ost_core::Category::Configuration,
+            "build_usd.py install structure changed; exact dependency capture cannot be attached safely",
+        )
+        .with_hint(
+            "use a supported OpenUSD release or update OST's build_usd.py capture adapter",
+        ));
     }
     let python = opts
         .python
@@ -3010,12 +3243,12 @@ fn build_with_script(
             )
         })?;
 
-    let args = build_usd_args(&script, &r.prefix, opts.jobs, &opts.extra);
+    let script_args = build_usd_args(&script, &r.prefix, opts.jobs, &opts.extra);
     // build_usd.py's component toggles are argparse mutually exclusive groups:
     // naming both halves is a hard error there. ost knows the exact argv it is
     // about to run, so refuse now rather than pay a process spawn to surface a
     // two-line usage dump (report 29 §1).
-    let conflicts = conflicting_component_flags(&args);
+    let conflicts = conflicting_component_flags(&script_args);
     if !conflicts.is_empty() {
         let pairs = conflicts
             .iter()
@@ -3031,11 +3264,170 @@ fn build_with_script(
         "==> building OpenUSD (build_usd.py) into {} (one-time, heavy)",
         r.prefix
     );
-    println!("    {python} {}", args.join(" "));
+    println!("    {python} {}", script_args.join(" "));
+    let capture_path = r.prefix.join(".ost-build-usd-dependencies.jsonl");
+    if let Err(error) = std::fs::remove_file(capture_path.as_std_path()) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(Error::io(capture_path.to_string(), error));
+        }
+    }
+    let mut args = vec!["-c".to_string(), BUILD_USD_CAPTURE_RUNNER.to_string()];
+    args.extend(script_args);
     let mut env = msvc_env();
     env.extend(opts.build_env.iter().cloned());
     env.extend(macos_build_env(&opts.macos)?);
-    run_build_step(python.as_str(), &args, &env, "build_usd.py")
+    env.push((
+        "OST_BUILD_USD_DEPENDENCY_CAPTURE".to_string(),
+        capture_path.to_string(),
+    ));
+    let build_result = run_build_step(python.as_str(), &args, &env, "build_usd.py");
+    let capture_result = read_build_usd_dependencies(&capture_path);
+    if let Err(error) = std::fs::remove_file(capture_path.as_std_path()) {
+        if error.kind() != std::io::ErrorKind::NotFound && build_result.is_ok() {
+            return Err(Error::io(capture_path.to_string(), error));
+        }
+    }
+    build_result?;
+    capture_result
+}
+
+fn read_build_usd_dependencies(path: &Utf8Path) -> Result<Vec<ResolvedDependencyIdentity>> {
+    let source = match std::fs::read_to_string(path.as_std_path()) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(Error::io(path.to_string(), error)),
+    };
+    let mut dependencies = Vec::new();
+    for (index, line) in source.lines().enumerate() {
+        let download: BuildUsdDownload = serde_json::from_str(line).map_err(|error| {
+            Error::parse(
+                format!("{} line {}", path, index + 1),
+                anyhow::Error::new(error),
+            )
+        })?;
+        dependencies.push(dependency_identity_from_download(download)?);
+    }
+    dependencies.sort_by(|left, right| left.name.cmp(&right.name));
+    if dependencies
+        .windows(2)
+        .any(|pair| pair[0].name == pair[1].name)
+    {
+        return Err(Error::coded(
+            "OPENUSD_DEPENDENCY_CAPTURE_INVALID",
+            ost_core::Category::Validation,
+            "build_usd.py downloaded more than one source archive for the same dependency",
+        ));
+    }
+    Ok(dependencies)
+}
+
+fn dependency_identity_from_download(
+    download: BuildUsdDownload,
+) -> Result<ResolvedDependencyIdentity> {
+    let (repository, revision) = source_identity_from_download_url(
+        &download.dependency,
+        &download.url,
+        &download.archive_sha256,
+    );
+    let version = dependency_version(&revision, &download.url, &download.archive_sha256);
+    let identity = ResolvedDependencyIdentity {
+        name: download.dependency,
+        version,
+        source: ResolvedSourceIdentity {
+            repository,
+            revision,
+        },
+    };
+    if !identity.is_verified() {
+        return Err(Error::coded(
+            "OPENUSD_DEPENDENCY_CAPTURE_INVALID",
+            ost_core::Category::Validation,
+            format!(
+                "build_usd.py dependency '{}' has an incomplete source identity",
+                identity.name
+            ),
+        ));
+    }
+    Ok(identity)
+}
+
+fn source_identity_from_download_url(
+    dependency: &str,
+    url: &str,
+    archive_sha256: &str,
+) -> (String, String) {
+    if let Some(rest) = url.strip_prefix("https://github.com/") {
+        let mut parts = rest.split('/');
+        if let (Some(owner), Some(repository)) = (parts.next(), parts.next()) {
+            let repository = format!("https://github.com/{owner}/{repository}");
+            let tail = parts.collect::<Vec<_>>();
+            if let Some(index) = tail.iter().position(|part| *part == "archive") {
+                let revision = tail[index + 1..]
+                    .join("/")
+                    .trim_end_matches(".zip")
+                    .trim_start_matches("refs/tags/")
+                    .to_string();
+                if !revision.is_empty() {
+                    return (repository, revision);
+                }
+            }
+            if tail.first() == Some(&"releases") && tail.get(1) == Some(&"download") {
+                if let Some(revision) = tail.get(2) {
+                    return (repository, (*revision).to_string());
+                }
+            }
+        }
+    }
+    if let Some(rest) = url.strip_prefix("https://gitlab.com/") {
+        let parts = rest.split('/').collect::<Vec<_>>();
+        if parts.len() >= 6 && parts[2] == "-" && parts[3] == "archive" {
+            return (
+                format!("https://gitlab.com/{}/{}", parts[0], parts[1]),
+                parts[4].to_string(),
+            );
+        }
+    }
+    if dependency.eq_ignore_ascii_case("boost") {
+        let version = url
+            .split('/')
+            .find(|part| {
+                part.chars()
+                    .next()
+                    .is_some_and(|value| value.is_ascii_digit())
+                    && part.contains('.')
+            })
+            .unwrap_or(archive_sha256);
+        return (
+            "https://github.com/boostorg/boost".to_string(),
+            format!("boost-{version}"),
+        );
+    }
+    (url.to_string(), format!("sha256:{archive_sha256}"))
+}
+
+fn dependency_version(revision: &str, url: &str, archive_sha256: &str) -> String {
+    let candidate = revision
+        .strip_prefix("refs/tags/")
+        .unwrap_or(revision)
+        .strip_prefix("boost-")
+        .unwrap_or(revision)
+        .trim_start_matches('v');
+    if candidate.chars().any(|value| value.is_ascii_digit())
+        && candidate.chars().any(|value| value == '.' || value == '_')
+    {
+        return candidate.replace('_', ".");
+    }
+    let filename = url.rsplit('/').next().unwrap_or_default();
+    let filename = filename.trim_end_matches(".zip");
+    let version = filename.split(['-', '_']).find(|part| {
+        part.chars()
+            .next()
+            .is_some_and(|value| value.is_ascii_digit())
+    });
+    version
+        .filter(|value| !value.is_empty())
+        .unwrap_or(archive_sha256)
+        .to_string()
 }
 
 /// Build OpenUSD directly with CMake against pre-provided dependency prefixes,
@@ -3282,6 +3674,7 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     }
     print_host_requirements(&manifest.host_requirements, "Host needs: ");
     print_openusd_compatibility(&manifest, "");
+    print_build_identities(&manifest, "");
     println!("Capabilities:");
     for cap in &manifest.capabilities {
         println!("  - {cap}");
@@ -4162,6 +4555,183 @@ mod tests {
         assert_eq!(record.name, m.id);
         assert_eq!(record.validation, "passed");
         assert_eq!(record.runtime_digest.as_deref(), Some(m.digest.as_str()));
+    }
+
+    #[test]
+    fn build_usd_download_urls_become_exact_dependency_identities() {
+        let cases = [
+            (
+                BuildUsdDownload {
+                    dependency: "oneTBB".into(),
+                    url: "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.12.0.zip"
+                        .into(),
+                    archive_sha256: "aa".repeat(32),
+                },
+                "https://github.com/oneapi-src/oneTBB",
+                "v2021.12.0",
+                "2021.12.0",
+            ),
+            (
+                BuildUsdDownload {
+                    dependency: "TIFF".into(),
+                    url: "https://gitlab.com/libtiff/libtiff/-/archive/v4.0.7/libtiff-v4.0.7.zip"
+                        .into(),
+                    archive_sha256: "bb".repeat(32),
+                },
+                "https://gitlab.com/libtiff/libtiff",
+                "v4.0.7",
+                "4.0.7",
+            ),
+            (
+                BuildUsdDownload {
+                    dependency: "boost".into(),
+                    url: "https://archives.boost.io/release/1.86.0/source/boost_1_86_0.zip".into(),
+                    archive_sha256: "cc".repeat(32),
+                },
+                "https://github.com/boostorg/boost",
+                "boost-1.86.0",
+                "1.86.0",
+            ),
+        ];
+        for (download, repository, revision, version) in cases {
+            let identity = dependency_identity_from_download(download).unwrap();
+            assert_eq!(identity.source.repository, repository);
+            assert_eq!(identity.source.revision, revision);
+            assert_eq!(identity.version, version);
+        }
+    }
+
+    #[test]
+    fn captured_build_usd_dependencies_are_sorted_and_duplicate_safe() {
+        let scratch = temp_dir("build-usd-capture");
+        let capture = scratch.join("dependencies.jsonl");
+        std::fs::write(
+            capture.as_std_path(),
+            concat!(
+                "{\"dependency\":\"oneTBB\",\"url\":\"https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.12.0.zip\",\"archive_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n",
+                "{\"dependency\":\"MaterialX\",\"url\":\"https://github.com/AcademySoftwareFoundation/MaterialX/archive/v1.39.4.zip\",\"archive_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}\n"
+            ),
+        )
+        .unwrap();
+        let dependencies = read_build_usd_dependencies(&capture).unwrap();
+        assert_eq!(dependencies[0].name, "MaterialX");
+        assert_eq!(dependencies[0].version, "1.39.4");
+        assert_eq!(dependencies[1].name, "oneTBB");
+
+        std::fs::write(
+            capture.as_std_path(),
+            concat!(
+                "{\"dependency\":\"oneTBB\",\"url\":\"https://github.com/oneapi-src/oneTBB/archive/v1.zip\",\"archive_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n",
+                "{\"dependency\":\"oneTBB\",\"url\":\"https://github.com/oneapi-src/oneTBB/archive/v2.zip\",\"archive_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            read_build_usd_dependencies(&capture).unwrap_err().code(),
+            "OPENUSD_DEPENDENCY_CAPTURE_INVALID"
+        );
+        std::fs::remove_dir_all(scratch.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn capture_runner_observes_the_download_selected_by_the_upstream_script() {
+        let Some(python) = tools::which("python").or_else(|| tools::which("python3")) else {
+            return;
+        };
+        let scratch = temp_dir("build-usd-runner");
+        let script = scratch.join("build_usd.py");
+        let capture = scratch.join("dependencies.jsonl");
+        std::fs::write(
+            script.as_std_path(),
+            r#"import os
+
+def DownloadURL(url, context, force, extractDir=None, dontExtract=None, destFileName=None, expectedSHA256=None):
+    filename = destFileName or url.split("/")[-1]
+    with open(os.path.join(context.srcDir, filename), "wb") as archive:
+        archive.write(b"selected dependency bytes")
+    return context.srcDir
+
+class Context:
+    srcDir = os.path.dirname(__file__)
+
+class Dependency:
+    name = "oneTBB"
+
+context = Context()
+dep = Dependency()
+try:
+    # Download and install 3rd-Party dependencies
+    DownloadURL("https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.12.0.zip", context, False)
+except Exception:
+    raise
+"#,
+        )
+        .unwrap();
+        let status = Command::new(python)
+            .args(["-c", BUILD_USD_CAPTURE_RUNNER, script.as_str()])
+            .env("OST_BUILD_USD_DEPENDENCY_CAPTURE", capture.as_str())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let dependencies = read_build_usd_dependencies(&capture).unwrap();
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].name, "oneTBB");
+        assert_eq!(dependencies[0].version, "2021.12.0");
+        assert_eq!(
+            dependencies[0].source.repository,
+            "https://github.com/oneapi-src/oneTBB"
+        );
+        std::fs::remove_dir_all(scratch.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn managed_build_identities_enrich_and_check_export_metadata() {
+        let mut manifest = exportable_manifest();
+        manifest
+            .set_build_identities(
+                Some(ResolvedSourceIdentity {
+                    repository: "https://github.com/PixarAnimationStudios/OpenUSD".into(),
+                    revision: "2095fafafd033fa23386d7ec6d58c7cc33974518".into(),
+                }),
+                vec![ResolvedDependencyIdentity {
+                    name: "oneTBB".into(),
+                    version: "2021.12.0".into(),
+                    source: ResolvedSourceIdentity {
+                        repository: "https://github.com/oneapi-src/oneTBB".into(),
+                        revision: "v2021.12.0".into(),
+                    },
+                }],
+            )
+            .unwrap();
+        let metadata = artifact_build_metadata(&manifest, None, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            metadata["source"]["revision"],
+            "2095fafafd033fa23386d7ec6d58c7cc33974518"
+        );
+        assert_eq!(metadata["dependencies"][0]["name"], "oneTBB");
+        assert_eq!(
+            metadata["builder"]["id"],
+            "https://openstrata.dev/builders/ost/runtime-pull"
+        );
+
+        let supplied = serde_json::json!({
+            "source": {
+                "repository": "https://example.invalid/not-openusd",
+                "revision": "different"
+            },
+            "builder": {
+                "id": "https://build.example/openusd",
+                "identity": { "host": "builder-01" }
+            }
+        });
+        assert_eq!(
+            artifact_build_metadata(&manifest, Some(supplied), true)
+                .unwrap_err()
+                .code(),
+            "BUILD_METADATA_SOURCE_MISMATCH"
+        );
     }
 
     #[test]

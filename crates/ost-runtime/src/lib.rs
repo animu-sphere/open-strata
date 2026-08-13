@@ -18,7 +18,10 @@ pub use manifest::{
     ExtensionRecord, HostPackageManager, HostRequirement, RuntimeManifest, RuntimeSource,
     Validation, MANIFEST_FILE,
 };
-pub use ost_platform::{OpenUsdBuilder, OpenUsdVariantId, ResolvedOpenUsdCompatibility};
+pub use ost_platform::{
+    OpenUsdBuilder, OpenUsdVariantId, ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility,
+    ResolvedSourceIdentity,
+};
 pub use profile::{Profile, ProfileCatalog, Requires};
 pub use runtime::{python_abi_tag, python_minor, Runtime};
 pub use validate::{validate, Check, ValidationReport};

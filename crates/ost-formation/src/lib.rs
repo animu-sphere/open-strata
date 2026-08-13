@@ -825,6 +825,8 @@ args = ["avatar.vrm"]
             runtime_deps: Vec::new(),
             host_requirements: Vec::new(),
             openusd_compatibility: None,
+            build_source: None,
+            build_dependencies: Vec::new(),
             artifact_digest: Some(runtime_digest.clone()),
         };
         runtime_manifest.digest = runtime_manifest.compute_digest();
