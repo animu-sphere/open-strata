@@ -1795,16 +1795,24 @@ fn assess_root_bundle_build_provenance(
             return Ok(Some(evidence_error(detail, None, "ost build".into())));
         }
     };
-    let identity_error = if lock.target != id
+    let target_identity_differs = lock.target != id
         || lock.platform != target.platform
         || lock.profile != target.profile
-        || lock.variant != target.variant
-        || lock.runtime.id != target.runtime_id
-        || lock.runtime.digest != target.runtime_digest
-    {
+        || lock.variant != target.variant;
+    let identity_error = if target_identity_differs {
         Some(format!(
             "last root managed build target/runtime identity does not match selected target '{id}' runtime '{}@{}'",
             target.runtime_id, target.runtime_digest
+        ))
+    } else if lock.runtime.id != target.runtime_id {
+        Some(format!(
+            "last root managed build runtime '{}' was substituted by selected runtime '{}'; rebuild the affected workspace member with `ost build`",
+            lock.runtime.id, target.runtime_id
+        ))
+    } else if lock.runtime.digest != target.runtime_digest {
+        Some(format!(
+            "last root managed build runtime '{}' changed digest under the same runtime id: recorded digest '{}' != selected digest '{}'; this may be manifest-identity enrichment or replacement of the runtime payload, so rebuild the affected workspace member with `ost build`",
+            target.runtime_id, lock.runtime.digest, target.runtime_digest
         ))
     } else {
         None
@@ -5864,6 +5872,415 @@ pub(crate) fn workspace_managed_outputs(
     (outputs.into_values().collect(), warnings)
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct ToolBuildBaseline {
+    outputs: BTreeMap<String, BuildOutput>,
+}
+
+/// Snapshot build-tree files that could satisfy a workspace tool descriptor.
+///
+/// The snapshot is captured before CMake runs. Staging later compares exact
+/// digests against it so an output merely left behind by an older invocation
+/// cannot acquire fresh managed-build provenance.
+pub(crate) fn snapshot_workspace_tool_build_outputs(
+    root: &Utf8Path,
+    build_dir: &Utf8Path,
+    os: Os,
+) -> Result<ToolBuildBaseline> {
+    if !build_dir.is_dir() {
+        return Ok(ToolBuildBaseline::default());
+    }
+
+    let suffix = if os == Os::Windows { ".exe" } else { "" };
+    let mut filenames = BTreeSet::new();
+    for tool_root in discover_workspace_tools(root)? {
+        let tool = ost_plugin::Tool::load(&tool_root)?;
+        filenames.extend(
+            tool.manifest
+                .executables
+                .iter()
+                .map(|executable| format!("{executable}{suffix}")),
+        );
+    }
+    if filenames.is_empty() {
+        return Ok(ToolBuildBaseline::default());
+    }
+
+    let mut files = Vec::new();
+    collect_build_files(build_dir, build_dir, &mut files)?;
+    let mut outputs = BTreeMap::new();
+    for (relative, path) in files {
+        if path
+            .file_name()
+            .is_none_or(|filename| !filenames.contains(filename))
+        {
+            continue;
+        }
+        let (sha256, size) = digest_file(&path)?;
+        outputs.insert(
+            relative.clone(),
+            BuildOutput {
+                path: relative,
+                sha256,
+                size,
+            },
+        );
+    }
+    Ok(ToolBuildBaseline { outputs })
+}
+
+#[derive(Debug)]
+enum ToolDestinationState {
+    Missing,
+    File {
+        bytes: Vec<u8>,
+        permissions: std::fs::Permissions,
+    },
+}
+
+#[derive(Debug)]
+struct ToolStagingPlan {
+    source: Utf8PathBuf,
+    destination: Utf8PathBuf,
+    bytes: Vec<u8>,
+    permissions: std::fs::Permissions,
+    original: ToolDestinationState,
+    note: String,
+}
+
+/// Stage executables produced by a root workspace build into each tool member.
+///
+/// CMake normally leaves an `add_executable` target below the root binary tree,
+/// while a tool artifact is intentionally packaged from the member root named
+/// by `openstrata.tool.yaml`. Bridge those two layouts after a successful
+/// managed build so the bytes recorded in the root completion are the exact
+/// bytes packaging will consume.
+///
+/// If this invocation produced no fresh candidate, an executable already
+/// present in a declared member directory remains untouched. For fresh
+/// build-tree output, prefer candidates below the member's relative binary-tree
+/// path, then the requested configuration, and finally a globally unique
+/// filename. Ambiguity is left unstaged and reported instead of guessing which
+/// binary should become a release artifact.
+pub(crate) fn stage_workspace_tool_executables(
+    root: &Utf8Path,
+    build_dir: &Utf8Path,
+    os: Os,
+    config: &str,
+    baseline: &ToolBuildBaseline,
+) -> Result<Vec<String>> {
+    let tool_roots = discover_workspace_tools(root)?;
+    if tool_roots.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut build_files = Vec::new();
+    collect_build_files(build_dir, build_dir, &mut build_files)?;
+    let canonical_project_root = canonical_root(root);
+    let mut notes = Vec::new();
+    let mut plans = Vec::new();
+    let mut destinations = BTreeSet::new();
+    let multi_config = build_tree_is_multi_config(build_dir);
+    for tool_root in tool_roots {
+        let tool = ost_plugin::Tool::load(&tool_root)?;
+        let member = member_relative(&canonical_project_root, &tool.root).ok_or_else(|| {
+            Error::validation(format!(
+                "tool '{}' at {} is outside the project root {root}",
+                tool.id(),
+                tool.root
+            ))
+        })?;
+        let suffix = if os == Os::Windows { ".exe" } else { "" };
+        for executable in &tool.manifest.executables {
+            let filename = format!("{executable}{suffix}");
+            let member_has_executable = tool
+                .manifest
+                .directories
+                .iter()
+                .any(|directory| tool.root.join(directory).join(&filename).is_file());
+
+            let candidates = build_files
+                .iter()
+                .filter(|(_, path)| path.file_name() == Some(filename.as_str()))
+                .collect::<Vec<_>>();
+            let mut fresh_candidates = Vec::new();
+            for candidate in &candidates {
+                let (sha256, size) = digest_file(&candidate.1)?;
+                let current = BuildOutput {
+                    path: candidate.0.clone(),
+                    sha256,
+                    size,
+                };
+                if baseline.outputs.get(&candidate.0) != Some(&current) {
+                    fresh_candidates.push(*candidate);
+                }
+            }
+            let selected =
+                select_tool_build_candidate(&fresh_candidates, &member, config, multi_config);
+            let Some(source) = selected else {
+                if fresh_candidates.is_empty() && member_has_executable {
+                    continue;
+                }
+                let detail = match fresh_candidates.len() {
+                    0 if candidates.is_empty() => format!(
+                        "warning: tool '{}' declares executable '{filename}', but the successful root build produced no matching file under {build_dir}; packaging requires it below {} in the tool member",
+                        tool.id(), tool.manifest.directories.join(", ")
+                    ),
+                    0 => format!(
+                        "warning: tool '{}' executable '{filename}' only matched output left unchanged from before this build; refusing to stage stale bytes as a managed result",
+                        tool.id()
+                    ),
+                    count => format!(
+                        "warning: tool '{}' executable '{filename}' matched {count} newly produced build-tree files and could not be staged for configuration '{config}' unambiguously; set a target output directory below member '{member}'",
+                        tool.id()
+                    ),
+                };
+                notes.push(detail);
+                continue;
+            };
+
+            let directory = tool
+                .manifest
+                .directories
+                .first()
+                .expect("validated tool descriptors have at least one directory");
+            let destination = tool.root.join(directory).join(&filename);
+            let bytes = std::fs::read(source.as_std_path())
+                .map_err(|error| Error::io(source.to_string(), error))?;
+            let source_permissions = std::fs::metadata(source.as_std_path())
+                .map_err(|error| Error::io(source.to_string(), error))?
+                .permissions();
+            if !destinations.insert(destination.clone()) {
+                return Err(Error::validation(format!(
+                    "more than one workspace tool executable stages to {destination}"
+                )));
+            }
+            let original = read_tool_destination_state(&destination)?;
+            let note = format!(
+                "staged tool '{}' executable {} -> {}",
+                tool.id(),
+                source,
+                destination
+            );
+            plans.push(ToolStagingPlan {
+                source: source.clone(),
+                destination,
+                bytes,
+                permissions: source_permissions,
+                original,
+                note,
+            });
+        }
+    }
+    apply_tool_staging_plans(&plans)?;
+    notes.extend(plans.into_iter().map(|plan| plan.note));
+    Ok(notes)
+}
+
+fn read_tool_destination_state(destination: &Utf8Path) -> Result<ToolDestinationState> {
+    match std::fs::symlink_metadata(destination.as_std_path()) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(Error::validation(format!(
+            "refusing to stage a tool executable over symlink {destination}"
+        ))),
+        Ok(metadata) if metadata.is_file() => {
+            let bytes = std::fs::read(destination.as_std_path())
+                .map_err(|error| Error::io(destination.to_string(), error))?;
+            Ok(ToolDestinationState::File {
+                bytes,
+                permissions: metadata.permissions(),
+            })
+        }
+        Ok(_) => Err(Error::validation(format!(
+            "tool executable destination {destination} is not a regular file"
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(ToolDestinationState::Missing)
+        }
+        Err(error) => Err(Error::io(destination.to_string(), error)),
+    }
+}
+
+fn apply_tool_staging_plans(plans: &[ToolStagingPlan]) -> Result<()> {
+    // Finish every fallible read/descriptor check before this point. Directory
+    // creation can leave only empty directories; file mutations below are
+    // rolled back together if any atomic write or permission update fails.
+    for plan in plans {
+        let parent = plan
+            .destination
+            .parent()
+            .expect("a staged tool executable has a member directory");
+        std::fs::create_dir_all(parent.as_std_path())
+            .map_err(|error| Error::io(parent.to_string(), error))?;
+    }
+
+    for (index, plan) in plans.iter().enumerate() {
+        let result = make_tool_destination_replaceable(&plan.destination)
+            .and_then(|()| write_atomic(plan.destination.as_std_path(), &plan.bytes))
+            .and_then(|()| {
+                std::fs::set_permissions(plan.destination.as_std_path(), plan.permissions.clone())
+                    .map_err(|error| Error::io(plan.destination.to_string(), error))
+            });
+        if let Err(error) = result {
+            let rollback_errors = plans[..=index]
+                .iter()
+                .rev()
+                .filter_map(|applied| restore_tool_destination(applied).err())
+                .map(|rollback| rollback.to_string())
+                .collect::<Vec<_>>();
+            if rollback_errors.is_empty() {
+                return Err(error);
+            }
+            return Err(Error::coded(
+                "TOOL_STAGING_ROLLBACK_FAILED",
+                Category::Io,
+                format!(
+                    "tool staging failed while copying {} -> {} ({error}); rollback also failed: {}",
+                    plan.source,
+                    plan.destination,
+                    rollback_errors.join("; ")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn restore_tool_destination(plan: &ToolStagingPlan) -> Result<()> {
+    make_tool_destination_replaceable(&plan.destination)?;
+    match &plan.original {
+        ToolDestinationState::Missing => match std::fs::remove_file(plan.destination.as_std_path())
+        {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(Error::io(plan.destination.to_string(), error)),
+        },
+        ToolDestinationState::File { bytes, permissions } => {
+            write_atomic(plan.destination.as_std_path(), bytes)?;
+            std::fs::set_permissions(plan.destination.as_std_path(), permissions.clone())
+                .map_err(|error| Error::io(plan.destination.to_string(), error))
+        }
+    }
+}
+
+fn make_tool_destination_replaceable(destination: &Utf8Path) -> Result<()> {
+    #[cfg(windows)]
+    if let Ok(metadata) = std::fs::metadata(destination.as_std_path()) {
+        let mut permissions = metadata.permissions();
+        if permissions.readonly() {
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            std::fs::set_permissions(destination.as_std_path(), permissions)
+                .map_err(|error| Error::io(destination.to_string(), error))?;
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = destination;
+    Ok(())
+}
+
+fn collect_build_files(
+    root: &Utf8Path,
+    directory: &Utf8Path,
+    files: &mut Vec<(String, Utf8PathBuf)>,
+) -> Result<()> {
+    let entries = std::fs::read_dir(directory.as_std_path())
+        .map_err(|error| Error::io(directory.to_string(), error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| Error::io(directory.to_string(), error))?;
+        let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
+            Error::validation(format!(
+                "build output path '{}' is not valid UTF-8",
+                path.display()
+            ))
+        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| Error::io(path.to_string(), error))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_build_files(root, &path, files)?;
+        } else if file_type.is_file() {
+            let relative = path.strip_prefix(root).map_err(|error| {
+                Error::validation(format!(
+                    "build output '{path}' escaped build tree '{root}': {error}"
+                ))
+            })?;
+            files.push((portable(relative), path));
+        }
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(())
+}
+
+fn select_tool_build_candidate<'a>(
+    candidates: &[&'a (String, Utf8PathBuf)],
+    member: &str,
+    config: &str,
+    multi_config: bool,
+) -> Option<&'a Utf8PathBuf> {
+    fn below_member(relative: &str, member: &str) -> bool {
+        relative == member
+            || relative.starts_with(&format!("{member}/"))
+            || relative.contains(&format!("/{member}/"))
+    }
+    fn in_config(relative: &str, config: &str) -> bool {
+        relative
+            .split('/')
+            .any(|segment| segment.eq_ignore_ascii_case(config))
+    }
+    fn in_other_standard_config(relative: &str, config: &str) -> bool {
+        const STANDARD_CONFIGS: &[&str] = &["Debug", "Release", "RelWithDebInfo", "MinSizeRel"];
+        relative.split('/').any(|segment| {
+            STANDARD_CONFIGS.iter().any(|known| {
+                segment.eq_ignore_ascii_case(known) && !segment.eq_ignore_ascii_case(config)
+            })
+        })
+    }
+
+    let member_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|(relative, _)| below_member(relative, member))
+        .collect::<Vec<_>>();
+    let configured = member_candidates
+        .iter()
+        .copied()
+        .filter(|(relative, _)| in_config(relative, config))
+        .collect::<Vec<_>>();
+    if configured.len() == 1 {
+        return Some(&configured[0].1);
+    }
+    if configured.len() > 1 {
+        return None;
+    }
+    if !multi_config {
+        let configless_member = member_candidates
+            .iter()
+            .copied()
+            .filter(|(relative, _)| !in_other_standard_config(relative, config))
+            .collect::<Vec<_>>();
+        if configless_member.len() == 1 {
+            return Some(&configless_member[0].1);
+        }
+    }
+    if !member_candidates.is_empty() || candidates.len() != 1 {
+        return None;
+    }
+    let (relative, path) = candidates[0];
+    (in_config(relative, config) || (!multi_config && !in_other_standard_config(relative, config)))
+        .then_some(path)
+}
+
+fn build_tree_is_multi_config(build_dir: &Utf8Path) -> bool {
+    std::fs::read_to_string(build_dir.join("CMakeCache.txt").as_std_path()).is_ok_and(|source| {
+        source
+            .lines()
+            .any(|line| line.starts_with("CMAKE_CONFIGURATION_TYPES:"))
+    })
+}
+
 /// The executables every workspace tool declares, as managed build outputs
 /// relative to the project root, for `ost build` to record in its completion.
 ///
@@ -8124,6 +8541,240 @@ fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
 mod tests {
     use super::*;
     use ost_core::host::Arch;
+
+    #[test]
+    fn root_build_stages_declared_tool_executables_into_the_member() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir().join(format!("ost-tool-stage-{}-{nonce}", std::process::id())),
+        )
+        .unwrap();
+        let tool_root = root.join("tools/motion_retarget");
+        let build = root.join("build/target");
+        let os = if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::Linux
+        };
+        let filename = if cfg!(windows) {
+            "motion_retarget.exe"
+        } else {
+            "motion_retarget"
+        };
+        std::fs::create_dir_all(tool_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(build.join("tools/motion_retarget/Release").as_std_path()).unwrap();
+        std::fs::write(
+            tool_root.join(ost_plugin::TOOL_MANIFEST).as_std_path(),
+            "schema: openstrata.tool/v1alpha1\n\
+             tool: { id: motion_retarget, version: 0.4.0 }\n\
+             executables: [motion_retarget]\n\
+             directories: [bin]\n",
+        )
+        .unwrap();
+        let produced = build.join("tools/motion_retarget/Release").join(filename);
+        std::fs::write(produced.as_std_path(), b"managed tool bytes").unwrap();
+        std::fs::create_dir_all(tool_root.join("bin").as_std_path()).unwrap();
+        std::fs::write(tool_root.join("bin").join(filename), b"stale member bytes").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                produced.as_std_path(),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+
+        let notes = stage_workspace_tool_executables(
+            &root,
+            &build,
+            os,
+            "Release",
+            &ToolBuildBaseline::default(),
+        )
+        .unwrap();
+
+        let staged = tool_root.join("bin").join(filename);
+        assert_eq!(
+            std::fs::read(staged.as_std_path()).unwrap(),
+            b"managed tool bytes"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(
+                std::fs::metadata(staged.as_std_path())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o111,
+                0
+            );
+        }
+        assert_eq!(notes.len(), 1);
+        let (outputs, warnings) = workspace_tool_outputs(&root, os);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(
+            outputs[0].path,
+            format!("tools/motion_retarget/bin/{filename}")
+        );
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn tool_staging_never_guesses_between_ambiguous_build_outputs() {
+        let candidates = [
+            (
+                "other/Debug/tool".to_string(),
+                Utf8PathBuf::from("build/other/Debug/tool"),
+            ),
+            (
+                "another/Release/tool".to_string(),
+                Utf8PathBuf::from("build/another/Release/tool"),
+            ),
+        ];
+        let references = candidates.iter().collect::<Vec<_>>();
+        assert!(select_tool_build_candidate(&references, "tools/tool", "Release", false).is_none());
+    }
+
+    #[test]
+    fn tool_staging_rejects_a_candidate_from_another_configuration() {
+        let candidates = [(
+            "tools/tool/Debug/tool".to_string(),
+            Utf8PathBuf::from("build/tools/tool/Debug/tool"),
+        )];
+        let references = candidates.iter().collect::<Vec<_>>();
+
+        assert!(select_tool_build_candidate(&references, "tools/tool", "Release", false).is_none());
+        assert!(select_tool_build_candidate(&references, "tools/tool", "Debug", false).is_some());
+    }
+
+    #[test]
+    fn tool_staging_does_not_fall_back_around_a_member_configuration_mismatch() {
+        let candidates = [
+            (
+                "tools/tool/Debug/tool".to_string(),
+                Utf8PathBuf::from("build/tools/tool/Debug/tool"),
+            ),
+            (
+                "Release/tool".to_string(),
+                Utf8PathBuf::from("build/Release/tool"),
+            ),
+        ];
+        let references = candidates.iter().collect::<Vec<_>>();
+
+        assert!(select_tool_build_candidate(&references, "tools/tool", "Release", true).is_none());
+    }
+
+    #[test]
+    fn tool_staging_does_not_promote_an_unchanged_build_tree_file() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir().join(format!("ost-tool-stale-{}-{nonce}", std::process::id())),
+        )
+        .unwrap();
+        let tool_root = root.join("tools/motion_retarget");
+        let build = root.join("build/target");
+        let os = if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::Linux
+        };
+        let filename = if cfg!(windows) {
+            "motion_retarget.exe"
+        } else {
+            "motion_retarget"
+        };
+        std::fs::create_dir_all(tool_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(build.join("tools/motion_retarget/Release").as_std_path()).unwrap();
+        std::fs::write(
+            tool_root.join(ost_plugin::TOOL_MANIFEST).as_std_path(),
+            "schema: openstrata.tool/v1alpha1\n\
+             tool: { id: motion_retarget, version: 0.4.0 }\n\
+             executables: [motion_retarget]\n\
+             directories: [bin]\n",
+        )
+        .unwrap();
+        let produced = build.join("tools/motion_retarget/Release").join(filename);
+        std::fs::write(produced.as_std_path(), b"old build bytes").unwrap();
+        let baseline = snapshot_workspace_tool_build_outputs(&root, &build, os).unwrap();
+
+        let notes =
+            stage_workspace_tool_executables(&root, &build, os, "Release", &baseline).unwrap();
+
+        assert!(!tool_root.join("bin").join(filename).exists());
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("left unchanged from before this build"));
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn tool_staging_preflights_every_descriptor_before_writing() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir().join(format!("ost-tool-preflight-{}-{nonce}", std::process::id())),
+        )
+        .unwrap();
+        let good = root.join("tools/a-good");
+        let invalid = root.join("tools/z-invalid");
+        let build = root.join("build/target");
+        let os = if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::Linux
+        };
+        let filename = if cfg!(windows) { "good.exe" } else { "good" };
+        std::fs::create_dir_all(good.join("bin").as_std_path()).unwrap();
+        std::fs::create_dir_all(invalid.as_std_path()).unwrap();
+        std::fs::create_dir_all(build.join("tools/a-good/Release").as_std_path()).unwrap();
+        std::fs::write(
+            good.join(ost_plugin::TOOL_MANIFEST).as_std_path(),
+            "schema: openstrata.tool/v1alpha1\n\
+             tool: { id: good, version: 0.4.0 }\n\
+             executables: [good]\n\
+             directories: [bin]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            invalid.join(ost_plugin::TOOL_MANIFEST).as_std_path(),
+            "schema: openstrata.tool/v1alpha1\n\
+             tool: { id: invalid, version: 0.4.0 }\n\
+             executables: [invalid]\n\
+             directories: []\n",
+        )
+        .unwrap();
+        let destination = good.join("bin").join(filename);
+        std::fs::write(destination.as_std_path(), b"original member bytes").unwrap();
+        std::fs::write(
+            build.join("tools/a-good/Release").join(filename),
+            b"new build bytes",
+        )
+        .unwrap();
+
+        assert!(stage_workspace_tool_executables(
+            &root,
+            &build,
+            os,
+            "Release",
+            &ToolBuildBaseline::default(),
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read(destination.as_std_path()).unwrap(),
+            b"original member bytes"
+        );
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
 
     fn variant(os: Os, abi: Abi) -> Variant {
         Variant {

@@ -357,6 +357,14 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         outputs,
         previous_completion,
     };
+    // A file left in the binary tree by an earlier invocation is not evidence
+    // that the build below produced it. Tool staging compares this snapshot to
+    // the post-build candidates and only promotes newly created/changed bytes.
+    let tool_build_baseline = crate::commands::plugin::snapshot_workspace_tool_build_outputs(
+        &root,
+        &build_dir,
+        target.os(),
+    )?;
     let renderer_reports_before =
         crate::commands::renderer::snapshot_managed_renderer_reports(&root, &build_dir)?;
     let producer_started_unix = lease
@@ -551,6 +559,34 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         lease.release();
         stamp?;
         return Err(error);
+    }
+    let tool_staging_notes = match crate::commands::plugin::stage_workspace_tool_executables(
+        &root,
+        &build_dir,
+        target.os(),
+        &args.config,
+        &tool_build_baseline,
+    ) {
+        Ok(notes) => notes,
+        Err(error) => {
+            let stamp = stamp_build_renderer_reports(
+                &root,
+                &build_dir,
+                &renderer_reports_before,
+                &id,
+                producer_invocation.as_deref(),
+                producer_started_unix,
+                Some(crate::commands::renderer::unix_now()),
+                ost_manifest::SessionOutcome::Failure,
+                false,
+            );
+            lease.release();
+            stamp?;
+            return Err(error);
+        }
+    };
+    for note in tool_staging_notes {
+        rep.note(&note);
     }
     let completed_unix = crate::commands::renderer::unix_now();
     let renderer_reports = stamp_build_renderer_reports(
