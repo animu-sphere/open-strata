@@ -2544,6 +2544,8 @@ fn export(
             .unwrap_or(0)
     });
     let mut producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
+    producer[ost_artifact::OPENUSD_SELECTOR_SCHEMA_FIELD] =
+        serde_json::json!(ost_artifact::OPENUSD_SELECTOR_SCHEMA);
 
     // Measure the real glibc floor from the packed ELF binaries and label the
     // artifact with it, overriding a fabricated/defaulted `glibc228` nominal. The

@@ -150,11 +150,14 @@ entries fail before export packing and again at artifact import. Source and the
 sorted dependency closure contribute to the full OpenUSD compatibility-selector
 hash, appear in artifact inspection, and become SPDX packages with `DEPENDS_ON`
 relationships. OCI pull re-derives and checks that source/dependency-bound
-selector from the fetched producer manifest before import. Re-import may enrich
-a legacy record from matching subject-bound provenance, but the same archive
-digest cannot replace an already normalized producer identity. Automatic capture
-of every dependency resolved internally by `build_usd.py` and build/link/render
-state separation remain open below.
+selector from the fetched producer manifest before import. New runtime exports
+mark selector schema 2; unmarked immutable artifacts retain validation against
+the pre-source/dependency selector. Re-import may enrich a legacy record only
+when provenance binds a new source and the SBOM binds a new dependency closure;
+OpenUSD compatibility still requires the original producer manifest. The same
+archive digest cannot replace an already normalized producer identity. Automatic
+capture of every dependency resolved internally by `build_usd.py` and
+build/link/render state separation remain open below.
 
 - Every published artifact carries or references its source revision, resolved
   dependencies, workflow identity, third-party attribution, SBOM, evidence

@@ -291,10 +291,41 @@ impl ArtifactStore {
             }
 
             // A byte-identical re-import can enrich a record written before
-            // these normalized fields existed. Differing manifests need
-            // subject-bound provenance before their stronger identity replaces
-            // an absent legacy value.
-            let can_enrich_identity = manifest_committed || provenance.is_some();
+            // these normalized fields existed. With a differing manifest, each
+            // new identity needs evidence that actually binds it: provenance
+            // binds source, and the SBOM binds the dependency closure. OpenUSD
+            // compatibility is not currently carried by either sidecar, so it
+            // can only be recovered from the already-committed manifest.
+            let source_enrichment =
+                existing.source_identity.is_none() && record.source_identity.is_some();
+            let dependency_enrichment = existing.dependency_identities.is_empty()
+                && !record.dependency_identities.is_empty();
+            let openusd_enrichment =
+                existing.openusd_compatibility.is_none() && record.openusd_compatibility.is_some();
+            let identity_enrichment_requested =
+                source_enrichment || dependency_enrichment || openusd_enrichment;
+            let enrichment_is_bound = (!source_enrichment || provenance.is_some())
+                && (!dependency_enrichment || sbom.is_some())
+                && !openusd_enrichment;
+            if !manifest_committed
+                && incoming_evidence
+                && identity_enrichment_requested
+                && !enrichment_is_bound
+            {
+                return Err(Error::coded(
+                    "ARTIFACT_IDENTITY_EVIDENCE_INCOMPLETE",
+                    Category::Validation,
+                    format!(
+                        "artifact {} cannot enrich source, dependency, or OpenUSD identity because the incoming evidence does not bind every new field",
+                        existing.short_digest()
+                    ),
+                )
+                .with_hint(
+                    "attach provenance for a new source identity and an SBOM for new dependency identities; OpenUSD compatibility enrichment requires the original producer manifest",
+                ));
+            }
+            let can_enrich_identity =
+                manifest_committed || (identity_enrichment_requested && enrichment_is_bound);
             let mut identity_enriched = false;
             if can_enrich_identity {
                 if existing.source_identity.is_none() && record.source_identity.is_some() {
@@ -369,8 +400,7 @@ impl ArtifactStore {
             // is identical either way, so both manifests describe these exact
             // bytes; the incoming one is the half of the pair that agrees with
             // the sidecar we just accepted.
-            if (evidence_attached.iter().any(|name| name == PROVENANCE_FILE)
-                || (identity_enriched && provenance.is_some()))
+            if (evidence_attached.iter().any(|name| name == PROVENANCE_FILE) || identity_enriched)
                 && !manifest_committed
             {
                 // Committing the incoming manifest also commits its promises:
@@ -1347,6 +1377,14 @@ mod tests {
             serde_json::from_slice(&std::fs::read(manifest_path.as_std_path()).unwrap()).unwrap();
         manifest["build"] = serde_json::json!({
             "source": { "repository": "owner/repo", "revision": "deadbeef" },
+            "dependencies": [{
+                "name": "onetbb",
+                "version": "2022.1.0",
+                "source": {
+                    "repository": "github.com/uxlfoundation/oneTBB",
+                    "revision": "v2022.1.0"
+                }
+            }],
             "builder": {
                 "id": "https://github.com/owner/repo/.github/workflows/release.yml@refs/tags/v1",
                 "identity": {
@@ -1681,6 +1719,10 @@ mod tests {
             "deadbeef",
             "subject-bound provenance enriches a legacy record's missing identity"
         );
+        assert_eq!(
+            second.record.dependency_identities[0].name, "onetbb",
+            "the subject-bound SBOM enriches the exact dependency closure"
+        );
 
         // The attach is durable: re-reading the store sees the evidence, and
         // the sidecars verify against the stored archive.
@@ -1700,6 +1742,27 @@ mod tests {
             vec![SBOM_FILE.to_string(), PROVENANCE_FILE.to_string()]
         );
 
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn provenance_alone_cannot_enrich_dependencies_in_a_differing_manifest() {
+        let root = tmp_root("dependency-enrichment-evidence");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_dist(&root, "toy", b"plugin bytes");
+        let first = store.import(&dist, ArtifactSource::Imported).unwrap();
+
+        add_evidence(&dist);
+        std::fs::remove_file(dist.join(SBOM_FILE).as_std_path()).unwrap();
+        let error = store
+            .import(&dist, ArtifactSource::Imported)
+            .expect_err("source-only provenance must not bind dependency identities");
+        assert_eq!(error.code(), "ARTIFACT_IDENTITY_EVIDENCE_INCOMPLETE");
+
+        let reread = store.resolve(&first.record.digest).unwrap();
+        assert!(reread.source_identity.is_none());
+        assert!(reread.dependency_identities.is_empty());
+        assert!(reread.provenance.is_none());
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

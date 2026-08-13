@@ -44,6 +44,14 @@ pub const TOOL_KIND: &str = "openstrata.tool";
 /// Producer-manifest `kind` tag for runtime artifacts (future `runtime export`).
 pub const RUNTIME_KIND: &str = "openstrata.runtime";
 
+/// Producer-manifest field selecting the source/dependency-aware OpenUSD
+/// selector algorithm. Manifests without this field predate that algorithm and
+/// may still carry the legacy selector annotation.
+pub const OPENUSD_SELECTOR_SCHEMA_FIELD: &str = "openusd_selector_schema";
+
+/// Current source/dependency-aware OpenUSD selector algorithm.
+pub const OPENUSD_SELECTOR_SCHEMA: u32 = 2;
+
 /// What an artifact is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -225,6 +233,17 @@ impl ArtifactRecord {
             })
     }
 
+    /// Selector emitted before source and dependency identities became part of
+    /// the hash. Pull verification uses this only for producer manifests that
+    /// do not opt into [`OPENUSD_SELECTOR_SCHEMA`].
+    pub(crate) fn legacy_openusd_selector(&self) -> Option<String> {
+        self.openusd_compatibility
+            .as_ref()
+            .and_then(|compatibility| {
+                compatibility.selector(&self.target, &self.version, None, &[])
+            })
+    }
+
     /// Reinterpret a pre-v0.18.0 record, whose `producer` field held the tool
     /// that *imported* the artifact rather than the one that produced it.
     ///
@@ -255,6 +274,7 @@ impl ArtifactRecord {
         imported_by: &str,
     ) -> Result<ArtifactRecord> {
         let kind = detect_kind(manifest)?;
+        validate_openusd_selector_schema(manifest, kind)?;
 
         let (name, version, licenses) = match kind {
             ArtifactKind::Plugin => {
@@ -377,6 +397,27 @@ impl ArtifactRecord {
             dependency_identities,
         })
     }
+}
+
+fn validate_openusd_selector_schema(
+    manifest: &serde_json::Value,
+    kind: ArtifactKind,
+) -> Result<()> {
+    let Some(value) = manifest.get(OPENUSD_SELECTOR_SCHEMA_FIELD) else {
+        return Ok(());
+    };
+    if kind != ArtifactKind::Runtime {
+        return Err(Error::InvalidManifest(format!(
+            "only runtime producer manifests may carry '{OPENUSD_SELECTOR_SCHEMA_FIELD}'"
+        )));
+    }
+    if value.as_u64() != Some(OPENUSD_SELECTOR_SCHEMA.into()) {
+        return Err(Error::InvalidManifest(format!(
+            "producer manifest carries unsupported OpenUSD selector schema {} (expected {OPENUSD_SELECTOR_SCHEMA})",
+            value
+        )));
+    }
+    Ok(())
 }
 
 /// Normalize the exact producer source revision when build metadata is present.
