@@ -446,6 +446,16 @@ fn make_bundle(name: &str, content: &[u8]) -> Bundle {
 }
 
 fn make_openusd_runtime_bundle(content: &[u8]) -> (Bundle, String) {
+    make_openusd_runtime_bundle_with_selector_schema(
+        content,
+        Some(ost_artifact::OPENUSD_SELECTOR_SCHEMA),
+    )
+}
+
+fn make_openusd_runtime_bundle_with_selector_schema(
+    content: &[u8],
+    selector_schema: Option<u32>,
+) -> (Bundle, String) {
     let archive = tar_zst(&[("lib/libusd.so", content)]);
     let archive_name = "openstrata-cy2026-usd.tar.zst".to_string();
     let compatibility = serde_json::json!({
@@ -481,7 +491,7 @@ fn make_openusd_runtime_bundle(content: &[u8]) -> (Bundle, String) {
         "variant": "standard",
         "capabilities": ["usd-core", "imaging", "opengl"]
     });
-    let producer = serde_json::json!({
+    let mut producer = serde_json::json!({
         "schema": 1,
         "kind": "openstrata.runtime",
         "name": "openstrata-cy2026-usd",
@@ -492,6 +502,20 @@ fn make_openusd_runtime_bundle(content: &[u8]) -> (Bundle, String) {
         "archive_size": archive.len(),
         "total_size": content.len(),
         "created_unix": 1_750_000_000u64,
+        "build": {
+            "source": {
+                "repository": "github.com/PixarAnimationStudios/OpenUSD",
+                "revision": "v26.05"
+            },
+            "dependencies": [{
+                "name": "onetbb",
+                "version": "2022.1.0",
+                "source": {
+                    "repository": "github.com/uxlfoundation/oneTBB",
+                    "revision": "v2022.1.0"
+                }
+            }]
+        },
         "openusd_compatibility": compatibility,
         "provenance": {
             "platform": "cy2026",
@@ -503,10 +527,23 @@ fn make_openusd_runtime_bundle(content: &[u8]) -> (Bundle, String) {
             { "path": "lib/libusd.so", "sha256": digest::sha256_hex(content), "size": content.len() },
         ],
     });
+    if let Some(schema) = selector_schema {
+        producer[ost_artifact::OPENUSD_SELECTOR_SCHEMA_FIELD] = serde_json::json!(schema);
+    }
     let record =
         ArtifactRecord::from_producer_manifest(&producer, ArtifactSource::Imported, 0, "test")
             .unwrap();
-    let selector = record.openusd_selector().unwrap();
+    let selector = if selector_schema.is_some() {
+        record.openusd_selector().unwrap()
+    } else {
+        record
+            .openusd_compatibility
+            .as_ref()
+            .and_then(|compatibility| {
+                compatibility.selector(&record.target, &record.version, None, &[])
+            })
+            .unwrap()
+    };
     let producer_manifest = serde_json::to_vec_pretty(&producer).unwrap();
     let mut bundle = finish_bundle(archive, archive_name, producer_manifest);
     let mut oci: serde_json::Value = serde_json::from_slice(&bundle.oci_manifest).unwrap();
@@ -910,6 +947,42 @@ fn pull_verifies_the_oci_selector_against_the_producer_identity() {
         evidence.record.openusd_selector().as_deref(),
         Some(selector.as_str())
     );
+    assert_eq!(
+        evidence.record.source_identity.as_ref().unwrap().revision,
+        "v26.05"
+    );
+    assert_eq!(evidence.record.dependency_identities[0].name, "onetbb");
+}
+
+#[test]
+fn pull_accepts_the_legacy_selector_for_an_unversioned_producer_manifest() {
+    let registry = MockRegistry::start();
+    let (bundle, legacy_selector) =
+        make_openusd_runtime_bundle_with_selector_schema(b"legacy OpenUSD runtime bytes", None);
+    registry.register("fixtures/legacy-rt", "v1", &bundle);
+
+    let root = tmp_root("selector-legacy");
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = OciTransport::new(true);
+    let reference = oci_ref(
+        &registry,
+        "fixtures/legacy-rt",
+        &format!("@{}", bundle.oci_digest),
+    );
+
+    let evidence = pull(&transport, &reference, &store, &PullPolicy::default()).unwrap();
+    assert_eq!(
+        evidence.remote.openusd_selector.as_deref(),
+        Some(legacy_selector.as_str())
+    );
+    assert_ne!(
+        evidence.record.openusd_selector().as_deref(),
+        Some(legacy_selector.as_str()),
+        "the compatibility path must verify the immutable old annotation without downgrading the normalized local record"
+    );
+    assert!(evidence
+        .verification
+        .contains(&("openusd_selector", "passed")));
 }
 
 #[test]

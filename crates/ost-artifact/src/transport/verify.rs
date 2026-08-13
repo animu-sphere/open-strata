@@ -104,7 +104,16 @@ pub(crate) fn verify_dist(
                      producer manifest carried by the artifact",
                 ));
             };
-            if declared != computed {
+            // Source/dependency identities were added to the selector hash
+            // after the annotation first shipped. An immutable artifact
+            // published by that older implementation has no selector-schema
+            // marker and must continue to verify against the legacy hash. New
+            // manifests opt in explicitly and accept only the current hash.
+            let legacy_matches = manifest
+                .get(crate::record::OPENUSD_SELECTOR_SCHEMA_FIELD)
+                .is_none()
+                && record.legacy_openusd_selector().as_deref() == Some(declared);
+            if declared != computed && !legacy_matches {
                 return Err(Error::coded(
                     "ARTIFACT_OPENUSD_SELECTOR_MISMATCH",
                     Category::Validation,
@@ -304,7 +313,11 @@ pub(crate) fn verify_dist(
     match &sbom {
         Some(evidence) => {
             verify_evidence_digest(&dist_dir, evidence)?;
-            verify_sbom(&dist_dir.join(SBOM_FILE), &record.digest)?;
+            verify_sbom(
+                &dist_dir.join(SBOM_FILE),
+                &record.digest,
+                &record.dependency_identities,
+            )?;
             steps.push(("sbom", "passed"));
         }
         None if policy.require_sbom => {

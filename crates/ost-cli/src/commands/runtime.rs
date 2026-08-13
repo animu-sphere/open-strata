@@ -137,7 +137,8 @@ pub enum RuntimeCmd {
         /// JSON file describing what produced this artifact, so a producer that
         /// is not GitHub Actions can still emit provenance. Requires a non-empty
         /// `source.repository`, `source.revision`, `builder.id`, and a populated
-        /// `builder.identity` object.
+        /// `builder.identity` object. Optional `dependencies` entries require an
+        /// exact name, version, and source repository/revision.
         #[arg(long)]
         build_metadata: Option<Utf8PathBuf>,
     },
@@ -2543,6 +2544,8 @@ fn export(
             .unwrap_or(0)
     });
     let mut producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
+    producer[ost_artifact::OPENUSD_SELECTOR_SCHEMA_FIELD] =
+        serde_json::json!(ost_artifact::OPENUSD_SELECTOR_SCHEMA);
 
     // Measure the real glibc floor from the packed ELF binaries and label the
     // artifact with it, overriding a fabricated/defaulted `glibc228` nominal. The

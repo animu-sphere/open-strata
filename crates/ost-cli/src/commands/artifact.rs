@@ -894,6 +894,25 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
         r.file_count, r.total_size
     );
     println!("  source:      {}", r.source.as_str());
+    if let Some(source) = &r.source_identity {
+        println!("  upstream:    {}@{}", source.repository, source.revision);
+    }
+    if !r.dependency_identities.is_empty() {
+        println!(
+            "  dependencies: {}",
+            r.dependency_identities
+                .iter()
+                .map(|dependency| format!(
+                    "{} {} ({}@{})",
+                    dependency.name,
+                    dependency.version,
+                    dependency.source.repository,
+                    dependency.source.revision
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     println!("  trust:       {}", r.trust);
     println!("  validation:  {}", r.validation);
     if r.licenses.is_empty() {
@@ -985,7 +1004,13 @@ fn verify(
     let object_dir = store.object_dir(record.digest_hex());
     let manifest = store.producer_manifest(&record)?;
     let (sbom, provenance) = store.evidence(&record)?;
-    let sbom = verify_sbom_check(&object_dir, &record.digest, sbom, require_sbom);
+    let sbom = verify_sbom_check(
+        &object_dir,
+        &record.digest,
+        &record.dependency_identities,
+        sbom,
+        require_sbom,
+    );
     let provenance = verify_provenance_check(
         &object_dir,
         &manifest,
@@ -1108,12 +1133,19 @@ impl EvidenceCheck {
 fn verify_sbom_check(
     object_dir: &Utf8Path,
     artifact_digest: &str,
+    dependencies: &[ost_platform::ResolvedDependencyIdentity],
     descriptor: Option<EvidenceDigest>,
     required: bool,
 ) -> EvidenceCheck {
     let error = match descriptor.as_ref() {
         Some(evidence) => verify_evidence_digest(object_dir, evidence)
-            .and_then(|()| verify_sbom(&object_dir.join(&evidence.path), artifact_digest))
+            .and_then(|()| {
+                verify_sbom(
+                    &object_dir.join(&evidence.path),
+                    artifact_digest,
+                    dependencies,
+                )
+            })
             .err(),
         None if required => Some(Error::coded(
             "ARTIFACT_SBOM_REQUIRED",

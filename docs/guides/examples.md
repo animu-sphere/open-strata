@@ -133,6 +133,38 @@ ost runtime export   cy2026 --profile usd --level 12  # faster pack, larger arch
 # or a runtime that has not passed validation
 ```
 
+Outside GitHub Actions, `--build-metadata build.json` supplies the exact source,
+builder, and optional resolved dependency closure. Each dependency needs all of
+`name`, `version`, `source.repository`, and `source.revision`; names must be
+unique. These identities enter `record.json`, the OpenUSD selector hash, and the
+generated SPDX SBOM:
+
+```json
+{
+  "source": {
+    "repository": "https://github.com/PixarAnimationStudios/OpenUSD",
+    "revision": "8b0c7f4f0937a5d43ad4c62bdbd7e54eb2d389ec"
+  },
+  "dependencies": [
+    {
+      "name": "onetbb",
+      "version": "2022.1.0",
+      "source": {
+        "repository": "https://github.com/uxlfoundation/oneTBB",
+        "revision": "v2022.1.0"
+      }
+    }
+  ],
+  "builder": {
+    "id": "https://build.example/pipelines/openusd",
+    "identity": { "host": "builder-07", "pipeline": "release" }
+  }
+}
+```
+
+Omit `dependencies` rather than guessing when a builder cannot resolve the
+closure yet; an incomplete entry is rejected before runtime packing begins.
+
 ```bash
 ost runtime list                          # what's in the store (+ SOURCE column)
 ost runtime show cy2026 --profile usd      # manifest: source, prefix, deps, digest

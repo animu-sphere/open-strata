@@ -5,6 +5,7 @@ use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
 use ost_core::{digest, Category, Error, Result};
+use ost_platform::ResolvedDependencyIdentity;
 
 use crate::{ArtifactPolicy, PublisherIdentity};
 
@@ -92,7 +93,7 @@ pub fn parse_build_metadata(source: &str) -> Result<serde_json::Value> {
             .get(parent)
             .and_then(|value| value.get(child))
             .and_then(|value| value.as_str())
-            .is_some_and(|value| !value.trim().is_empty());
+            .is_some_and(|value| !value.is_empty() && value == value.trim());
         if !present {
             return Err(Error::coded(
                 "BUILD_METADATA_INCOMPLETE",
@@ -125,7 +126,52 @@ pub fn parse_build_metadata(source: &str) -> Result<serde_json::Value> {
         ));
     }
 
+    if let Some(dependencies) = value.pointer("/dependencies") {
+        validate_build_dependencies(dependencies)?;
+    }
+
     Ok(value)
+}
+
+fn validate_build_dependencies(value: &serde_json::Value) -> Result<()> {
+    let values = value.as_array().ok_or_else(|| {
+        Error::coded(
+            "BUILD_METADATA_DEPENDENCY_INVALID",
+            Category::Validation,
+            "build metadata 'dependencies' must be an array",
+        )
+    })?;
+    let mut names = std::collections::BTreeSet::new();
+    for (index, value) in values.iter().enumerate() {
+        let dependency: ResolvedDependencyIdentity = serde_json::from_value(value.clone())
+            .map_err(|error| {
+                Error::coded(
+                    "BUILD_METADATA_DEPENDENCY_INVALID",
+                    Category::Validation,
+                    format!("build metadata dependency {index} is invalid: {error}"),
+                )
+            })?;
+        if !dependency.is_verified() {
+            return Err(Error::coded(
+                "BUILD_METADATA_DEPENDENCY_INVALID",
+                Category::Validation,
+                format!(
+                    "build metadata dependency {index} has a blank name, version, repository, or revision"
+                ),
+            ));
+        }
+        if !names.insert(dependency.name.clone()) {
+            return Err(Error::coded(
+                "BUILD_METADATA_DEPENDENCY_INVALID",
+                Category::Validation,
+                format!(
+                    "build metadata dependencies repeat name '{}'",
+                    dependency.name
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Generate the deterministic SPDX SBOM and, when complete GitHub build
@@ -234,6 +280,61 @@ fn spdx_document(manifest: &serde_json::Value) -> Result<serde_json::Value> {
             })
         })
         .collect::<Vec<_>>();
+    let dependency_packages = manifest
+        .pointer("/build/dependencies")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(index, dependency)| {
+            serde_json::json!({
+                "name": dependency["name"],
+                "SPDXID": format!("SPDXRef-Dependency-{index:06}"),
+                "versionInfo": dependency["version"],
+                "downloadLocation": dependency["source"]["repository"],
+                "filesAnalyzed": false,
+                "licenseConcluded": "NOASSERTION",
+                "licenseDeclared": "NOASSERTION",
+                "copyrightText": "NOASSERTION",
+                "sourceInfo": format!(
+                    "revision {}",
+                    dependency["source"]["revision"].as_str().unwrap_or("unknown")
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+    let dependency_relationships = dependency_packages
+        .iter()
+        .filter_map(|package| {
+            package
+                .get("SPDXID")
+                .and_then(|value| value.as_str())
+                .map(|id| {
+                    serde_json::json!({
+                        "spdxElementId": "SPDXRef-Package",
+                        "relationshipType": "DEPENDS_ON",
+                        "relatedSpdxElement": id,
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    let mut packages = vec![serde_json::json!({
+        "name": name,
+        "SPDXID": "SPDXRef-Package",
+        "versionInfo": version,
+        "downloadLocation": "NOASSERTION",
+        "filesAnalyzed": true,
+        "licenseConcluded": "NOASSERTION",
+        "licenseDeclared": licenses,
+        "copyrightText": "NOASSERTION",
+        "checksums": [{
+            "algorithm": "SHA256",
+            "checksumValue": digest_hex,
+        }],
+    })];
+    packages.extend(dependency_packages);
+    let mut relationships = relationships;
+    relationships.extend(dependency_relationships);
 
     Ok(serde_json::json!({
         "spdxVersion": "SPDX-2.3",
@@ -246,20 +347,7 @@ fn spdx_document(manifest: &serde_json::Value) -> Result<serde_json::Value> {
             "creators": [format!("Tool: ost-{}", env!("CARGO_PKG_VERSION"))],
             "comment": "Timestamp is fixed for deterministic OpenStrata evidence; producer time remains in manifest.json.",
         },
-        "packages": [{
-            "name": name,
-            "SPDXID": "SPDXRef-Package",
-            "versionInfo": version,
-            "downloadLocation": "NOASSERTION",
-            "filesAnalyzed": true,
-            "licenseConcluded": "NOASSERTION",
-            "licenseDeclared": licenses,
-            "copyrightText": "NOASSERTION",
-            "checksums": [{
-                "algorithm": "SHA256",
-                "checksumValue": digest_hex,
-            }],
-        }],
+        "packages": packages,
         "files": spdx_files,
         "relationships": relationships,
     }))
@@ -357,7 +445,11 @@ pub fn verify_evidence_digest(root: &Utf8Path, evidence: &EvidenceDigest) -> Res
     Ok(())
 }
 
-pub fn verify_sbom(path: &Utf8Path, artifact_digest: &str) -> Result<()> {
+pub fn verify_sbom(
+    path: &Utf8Path,
+    artifact_digest: &str,
+    dependencies: &[ResolvedDependencyIdentity],
+) -> Result<()> {
     let document: serde_json::Value = serde_json::from_slice(
         &std::fs::read(path.as_std_path()).map_err(|source| Error::io(path.to_string(), source))?,
     )
@@ -400,6 +492,48 @@ pub fn verify_sbom(path: &Utf8Path, artifact_digest: &str) -> Result<()> {
             Category::Validation,
             format!("{SBOM_FILE} does not identify artifact digest {artifact_digest}"),
         ));
+    }
+    if !dependencies.is_empty() {
+        let packages = document
+            .get("packages")
+            .and_then(|value| value.as_array())
+            .expect("subject matching already required a package array");
+        let declared = packages
+            .iter()
+            .filter(|package| {
+                package
+                    .get("SPDXID")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|id| id.starts_with("SPDXRef-Dependency-"))
+            })
+            .collect::<Vec<_>>();
+        let matches = |dependency: &ResolvedDependencyIdentity| {
+            let expected_source = format!("revision {}", dependency.source.revision);
+            declared.iter().any(|package| {
+                package.get("name").and_then(|value| value.as_str())
+                    == Some(dependency.name.as_str())
+                    && package.get("versionInfo").and_then(|value| value.as_str())
+                        == Some(dependency.version.as_str())
+                    && package
+                        .get("downloadLocation")
+                        .and_then(|value| value.as_str())
+                        == Some(dependency.source.repository.as_str())
+                    && package.get("sourceInfo").and_then(|value| value.as_str())
+                        == Some(expected_source.as_str())
+            })
+        };
+        if declared.len() != dependencies.len() || dependencies.iter().any(|value| !matches(value))
+        {
+            return Err(Error::coded(
+                "ARTIFACT_SBOM_DEPENDENCY_MISMATCH",
+                Category::Validation,
+                format!(
+                    "{SBOM_FILE} dependency packages do not match the artifact's {} exact dependency identit{}",
+                    dependencies.len(),
+                    if dependencies.len() == 1 { "y" } else { "ies" }
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -606,6 +740,43 @@ mod tests {
         assert!(error.to_string().contains("builder.identity"), "{error}");
     }
 
+    #[test]
+    fn build_metadata_dependencies_require_exact_unique_identities() {
+        let mut value: serde_json::Value = serde_json::from_str(SELF_HOSTED).unwrap();
+        value["dependencies"] = serde_json::json!([{
+            "name": "onetbb",
+            "version": "2022.1.0",
+            "source": {
+                "repository": "github.com/uxlfoundation/oneTBB",
+                "revision": "v2022.1.0"
+            }
+        }]);
+        parse_build_metadata(&serde_json::to_string(&value).unwrap()).unwrap();
+
+        value["dependencies"][0]["source"]["revision"] = serde_json::json!("");
+        let error = parse_build_metadata(&serde_json::to_string(&value).unwrap()).unwrap_err();
+        assert_eq!(error.code(), "BUILD_METADATA_DEPENDENCY_INVALID");
+        assert!(error.to_string().contains("blank"), "{error}");
+
+        value["dependencies"] = serde_json::json!([
+            {
+                "name": "onetbb",
+                "version": "2022.1.0",
+                "source": { "repository": "oneTBB", "revision": "a" }
+            },
+            {
+                "name": "onetbb",
+                "version": "2022.2.0",
+                "source": { "repository": "oneTBB", "revision": "b" }
+            }
+        ]);
+        let error = parse_build_metadata(&serde_json::to_string(&value).unwrap()).unwrap_err();
+        assert!(
+            error.to_string().contains("repeat name 'onetbb'"),
+            "{error}"
+        );
+    }
+
     /// Supplied metadata has to reach the provenance statement, or the flag
     /// would validate a document it then ignored.
     #[test]
@@ -633,6 +804,14 @@ mod tests {
             "files": [{ "path": "lib/toy.so", "sha256": format!("sha256:{}", "cd".repeat(32)), "size": 3 }],
             "build": {
                 "source": { "repository": "owner/repo", "revision": "deadbeef" },
+                "dependencies": [{
+                    "name": "onetbb",
+                    "version": "2022.1.0",
+                    "source": {
+                        "repository": "github.com/uxlfoundation/oneTBB",
+                        "revision": "v2022.1.0"
+                    }
+                }],
                 "builder": {
                     "id": "https://github.com/owner/repo/.github/workflows/release.yml@refs/tags/v1",
                     "identity": {
@@ -656,9 +835,18 @@ mod tests {
         let mut manifest = manifest();
         let evidence = generate_evidence(&root, &mut manifest).unwrap();
         assert_eq!(evidence.len(), 2);
+        let dependencies = manifest["build"]["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .cloned()
+            .map(serde_json::from_value)
+            .collect::<std::result::Result<Vec<ResolvedDependencyIdentity>, _>>()
+            .unwrap();
         verify_sbom(
             &root.join(SBOM_FILE),
             manifest["archive_digest"].as_str().unwrap(),
+            &dependencies,
         )
         .unwrap();
         verify_provenance(
@@ -668,6 +856,28 @@ mod tests {
             None,
         )
         .unwrap();
+        let mut sbom: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join(SBOM_FILE).as_std_path()).unwrap())
+                .unwrap();
+        assert!(sbom["packages"].as_array().unwrap().iter().any(|package| {
+            package["name"] == "onetbb"
+                && package["versionInfo"] == "2022.1.0"
+                && package["sourceInfo"] == "revision v2022.1.0"
+        }));
+        assert!(sbom["relationships"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|relationship| relationship["relationshipType"] == "DEPENDS_ON"));
+        sbom["packages"][1]["sourceInfo"] = serde_json::json!("revision substituted");
+        write_json(&root.join(SBOM_FILE), &sbom).unwrap();
+        let error = verify_sbom(
+            &root.join(SBOM_FILE),
+            manifest["archive_digest"].as_str().unwrap(),
+            &dependencies,
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "ARTIFACT_SBOM_DEPENDENCY_MISMATCH");
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

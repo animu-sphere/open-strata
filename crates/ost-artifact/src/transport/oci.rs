@@ -1300,7 +1300,11 @@ impl ArtifactTransport for OciTransport {
             crate::evidence::verify_evidence_digest(source_dir, evidence)?;
         }
         if let Some(evidence) = &sbom {
-            crate::evidence::verify_sbom(&source_dir.join(&evidence.path), &source.record.digest)?;
+            crate::evidence::verify_sbom(
+                &source_dir.join(&evidence.path),
+                &source.record.digest,
+                &source.record.dependency_identities,
+            )?;
         }
         if let Some(evidence) = &provenance {
             crate::evidence::verify_provenance(
@@ -2733,6 +2737,8 @@ mod tests {
             runtime_id: Some("rt".into()),
             runtime_digest: Some("sha256:beef".into()),
             openusd_compatibility: None,
+            source_identity: None,
+            dependency_identities: Vec::new(),
         };
         (archive, manifest, record)
     }

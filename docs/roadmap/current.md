@@ -53,8 +53,8 @@ refuses direct or nested CMake overrides of protected compatibility dimensions,
 and clears managed install/build trees on forced rebuilds. It records the verified
 selection in schema-5 runtime identity and the exported producer manifest.
 Targets without an approved cell retain the legacy unclassified build
-path unless the caller explicitly claims a variant. Exact dependency/source
-identities and consumer-side mismatch validation remain open below.
+path unless the caller explicitly claims a variant. Automatic resolved-dependency
+capture and consumer-side mismatch validation remain open below.
 
 **Implemented 2026-08-11 — artifact-record normalization slice:** runtime
 artifact records now preserve the producer's normalized OpenUSD compatibility
@@ -64,7 +64,7 @@ exact versions that contradict their declared CY constraints, non-runtime
 manifests that claim the identity, and platform or OS/architecture bindings that
 contradict the producer provenance or artifact target. `artifact show` exposes
 the normalized variant, providers, exact versions, and graphics capabilities in
-both human and JSON output. Exact dependency/source identities and consumer
+both human and JSON output. Automatic resolved-dependency capture and consumer
 requirement matching remain open.
 
 **Implemented 2026-08-11 — deterministic compatibility-selector slice:** every
@@ -101,8 +101,7 @@ Python ABI tag is bound to the observed Python major/minor. Missing identity and
 release, platform, toolchain, Python, TBB, or graphics mismatches have
 dimension-specific stable validation codes; their JSON evidence names the
 requirement and selected artifact while the hint gives a direct selection
-action. Exact dependency/source identities and evidence requirements remain
-open below.
+action. Resolved-dependency capture and evidence requirements remain open below.
 
 - Version and validate the OpenUSD artifact record, including ABI dimensions,
   capabilities, runtime providers, build/runtime requirement separation, exact
@@ -137,8 +136,28 @@ provenance against the policy's publisher identities, derives the non-sticky
 effective trust level, and enforces the stricter explicit/policy floor. Missing,
 invalid, untrusted, or insufficient evidence leaves no usable artifact behind;
 human and JSON success output report effective/required trust and the matched
-publisher. Exact source and dependency identities and build/link/render state
+publisher. Automatic resolved-dependency capture and build/link/render state
 separation remain open below.
+
+**Implemented 2026-08-14 — exact artifact source/dependency identity slice:** producer
+`build.source.repository` and `build.source.revision` now normalize into the
+artifact record whenever build metadata is present; a partial or blank source
+identity is rejected instead of silently disappearing. The exact source is
+visible in human and JSON `artifact show` output. Optional
+`build.dependencies` entries add a unique dependency name, exact version, and
+source repository/revision; incomplete, unknown-field, and duplicate-name
+entries fail before export packing and again at artifact import. Source and the
+sorted dependency closure contribute to the full OpenUSD compatibility-selector
+hash, appear in artifact inspection, and become SPDX packages with `DEPENDS_ON`
+relationships. OCI pull re-derives and checks that source/dependency-bound
+selector from the fetched producer manifest before import. New runtime exports
+mark selector schema 2; unmarked immutable artifacts retain validation against
+the pre-source/dependency selector. Re-import may enrich a legacy record only
+when provenance binds a new source and the SBOM binds a new dependency closure;
+OpenUSD compatibility still requires the original producer manifest. The same
+archive digest cannot replace an already normalized producer identity. Automatic
+capture of every dependency resolved internally by `build_usd.py` and
+build/link/render state separation remain open below.
 
 - Every published artifact carries or references its source revision, resolved
   dependencies, workflow identity, third-party attribution, SBOM, evidence

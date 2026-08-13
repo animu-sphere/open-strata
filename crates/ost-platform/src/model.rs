@@ -187,6 +187,45 @@ pub struct ResolvedOpenUsdToolchain {
     pub runtime: ResolvedOpenUsdProvider,
 }
 
+/// Exact upstream source revision that contributed artifact bytes.
+///
+/// This is kept separate from the compatibility cell because the cell is
+/// selected before a build runs, while source identity is attached by a
+/// producer when it exports the resulting artifact.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedSourceIdentity {
+    pub repository: String,
+    pub revision: String,
+}
+
+impl ResolvedSourceIdentity {
+    pub fn is_verified(&self) -> bool {
+        exact_identity_component(&self.repository) && exact_identity_component(&self.revision)
+    }
+}
+
+/// One exact dependency selected by the artifact producer.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedDependencyIdentity {
+    pub name: String,
+    pub version: String,
+    pub source: ResolvedSourceIdentity,
+}
+
+impl ResolvedDependencyIdentity {
+    pub fn is_verified(&self) -> bool {
+        exact_identity_component(&self.name)
+            && exact_identity_component(&self.version)
+            && self.source.is_verified()
+    }
+}
+
+fn exact_identity_component(value: &str) -> bool {
+    !value.is_empty() && value == value.trim()
+}
+
 /// Whether one observed numeric version satisfies a CY compatibility
 /// constraint. Plain dotted constraints are prefix matches (`14.2` accepts
 /// `14.2.0`), `x`/`X`/`*` are trailing wildcards, and the usual comparison
@@ -305,13 +344,22 @@ impl ResolvedOpenUsdCompatibility {
     ///
     /// The readable prefix is deliberately short; the full SHA-256 suffix is
     /// over every compatibility-critical field (including providers, exact
-    /// versions, the OpenUSD release, C++ standard, and a sorted capability
-    /// set). This keeps the selector within OCI's 128-character tag limit
-    /// without dropping identity dimensions from the comparison contract.
-    pub fn selector(&self, artifact_target: &str, openusd_version: &str) -> Option<String> {
+    /// versions, the OpenUSD release, exact source/dependency revisions, C++
+    /// standard, and sorted capability/dependency sets). This keeps the
+    /// selector within OCI's 128-character tag limit without dropping identity
+    /// dimensions from the comparison contract.
+    pub fn selector(
+        &self,
+        artifact_target: &str,
+        openusd_version: &str,
+        source: Option<&ResolvedSourceIdentity>,
+        dependencies: &[ResolvedDependencyIdentity],
+    ) -> Option<String> {
         if !self.is_verified()
             || artifact_target.trim().is_empty()
             || openusd_version.trim().is_empty()
+            || source.is_some_and(|value| !value.is_verified())
+            || dependencies.iter().any(|value| !value.is_verified())
         {
             return None;
         }
@@ -324,6 +372,8 @@ impl ResolvedOpenUsdCompatibility {
             arch: Arch,
             artifact_target: &'a str,
             openusd_version: &'a str,
+            source: Option<&'a ResolvedSourceIdentity>,
+            dependencies: Vec<&'a ResolvedDependencyIdentity>,
             toolchain: &'a ResolvedOpenUsdToolchain,
             python: &'a ResolvedOpenUsdProvider,
             tbb: &'a ResolvedOpenUsdProvider,
@@ -338,6 +388,9 @@ impl ResolvedOpenUsdCompatibility {
             .collect::<Vec<_>>();
         capabilities.sort_unstable();
         capabilities.dedup();
+        let mut dependencies = dependencies.iter().collect::<Vec<_>>();
+        dependencies.sort_unstable();
+        dependencies.dedup();
         let identity = SelectorIdentity {
             schema: self.schema,
             platform: &self.platform,
@@ -345,6 +398,8 @@ impl ResolvedOpenUsdCompatibility {
             arch: self.arch,
             artifact_target,
             openusd_version,
+            source,
+            dependencies,
             toolchain: &self.toolchain,
             python: &self.python,
             tbb: &self.tbb,
@@ -500,14 +555,16 @@ mod tests {
     fn selector_is_deterministic_oci_tag_identity() {
         let compatibility = verified_compatibility();
         let target = "linux-x86_64-glibc228-py313";
-        let selector = compatibility.selector(target, "26.05").unwrap();
+        let selector = compatibility.selector(target, "26.05", None, &[]).unwrap();
         assert!(selector.starts_with("openusd-cy2026-linux-x86_64-vulkan-"));
         assert!(selector.len() <= 128);
         assert!(selector
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)));
         assert_eq!(
-            compatibility.selector(target, "26.05").as_deref(),
+            compatibility
+                .selector(target, "26.05", None, &[])
+                .as_deref(),
             Some(selector.as_str())
         );
     }
@@ -520,24 +577,50 @@ mod tests {
         reordered.capabilities.push("vulkan".into());
         let target = "linux-x86_64-glibc228-py313";
         assert_eq!(
-            compatibility.selector(target, "26.05"),
-            reordered.selector(target, "26.05")
+            compatibility.selector(target, "26.05", None, &[]),
+            reordered.selector(target, "26.05", None, &[])
         );
 
         let mut other_provider = compatibility.clone();
         other_provider.python.provider = "host".into();
         assert_ne!(
-            compatibility.selector(target, "26.05"),
-            other_provider.selector(target, "26.05")
+            compatibility.selector(target, "26.05", None, &[]),
+            other_provider.selector(target, "26.05", None, &[])
         );
 
         assert_ne!(
-            compatibility.selector(target, "26.05"),
-            compatibility.selector("linux-x86_64-glibc234-py313", "26.05")
+            compatibility.selector(target, "26.05", None, &[]),
+            compatibility.selector("linux-x86_64-glibc234-py313", "26.05", None, &[])
         );
         assert_ne!(
-            compatibility.selector(target, "26.05"),
-            compatibility.selector(target, "25.11")
+            compatibility.selector(target, "26.05", None, &[]),
+            compatibility.selector(target, "25.11", None, &[])
+        );
+
+        let source = ResolvedSourceIdentity {
+            repository: "github.com/PixarAnimationStudios/OpenUSD".into(),
+            revision: "v26.05".into(),
+        };
+        let mut other_source = source.clone();
+        other_source.revision = "v26.08".into();
+        assert_ne!(
+            compatibility.selector(target, "26.05", Some(&source), &[]),
+            compatibility.selector(target, "26.05", Some(&other_source), &[])
+        );
+
+        let dependency = ResolvedDependencyIdentity {
+            name: "onetbb".into(),
+            version: "2022.1.0".into(),
+            source: ResolvedSourceIdentity {
+                repository: "github.com/uxlfoundation/oneTBB".into(),
+                revision: "v2022.1.0".into(),
+            },
+        };
+        let mut other_dependency = dependency.clone();
+        other_dependency.source.revision = "v2022.2.0".into();
+        assert_ne!(
+            compatibility.selector(target, "26.05", Some(&source), &[dependency]),
+            compatibility.selector(target, "26.05", Some(&source), &[other_dependency])
         );
     }
 
@@ -546,7 +629,7 @@ mod tests {
         let mut compatibility = verified_compatibility();
         compatibility.tbb.version = None;
         assert_eq!(
-            compatibility.selector("linux-x86_64-glibc228-py313", "26.05"),
+            compatibility.selector("linux-x86_64-glibc228-py313", "26.05", None, &[]),
             None
         );
     }
@@ -557,7 +640,7 @@ mod tests {
         compatibility.python.version = Some("3.12.9".into());
         assert!(!compatibility.is_verified());
         assert_eq!(
-            compatibility.selector("linux-x86_64-glibc228-py313", "26.05"),
+            compatibility.selector("linux-x86_64-glibc228-py313", "26.05", None, &[]),
             None
         );
 
