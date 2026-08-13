@@ -54,7 +54,7 @@ and clears managed install/build trees on forced rebuilds. It records the verifi
 selection in schema-6 runtime identity and the exported producer manifest.
 Targets without an approved cell retain the legacy unclassified build
 path unless the caller explicitly claims a variant. Verification-state
-separation remains open below.
+separation is implemented in the provenance section below.
 
 **Implemented 2026-08-11 — artifact-record normalization slice:** runtime
 artifact records now preserve the producer's normalized OpenUSD compatibility
@@ -64,7 +64,7 @@ exact versions that contradict their declared CY constraints, non-runtime
 manifests that claim the identity, and platform or OS/architecture bindings that
 contradict the producer provenance or artifact target. `artifact show` exposes
 the normalized variant, providers, exact versions, and graphics capabilities in
-both human and JSON output. Verification-state separation remains open.
+both human and JSON output. Verification-state separation is implemented below.
 
 **Implemented 2026-08-11 — deterministic compatibility-selector slice:** every
 verified normalized OpenUSD identity now produces one OCI-tag-safe selector.
@@ -100,7 +100,7 @@ Python ABI tag is bound to the observed Python major/minor. Missing identity and
 release, platform, toolchain, Python, TBB, or graphics mismatches have
 dimension-specific stable validation codes; their JSON evidence names the
 requirement and selected artifact while the hint gives a direct selection
-action. Verification-state separation remains open below.
+action. Verification-state separation is implemented below.
 
 - Version and validate the OpenUSD artifact record, including ABI dimensions,
   capabilities, runtime providers, build/runtime requirement separation, exact
@@ -135,7 +135,7 @@ provenance against the policy's publisher identities, derives the non-sticky
 effective trust level, and enforces the stricter explicit/policy floor. Missing,
 invalid, untrusted, or insufficient evidence leaves no usable artifact behind;
 human and JSON success output report effective/required trust and the matched
-publisher. Build/link/render state separation remains open below.
+publisher. Independent build/link/render state is implemented below.
 
 **Implemented 2026-08-14 — exact artifact source/dependency identity slice:** producer
 `build.source.repository` and `build.source.revision` now normalize into the
@@ -155,7 +155,19 @@ the pre-source/dependency selector. Re-import may enrich a legacy record only
 when provenance binds a new source and the SBOM binds a new dependency closure;
 OpenUSD compatibility still requires the original producer manifest. The same
 archive digest cannot replace an already normalized producer identity.
-Build/link/render state separation remains open below.
+Build/link/render state is separated below.
+
+**Implemented 2026-08-14 — independent OpenUSD verification-state slice:**
+schema-7 runtime identity and normalized runtime artifact records now carry five
+versioned states — compile, link, loader, physical-device, and render — instead
+of allowing aggregate validation or a successful build to imply all of them.
+A successful managed source build records only compile and link as `passed`;
+loader, physical-device, and render remain explicitly `not-run`. The state is
+digest-significant, appears in human and JSON runtime/artifact inspection, and
+is duplicated between the artifact-facing producer manifest and its embedded
+runtime with exact agreement required at import. Legacy records remain readable
+with absent artifact state, while unsupported or split state fails before
+registration. Loader/device/render probes remain in P2 below.
 
 **Implemented 2026-08-14 — automatic managed dependency-capture slice:** managed
 `build_usd.py` execution now observes each source archive that the upstream
@@ -179,16 +191,15 @@ an identical retry before the successful manifest is written.
 - Every published artifact carries or references its source revision, resolved
   dependencies, workflow identity, third-party attribution, SBOM, evidence
   digests, and SLSA-compatible provenance.
-- Compile, link, loader, physical-device, and render verification remain
-  separate states. A Vulkan artifact built on a runner without a physical device
-  must not be reported as render-verified.
+- Extend the separated state contract with loader, physical-device, and render
+  probes; no probe may infer a later state from compile/link success.
 
 #### P2 - artifact diagnostics
 
 - Inspection reports the selected profile, ABI/provider choices, graphics
-  capabilities, tag, digest, and evidence status. Add the OpenGL/Vulkan
-  loader/device checks needed to explain whether the host can consume an
-  artifact; DCC-specific probing waits for v0.23.0.
+  capabilities, tag, digest, evidence status, and split OpenUSD verification
+  state. Add the OpenGL/Vulkan loader/device checks needed to explain whether
+  the host can consume an artifact; DCC-specific probing waits for v0.23.0.
 
 ### Artifact-policy exit criteria
 

@@ -276,12 +276,18 @@ impl ArtifactStore {
                 (Some(_), None) => incoming_evidence,
                 _ => false,
             };
-            if source_conflict || dependency_conflict || openusd_conflict {
+            let verification_conflict =
+                match (&existing.openusd_verification, &record.openusd_verification) {
+                    (Some(stored), Some(incoming)) => stored != incoming,
+                    (Some(_), None) => incoming_evidence,
+                    _ => false,
+                };
+            if source_conflict || dependency_conflict || openusd_conflict || verification_conflict {
                 return Err(Error::coded(
                     "ARTIFACT_IDENTITY_CONFLICT",
                     Category::Validation,
                     format!(
-                        "artifact {} is already stored with different source, dependency, or OpenUSD compatibility identity",
+                        "artifact {} is already stored with different source, dependency, OpenUSD compatibility, or verification identity",
                         existing.short_digest()
                     ),
                 )
@@ -294,19 +300,25 @@ impl ArtifactStore {
             // these normalized fields existed. With a differing manifest, each
             // new identity needs evidence that actually binds it: provenance
             // binds source, and the SBOM binds the dependency closure. OpenUSD
-            // compatibility is not currently carried by either sidecar, so it
-            // can only be recovered from the already-committed manifest.
+            // compatibility and verification are not currently carried by
+            // either sidecar, so they can only be recovered from the already-
+            // committed manifest.
             let source_enrichment =
                 existing.source_identity.is_none() && record.source_identity.is_some();
             let dependency_enrichment = existing.dependency_identities.is_empty()
                 && !record.dependency_identities.is_empty();
             let openusd_enrichment =
                 existing.openusd_compatibility.is_none() && record.openusd_compatibility.is_some();
-            let identity_enrichment_requested =
-                source_enrichment || dependency_enrichment || openusd_enrichment;
+            let verification_enrichment =
+                existing.openusd_verification.is_none() && record.openusd_verification.is_some();
+            let identity_enrichment_requested = source_enrichment
+                || dependency_enrichment
+                || openusd_enrichment
+                || verification_enrichment;
             let enrichment_is_bound = (!source_enrichment || provenance.is_some())
                 && (!dependency_enrichment || sbom.is_some())
-                && !openusd_enrichment;
+                && !openusd_enrichment
+                && !verification_enrichment;
             if !manifest_committed
                 && incoming_evidence
                 && identity_enrichment_requested
@@ -316,12 +328,12 @@ impl ArtifactStore {
                     "ARTIFACT_IDENTITY_EVIDENCE_INCOMPLETE",
                     Category::Validation,
                     format!(
-                        "artifact {} cannot enrich source, dependency, or OpenUSD identity because the incoming evidence does not bind every new field",
+                        "artifact {} cannot enrich source, dependency, OpenUSD compatibility, or verification identity because the incoming evidence does not bind every new field",
                         existing.short_digest()
                     ),
                 )
                 .with_hint(
-                    "attach provenance for a new source identity and an SBOM for new dependency identities; OpenUSD compatibility enrichment requires the original producer manifest",
+                    "attach provenance for a new source identity and an SBOM for new dependency identities; OpenUSD compatibility and verification enrichment require the original producer manifest",
                 ));
             }
             let can_enrich_identity =
@@ -342,6 +354,11 @@ impl ArtifactStore {
                     && record.openusd_compatibility.is_some()
                 {
                     existing.openusd_compatibility = record.openusd_compatibility.clone();
+                    identity_enriched = true;
+                }
+                if existing.openusd_verification.is_none() && record.openusd_verification.is_some()
+                {
+                    existing.openusd_verification = record.openusd_verification.clone();
                     identity_enriched = true;
                 }
             }
@@ -1404,6 +1421,35 @@ mod tests {
         .unwrap();
     }
 
+    fn make_runtime_verification_dist(root: &Utf8Path) -> Utf8PathBuf {
+        let dist = make_dist(root, "runtime", b"runtime bytes");
+        let manifest_path = dist.join(MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest_path.as_std_path()).unwrap()).unwrap();
+        manifest["kind"] = serde_json::json!("openstrata.runtime");
+        manifest["name"] = serde_json::json!("openstrata-cy2026-usd");
+        manifest["version"] = serde_json::json!("26.05");
+        manifest["licenses"] = serde_json::json!([]);
+        let verification = serde_json::json!({
+            "schema": 1,
+            "compile": "passed",
+            "link": "passed",
+            "loader": "not-run",
+            "physical_device": "not-run",
+            "render": "not-run"
+        });
+        manifest["openusd_verification"] = verification.clone();
+        manifest["provenance"]["runtime_manifest"] = serde_json::json!({
+            "openusd_verification": verification,
+        });
+        std::fs::write(
+            manifest_path.as_std_path(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        dist
+    }
+
     fn tmp_root(tag: &str) -> Utf8PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1797,6 +1843,41 @@ mod tests {
         assert_eq!(
             reread.source_identity.as_ref().unwrap().revision,
             "deadbeef"
+        );
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn same_digest_cannot_replace_openusd_verification_identity() {
+        let root = tmp_root("verification-identity-conflict");
+        let store = ArtifactStore::at(root.join("store"));
+        let dist = make_runtime_verification_dist(&root);
+        let first = store.import(&dist, ArtifactSource::Imported).unwrap();
+        assert_eq!(
+            first.record.openusd_verification.as_ref().unwrap().render,
+            ost_platform::OpenUsdVerificationStatus::NotRun
+        );
+
+        let manifest_path = dist.join(MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest_path.as_std_path()).unwrap()).unwrap();
+        manifest["openusd_verification"]["render"] = serde_json::json!("passed");
+        manifest["provenance"]["runtime_manifest"]["openusd_verification"]["render"] =
+            serde_json::json!("passed");
+        std::fs::write(
+            manifest_path.as_std_path(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let error = store
+            .import(&dist, ArtifactSource::Imported)
+            .expect_err("one archive digest cannot replace its verification identity");
+        assert_eq!(error.code(), "ARTIFACT_IDENTITY_CONFLICT");
+        let reread = store.resolve(&first.record.digest).unwrap();
+        assert_eq!(
+            reread.openusd_verification.as_ref().unwrap().render,
+            ost_platform::OpenUsdVerificationStatus::NotRun
         );
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }

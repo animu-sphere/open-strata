@@ -146,6 +146,74 @@ pub enum OpenUsdBuilder {
     Cmake,
 }
 
+/// Outcome of one independently evidenced OpenUSD verification stage.
+///
+/// `not-run` is deliberately distinct from failure and success. In particular,
+/// a build runner without a graphics device must preserve that absence instead
+/// of allowing a successful compile to imply device or render verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OpenUsdVerificationStatus {
+    NotRun,
+    Passed,
+    Failed,
+}
+
+impl OpenUsdVerificationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRun => "not-run",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// Separately tracked verification stages for a produced OpenUSD runtime.
+///
+/// The stages are observations, not a ladder: importing or launching a runtime
+/// may establish a later stage without rewriting what an earlier producer
+/// actually recorded. Callers therefore must never infer one field from
+/// another.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenUsdVerification {
+    pub schema: u32,
+    pub compile: OpenUsdVerificationStatus,
+    pub link: OpenUsdVerificationStatus,
+    pub loader: OpenUsdVerificationStatus,
+    pub physical_device: OpenUsdVerificationStatus,
+    pub render: OpenUsdVerificationStatus,
+}
+
+impl Default for OpenUsdVerification {
+    fn default() -> Self {
+        Self {
+            schema: 1,
+            compile: OpenUsdVerificationStatus::NotRun,
+            link: OpenUsdVerificationStatus::NotRun,
+            loader: OpenUsdVerificationStatus::NotRun,
+            physical_device: OpenUsdVerificationStatus::NotRun,
+            render: OpenUsdVerificationStatus::NotRun,
+        }
+    }
+}
+
+impl OpenUsdVerification {
+    /// Evidence established by a managed source build that returned success.
+    pub fn managed_build_passed() -> Self {
+        Self {
+            compile: OpenUsdVerificationStatus::Passed,
+            link: OpenUsdVerificationStatus::Passed,
+            ..Self::default()
+        }
+    }
+
+    pub fn is_supported(&self) -> bool {
+        self.schema == 1
+    }
+}
+
 /// Exact, normalized compatibility selection stored in runtime identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

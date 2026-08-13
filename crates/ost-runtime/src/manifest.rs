@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use ost_core::{digest, Variant};
 use ost_platform::{
-    ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility, ResolvedSourceIdentity,
+    OpenUsdVerification, ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility,
+    ResolvedSourceIdentity,
 };
 
 use crate::runtime::Runtime;
@@ -161,6 +162,7 @@ struct Canonical {
     extensions: Vec<ExtensionRecord>,
     host_requirements: Vec<HostRequirement>,
     openusd_compatibility: Option<ResolvedOpenUsdCompatibility>,
+    openusd_verification: OpenUsdVerification,
     build_source: Option<ResolvedSourceIdentity>,
     build_dependencies: Vec<ResolvedDependencyIdentity>,
 }
@@ -211,6 +213,11 @@ pub struct RuntimeManifest {
     /// produced bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openusd_compatibility: Option<ResolvedOpenUsdCompatibility>,
+    /// Independent compile/link/loader/device/render evidence for OpenUSD.
+    /// A successful managed build establishes only compile and link; later
+    /// stages remain `not-run` until a command actually observes them.
+    #[serde(default)]
+    pub openusd_verification: OpenUsdVerification,
     /// Exact source checkout used by a managed OpenUSD build. This is captured
     /// from Git rather than inferred later from the machine exporting it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -227,11 +234,11 @@ pub struct RuntimeManifest {
     pub artifact_digest: Option<String>,
 }
 
-// Bumped to 6 when the managed OpenUSD source and build_usd.py dependency
-// closure became compatibility identity. Older manifests deserialize without
-// those fields, but the schema gate still requires an explicit rebuild before
-// publication as a normalized v0.22 artifact.
-const SCHEMA: u32 = 6;
+// Bumped to 7 when independent OpenUSD verification stages became runtime
+// identity. Older manifests deserialize with every stage `not-run`, but the
+// schema gate still requires an explicit rebuild before publication as a
+// normalized v0.22 artifact.
+const SCHEMA: u32 = 7;
 
 impl RuntimeManifest {
     /// Build a manifest for a resolved runtime, computing the digest.
@@ -257,6 +264,7 @@ impl RuntimeManifest {
             extensions,
             host_requirements: Vec::new(),
             openusd_compatibility: None,
+            openusd_verification: OpenUsdVerification::default(),
             build_source: None,
             build_dependencies: Vec::new(),
         };
@@ -282,6 +290,7 @@ impl RuntimeManifest {
             runtime_deps: Vec::new(),
             host_requirements: Vec::new(),
             openusd_compatibility: None,
+            openusd_verification: OpenUsdVerification::default(),
             build_source: None,
             build_dependencies: Vec::new(),
             artifact_digest: None,
@@ -315,6 +324,7 @@ impl RuntimeManifest {
             extensions: self.extensions.clone(),
             host_requirements: self.host_requirements.clone(),
             openusd_compatibility: self.openusd_compatibility.clone(),
+            openusd_verification: self.openusd_verification.clone(),
             build_source: self.build_source.clone(),
             build_dependencies: self.build_dependencies.clone(),
         };
@@ -350,6 +360,22 @@ impl RuntimeManifest {
             ));
         }
         self.openusd_compatibility = compatibility;
+        self.digest = self.compute_digest();
+        Ok(())
+    }
+
+    /// Replace the independently observed OpenUSD verification stages.
+    pub fn set_openusd_verification(
+        &mut self,
+        verification: OpenUsdVerification,
+    ) -> ost_core::Result<()> {
+        if !verification.is_supported() {
+            return Err(ost_core::Error::InvalidManifest(format!(
+                "unsupported OpenUSD verification schema {} (expected 1)",
+                verification.schema
+            )));
+        }
+        self.openusd_verification = verification;
         self.digest = self.compute_digest();
         Ok(())
     }
@@ -432,6 +458,63 @@ mod tests {
         let before = m.digest.clone();
         m.set_validation(Validation::Passed);
         assert_eq!(m.compute_digest(), before);
+    }
+
+    #[test]
+    fn openusd_verification_is_split_and_digest_significant() {
+        let mut manifest = sample();
+        assert_eq!(
+            manifest.openusd_verification,
+            OpenUsdVerification::default()
+        );
+        let before = manifest.digest.clone();
+        manifest
+            .set_openusd_verification(OpenUsdVerification::managed_build_passed())
+            .unwrap();
+
+        assert_ne!(manifest.digest, before);
+        assert_eq!(manifest.compute_digest(), manifest.digest);
+        assert_eq!(
+            manifest.openusd_verification.compile,
+            ost_platform::OpenUsdVerificationStatus::Passed
+        );
+        assert_eq!(
+            manifest.openusd_verification.link,
+            ost_platform::OpenUsdVerificationStatus::Passed
+        );
+        assert_eq!(
+            manifest.openusd_verification.loader,
+            ost_platform::OpenUsdVerificationStatus::NotRun
+        );
+        assert_eq!(
+            manifest.openusd_verification.physical_device,
+            ost_platform::OpenUsdVerificationStatus::NotRun
+        );
+        assert_eq!(
+            manifest.openusd_verification.render,
+            ost_platform::OpenUsdVerificationStatus::NotRun
+        );
+
+        let roundtrip = RuntimeManifest::from_json(&manifest.to_json().unwrap()).unwrap();
+        assert_eq!(
+            roundtrip.openusd_verification,
+            manifest.openusd_verification
+        );
+    }
+
+    #[test]
+    fn unsupported_openusd_verification_schema_cannot_be_stamped() {
+        let mut manifest = sample();
+        let mut verification = OpenUsdVerification::managed_build_passed();
+        verification.schema = 2;
+        let error = manifest.set_openusd_verification(verification).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported OpenUSD verification schema 2"));
+        assert_eq!(
+            manifest.openusd_verification,
+            OpenUsdVerification::default()
+        );
     }
 
     #[test]

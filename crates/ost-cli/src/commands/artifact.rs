@@ -964,6 +964,16 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
             println!("  graphics:    {}", openusd.capabilities.join(", "));
         }
     }
+    if let Some(verification) = &r.openusd_verification {
+        println!(
+            "  verification: compile={} link={} loader={} device={} render={}",
+            verification.compile.as_str(),
+            verification.link.as_str(),
+            verification.loader.as_str(),
+            verification.physical_device.as_str(),
+            verification.render.as_str(),
+        );
+    }
     if !host_requirements.is_empty() {
         println!(
             "  host needs:  {}",

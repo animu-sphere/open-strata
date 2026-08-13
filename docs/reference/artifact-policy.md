@@ -94,6 +94,26 @@ value, or a selector that disagrees with the producer identity fails closed.
 Artifacts published before selector annotations existed remain consumable and
 report the `openusd_selector` verification step as `skipped`.
 
+## OpenUSD verification state
+
+Normalized runtime artifacts keep compile, link, loader, physical-device, and
+render verification as five independent fields under `openusd_verification`.
+Each field is `passed`, `failed`, or `not-run`; absence on an older artifact
+means the producer made no versioned claim. A managed source build that exits
+successfully records compile and link as `passed`, but leaves loader,
+physical-device, and render as `not-run`. In particular, selecting the `vulkan`
+variant or compiling HgiVulkan does not establish that the build runner had a
+Vulkan device or rendered a frame.
+
+The state is part of schema-7 runtime digest identity. Runtime export copies it
+to the producer manifest and retains the same value inside
+`provenance.runtime_manifest`; artifact import requires exact agreement and
+rejects unsupported state schemas. A local object refuses a second verification
+identity for the same archive digest, and an OCI manifest digest binds the
+producer-manifest layer carrying the state. `runtime show` and `artifact show`
+expose all five fields in human and JSON output. Compatibility selectors remain
+selectors for build/ABI compatibility rather than verification claims.
+
 A consumer can require an approved compatibility cell during the same pull:
 
 ```bash

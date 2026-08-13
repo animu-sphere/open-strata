@@ -2737,6 +2737,7 @@ mod tests {
             runtime_id: Some("rt".into()),
             runtime_digest: Some("sha256:beef".into()),
             openusd_compatibility: None,
+            openusd_verification: None,
             source_identity: None,
             dependency_identities: Vec::new(),
         };

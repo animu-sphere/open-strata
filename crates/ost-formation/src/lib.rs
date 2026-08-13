@@ -825,6 +825,7 @@ args = ["avatar.vrm"]
             runtime_deps: Vec::new(),
             host_requirements: Vec::new(),
             openusd_compatibility: None,
+            openusd_verification: ost_runtime::OpenUsdVerification::default(),
             build_source: None,
             build_dependencies: Vec::new(),
             artifact_digest: Some(runtime_digest.clone()),
@@ -858,6 +859,7 @@ args = ["avatar.vrm"]
             runtime_id: None,
             runtime_digest: None,
             openusd_compatibility: None,
+            openusd_verification: None,
             source_identity: None,
             dependency_identities: Vec::new(),
         };
