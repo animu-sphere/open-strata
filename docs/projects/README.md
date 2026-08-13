@@ -21,6 +21,9 @@ OpenStrata ecosystem
 ├── usd-3dgs-plugins
 │   └── reference Gaussian file-format workspace
 │
+├── usd-pointcloud-plugins
+│   └── reference multi-format point-cloud workspace
+│
 ├── usd-vrm-plugins
 │   └── reference multi-bundle OpenUSD plugin workspace
 │
@@ -40,6 +43,7 @@ every build unit into an artificial package abstraction.
 | --- | --- | --- | --- |
 | [OpenStrata](../concepts/overview.md) | Toolchain | Runtime, artifact, CI, validation, and (planned) Formation | `runtime`, `build`, `artifact`, `ci` |
 | [USD 3DGS Plugins](usd-3dgs-plugins.md) | Plugin workspace | Fresh scaffold, bundle-to-library edge, Gaussian PLY import | `plugin build` / `test` / `run` / `view` / `package` |
+| [USD Point Cloud Plugins](usd-pointcloud-plugins.md) | Plugin workspace | Four geospatial file formats, shared authoring/tiling stack, format arguments | `configure` / `build` / `test`, `plugin build` / `test` / `view` |
 | [USD VRM Plugins](usd-vrm-plugins.md) | Plugin workspace | Typed schemas, file formats, resolver, bundle graph | `plugin build` / `test` / `run` / `view` / `package` |
 | [hdMerlin](hydra-merlin.md) | Renderer project | Managed renderer build, evidence, Hydra discovery | `build`, `validate`, `renderer view` |
 
@@ -50,6 +54,12 @@ every build unit into an artificial package abstraction.
   scaffolding, bundle-to-library dependency composition, OpenUSD 26.05 Gaussian
   schema authoring, generated three-OS CI, package-origin validation, and
   reproducibility feedback.
+- **[USD Point Cloud Plugins](usd-pointcloud-plugins.md)** —
+  [`animu-sphere/usd-pointcloud-plugins`](https://github.com/animu-sphere/usd-pointcloud-plugins):
+  four LAS, LAZ, COPC, and PLY file-format bundles backed by shared point-cloud
+  libraries and authoring tools. Read it for a larger multi-format workspace,
+  OpenUSD 26.08 generated CI, cross-platform verification, and a concrete case
+  where a smoke fixture needs file-format arguments.
 - **[USD VRM Plugins](usd-vrm-plugins.md)** —
   [`animu-sphere/usd-vrm-plugins`](https://github.com/animu-sphere/usd-vrm-plugins):
   a multi-bundle OpenUSD plugin workspace (schema bundle, `SdfFileFormat` plugin,
@@ -65,15 +75,16 @@ every build unit into an artificial package abstraction.
 
 ## Cross-project story
 
-The strongest narrative is not that three downstream projects independently use
+The strongest narrative is not that four downstream projects independently use
 `ost`. It is that **independently released OpenUSD components can be resolved,
 validated, and composed into one reproducible execution environment**. The two
-plugin workspaces exercise different shapes — a single file-format bundle with
-an ordinary library dependency and a multi-bundle avatar stack — while hdMerlin
-exercises the renderer boundary. One concrete planned composition is a VRM file
-opened through the VRM bundles and rendered by hdMerlin in a single Vulkan
-viewport; Gaussian PLY stage inspection supplies another independent packaged
-plugin dogfood without claiming renderer compatibility.
+original plugin workspaces exercise a single file-format bundle with an ordinary
+library dependency and a multi-bundle avatar stack; USD Point Cloud Plugins adds
+a four-format geospatial workspace with a shared authoring and tiling stack,
+while hdMerlin exercises the renderer boundary. One concrete planned composition
+is a VRM file opened through the VRM bundles and rendered by hdMerlin in a single
+Vulkan viewport; Gaussian and point-cloud stage inspection supply independent
+plugin dogfoods without claiming renderer compatibility.
 
 That composition is the planned [Formation](../design/proposed/formations.md)
 model. `ost formation resolve|inspect|lock|run` shipped in v0.19.0 and

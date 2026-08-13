@@ -7,10 +7,15 @@
 > [design/proposed/formations.md](../design/proposed/formations.md); the
 > milestone is in the [roadmap backlog](../roadmap/backlog.md).
 
-The reference projects — [USD 3DGS Plugins](usd-3dgs-plugins.md) (a file-format
-bundle with an ordinary-library dependency),
-[USD VRM Plugins](usd-vrm-plugins.md) (a multi-bundle plugin workspace), and
-[hdMerlin](hydra-merlin.md) (a renderer) — are released and pinned independently.
+Four reference projects are released and pinned independently:
+[USD 3DGS Plugins](usd-3dgs-plugins.md) (a file-format bundle with an
+ordinary-library dependency),
+[USD Point Cloud Plugins](usd-pointcloud-plugins.md) (a multi-format geospatial
+workspace), [USD VRM Plugins](usd-vrm-plugins.md) (a multi-bundle plugin
+workspace), and [hdMerlin](hydra-merlin.md) (a renderer). This acceptance plan
+retains the four original Formation cases built from 3DGS, VRM, and hdMerlin;
+the point-cloud workspace is an additional plugin-workspace dogfood, not a
+retroactive v0.19.0 acceptance requirement.
 A **Formation** resolves such independently released components into one
 reproducible, digest-pinned execution environment and launches a command inside
 it. This page shows the four conceptual cases that motivate the v0.19.0
@@ -197,5 +202,6 @@ case is the required first-party dogfood for the v0.19.0 milestone.
 - v0.19.0-oriented procedure:
   [Compose a formation](../guides/compose-a-formation.md).
 - The projects: [USD 3DGS Plugins](usd-3dgs-plugins.md),
+  [USD Point Cloud Plugins](usd-pointcloud-plugins.md),
   [USD VRM Plugins](usd-vrm-plugins.md), and [hdMerlin](hydra-merlin.md).
 - Reference Projects overview: [README.md](README.md).

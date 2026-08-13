@@ -5,8 +5,9 @@ developed together** — schemas, file formats, resolvers, and shared libraries 
 and wants OpenStrata to discover, validate, test, and package them as one
 dependency-ordered workspace. It is transferable to any such repository. The
 [USD 3DGS Plugins](../projects/usd-3dgs-plugins.md) single-bundle-plus-library
-workspace and the [USD VRM Plugins](../projects/usd-vrm-plugins.md) multi-bundle
-workspace are complementary worked examples, not required layouts.
+workspace, the [USD Point Cloud Plugins](../projects/usd-pointcloud-plugins.md)
+multi-format workspace, and the [USD VRM Plugins](../projects/usd-vrm-plugins.md)
+multi-bundle workspace are complementary worked examples, not required layouts.
 
 The factual contract behind everything here is
 [reference/plugin-workspace.md](../reference/plugin-workspace.md); this page is
@@ -175,6 +176,10 @@ overwrite is still reported as `mismatched` and needs the explicit
   scaffold becoming a real `SdfFileFormat`, a versioned ordinary-library edge,
   clean extracted-package consumption, and the need to verify that every
   requested package-origin test level really executes rather than skips.
+- [USD Point Cloud Plugins](../projects/usd-pointcloud-plugins.md) demonstrates
+  four file-format bundles sharing native authoring and tiling code, a
+  digest-pinned 24-cell source-CI matrix, and a strict file format whose smoke
+  fixture needs arguments unavailable in the current string-only manifest form.
 - [USD VRM Plugins](../projects/usd-vrm-plugins.md) demonstrates several
   bundles, bundle-to-bundle runtime and link dependencies, a shared library, and
   workspace packaging.

@@ -108,6 +108,9 @@ ost formation run formation.toml -- usdview avatar.vrm
 - Worked cross-repository cases (VRM inspection, Gaussian PLY stage inspection,
   hdMerlin view, and VRM rendered by hdMerlin) are in
   [combined-formations.md](../projects/combined-formations.md), built from the
-  [USD 3DGS Plugins](../projects/usd-3dgs-plugins.md),
+  three original [USD 3DGS Plugins](../projects/usd-3dgs-plugins.md),
   [USD VRM Plugins](../projects/usd-vrm-plugins.md), and
-  [hdMerlin](../projects/hydra-merlin.md) reference projects.
+  [hdMerlin](../projects/hydra-merlin.md) reference projects. The later
+  [USD Point Cloud Plugins](../projects/usd-pointcloud-plugins.md) adoption is
+  an additional plugin-workspace dogfood, not a retroactive v0.19.0 Formation
+  acceptance case.
