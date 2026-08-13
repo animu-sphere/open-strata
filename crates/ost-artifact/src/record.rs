@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use ost_core::{Error, Result};
 use ost_platform::{
-    ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility, ResolvedSourceIdentity,
+    OpenUsdVerification, ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility,
+    ResolvedSourceIdentity,
 };
 
 use crate::policy::TrustLevel;
@@ -190,6 +191,11 @@ pub struct ArtifactRecord {
     /// non-runtime artifacts omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openusd_compatibility: Option<ResolvedOpenUsdCompatibility>,
+    /// Independent verification stages claimed by a runtime producer. This is
+    /// kept separate from the aggregate `validation` word so compile/link
+    /// success cannot imply loader, physical-device, or render success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openusd_verification: Option<OpenUsdVerification>,
     /// Exact upstream repository and revision declared by the producer.
     ///
     /// The archive digest remains the immutable artifact identity; this field
@@ -336,6 +342,7 @@ impl ArtifactRecord {
         let target = require_str(manifest, "target")?;
         let openusd_compatibility =
             normalize_openusd_compatibility(manifest, kind, producer_platform, &target)?;
+        let openusd_verification = normalize_openusd_verification(manifest, kind)?;
         let source_identity = normalize_source_identity(manifest)?;
         let dependency_identities = normalize_dependency_identities(manifest)?;
 
@@ -393,10 +400,67 @@ impl ArtifactRecord {
             runtime_id,
             runtime_digest,
             openusd_compatibility,
+            openusd_verification,
             source_identity,
             dependency_identities,
         })
     }
+}
+
+/// Parse the versioned, split OpenUSD verification state and require the
+/// artifact-facing copy to match the embedded runtime that pull materializes.
+fn normalize_openusd_verification(
+    manifest: &serde_json::Value,
+    kind: ArtifactKind,
+) -> Result<Option<OpenUsdVerification>> {
+    let top_level = manifest
+        .get("openusd_verification")
+        .filter(|value| !value.is_null());
+    if kind != ArtifactKind::Runtime && top_level.is_some() {
+        return Err(Error::InvalidManifest(
+            "only runtime producer manifests may carry 'openusd_verification'".to_string(),
+        ));
+    }
+    if kind != ArtifactKind::Runtime {
+        return Ok(None);
+    }
+
+    let embedded = manifest
+        .pointer("/provenance/runtime_manifest/openusd_verification")
+        .filter(|value| !value.is_null());
+    let value = match (top_level, embedded) {
+        (None, None) => return Ok(None),
+        (Some(top_level), Some(embedded)) if top_level == embedded => embedded,
+        (Some(_), Some(_)) => {
+            return Err(Error::InvalidManifest(
+                "producer manifest top-level 'openusd_verification' does not match \
+                 provenance.runtime_manifest.openusd_verification"
+                    .to_string(),
+            ));
+        }
+        (top_level, embedded) => {
+            return Err(Error::InvalidManifest(format!(
+                "producer manifest OpenUSD verification state is incomplete \
+                 (top-level present={}, embedded runtime present={})",
+                top_level.is_some(),
+                embedded.is_some()
+            )));
+        }
+    };
+
+    let verification: OpenUsdVerification =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            Error::InvalidManifest(format!(
+                "producer manifest 'openusd_verification' is invalid: {error}"
+            ))
+        })?;
+    if !verification.is_supported() {
+        return Err(Error::InvalidManifest(format!(
+            "producer manifest carries unsupported OpenUSD verification schema {} (expected 1)",
+            verification.schema
+        )));
+    }
+    Ok(Some(verification))
 }
 
 fn validate_openusd_selector_schema(
@@ -877,8 +941,18 @@ mod tests {
             "capabilities": ["hgi-gl", "hgi-vulkan"]
         });
         manifest["openusd_compatibility"] = compatibility.clone();
+        let verification = serde_json::json!({
+            "schema": 1,
+            "compile": "passed",
+            "link": "passed",
+            "loader": "not-run",
+            "physical_device": "not-run",
+            "render": "not-run"
+        });
+        manifest["openusd_verification"] = verification.clone();
         manifest["provenance"]["runtime_manifest"] = serde_json::json!({
             "openusd_compatibility": compatibility,
+            "openusd_verification": verification,
         });
         manifest
     }
@@ -990,6 +1064,15 @@ mod tests {
         assert_eq!(compatibility.capabilities, ["hgi-gl", "hgi-vulkan"]);
         assert_eq!(record.source_identity.as_ref().unwrap().revision, "v26.05");
         assert_eq!(record.dependency_identities[0].name, "onetbb");
+        let verification = record.openusd_verification.as_ref().unwrap();
+        assert_eq!(
+            verification.compile,
+            ost_platform::OpenUsdVerificationStatus::Passed
+        );
+        assert_eq!(
+            verification.render,
+            ost_platform::OpenUsdVerificationStatus::NotRun
+        );
         assert!(selector.starts_with("openusd-cy2026-linux-x86_64-vulkan-"));
         assert_eq!(selector.rsplit_once('-').unwrap().1.len(), 64);
 
@@ -1238,6 +1321,37 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("identity is incomplete"));
+    }
+
+    #[test]
+    fn runtime_record_rejects_split_or_unsupported_verification_state() {
+        let mut mismatched = runtime_manifest_with_openusd();
+        mismatched["openusd_verification"]["render"] = serde_json::json!("passed");
+        let error = ArtifactRecord::from_producer_manifest(
+            &mismatched,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("top-level 'openusd_verification' does not match"));
+
+        let mut unsupported = runtime_manifest_with_openusd();
+        unsupported["openusd_verification"]["schema"] = serde_json::json!(2);
+        unsupported["provenance"]["runtime_manifest"]["openusd_verification"]["schema"] =
+            serde_json::json!(2);
+        let error = ArtifactRecord::from_producer_manifest(
+            &unsupported,
+            ArtifactSource::Imported,
+            0,
+            "ost test",
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported OpenUSD verification schema 2"));
     }
 
     #[test]

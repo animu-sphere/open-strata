@@ -119,6 +119,18 @@ pub fn validate(prefix: &Utf8Path, manifest: &RuntimeManifest) -> ValidationRepo
         ));
     }
 
+    if manifest.openusd_verification.is_supported() {
+        checks.push(Check::pass("openusd-verification-schema"));
+    } else {
+        checks.push(Check::fail(
+            "openusd-verification-schema",
+            format!(
+                "OpenUSD verification schema {} != expected 1",
+                manifest.openusd_verification.schema
+            ),
+        ));
+    }
+
     // 3. Every declared layout directory exists on disk.
     let missing: Vec<&str> = manifest
         .layout

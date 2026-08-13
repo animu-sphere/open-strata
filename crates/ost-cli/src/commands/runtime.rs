@@ -27,8 +27,9 @@ use ost_core::{tools, Error, Host, Result, Variant};
 use ost_platform::version_satisfies_constraint;
 use ost_runtime::{
     python_minor, ExtensionRecord, HostPackageManager, HostRequirement, OpenUsdBuilder,
-    OpenUsdVariantId, ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility,
-    ResolvedSourceIdentity, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
+    OpenUsdVariantId, OpenUsdVerification, ResolvedDependencyIdentity,
+    ResolvedOpenUsdCompatibility, ResolvedSourceIdentity, RuntimeManifest, RuntimeSource,
+    Validation, MANIFEST_FILE,
 };
 
 use crate::commands::resolve;
@@ -484,6 +485,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             "extensions": manifest.extensions,
             "host_requirements": manifest.host_requirements,
             "openusd_compatibility": manifest.openusd_compatibility,
+            "openusd_verification": manifest.openusd_verification,
             "build_source": manifest.build_source,
             "build_dependencies": manifest.build_dependencies,
         }));
@@ -517,6 +519,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
     }
     print_host_requirements(&manifest.host_requirements, "  host:    ");
     print_openusd_compatibility(&manifest, "  ");
+    print_openusd_verification(&manifest.openusd_verification, "  ");
     print_build_identities(&manifest, "  ");
     println!("\nValidate with:");
     println!("  ost runtime validate {} --profile {}", platform, profile);
@@ -1047,6 +1050,17 @@ fn print_openusd_compatibility(manifest: &RuntimeManifest, prefix: &str) {
     println!("{prefix}graphics: {}", selected.capabilities.join(", "));
 }
 
+fn print_openusd_verification(verification: &OpenUsdVerification, prefix: &str) {
+    println!(
+        "{prefix}verification: compile={} link={} loader={} device={} render={}",
+        verification.compile.as_str(),
+        verification.link.as_str(),
+        verification.loader.as_str(),
+        verification.physical_device.as_str(),
+        verification.render.as_str(),
+    );
+}
+
 fn print_build_identities(manifest: &RuntimeManifest, prefix: &str) {
     if let Some(source) = &manifest.build_source {
         println!(
@@ -1574,6 +1588,7 @@ fn build_from_source(
     // self-contained (deps installed into the prefix), so this stays empty.
     manifest.runtime_deps = opts.deps.iter().map(|d| d.replace('\\', "/")).collect();
     manifest.set_build_identities(build_source, build_dependencies)?;
+    manifest.set_openusd_verification(OpenUsdVerification::managed_build_passed())?;
     Ok(manifest)
 }
 
@@ -1788,6 +1803,7 @@ fn redetect_build(
         previous.build_source.clone(),
         previous.build_dependencies.clone(),
     )?;
+    manifest.set_openusd_verification(OpenUsdVerification::managed_build_passed())?;
     Ok(manifest)
 }
 
@@ -2377,6 +2393,7 @@ fn runtime_artifact_manifest(
         "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
         "host_requirements": manifest.host_requirements,
         "openusd_compatibility": manifest.openusd_compatibility,
+        "openusd_verification": manifest.openusd_verification,
         "provenance": {
             "platform": manifest.platform,
             "profile": manifest.profile,
@@ -3673,6 +3690,7 @@ fn list(fmt: Format) -> Result<()> {
                     "digest": m.digest,
                     "source": m.source.as_str(),
                     "openusd_compatibility": m.openusd_compatibility,
+                    "openusd_verification": m.openusd_verification,
                 })
             })
             .collect();
@@ -3782,6 +3800,7 @@ fn show(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     }
     print_host_requirements(&manifest.host_requirements, "Host needs: ");
     print_openusd_compatibility(&manifest, "");
+    print_openusd_verification(&manifest.openusd_verification, "");
     print_build_identities(&manifest, "");
     println!("Capabilities:");
     for cap in &manifest.capabilities {
@@ -4386,6 +4405,9 @@ mod tests {
         manifest
             .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Vulkan)))
             .unwrap();
+        manifest
+            .set_openusd_verification(OpenUsdVerification::managed_build_passed())
+            .unwrap();
         let packed = ost_build::PackResult {
             archive_digest: format!("sha256:{}", "ab".repeat(32)),
             archive_size: 42,
@@ -4398,6 +4420,12 @@ mod tests {
         assert_eq!(
             producer["openusd_compatibility"]["python"]["version"],
             "3.13.7"
+        );
+        assert_eq!(producer["openusd_verification"]["compile"], "passed");
+        assert_eq!(producer["openusd_verification"]["render"], "not-run");
+        assert_eq!(
+            producer["provenance"]["runtime_manifest"]["openusd_verification"],
+            producer["openusd_verification"]
         );
     }
 

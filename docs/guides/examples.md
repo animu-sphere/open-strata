@@ -138,6 +138,10 @@ and every source archive actually selected by `build_usd.py`. The sorted closure
 is visible in `runtime show` and automatically enters `record.json`, the OpenUSD
 selector hash, provenance, and the generated SPDX SBOM at export. Each captured
 archive carries its SHA-256 in the dependency identity and as an SPDX checksum.
+The same manifest reports compile, link, loader, physical-device, and render
+verification separately. A successful managed build marks only compile/link as
+`passed`; the remaining states stay `not-run` until dedicated probes establish
+them, so a headless Vulkan build never claims render success.
 
 Outside GitHub Actions, `--build-metadata build.json` supplies the builder
 identity. It may omit `dependencies` for a managed build; OST inserts the
