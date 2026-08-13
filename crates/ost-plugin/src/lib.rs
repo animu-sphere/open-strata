@@ -32,7 +32,7 @@ mod workspace;
 
 pub use bundle::Bundle;
 pub use doctor::{diagnose, Diagnostic, DoctorReport, RuntimeContext, Status};
-pub use levels::{run_levels, usdview_check, Probe, Session, ToolOutput};
+pub use levels::{fixture_identifier, run_levels, usdview_check, Probe, Session, ToolOutput};
 pub use library::{
     Library, LibraryCmake, LibraryIdentity, LibraryManifest, LibraryRequires, LibraryRuntime,
     LIBRARY_MANIFEST, LIBRARY_SCHEMA,

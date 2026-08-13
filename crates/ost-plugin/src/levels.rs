@@ -240,6 +240,13 @@ pub fn usdview_check(bundle: &Bundle, session: &Session, fixture: Option<&str>) 
     level6_usdview(bundle, session, fixture)
 }
 
+/// Resolve an explicit fixture path to the same OpenUSD layer identifier used
+/// by the verification pyramid. If the path names a structured smoke fixture,
+/// its file-format arguments are retained for interactive callers as well.
+pub fn fixture_identifier(bundle: &Bundle, fixture: &str) -> String {
+    explicit_fixture(bundle, fixture).identifier()
+}
+
 /// The file extension this fileformat plugin registers, from `provides`
 /// (`usd-fileformat:<ext>`) with the first declared fixture as a fallback.
 fn fileformat_ext(bundle: &Bundle) -> Option<String> {
@@ -312,6 +319,34 @@ fn smoke_fixture(bundle: &Bundle) -> Option<ResolvedFixture<'_>> {
         path: bundle.path(relative),
         source: None,
     })
+}
+
+/// Resolve a caller-selected fixture back to its manifest declaration when
+/// possible. Canonical comparison covers an absolute spelling of the same
+/// bundle-relative fixture and normalizes platform-specific path details.
+fn explicit_fixture<'a>(bundle: &'a Bundle, fixture: &'a str) -> ResolvedFixture<'a> {
+    let path = bundle.path(fixture);
+    let source = bundle.manifest.tests.smoke.iter().find(|candidate| {
+        if candidate.path() == fixture {
+            return true;
+        }
+        let candidate_path = bundle.path(candidate.path());
+        if candidate_path == path {
+            return true;
+        }
+        match (
+            std::fs::canonicalize(candidate_path.as_std_path()),
+            std::fs::canonicalize(path.as_std_path()),
+        ) {
+            (Ok(candidate), Ok(selected)) => candidate == selected,
+            _ => false,
+        }
+    });
+    ResolvedFixture {
+        relative: fixture,
+        path,
+        source,
+    }
 }
 
 /// The fixtures L5 should flatten. Every explicitly declared round-trip fixture
@@ -1179,11 +1214,7 @@ fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> 
         return Diagnostic::skip(ID, 6, "no display available for usdview");
     };
     let selected = match fixture {
-        Some(relative) => ResolvedFixture {
-            relative,
-            path: bundle.path(relative),
-            source: None,
-        },
+        Some(relative) => explicit_fixture(bundle, relative),
         None => match smoke_fixture(bundle) {
             Some(fixture) => fixture,
             None => return Diagnostic::skip(ID, 6, "no fixture to open"),
@@ -1922,6 +1953,19 @@ tests:
                 .iter()
                 .any(|call| call == &format!("usdview {identifier} --quitAfterStartup")),
             "{calls:#?}"
+        );
+        drop(calls);
+
+        probe.calls.borrow_mut().clear();
+        let diagnostic = usdview_check(&bundle, &session, Some("tests/fixtures/basic.toy"));
+        assert_eq!(diagnostic.status, Status::Pass);
+        assert_eq!(
+            probe.calls.borrow().as_slice(),
+            [format!("usdview {identifier} --quitAfterStartup")]
+        );
+        assert_eq!(
+            fixture_identifier(&bundle, bundle.path("tests/fixtures/basic.toy").as_str()),
+            identifier
         );
     }
 
