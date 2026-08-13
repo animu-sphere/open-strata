@@ -347,12 +347,24 @@ registry.
   an explicit library selector on existing verbs. Packaging must produce a
   descriptor-named archive from one library's install tree so an optional
   adapter can ship outside the aggregate product.
-- Stage declared tool executables produced by `ost build`, or make the packaging
-  error lead with the actual requirement that the executable must exist below a
-  declared member directory rather than suggesting a build that already ran.
-- When an OST upgrade enriches and re-identifies an unchanged runtime record,
-  distinguish that migration from a runtime substitution in managed-build
-  mismatch diagnostics and direct the user to rebuild the affected member.
+
+**Implemented 2026-08-14 — managed workspace-tool staging:** a root `ost build`
+snapshots matching build-tree files before CMake and promotes only executables
+created or changed by that invocation. Selection uses member path,
+configuration, and unique filename; the full selected set is staged
+transactionally below the first directory in `openstrata.tool.yaml`. Stale and
+ambiguous outputs are never guessed. The root completion digests the staged
+member bytes, so the following workspace package consumes and verifies the
+exact managed output instead of asking for a build that already completed
+elsewhere.
+
+**Implemented 2026-08-14 — runtime identity-drift diagnostics:** managed build
+completion and root package-provenance checks now distinguish same-ID runtime
+digest drift from selection of a differently named runtime. Because the same
+ID/different digest case can be either manifest-identity enrichment or payload
+replacement, the diagnostic does not claim which occurred; it retains both
+digests and directs the operator to rebuild the affected member before reusing
+managed evidence.
 
 #### Renderer workflow and evidence acceptance
 
@@ -363,12 +375,23 @@ apply the selected budgets to both the standard and adopted-project retry build.
 Successful and failed launch records retain the budgets, so recovery can be
 reproduced without waiting for an implicit boundary.
 
+**Implemented 2026-08-14 — durable managed launch failures:** a managed
+`renderer view` build failure now writes the same versioned launch-record
+location used by a completed host launch and attaches that record to structured
+error data; `renderer viewport` already records its build-failure envelope. An
+upstream host-neutral fixture asserts both paths persist their selected timeout,
+target/profile, outcome, and `build-failure` state without a downstream renderer
+compiler environment.
+
 - Add an upstream fixture that completes both managed launch paths and asserts
-  their persisted success and failure JSON envelopes independently of a
-  downstream compiler environment.
-- Add a negative managed-evidence fixture proving that a stale or separately
-  produced renderer report cannot be promoted by copying or attaching a newer
-  successful completion record.
+  their persisted success JSON envelopes independently of a downstream compiler
+  environment. Failure envelopes are covered above.
+
+**Implemented 2026-08-14 — negative managed renderer evidence:** build/test
+completions bind each changed renderer report by build-directory-relative path,
+owning producer session, and SHA-256. Validation rejects changed/copied report
+bytes, an incomplete producer that stranded PASS, and attempts to attach a new
+owner to a report that already carries provenance.
 
 **Implemented 2026-08-14 — carried hdMerlin acceptance:** the report-11
 `usdview-smoke.usda` scene completed the real `viewport-usd` managed workflow on

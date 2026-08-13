@@ -256,8 +256,14 @@ the target/runtime/compiler/generator build fingerprint and the path, size, and
 SHA-256 of the primary bundle's package-relevant registration, library, and
 Python outputs. A successful root `ost build` records the same output set for
 every workspace bundle in its project completion, prefixing each path with the
-member's project-relative directory. `ost plugin package` recomputes the staged
-set and compares it with both applicable managed producers; an exact match is
+member's project-relative directory. It also stages a declared workspace-tool
+executable found in the root target build tree below the first directory in the
+tool descriptor. Selection considers only files created or changed since the
+pre-build snapshot, prefers the member-relative build path and requested
+configuration, permits a globally unique filename fallback, and reports rather
+than guesses when candidates are stale or ambiguous. The selected set is
+committed transactionally. `ost plugin package` recomputes the staged set and
+compares it with both applicable managed producers; an exact match is
 accepted even when an older completion from the other build path is stale.
 Root candidates include the default and every currently declared named build
 intent; their recorded generator is validated against the target lock rather

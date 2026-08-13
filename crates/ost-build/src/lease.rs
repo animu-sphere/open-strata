@@ -541,23 +541,35 @@ fn process_is_live(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_is_live(pid: u32) -> bool {
-    use std::process::{Command, Stdio};
+    use std::ffi::c_void;
 
-    // This runs only on the stale-recovery path, where a process spawn is cheap
-    // relative to the build about to start — the same reason the CLI reaches for
-    // `taskkill` rather than binding the Win32 process APIs.
-    let Ok(output) = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-    else {
-        // Without an answer, assume the PID is gone: we already hold the lock,
-        // and claiming reuse we cannot demonstrate would be the louder lie.
-        return false;
-    };
-    // A miss prints an INFO banner rather than failing, so match the PID itself.
-    String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, process_id: u32) -> *mut c_void;
+        fn GetExitCodeProcess(process: *mut c_void, exit_code: *mut u32) -> i32;
+        fn CloseHandle(object: *mut c_void) -> i32;
+    }
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+
+    // Query the process table directly. The former `tasklist` subprocess was
+    // locale/output-format dependent and intermittently missed the test
+    // process under a busy parallel test run. Access denied still proves that
+    // a protected process owns the PID; every acquired handle is closed once.
+    // SAFETY: no borrowed memory crosses the API. `exit_code` remains live for
+    // the call and a non-null handle is closed before returning.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+    }
+    let mut exit_code = 0;
+    let observed = unsafe { GetExitCodeProcess(process, &mut exit_code) } != 0;
+    unsafe {
+        CloseHandle(process);
+    }
+    observed && exit_code == STILL_ACTIVE
 }
 
 #[cfg(not(any(unix, windows)))]

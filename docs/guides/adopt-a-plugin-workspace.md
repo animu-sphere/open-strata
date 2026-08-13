@@ -115,6 +115,15 @@ SBOM), and `--product` composes it into the aggregate as a `tool` member.
 `ost plugin product install` puts it under `tools/<id>/` and joins its
 directories to the aggregate loader path.
 
+A root `ost build` may leave `add_executable()` output in its target build tree
+instead of the source member. OST snapshots matching files before CMake runs;
+after success it selects only executables created or changed by that invocation,
+using the member path and build configuration (or a globally unique filename),
+then stages the selected set transactionally below the descriptor's first
+`directories` entry. Stale and ambiguous matches are reported and never
+guessed. The root completion records the staged digest, so a subsequent
+workspace package proves it consumed the exact managed bytes.
+
 Packaging fails if a declared executable is not there, so a release cannot ship
 a tool package with no tool in it. `ost build` records the executables it
 produced, so `plugin package` reports the same `matched` / `untracked` /

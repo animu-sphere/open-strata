@@ -86,7 +86,10 @@ ost renderer view scene.usda --configure-timeout 30 --build-timeout 120
 ost renderer viewport --configure-timeout 30 --build-timeout 120 -- --hidden
 ```
 
-The selected budgets are retained in successful and failed launch records.
+The selected budgets are retained in successful and failed launch records. A
+managed build failure writes the durable record before returning: in `--json`
+mode the normal structured error carries it under `data.launch`, for both
+`renderer view` and `renderer viewport`.
 
 Before paying the configure/build cost, resolve the named intent and
 scene/runtime capabilities:

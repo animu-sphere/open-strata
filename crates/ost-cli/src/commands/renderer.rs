@@ -933,6 +933,7 @@ fn cmake_sources_contain(root: &Utf8Path, target: &str) -> bool {
 }
 
 fn view(args: ViewArgs, fmt: Format) -> Result<()> {
+    let view_started_unix = unix_now();
     // Renderer projects intentionally default to host-neutral `core`. For a
     // view, prefer the single already-pulled real Hydra-capable profile; this
     // makes an adopted `usd` runtime work without repeating `--profile` while
@@ -968,19 +969,35 @@ fn view(args: ViewArgs, fmt: Format) -> Result<()> {
             )?;
             build_dir
         }
-        None => managed_hydra_build(
+        None => match managed_hydra_build(
             &root,
             &platform,
             &profile,
             &args.config,
-            args.generator,
-            args.intent,
+            args.generator.clone(),
+            args.intent.clone(),
             args.configure_timeout,
             args.build_timeout,
             &runtime,
             &runtime_manifest.digest,
             fmt,
-        )?,
+        ) {
+            Ok(build_dir) => build_dir,
+            Err(error) => {
+                return Err(error.with_data(write_view_build_failure_record(
+                    &root,
+                    &manifest.renderer.name,
+                    &platform,
+                    &profile,
+                    &args.config,
+                    explicit_scene.as_deref(),
+                    args.intent.as_deref(),
+                    args.configure_timeout,
+                    args.build_timeout,
+                    view_started_unix,
+                )?));
+            }
+        },
     };
 
     let cmake = tools::which("cmake").ok_or_else(|| {
@@ -1130,6 +1147,61 @@ fn view(args: ViewArgs, fmt: Format) -> Result<()> {
         }));
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_view_build_failure_record(
+    root: &Utf8Path,
+    renderer_name: &str,
+    platform: &str,
+    profile: &str,
+    config: &str,
+    scene: Option<&Utf8Path>,
+    intent: Option<&str>,
+    configure_timeout: u64,
+    build_timeout: u64,
+    started_unix: u64,
+) -> Result<Value> {
+    let record_path = root
+        .join(STATE_DIR)
+        .join("renderer-view")
+        .join(renderer_name)
+        .join("launch.json");
+    let record = serde_json::json!({
+        "schema": "openstrata.renderer-launch/v1",
+        "kind": "renderer-view",
+        "executable": Value::Null,
+        "target": platform,
+        "profile": profile,
+        "config": config,
+        "timeouts": {
+            "configure_seconds": configure_timeout,
+            "build_seconds": build_timeout,
+        },
+        "build_dir": Value::Null,
+        "intent": intent,
+        "renderer": renderer_name,
+        "scene": scene,
+        "camera": Value::Null,
+        "camera_selection": "unavailable-before-launch",
+        "started_unix": started_unix,
+        "completed_unix": unix_now(),
+        "exit_code": Value::Null,
+        "outcome": "failure",
+        "exit": {
+            "state": "build-failure",
+            "code": Value::Null,
+        },
+        "stdout": "",
+        "stderr": "",
+        "install_stdout": "",
+        "install_stderr": "",
+    });
+    write_launch_record(&record_path, &record)?;
+    Ok(serde_json::json!({
+        "launch": record,
+        "record": record_path,
+    }))
 }
 
 fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
@@ -2484,6 +2556,55 @@ validation:
     fn presentation_unavailable_is_a_completed_viewport_session() {
         assert_eq!(viewport_session_outcome(Some(77)), SessionOutcome::Success);
         assert_eq!(viewport_session_outcome(Some(1)), SessionOutcome::Failure);
+    }
+
+    #[test]
+    fn managed_launch_build_failures_persist_for_view_and_viewport() {
+        let root = temp_dir("managed-launch-failures");
+        let view = write_view_build_failure_record(
+            &root,
+            "sample-renderer",
+            "cy2026",
+            "usd",
+            "Release",
+            Some(Utf8Path::new("scene.usda")),
+            Some("renderer-hydra2"),
+            17,
+            23,
+            100,
+        )
+        .unwrap();
+        assert_eq!(view["launch"]["kind"], "renderer-view");
+        assert_eq!(view["launch"]["outcome"], "failure");
+        assert_eq!(view["launch"]["exit"]["state"], "build-failure");
+        assert_eq!(view["launch"]["timeouts"]["configure_seconds"], 17);
+        assert!(Utf8Path::new(view["record"].as_str().unwrap()).is_file());
+
+        let intent = BuildIntent {
+            name: "renderer-viewport".into(),
+            cache: BTreeMap::new(),
+        };
+        let viewport = write_viewport_build_failure_record(
+            &root,
+            "cy2026-windows-x86_64-py313-usd",
+            "cy2026",
+            "usd",
+            "Release",
+            &root.join("build/target"),
+            &intent,
+            &serde_json::json!({"passed": true}),
+            &["--hidden".into()],
+            31,
+            47,
+            200,
+        )
+        .unwrap();
+        assert_eq!(viewport["launch"]["kind"], "renderer-viewport");
+        assert_eq!(viewport["launch"]["outcome"], "failure");
+        assert_eq!(viewport["launch"]["exit"]["state"], "build-failure");
+        assert_eq!(viewport["launch"]["timeouts"]["build_seconds"], 47);
+        assert!(Utf8Path::new(viewport["record"].as_str().unwrap()).is_file());
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[test]

@@ -262,7 +262,16 @@ impl BuildCompletion {
             ));
         }
         if self.runtime != lock.runtime {
-            return Err("completion runtime does not match target.lock.json".into());
+            if self.runtime.id == lock.runtime.id {
+                return Err(format!(
+                    "completion runtime '{}' changed digest under the same runtime id: recorded digest '{}' != current digest '{}'; this may be manifest-identity enrichment or replacement of the runtime payload, so rebuild the affected member before reusing managed evidence",
+                    self.runtime.id, self.runtime.digest, lock.runtime.digest
+                ));
+            }
+            return Err(format!(
+                "completion runtime '{}' was substituted by configured runtime '{}'; rebuild the affected member before reusing managed evidence",
+                self.runtime.id, lock.runtime.id
+            ));
         }
         if self.compiler.fingerprint() != lock.compiler.fingerprint() {
             return Err("completion compiler does not match target.lock.json".into());
@@ -559,6 +568,41 @@ mod tests {
         let mut regenerated = build_completion();
         regenerated.generator = "Visual Studio 17 2022".into();
         assert_ne!(build_completion().fingerprint(), regenerated.fingerprint());
+    }
+
+    #[test]
+    fn completion_distinguishes_same_id_digest_drift_from_substitution() {
+        let completion = build_completion();
+        let mut reidentified = lock();
+        reidentified.runtime.digest = "sha256:enriched".into();
+        let detail = completion
+            .validate_against(
+                &reidentified,
+                "demo",
+                "1.2.3",
+                Utf8Path::new("build/cy2026-linux-x86_64-py313-usd"),
+            )
+            .unwrap_err();
+        assert!(
+            detail.contains("changed digest under the same runtime id"),
+            "{detail}"
+        );
+        assert!(detail.contains("or replacement"), "{detail}");
+        assert!(detail.contains("rebuild the affected member"), "{detail}");
+
+        let mut substituted = lock();
+        substituted.runtime.id = "another-runtime".into();
+        substituted.runtime.digest = "sha256:other".into();
+        let detail = completion
+            .validate_against(
+                &substituted,
+                "demo",
+                "1.2.3",
+                Utf8Path::new("build/cy2026-linux-x86_64-py313-usd"),
+            )
+            .unwrap_err();
+        assert!(detail.contains("was substituted"), "{detail}");
+        assert!(detail.contains("another-runtime"), "{detail}");
     }
 
     #[test]
