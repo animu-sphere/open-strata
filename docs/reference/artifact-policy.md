@@ -114,6 +114,17 @@ producer-manifest layer carrying the state. `runtime show` and `artifact show`
 expose all five fields in human and JSON output. Compatibility selectors remain
 selectors for build/ABI compatibility rather than verification claims.
 
+`ost runtime validate` probes the graphics loaders declared by the normalized
+cell: OpenGL for `standard`, and OpenGL plus Vulkan for `vulkan`. It opens the
+native loader library and requires its canonical API entry point, so the check
+does not require `glxinfo`, `vulkaninfo`, or a Vulkan SDK. Each API is reported
+independently. A producer-owned build runtime persists the aggregate only to
+`openusd_verification.loader`; an artifact-sourced consumer reports its host
+observation without replacing the producer's digest-bound state. A headless cell
+skips the probe and remains `not-run`; a loader success never changes
+`physical_device` or `render`. Exporting a normalized graphics runtime requires
+that persisted loader state to be `passed`.
+
 A consumer can require an approved compatibility cell during the same pull:
 
 ```bash
