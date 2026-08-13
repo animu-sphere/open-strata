@@ -174,10 +174,12 @@ validate` now loads every host graphics API required by the normalized OpenUSD
 cell directly through the operating-system dynamic loader. Standard cells check
 OpenGL; Vulkan cells check both OpenGL and Vulkan; headless cells report a skip
 and retain `loader: not-run`. Per-API pass/fail detail appears in human and JSON
-validation output, the aggregate result is persisted only to the independent
-`loader` field, and export refuses a graphics runtime without a persisted
-passing loader observation. The probe needs no Vulkan SDK utility and never
-infers physical-device or render success.
+validation output. Producer-owned build runtimes persist the aggregate result
+only to the independent `loader` field; an artifact consumer reports its local
+observation without rewriting the digest-bound producer claim. Export refuses a
+graphics runtime without a persisted passing loader observation. The probe
+requires the loader's canonical API entry point, needs no Vulkan SDK utility,
+and never infers physical-device or render success.
 
 **Implemented 2026-08-14 — automatic managed dependency-capture slice:** managed
 `build_usd.py` execution now observes each source archive that the upstream

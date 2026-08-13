@@ -2058,9 +2058,12 @@ fn check_exportable(manifest: &RuntimeManifest) -> Result<()> {
                 manifest.openusd_verification.loader.as_str()
             ),
         )
-        .with_hint(
-            "run `ost runtime validate <platform> --profile <profile>` on the publishing host",
-        ));
+        .with_hint(if manifest.source == RuntimeSource::Artifact {
+            "the immutable artifact producer made no passing loader claim; select an artifact \
+             that carries one or rebuild the runtime from source on the publishing host"
+        } else {
+            "run `ost runtime validate <platform> --profile <profile>` on the publishing host"
+        }));
     }
     Ok(())
 }
@@ -2141,6 +2144,23 @@ fn append_graphics_loader_checks(
         }
     }));
     status
+}
+
+/// Persist producer-owned loader evidence without rewriting an immutable
+/// artifact producer's identity with a consumer-host observation.
+fn persist_graphics_loader_observation(
+    manifest: &mut RuntimeManifest,
+    loader_status: Option<OpenUsdVerificationStatus>,
+) -> Result<()> {
+    if manifest.source == RuntimeSource::Artifact {
+        return Ok(());
+    }
+    if let Some(loader) = loader_status {
+        let mut verification = manifest.openusd_verification.clone();
+        verification.loader = loader;
+        manifest.set_openusd_verification(verification)?;
+    }
+    Ok(())
 }
 
 /// Configure a trivial `find_package(pxr)` consumer against the materialized
@@ -3934,13 +3954,10 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     let current = current_validation_report(&manifest, &r.artifact_prefix, &platform, &profile);
     let passed = current.report.passed();
 
-    if let Some(loader) = current.loader_status {
-        let mut verification = manifest.openusd_verification.clone();
-        verification.loader = loader;
-        manifest.set_openusd_verification(verification)?;
-    }
+    persist_graphics_loader_observation(&mut manifest, current.loader_status)?;
 
-    // Record the outcome back into the manifest (digest is unaffected).
+    // Record the aggregate outcome. Unlike producer-owned verification state,
+    // this field is intentionally not part of runtime identity.
     manifest.set_validation(if passed {
         Validation::Passed
     } else {
@@ -4359,10 +4376,10 @@ mod tests {
         let error = check_exportable(&standard).unwrap_err();
         assert_eq!(error.code(), "EXPORT_OPENUSD_LOADER_VERIFICATION_REQUIRED");
         assert!(error.to_string().contains("not-run"));
+        assert!(error.hint().unwrap().contains("runtime validate"));
 
-        let mut verification = standard.openusd_verification.clone();
-        verification.loader = OpenUsdVerificationStatus::Passed;
-        standard.set_openusd_verification(verification).unwrap();
+        persist_graphics_loader_observation(&mut standard, Some(OpenUsdVerificationStatus::Passed))
+            .unwrap();
         assert!(check_exportable(&standard).is_ok());
 
         let mut headless = exportable_manifest();
@@ -4374,6 +4391,41 @@ mod tests {
             OpenUsdVerificationStatus::NotRun
         );
         assert!(check_exportable(&headless).is_ok());
+    }
+
+    #[test]
+    fn artifact_consumer_loader_probe_does_not_rewrite_producer_identity() {
+        let mut artifact = exportable_manifest();
+        artifact.source = RuntimeSource::Artifact;
+        artifact.artifact_digest = Some(format!("sha256:{}", "ab".repeat(32)));
+        artifact
+            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Standard)))
+            .unwrap();
+        let producer_digest = artifact.digest.clone();
+
+        persist_graphics_loader_observation(&mut artifact, Some(OpenUsdVerificationStatus::Passed))
+            .unwrap();
+
+        assert_eq!(artifact.digest, producer_digest);
+        assert_eq!(
+            artifact.openusd_verification.loader,
+            OpenUsdVerificationStatus::NotRun
+        );
+        assert_eq!(
+            artifact.openusd_verification.physical_device,
+            OpenUsdVerificationStatus::NotRun
+        );
+        assert_eq!(
+            artifact.openusd_verification.render,
+            OpenUsdVerificationStatus::NotRun
+        );
+        let error = check_exportable(&artifact).unwrap_err();
+        assert_eq!(error.code(), "EXPORT_OPENUSD_LOADER_VERIFICATION_REQUIRED");
+        assert!(error
+            .hint()
+            .unwrap()
+            .contains("immutable artifact producer"));
+        assert!(!error.hint().unwrap().contains("runtime validate"));
     }
 
     #[test]

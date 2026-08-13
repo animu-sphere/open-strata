@@ -140,12 +140,14 @@ selector hash, provenance, and the generated SPDX SBOM at export. Each captured
 archive carries its SHA-256 in the dependency identity and as an SPDX checksum.
 The same manifest reports compile, link, loader, physical-device, and render
 verification separately. A successful managed build marks only compile/link as
-`passed`. `runtime validate` then probes the normalized cell's native OpenGL and
-Vulkan loaders without requiring SDK utilities and updates only `loader`;
-physical-device and render stay `not-run` until their own probes establish them.
+`passed`. `runtime validate` then opens the normalized cell's native OpenGL and
+Vulkan loaders, requires their canonical entry points without SDK utilities, and
+updates only a producer-owned build's `loader`; an artifact consumer keeps the
+producer's digest-bound state and reports its host result in validation output.
+Physical-device and render stay `not-run` until their own probes establish them.
 A headless build skips graphics loading and never claims loader or render
-success. Normalized graphics runtimes must persist a passing loader observation
-before export.
+success. Normalized graphics runtimes must persist a passing producer loader
+observation before export.
 
 Outside GitHub Actions, `--build-metadata build.json` supplies the builder
 identity. It may omit `dependencies` for a managed build; OST inserts the
