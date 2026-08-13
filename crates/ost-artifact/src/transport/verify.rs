@@ -18,6 +18,11 @@ use ost_platform::{
     version_satisfies_constraint, ResolvedOpenUsdCompatibility, ResolvedOpenUsdProvider,
 };
 
+use crate::evidence::{
+    verify_evidence_digest, verify_provenance, verify_sbom, EvidenceDigest, PROVENANCE_FILE,
+    SBOM_FILE,
+};
+use crate::policy::TrustLevel;
 use crate::record::{manifest_debug_archive, manifest_files, ArtifactRecord};
 use crate::store::{compare_archive_files, locate_manifest, walk_archive};
 use crate::transport::{PullPolicy, StepStatus};
@@ -27,6 +32,9 @@ use crate::transport::{PullPolicy, StepStatus};
 /// import that follows, so the chain only reports.
 pub(crate) struct ChainOutcome {
     pub steps: Vec<StepStatus>,
+    pub effective_trust: TrustLevel,
+    pub required_trust: TrustLevel,
+    pub matched_publisher: Option<String>,
 }
 
 /// Verify a fetched dist directory against the pull policy.
@@ -289,13 +297,135 @@ pub(crate) fn verify_dist(
         None => steps.push(("target_match", "skipped")),
     }
 
-    // Trust policy (plan § "Trust policy"): a pull that passed the full
-    // digest / manifest / file chain reaches the `verified` level, which is
-    // what source CI admits. `trusted` (publisher identity, provenance, SBOM)
-    // lands with plan Phase 4.
-    steps.push(("trust_policy", "passed"));
+    // Trust evidence is a consume gate, not a post-import audit. Validate every
+    // fetched sidecar even when it is optional, and enforce requested presence
+    // and assurance before these bytes enter the local registry.
+    let sbom = evidence_in_dist(&dist_dir, SBOM_FILE)?;
+    match &sbom {
+        Some(evidence) => {
+            verify_evidence_digest(&dist_dir, evidence)?;
+            verify_sbom(&dist_dir.join(SBOM_FILE), &record.digest)?;
+            steps.push(("sbom", "passed"));
+        }
+        None if policy.require_sbom => {
+            return Err(Error::coded(
+                "ARTIFACT_SBOM_REQUIRED",
+                Category::Validation,
+                "pulled artifact has no SPDX SBOM",
+            )
+            .with_hint("select or publish an artifact carrying subject-bound SBOM evidence"));
+        }
+        None => steps.push(("sbom", "skipped")),
+    }
 
-    Ok(ChainOutcome { steps })
+    let required_trust = std::cmp::max(
+        policy.minimum_trust.unwrap_or_default(),
+        policy
+            .artifact_policy
+            .as_ref()
+            .map(|policy| policy.minimum_trust)
+            .unwrap_or_default(),
+    );
+    let provenance = evidence_in_dist(&dist_dir, PROVENANCE_FILE)?;
+    let publisher_policy = policy
+        .artifact_policy
+        .as_ref()
+        .filter(|_| policy.require_provenance || required_trust > TrustLevel::Attested);
+    let matched_publisher = match &provenance {
+        Some(evidence) => {
+            verify_evidence_digest(&dist_dir, evidence)?;
+            let publisher = verify_provenance(
+                &dist_dir.join(PROVENANCE_FILE),
+                &manifest,
+                &record.digest,
+                publisher_policy,
+            )?;
+            steps.push(("provenance", "passed"));
+            publisher
+        }
+        None if policy.require_provenance => {
+            return Err(Error::coded(
+                "ARTIFACT_PROVENANCE_REQUIRED",
+                Category::Validation,
+                "pulled artifact has no SLSA/in-toto provenance",
+            )
+            .with_hint(
+                "select or publish an artifact carrying subject-bound provenance evidence",
+            ));
+        }
+        None => {
+            steps.push(("provenance", "skipped"));
+            None
+        }
+    };
+
+    let effective_trust = if let Some(publisher) = matched_publisher.as_deref() {
+        if sbom.is_some() {
+            publisher_policy
+                .and_then(|policy| policy.publisher(publisher))
+                .map(|publisher| std::cmp::max(TrustLevel::Attested, publisher.trust))
+                .unwrap_or(TrustLevel::Attested)
+        } else {
+            TrustLevel::Attested
+        }
+    } else if provenance.is_some() {
+        TrustLevel::Attested
+    } else {
+        record.trust
+    };
+    if effective_trust < required_trust {
+        return Err(Error::coded(
+            "ARTIFACT_POLICY_TRUST_INSUFFICIENT",
+            Category::Validation,
+            format!(
+                "pulled artifact trust '{effective_trust}' is below required minimum \
+                 '{required_trust}'"
+            ),
+        )
+        .with_hint(
+            "select an artifact with the required SBOM/provenance and allowed publisher evidence",
+        )
+        .with_data(serde_json::json!({
+            "effective_trust": effective_trust,
+            "required_trust": required_trust,
+            "matched_publisher": matched_publisher,
+            "sbom_present": sbom.is_some(),
+            "provenance_present": provenance.is_some(),
+        })));
+    }
+    steps.push((
+        "trust_policy",
+        if required_trust > TrustLevel::Local
+            || policy.artifact_policy.is_some()
+            || policy.minimum_trust.is_some()
+        {
+            "passed"
+        } else {
+            "skipped"
+        },
+    ));
+
+    Ok(ChainOutcome {
+        steps,
+        effective_trust,
+        required_trust,
+        matched_publisher,
+    })
+}
+
+fn evidence_in_dist(dist: &Utf8Path, name: &str) -> Result<Option<EvidenceDigest>> {
+    let path = dist.join(name);
+    if !path.as_std_path().exists() {
+        return Ok(None);
+    }
+    if !path.as_std_path().is_file() {
+        return Err(Error::coded(
+            "ARTIFACT_EVIDENCE_INVALID",
+            Category::Validation,
+            format!("fetched evidence '{name}' is not a regular file"),
+        ));
+    }
+    EvidenceDigest::from_file(&path, name).map(Some)
 }
 
 fn verify_openusd_requirement(

@@ -13,7 +13,10 @@ use camino::Utf8Path;
 
 use ost_core::{Category, Error, Result};
 
-use crate::record::is_sha256_ref;
+use crate::evidence::{PROVENANCE_FILE, SBOM_FILE};
+use crate::record::{
+    is_sha256_ref, manifest_debug_archive, ArtifactRecord, ArtifactSource, MANIFEST_FILE,
+};
 use crate::reference::RemoteReference;
 use crate::store::locate_manifest;
 use crate::transport::{ArtifactTransport, FetchOutcome, ResolvedRemote, TransferEvidence};
@@ -92,13 +95,84 @@ impl ArtifactTransport for FileTransport {
         &self,
         reference: &RemoteReference,
         _resolved: &ResolvedRemote,
-        _scratch: &Utf8Path,
+        scratch: &Utf8Path,
     ) -> Result<FetchOutcome> {
-        // The dist dir already holds the producer files; the verification
-        // chain reads them in place and import copies them into the store.
+        // Freeze caller-owned files before verification. The pull chain verifies
+        // and imports this same snapshot, so a producer cannot replace a
+        // manifest or evidence sidecar between those two operations.
+        let (_, manifest_path) = locate_manifest(self.dist_dir(reference)?)?;
+        let dist = manifest_path
+            .parent()
+            .ok_or_else(|| Error::usage("producer manifest has no parent directory"))?;
+        let manifest_bytes = std::fs::read(manifest_path.as_std_path())
+            .map_err(|error| Error::io(manifest_path.to_string(), error))?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&manifest_bytes).map_err(|error| {
+                Error::coded(
+                    "ARTIFACT_MANIFEST_INVALID",
+                    Category::Validation,
+                    format!("'{manifest_path}' is not valid JSON: {error}"),
+                )
+            })?;
+        let record = ArtifactRecord::from_producer_manifest(
+            &manifest,
+            ArtifactSource::Imported,
+            0,
+            "filesystem transport",
+        )
+        .map_err(|error| {
+            Error::coded(
+                "ARTIFACT_MANIFEST_INVALID",
+                Category::Validation,
+                format!("'{manifest_path}' is not a producer manifest: {error}"),
+            )
+        })?;
+        let debug = manifest_debug_archive(&manifest).map_err(|error| {
+            Error::coded(
+                "ARTIFACT_MANIFEST_INVALID",
+                Category::Validation,
+                format!("'{manifest_path}' has an invalid debug archive: {error}"),
+            )
+        })?;
+
+        std::fs::write(scratch.join(MANIFEST_FILE).as_std_path(), &manifest_bytes)
+            .map_err(|error| Error::io(scratch.join(MANIFEST_FILE).to_string(), error))?;
+        snapshot_file(dist, scratch, &record.archive, true)?;
+        if let Some(debug) = debug {
+            snapshot_file(dist, scratch, &debug.archive, true)?;
+        }
+        for name in [SBOM_FILE, PROVENANCE_FILE] {
+            snapshot_file(dist, scratch, name, false)?;
+        }
+
         Ok(FetchOutcome {
-            dist: self.dist_dir(reference)?.to_owned(),
+            dist: scratch.to_owned(),
             transfer: TransferEvidence::default(),
         })
     }
+}
+
+fn snapshot_file(dist: &Utf8Path, scratch: &Utf8Path, name: &str, required: bool) -> Result<()> {
+    let source = dist.join(name);
+    if !source.as_std_path().exists() {
+        if required {
+            return Err(Error::coded(
+                "ARTIFACT_REMOTE_NOT_FOUND",
+                Category::Precondition,
+                format!("producer output is missing '{source}'"),
+            ));
+        }
+        return Ok(());
+    }
+    if !source.as_std_path().is_file() {
+        return Err(Error::coded(
+            "ARTIFACT_EVIDENCE_INVALID",
+            Category::Validation,
+            format!("producer output path '{source}' is not a regular file"),
+        ));
+    }
+    let destination = scratch.join(name);
+    std::fs::copy(source.as_std_path(), destination.as_std_path())
+        .map_err(|error| Error::io(source.to_string(), error))?;
+    Ok(())
 }

@@ -129,6 +129,17 @@ open below.
 
 #### P1 - provenance and verification truth
 
+**Implemented 2026-08-14 — evidence-gated artifact pull slice:** digest-pinned
+`artifact pull` now accepts `--require-sbom`, `--require-provenance`,
+`--minimum-trust`, and `--policy`. It validates every fetched evidence sidecar
+against its descriptor and artifact subject before local import, matches required
+provenance against the policy's publisher identities, derives the non-sticky
+effective trust level, and enforces the stricter explicit/policy floor. Missing,
+invalid, untrusted, or insufficient evidence leaves no usable artifact behind;
+human and JSON success output report effective/required trust and the matched
+publisher. Exact source and dependency identities and build/link/render state
+separation remain open below.
+
 - Every published artifact carries or references its source revision, resolved
   dependencies, workflow identity, third-party attribution, SBOM, evidence
   digests, and SLSA-compatible provenance.

@@ -19,8 +19,9 @@ use ost_artifact::transport::oci::{
     MEDIA_TYPE_ARCHIVE, MEDIA_TYPE_DEBUG_ARCHIVE, MEDIA_TYPE_PRODUCER_MANIFEST,
 };
 use ost_artifact::{
-    pull, ArtifactKind, ArtifactRecord, ArtifactSource, ArtifactStore, ArtifactTransport,
-    FileTransport, OciTransferPolicy, OciTransport, PullPolicy, RemoteReference,
+    generate_evidence, pull, ArtifactKind, ArtifactPolicy, ArtifactRecord, ArtifactSource,
+    ArtifactStore, ArtifactTransport, FetchOutcome, FileTransport, OciTransferPolicy, OciTransport,
+    PullPolicy, RemoteReference, ResolvedRemote, TrustLevel,
 };
 use ost_core::digest;
 
@@ -685,6 +686,75 @@ fn assert_store_empty(store: &ArtifactStore) {
     );
 }
 
+struct RemoveFileSourceAfterFetch {
+    source: Utf8PathBuf,
+}
+
+impl ArtifactTransport for RemoveFileSourceAfterFetch {
+    fn resolve(&self, reference: &RemoteReference) -> ost_core::Result<ResolvedRemote> {
+        FileTransport::new().resolve(reference)
+    }
+
+    fn fetch(
+        &self,
+        reference: &RemoteReference,
+        resolved: &ResolvedRemote,
+        scratch: &Utf8Path,
+    ) -> ost_core::Result<FetchOutcome> {
+        let fetched = FileTransport::new().fetch(reference, resolved, scratch)?;
+        std::fs::remove_dir_all(self.source.as_std_path())
+            .map_err(|error| ost_core::Error::io(self.source.to_string(), error))?;
+        Ok(fetched)
+    }
+}
+
+fn write_dist(root: &Utf8Path, bundle: &Bundle, with_provenance: bool) -> Utf8PathBuf {
+    let dist = root.join("dist");
+    std::fs::create_dir_all(dist.as_std_path()).unwrap();
+    std::fs::write(
+        dist.join(&bundle.archive_name).as_std_path(),
+        &bundle.archive,
+    )
+    .unwrap();
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&bundle.producer_manifest).unwrap();
+    if with_provenance {
+        manifest["build"] = serde_json::json!({
+            "source": {
+                "repository": "animu-sphere/open-strata",
+                "revision": "0123456789abcdef"
+            },
+            "builder": {
+                "id": "https://github.com/animu-sphere/open-strata/.github/workflows/release.yml",
+                "identity": {
+                    "repository": "animu-sphere/open-strata",
+                    "workflow_path": ".github/workflows/release.yml",
+                    "git_ref": "refs/tags/v0.22.0",
+                    "actor": "release-bot",
+                    "event": "push"
+                }
+            }
+        });
+    }
+    generate_evidence(&dist, &mut manifest).unwrap();
+    if !with_provenance {
+        // Keep the fixture deterministic under GitHub Actions, where evidence
+        // generation would otherwise discover ambient build metadata and add
+        // provenance even though this case intentionally supplies only SBOM.
+        manifest.as_object_mut().unwrap().remove("build");
+        let provenance = dist.join(ost_artifact::PROVENANCE_FILE);
+        if let Err(error) = std::fs::remove_file(provenance.as_std_path()) {
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        }
+    }
+    std::fs::write(
+        dist.join("manifest.json").as_std_path(),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    dist
+}
+
 fn retry_policy(max_attempts: u32) -> OciTransferPolicy {
     OciTransferPolicy {
         connect_timeout: Some(Duration::from_secs(1)),
@@ -766,6 +836,7 @@ fn digest_pinned_pull_imports_and_verifies() {
         require_target: Some(TARGET.to_string()),
         require_openusd: None,
         require_openusd_version: None,
+        ..PullPolicy::default()
     };
     let evidence = pull(&transport, &reference, &store, &policy).unwrap();
 
@@ -781,7 +852,7 @@ fn digest_pinned_pull_imports_and_verifies() {
     for (step, status) in &evidence.verification {
         let expected = if matches!(
             *step,
-            "openusd_selector" | "openusd_requirement" | "sbom" | "provenance"
+            "openusd_selector" | "openusd_requirement" | "sbom" | "provenance" | "trust_policy"
         ) {
             "skipped"
         } else {
@@ -1770,6 +1841,7 @@ fn file_transport_pulls_a_dist_dir_with_the_same_chain() {
             require_target: Some(TARGET.to_string()),
             require_openusd: None,
             require_openusd_version: None,
+            ..PullPolicy::default()
         },
     )
     .unwrap();
@@ -1784,8 +1856,166 @@ fn file_transport_pulls_a_dist_dir_with_the_same_chain() {
         .any(|(step, status)| *step == "oci_digest" && *status == "skipped"));
     assert!(store.verify(&bundle.artifact_digest).unwrap().passed());
 
-    // The source dist dir is untouched (fetch reads in place, import copies).
+    // The source dist dir is untouched (fetch snapshots it, import copies the snapshot).
     assert!(dist.join(&bundle.archive_name).as_std_path().is_file());
+
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn file_pull_imports_the_same_snapshot_that_passed_trust_validation() {
+    let root = tmp_root("file-evidence-snapshot");
+    let bundle = make_bundle("toy", b"plugin bytes");
+    let dist = write_dist(&root, &bundle, true);
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = RemoveFileSourceAfterFetch {
+        source: dist.clone(),
+    };
+    let reference = RemoteReference::parse(&format!("file://{dist}")).unwrap();
+
+    let evidence = pull(
+        &transport,
+        &reference,
+        &store,
+        &PullPolicy {
+            require_sbom: true,
+            require_provenance: true,
+            minimum_trust: Some(TrustLevel::Attested),
+            ..PullPolicy::default()
+        },
+    )
+    .unwrap();
+
+    assert!(!dist.as_std_path().exists());
+    assert_eq!(evidence.effective_trust, TrustLevel::Attested);
+    assert!(evidence.verification.contains(&("sbom", "passed")));
+    assert!(evidence.verification.contains(&("provenance", "passed")));
+    assert!(store.verify(&bundle.artifact_digest).unwrap().passed());
+
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn pull_requires_evidence_before_local_import() {
+    let root = tmp_root("file-evidence-required");
+    let bundle = make_bundle("toy", b"plugin bytes");
+    let dist = root.join("missing");
+    std::fs::create_dir_all(dist.as_std_path()).unwrap();
+    std::fs::write(
+        dist.join(&bundle.archive_name).as_std_path(),
+        &bundle.archive,
+    )
+    .unwrap();
+    std::fs::write(
+        dist.join("manifest.json").as_std_path(),
+        &bundle.producer_manifest,
+    )
+    .unwrap();
+
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = FileTransport::new();
+    let reference = RemoteReference::parse(&format!("file://{dist}")).unwrap();
+    let error = pull(
+        &transport,
+        &reference,
+        &store,
+        &PullPolicy {
+            require_sbom: true,
+            require_provenance: true,
+            ..PullPolicy::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "ARTIFACT_SBOM_REQUIRED");
+    assert_store_empty(&store);
+
+    let sbom_only = write_dist(&root.join("sbom-only"), &bundle, false);
+    let reference = RemoteReference::parse(&format!("file://{sbom_only}")).unwrap();
+    let error = pull(
+        &transport,
+        &reference,
+        &store,
+        &PullPolicy {
+            require_sbom: true,
+            require_provenance: true,
+            ..PullPolicy::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "ARTIFACT_PROVENANCE_REQUIRED");
+    assert_store_empty(&store);
+
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
+fn pull_derives_policy_trust_from_subject_bound_evidence() {
+    let root = tmp_root("file-evidence-trust");
+    let bundle = make_bundle("toy", b"plugin bytes");
+    let dist = write_dist(&root, &bundle, true);
+    let policy = ArtifactPolicy::parse(
+        r#"
+schema = 1
+minimum_trust = "verified"
+
+[[allowed_publishers]]
+id = "openstrata-release"
+trust = "verified"
+repository = "animu-sphere/open-strata"
+workflow_path = ".github/workflows/release.yml"
+git_refs = ["refs/tags/v*"]
+actors = ["release-bot"]
+events = ["push"]
+"#,
+    )
+    .unwrap();
+    let store = ArtifactStore::at(root.join("store"));
+    let transport = FileTransport::new();
+    let reference = RemoteReference::parse(&format!("file://{dist}")).unwrap();
+    let evidence = pull(
+        &transport,
+        &reference,
+        &store,
+        &PullPolicy {
+            require_sbom: true,
+            require_provenance: true,
+            minimum_trust: Some(TrustLevel::Attested),
+            artifact_policy: Some(policy.clone()),
+            ..PullPolicy::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(evidence.effective_trust, TrustLevel::Verified);
+    assert_eq!(evidence.required_trust, TrustLevel::Verified);
+    assert_eq!(
+        evidence.matched_publisher.as_deref(),
+        Some("openstrata-release")
+    );
+    assert!(evidence.verification.contains(&("sbom", "passed")));
+    assert!(evidence.verification.contains(&("provenance", "passed")));
+    assert!(evidence.verification.contains(&("trust_policy", "passed")));
+
+    let strict_store = ArtifactStore::at(root.join("strict-store"));
+    let error = pull(
+        &transport,
+        &reference,
+        &strict_store,
+        &PullPolicy {
+            minimum_trust: Some(TrustLevel::Trusted),
+            artifact_policy: Some(policy),
+            ..PullPolicy::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "ARTIFACT_POLICY_TRUST_INSUFFICIENT");
+    assert_eq!(
+        error
+            .data()
+            .and_then(|data| data["effective_trust"].as_str()),
+        Some("verified")
+    );
+    assert_store_empty(&strict_store);
 
     std::fs::remove_dir_all(root.as_std_path()).ok();
 }
