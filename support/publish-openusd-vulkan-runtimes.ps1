@@ -29,6 +29,10 @@ param(
     [ValidatePattern('^3\.13\.\d+$')]
     [string] $ExpectedPythonVersion = '3.13.14',
 
+    # The deadsnakes image resolves this independently of the Windows host.
+    [ValidatePattern('^3\.13\.\d+$')]
+    [string] $LinuxPythonVersion = '3.13.15',
+
     [switch] $Publish,
 
     [string] $PublishFrom,
@@ -158,8 +162,10 @@ function Initialize-VsDevEnvironment {
 
 function Assert-CommonPrerequisites {
     $ostVersion = (& $script:Ost --version) -join ''
-    if ($LASTEXITCODE -ne 0 -or $ostVersion -notmatch '^ost 0\.21\.') {
-        throw "ost 0.21.x is required; found '$ostVersion'"
+    # The v0.22 implementation is exercised from a 0.21-versioned release
+    # branch before the workspace version bump, then by the final 0.22 binary.
+    if ($LASTEXITCODE -ne 0 -or $ostVersion -notmatch '^ost 0\.(21|22)\.') {
+        throw "ost 0.21.x or 0.22.x is required; found '$ostVersion'"
     }
 
     $pythonCommand = if (Test-Path -LiteralPath $PythonExecutable) {
@@ -403,7 +409,7 @@ function Build-LinuxImage {
         'docker', 'build',
         '--file', $dockerfile,
         '--tag', $image,
-        '--build-arg', "PYTHON_VERSION=$ExpectedPythonVersion",
+        '--build-arg', "PYTHON_VERSION=$LinuxPythonVersion",
         $repo
     )
     return $image
@@ -433,7 +439,7 @@ function Build-LinuxRuntime {
         '--volume', "${runRootWsl}:/out",
         $Image,
         'bash', '/src/open-strata/support/build-openusd-vulkan-linux.sh',
-        $OpenUsdVersion, "$Jobs", $slug, $OpenStrataRevision, $ExpectedPythonVersion
+        $OpenUsdVersion, "$Jobs", $slug, $OpenStrataRevision, $LinuxPythonVersion
     )
 
     $exportPath = Join-Path $output 'export.json'

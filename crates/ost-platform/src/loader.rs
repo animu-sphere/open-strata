@@ -143,7 +143,7 @@ mod tests {
         assert_eq!(resolved.toolchain.version_constraint, "14.2");
         assert_eq!(resolved.toolchain.cxx_standard, "20");
         assert_eq!(resolved.toolchain.runtime.version, None);
-        assert_eq!(resolved.toolchain.runtime.version_constraint, "2.28");
+        assert_eq!(resolved.toolchain.runtime.version_constraint, ">=2.28");
         assert_eq!(resolved.python.version, None);
         assert_eq!(resolved.python.version_constraint, "3.13.x");
         assert_eq!(resolved.tbb.version, None);

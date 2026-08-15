@@ -11,7 +11,7 @@
 //! registry as a digest-addressed `openstrata.runtime` artifact.
 
 use std::collections::BTreeSet;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Subcommand;
@@ -26,10 +26,11 @@ use ost_core::variant::Abi;
 use ost_core::{tools, Error, Host, Result, Variant};
 use ost_platform::version_satisfies_constraint;
 use ost_runtime::{
-    graphics_loader_status, probe_graphics_loaders, python_minor, ExtensionRecord, GraphicsApi,
-    HostPackageManager, HostRequirement, OpenUsdBuilder, OpenUsdVariantId, OpenUsdVerification,
-    OpenUsdVerificationStatus, ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility,
-    ResolvedSourceIdentity, RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
+    graphics_device_status, graphics_loader_status, probe_graphics_devices, probe_graphics_loaders,
+    python_minor, EnvSet, ExtensionRecord, GraphicsApi, HostPackageManager, HostRequirement,
+    OpenUsdBuilder, OpenUsdVariantId, OpenUsdVerification, OpenUsdVerificationStatus,
+    ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility, ResolvedSourceIdentity,
+    RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
 };
 
 use crate::commands::resolve;
@@ -704,6 +705,31 @@ struct PreparedOpenUsdBuild {
     build_env: Vec<(String, String)>,
 }
 
+const MANAGED_ONETBB_INPUTS: &[(&str, &str, &str)] = &[
+    (
+        "2021.x",
+        "2021.12.0",
+        "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.12.0.zip",
+    ),
+    (
+        "2022.x",
+        "2022.1.0",
+        "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2022.1.0.zip",
+    ),
+    (
+        "2023.x",
+        "2023.1.0",
+        "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2023.1.0.zip",
+    ),
+];
+
+fn managed_onetbb_input(constraint: &str) -> Option<(&'static str, &'static str)> {
+    MANAGED_ONETBB_INPUTS
+        .iter()
+        .find(|(supported, _, _)| *supported == constraint)
+        .map(|(_, version, url)| (*version, *url))
+}
+
 fn prepare_openusd_build(
     mut compatibility: ResolvedOpenUsdCompatibility,
     builder: OpenUsdBuilder,
@@ -744,8 +770,40 @@ fn prepare_openusd_build(
         ),
         format!("-DPython_EXECUTABLE={}", python.as_str().replace('\\', "/")),
     ];
+    let mut build_env = vec![
+        ("CC".into(), cc.to_string()),
+        ("CXX".into(), cxx.to_string()),
+    ];
     match builder {
         OpenUsdBuilder::BuildUsd => {
+            let (onetbb_version, onetbb_url) =
+                managed_onetbb_input(&compatibility.tbb.version_constraint).ok_or_else(|| {
+                    Error::coded(
+                        "OPENUSD_TBB_INPUT_UNSUPPORTED",
+                        ost_core::Category::Configuration,
+                        format!(
+                            "no deterministic oneTBB source is declared for CY constraint '{}'",
+                            compatibility.tbb.version_constraint
+                        ),
+                    )
+                    .with_hint("declare an exact managed oneTBB source before using build_usd.py")
+                })?;
+            if args.iter().any(|arg| option_name(arg) == Some("no-onetbb")) {
+                return Err(Error::coded(
+                    "OPENUSD_VARIANT_OVERRIDE",
+                    ost_core::Category::Configuration,
+                    format!(
+                        "--no-onetbb contradicts the CY oneTBB {} requirement",
+                        compatibility.tbb.version_constraint
+                    ),
+                )
+                .with_hint("remove --no-onetbb; the selected CY cell owns the TBB provider"));
+            }
+            if !args.iter().any(|arg| option_name(arg) == Some("onetbb")) {
+                args.push("--onetbb".into());
+            }
+            build_env.push(("OST_BUILD_USD_ONETBB_URL".into(), onetbb_url.into()));
+            build_env.push(("OST_BUILD_USD_ONETBB_VERSION".into(), onetbb_version.into()));
             if let Some(passthrough) = args
                 .iter_mut()
                 .find(|arg| arg.starts_with("--build-args=USD,"))
@@ -762,10 +820,7 @@ fn prepare_openusd_build(
     Ok(PreparedOpenUsdBuild {
         compatibility,
         python,
-        build_env: vec![
-            ("CC".into(), cc.to_string()),
-            ("CXX".into(), cxx.to_string()),
-        ],
+        build_env,
     })
 }
 
@@ -2073,6 +2128,12 @@ struct CurrentValidation {
     /// `None` means no normalized graphics loader was required or the state
     /// schema was unsupported. It must remain `not-run`, not become `passed`.
     loader_status: Option<OpenUsdVerificationStatus>,
+    /// `None` preserves `not-run` when a required native context could not be
+    /// attempted (for example standard OpenGL on a headless Linux builder).
+    device_status: Option<OpenUsdVerificationStatus>,
+    /// A rendered frame is an independent observation and may pass even when a
+    /// different required API's device check was skipped.
+    render_status: Option<OpenUsdVerificationStatus>,
 }
 
 /// Build the same validation report `ost runtime validate` would show for this
@@ -2081,6 +2142,7 @@ struct CurrentValidation {
 fn current_validation_report(
     manifest: &RuntimeManifest,
     artifact_prefix: &Utf8Path,
+    env: &EnvSet,
     platform: &str,
     profile: &str,
 ) -> CurrentValidation {
@@ -2101,9 +2163,20 @@ fn current_validation_report(
         report.checks.push(check);
     }
     let loader_status = append_graphics_loader_checks(&mut report, manifest);
+    let (device_status, render_backend_ready) =
+        append_graphics_device_checks(&mut report, manifest, loader_status);
+    let render_status = append_graphics_render_check(
+        &mut report,
+        manifest,
+        artifact_prefix,
+        env,
+        render_backend_ready,
+    );
     CurrentValidation {
         report,
         loader_status,
+        device_status,
+        render_status,
     }
 }
 
@@ -2146,18 +2219,289 @@ fn append_graphics_loader_checks(
     status
 }
 
+/// Enumerate native physical devices independently of loader availability.
+///
+/// The boolean is narrower than the aggregate state: it says whether the Hgi
+/// backend selected for the render probe was actually observed. A Vulkan cell
+/// can therefore render through an enumerated Vulkan device on a headless host
+/// while truthfully leaving its separate OpenGL-device observation `not-run`.
+fn append_graphics_device_checks(
+    report: &mut ost_runtime::ValidationReport,
+    manifest: &RuntimeManifest,
+    loader_status: Option<OpenUsdVerificationStatus>,
+) -> (Option<OpenUsdVerificationStatus>, bool) {
+    if !manifest.openusd_verification.is_supported() {
+        return (None, false);
+    }
+    let Some(compatibility) = &manifest.openusd_compatibility else {
+        return (None, false);
+    };
+    if !compatibility
+        .capabilities
+        .iter()
+        .any(|capability| matches!(capability.as_str(), "opengl" | "vulkan"))
+    {
+        report.checks.push(ost_runtime::Check::skip(
+            "openusd-physical-device",
+            "the normalized OpenUSD cell requires no graphics device",
+        ));
+        return (None, false);
+    }
+    if loader_status != Some(OpenUsdVerificationStatus::Passed) {
+        report.checks.push(ost_runtime::Check::skip(
+            "openusd-physical-device",
+            "the required graphics loaders did not all pass, so device enumeration was not attempted",
+        ));
+        return (None, false);
+    }
+
+    let probes = probe_graphics_devices(&compatibility.capabilities);
+    let render_api = if compatibility.variant == OpenUsdVariantId::Vulkan {
+        GraphicsApi::Vulkan
+    } else {
+        GraphicsApi::OpenGl
+    };
+    let render_backend_ready = probes
+        .iter()
+        .any(|probe| probe.api == render_api && probe.passed && !probe.skipped);
+    let status = graphics_device_status(&probes);
+    report.checks.extend(probes.into_iter().map(|probe| {
+        let name = match probe.api {
+            GraphicsApi::OpenGl => "openusd-opengl-device",
+            GraphicsApi::Vulkan => "openusd-vulkan-device",
+        };
+        ost_runtime::Check {
+            name,
+            passed: probe.passed,
+            skipped: probe.skipped,
+            detail: Some(probe.detail),
+        }
+    }));
+    (status, render_backend_ready)
+}
+
+const OPENUSD_RENDER_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Render a real frame with OpenUSD's own Hydra utility.
+///
+/// `usdrecord` is the proof rather than a native API shortcut: a successful
+/// process plus a non-empty image establishes that OpenUSD selected its Hgi
+/// backend, opened the stage, executed Hydra, and wrote a frame. Vulkan cells
+/// set OpenUSD's official `HGI_ENABLE_VULKAN` selection knob.
+fn append_graphics_render_check(
+    report: &mut ost_runtime::ValidationReport,
+    manifest: &RuntimeManifest,
+    artifact_prefix: &Utf8Path,
+    env: &EnvSet,
+    render_backend_ready: bool,
+) -> Option<OpenUsdVerificationStatus> {
+    const NAME: &str = "openusd-render";
+    let Some(compatibility) = &manifest.openusd_compatibility else {
+        return None;
+    };
+    if !compatibility
+        .capabilities
+        .iter()
+        .any(|capability| matches!(capability.as_str(), "opengl" | "vulkan"))
+    {
+        report.checks.push(ost_runtime::Check::skip(
+            NAME,
+            "the normalized OpenUSD cell is headless",
+        ));
+        return None;
+    }
+    if !render_backend_ready {
+        report.checks.push(ost_runtime::Check::skip(
+            NAME,
+            "the selected Hgi backend has no passing physical-device observation",
+        ));
+        return None;
+    }
+    let Some(tool) = ["usdrecord.cmd", "usdrecord.exe", "usdrecord"]
+        .into_iter()
+        .map(|name| artifact_prefix.join("bin").join(name))
+        .find(|path| path.as_std_path().is_file())
+    else {
+        report.checks.push(ost_runtime::Check::skip(
+            NAME,
+            format!("usdrecord is not installed under {artifact_prefix}/bin"),
+        ));
+        return None;
+    };
+    let scratch = match scratch_dir("openusd-render") {
+        Ok(scratch) => scratch,
+        Err(error) => {
+            report.checks.push(ost_runtime::Check::skip(
+                NAME,
+                format!("could not prepare the render probe: {error}"),
+            ));
+            return None;
+        }
+    };
+    let stage = scratch.path.join("probe.usda");
+    let image = scratch.path.join("probe.png");
+    let log_path = scratch.path.join("usdrecord.log");
+    let scene = "#usda 1.0\n(\n    defaultPrim = \"World\"\n)\ndef Xform \"World\" {\n    def Sphere \"Sphere\" {}\n}\n";
+    if let Err(error) = std::fs::write(stage.as_std_path(), scene) {
+        report.checks.push(ost_runtime::Check::skip(
+            NAME,
+            format!("could not write the render fixture: {error}"),
+        ));
+        return None;
+    }
+    let mut command = match openusd_tool_command(artifact_prefix, &manifest.python, &tool) {
+        Ok(command) => command,
+        Err(error) => {
+            report
+                .checks
+                .push(ost_runtime::Check::skip(NAME, error.to_string()));
+            return None;
+        }
+    };
+    command
+        .arg(stage.as_std_path())
+        .arg(image.as_std_path())
+        .args(["--imageWidth", "64"]);
+    if compatibility.variant == OpenUsdVariantId::Vulkan {
+        command.env("HGI_ENABLE_VULKAN", "1");
+    }
+    env.apply(&mut command);
+    let log = match std::fs::File::create(log_path.as_std_path()) {
+        Ok(log) => log,
+        Err(error) => {
+            report.checks.push(ost_runtime::Check::skip(
+                NAME,
+                format!("could not create the render log: {error}"),
+            ));
+            return None;
+        }
+    };
+    let stderr = match log.try_clone() {
+        Ok(stderr) => stderr,
+        Err(error) => {
+            report.checks.push(ost_runtime::Check::skip(
+                NAME,
+                format!("could not duplicate the render log: {error}"),
+            ));
+            return None;
+        }
+    };
+    command.stdout(Stdio::from(log)).stderr(Stdio::from(stderr));
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            report.checks.push(ost_runtime::Check {
+                name: NAME,
+                passed: false,
+                skipped: false,
+                detail: Some(format!("could not launch {tool}: {error}")),
+            });
+            return None;
+        }
+    };
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < OPENUSD_RENDER_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(error) => {
+                report.checks.push(ost_runtime::Check {
+                    name: NAME,
+                    passed: false,
+                    skipped: false,
+                    detail: Some(format!("could not wait for {tool}: {error}")),
+                });
+                return Some(OpenUsdVerificationStatus::Failed);
+            }
+        }
+    };
+    let tail = configure_failure_tail(&read_lossy(&log_path));
+    let Some(status) = status else {
+        report.checks.push(ost_runtime::Check {
+            name: NAME,
+            passed: false,
+            skipped: false,
+            detail: Some(format!(
+                "usdrecord did not finish within {}s: {tail}",
+                OPENUSD_RENDER_TIMEOUT.as_secs()
+            )),
+        });
+        return Some(OpenUsdVerificationStatus::Failed);
+    };
+    let image_bytes = std::fs::metadata(image.as_std_path())
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let passed = status.success() && image_bytes > 0;
+    report.checks.push(ost_runtime::Check {
+        name: NAME,
+        passed,
+        skipped: false,
+        detail: Some(if passed {
+            format!(
+                "usdrecord rendered a 64px frame through {} ({image_bytes} bytes)",
+                compatibility.variant.as_str()
+            )
+        } else {
+            format!(
+                "usdrecord did not produce a non-empty frame (exit {:?}, {image_bytes} bytes): {tail}",
+                status.code()
+            )
+        }),
+    });
+    Some(if passed {
+        OpenUsdVerificationStatus::Passed
+    } else {
+        OpenUsdVerificationStatus::Failed
+    })
+}
+
+fn openusd_tool_command(
+    artifact_prefix: &Utf8Path,
+    python_version: &str,
+    tool: &Utf8Path,
+) -> Result<Command> {
+    let extension = tool.extension().unwrap_or_default().to_ascii_lowercase();
+    if Host::detect().os != Os::Windows || matches!(extension.as_str(), "exe" | "cmd" | "bat") {
+        return Ok(Command::new(tool.as_std_path()));
+    }
+    let python =
+        ost_build::resolve_for_runtime(artifact_prefix, python_version).ok_or_else(|| {
+            Error::precondition("a Python interpreter matching the OpenUSD runtime was not found")
+        })?;
+    let mut command = Command::new(&python.executable);
+    command.arg(tool.as_std_path());
+    Ok(command)
+}
+
 /// Persist producer-owned loader evidence without rewriting an immutable
 /// artifact producer's identity with a consumer-host observation.
-fn persist_graphics_loader_observation(
+fn persist_graphics_observations(
     manifest: &mut RuntimeManifest,
     loader_status: Option<OpenUsdVerificationStatus>,
+    device_status: Option<OpenUsdVerificationStatus>,
+    render_status: Option<OpenUsdVerificationStatus>,
 ) -> Result<()> {
     if manifest.source == RuntimeSource::Artifact {
         return Ok(());
     }
-    if let Some(loader) = loader_status {
+    if loader_status.is_some() || device_status.is_some() || render_status.is_some() {
         let mut verification = manifest.openusd_verification.clone();
-        verification.loader = loader;
+        if let Some(loader) = loader_status {
+            verification.loader = loader;
+        }
+        if let Some(device) = device_status {
+            verification.physical_device = device;
+        }
+        if let Some(render) = render_status {
+            verification.render = render;
+        }
         manifest.set_openusd_verification(verification)?;
     }
     Ok(())
@@ -2429,10 +2773,11 @@ fn failed_validation_summary(report: &ost_runtime::ValidationReport) -> String {
 fn check_current_export_validation(
     manifest: &RuntimeManifest,
     artifact_prefix: &Utf8Path,
+    env: &EnvSet,
     platform: &str,
     profile: &str,
 ) -> Result<()> {
-    let current = current_validation_report(manifest, artifact_prefix, platform, profile);
+    let current = current_validation_report(manifest, artifact_prefix, env, platform, profile);
     if current.report.passed() {
         return Ok(());
     }
@@ -2627,7 +2972,7 @@ fn export(
     // manifest travels in the producer manifest instead, so the archive is a
     // pure USD tree.
     let effective = Utf8PathBuf::from(manifest.effective_prefix(&r.prefix));
-    check_current_export_validation(&manifest, &effective, &platform, &profile)?;
+    check_current_export_validation(&manifest, &effective, &r.env, &platform, &profile)?;
 
     let map_stage_error = |e: std::io::Error| {
         if e.kind() == std::io::ErrorKind::InvalidData {
@@ -3372,11 +3717,19 @@ if _ost_script_dir not in _ost_sys.path:
     _ost_sys.path.insert(0, _ost_script_dir)
 with open(_ost_script, "r", encoding="utf-8") as _ost_file:
     _ost_source = _ost_file.read()
-_ost_marker = "try:\n    # Download and install 3rd-Party dependencies"
+_ost_markers = (
+    "try:\n    # Download and install 3rd-Party dependencies",
+    "try:\n    # Download and install 3rd-party dependencies",
+)
 _ost_hook = r'''
 import hashlib as _ost_hashlib
 import json as _ost_json
 import os as _ost_os
+_ost_onetbb_url = _ost_os.environ.get("OST_BUILD_USD_ONETBB_URL")
+if _ost_onetbb_url:
+    if not globals().get("ONETBB_URL"):
+        raise RuntimeError("build_usd.py oneTBB input changed; managed override cannot run safely")
+    ONETBB_URL = _ost_onetbb_url
 _ost_original_download_url = DownloadURL
 def DownloadURL(*args, **kwargs):
     result = _ost_original_download_url(*args, **kwargs)
@@ -3403,13 +3756,29 @@ def DownloadURL(*args, **kwargs):
             }, sort_keys=True) + "\n")
     return result
 '''
-if _ost_source.count(_ost_marker) != 1:
+_ost_matches = [
+    marker
+    for marker in _ost_markers
+    for _ in range(_ost_source.count(marker))
+]
+if len(_ost_matches) != 1:
     raise RuntimeError("build_usd.py install marker changed; dependency capture cannot run safely")
+_ost_marker = _ost_matches[0]
 _ost_source = _ost_source.replace(_ost_marker, _ost_hook + "\n" + _ost_marker, 1)
 exec(compile(_ost_source, _ost_script, "exec"), {"__file__": _ost_script, "__name__": "__main__"})
 "#;
 
-const BUILD_USD_INSTALL_MARKER: &str = "try:\n    # Download and install 3rd-Party dependencies";
+const BUILD_USD_INSTALL_MARKERS: &[&str] = &[
+    "try:\n    # Download and install 3rd-Party dependencies",
+    "try:\n    # Download and install 3rd-party dependencies",
+];
+
+fn build_usd_install_marker_count(source: &str) -> usize {
+    BUILD_USD_INSTALL_MARKERS
+        .iter()
+        .map(|marker| source.matches(marker).count())
+        .sum()
+}
 
 /// Drive the source tree's `build_scripts/build_usd.py` and return the exact
 /// source archives its selected dependency installers consumed.
@@ -3427,7 +3796,7 @@ fn build_with_script(
     }
     let script_source = std::fs::read_to_string(script.as_std_path())
         .map_err(|error| Error::io(script.to_string(), error))?;
-    if script_source.matches(BUILD_USD_INSTALL_MARKER).count() != 1 {
+    if build_usd_install_marker_count(&script_source) != 1 {
         return Err(Error::coded(
             "OPENUSD_DEPENDENCY_CAPTURE_UNSUPPORTED",
             ost_core::Category::Configuration,
@@ -3480,7 +3849,7 @@ fn build_with_script(
     // successful manifest record only the remaining suffix of the closure. The
     // key isolates retries by exact script contents and argv.
     let capture_key = ost_core::digest::sha256_hex(
-        serde_json::to_string(&(&script_source, &script_args))
+        serde_json::to_string(&(&script_source, &script_args, &opts.build_env))
             .expect("build_usd capture identity serializes")
             .as_bytes(),
     );
@@ -3951,10 +4320,16 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
 
     // Validate against the effective artifact prefix (the external USD root for
     // an adopted runtime; the store prefix otherwise).
-    let current = current_validation_report(&manifest, &r.artifact_prefix, &platform, &profile);
+    let current =
+        current_validation_report(&manifest, &r.artifact_prefix, &r.env, &platform, &profile);
     let passed = current.report.passed();
 
-    persist_graphics_loader_observation(&mut manifest, current.loader_status)?;
+    persist_graphics_observations(
+        &mut manifest,
+        current.loader_status,
+        current.device_status,
+        current.render_status,
+    )?;
 
     // Record the aggregate outcome. Unlike producer-owned verification state,
     // this field is intentionally not part of runtime identity.
@@ -4378,8 +4753,13 @@ mod tests {
         assert!(error.to_string().contains("not-run"));
         assert!(error.hint().unwrap().contains("runtime validate"));
 
-        persist_graphics_loader_observation(&mut standard, Some(OpenUsdVerificationStatus::Passed))
-            .unwrap();
+        persist_graphics_observations(
+            &mut standard,
+            Some(OpenUsdVerificationStatus::Passed),
+            None,
+            None,
+        )
+        .unwrap();
         assert!(check_exportable(&standard).is_ok());
 
         let mut headless = exportable_manifest();
@@ -4403,8 +4783,13 @@ mod tests {
             .unwrap();
         let producer_digest = artifact.digest.clone();
 
-        persist_graphics_loader_observation(&mut artifact, Some(OpenUsdVerificationStatus::Passed))
-            .unwrap();
+        persist_graphics_observations(
+            &mut artifact,
+            Some(OpenUsdVerificationStatus::Passed),
+            Some(OpenUsdVerificationStatus::Passed),
+            Some(OpenUsdVerificationStatus::Passed),
+        )
+        .unwrap();
 
         assert_eq!(artifact.digest, producer_digest);
         assert_eq!(
@@ -4437,11 +4822,29 @@ mod tests {
         let mut report = ost_runtime::ValidationReport { checks: Vec::new() };
 
         let status = append_graphics_loader_checks(&mut report, &manifest);
+        let (device_status, render_backend_ready) =
+            append_graphics_device_checks(&mut report, &manifest, status);
+        let render_status = append_graphics_render_check(
+            &mut report,
+            &manifest,
+            Utf8Path::new("missing-runtime"),
+            &EnvSet {
+                sep: ';',
+                vars: Vec::new(),
+            },
+            render_backend_ready,
+        );
 
         assert_eq!(status, None);
-        assert_eq!(report.checks.len(), 1);
+        assert_eq!(device_status, None);
+        assert_eq!(render_status, None);
+        assert_eq!(report.checks.len(), 3);
         assert_eq!(report.checks[0].name, "openusd-graphics-loader");
         assert!(report.checks[0].skipped);
+        assert_eq!(report.checks[1].name, "openusd-physical-device");
+        assert!(report.checks[1].skipped);
+        assert_eq!(report.checks[2].name, "openusd-render");
+        assert!(report.checks[2].skipped);
         assert_eq!(
             manifest.openusd_verification.loader,
             OpenUsdVerificationStatus::NotRun
@@ -4453,6 +4856,43 @@ mod tests {
         assert_eq!(
             manifest.openusd_verification.render,
             OpenUsdVerificationStatus::NotRun
+        );
+    }
+
+    #[test]
+    fn producer_graphics_observations_update_only_their_independent_fields() {
+        let mut manifest = exportable_manifest();
+        manifest
+            .set_openusd_verification(OpenUsdVerification::managed_build_passed())
+            .unwrap();
+
+        persist_graphics_observations(
+            &mut manifest,
+            Some(OpenUsdVerificationStatus::Passed),
+            Some(OpenUsdVerificationStatus::Failed),
+            Some(OpenUsdVerificationStatus::Passed),
+        )
+        .unwrap();
+
+        assert_eq!(
+            manifest.openusd_verification.compile,
+            OpenUsdVerificationStatus::Passed
+        );
+        assert_eq!(
+            manifest.openusd_verification.link,
+            OpenUsdVerificationStatus::Passed
+        );
+        assert_eq!(
+            manifest.openusd_verification.loader,
+            OpenUsdVerificationStatus::Passed
+        );
+        assert_eq!(
+            manifest.openusd_verification.physical_device,
+            OpenUsdVerificationStatus::Failed
+        );
+        assert_eq!(
+            manifest.openusd_verification.render,
+            OpenUsdVerificationStatus::Passed
         );
     }
 
@@ -4627,6 +5067,16 @@ mod tests {
         assert!(version_satisfies_constraint("2.39", ">=2.28"));
         assert!(!version_satisfies_constraint("3.12.9", "3.13.x"));
         assert!(!version_satisfies_constraint("15.0", "14.2"));
+    }
+
+    #[test]
+    fn managed_onetbb_inputs_are_exact_and_satisfy_their_cy_constraints() {
+        for (constraint, version, url) in MANAGED_ONETBB_INPUTS {
+            assert!(version_satisfies_constraint(version, constraint));
+            assert_eq!(managed_onetbb_input(constraint), Some((*version, *url)));
+            assert!(url.ends_with(&format!("/v{version}.zip")));
+        }
+        assert_eq!(managed_onetbb_input("2024.x"), None);
     }
 
     #[test]
@@ -4971,6 +5421,18 @@ mod tests {
     }
 
     #[test]
+    fn build_usd_capture_accepts_supported_install_markers_only_once() {
+        for marker in BUILD_USD_INSTALL_MARKERS {
+            assert_eq!(build_usd_install_marker_count(marker), 1);
+        }
+        assert_eq!(build_usd_install_marker_count("no install loop here"), 0);
+        assert_eq!(
+            build_usd_install_marker_count(&BUILD_USD_INSTALL_MARKERS.join("\n")),
+            2
+        );
+    }
+
+    #[test]
     fn capture_runner_observes_the_download_selected_by_the_upstream_script() {
         let Some(python) = tools::which("python").or_else(|| tools::which("python3")) else {
             return;
@@ -4990,6 +5452,8 @@ import apple_utils
 
 assert apple_utils.SIBLING_IMPORT_WORKED
 
+ONETBB_URL = "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.12.0.zip"
+
 def DownloadURL(url, context, force, extractDir=None, dontExtract=None, destFileName=None, expectedSHA256=None):
     filename = destFileName or url.split("/")[-1]
     with open(os.path.join(context.srcDir, filename), "wb") as archive:
@@ -5005,8 +5469,8 @@ class Dependency:
 context = Context()
 dep = Dependency()
 try:
-    # Download and install 3rd-Party dependencies
-    DownloadURL("https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.12.0.zip", context, False)
+    # Download and install 3rd-party dependencies, followed by USD.
+    DownloadURL(ONETBB_URL, context, False)
 except Exception:
     raise
 "#,
@@ -5015,13 +5479,17 @@ except Exception:
         let status = Command::new(python)
             .args(["-c", BUILD_USD_CAPTURE_RUNNER, script.as_str()])
             .env("OST_BUILD_USD_DEPENDENCY_CAPTURE", capture.as_str())
+            .env(
+                "OST_BUILD_USD_ONETBB_URL",
+                "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2022.1.0.zip",
+            )
             .status()
             .unwrap();
         assert!(status.success());
         let dependencies = read_build_usd_dependencies(&capture).unwrap();
         assert_eq!(dependencies.len(), 1);
         assert_eq!(dependencies[0].name, "oneTBB");
-        assert_eq!(dependencies[0].version, "2021.12.0");
+        assert_eq!(dependencies[0].version, "2022.1.0");
         assert!(dependencies[0].archive_digest.is_some());
         assert_eq!(
             dependencies[0].source.repository,

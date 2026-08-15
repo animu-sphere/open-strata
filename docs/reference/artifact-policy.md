@@ -125,6 +125,27 @@ skips the probe and remains `not-run`; a loader success never changes
 `physical_device` or `render`. Exporting a normalized graphics runtime requires
 that persisted loader state to be `passed`.
 
+After all required loaders pass, validation separately probes physical devices.
+For the approved Linux cells, OpenGL creates a one-pixel GLX pbuffer context and
+records the renderer returned by the driver; Vulkan creates a minimal 1.0
+instance and calls physical-device enumeration through the native loader. No
+`glxinfo`, `vulkaninfo`, Vulkan SDK, or compile step is involved. A Linux host
+without `DISPLAY` or `WAYLAND_DISPLAY` skips the OpenGL device observation and
+leaves the aggregate producer field `not-run`; an attempted enumeration that
+finds no device is `failed`.
+
+When the selected Hgi backend has a passing device observation, validation runs
+the runtime's own `usdrecord` on a generated sphere and requires both a clean
+exit and a non-empty 64-pixel PNG. Vulkan cells set OpenUSD's documented
+`HGI_ENABLE_VULKAN=1` backend selector for this process. That actual-frame probe
+alone updates `render`; device state is never inferred from loader success, and
+render state is never inferred from device enumeration. As with loader checks,
+only a producer-owned build runtime persists these observations. An immutable
+artifact consumer reports its current host results without replacing the
+producer's digest-bound fields. Missing display or `usdrecord` prerequisites
+remain `not-run`, so a non-GPU build host does not manufacture either success or
+failure evidence.
+
 A consumer can require an approved compatibility cell during the same pull:
 
 ```bash

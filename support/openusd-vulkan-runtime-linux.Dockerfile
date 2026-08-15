@@ -7,18 +7,24 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG VULKAN_HEADERS_VERSION=v1.4.350
 ARG VULKAN_UTILITY_LIBRARIES_VERSION=v1.4.350
 ARG VMA_VERSION=v3.4.0
-ARG PYTHON_VERSION=3.13.14
+ARG PYTHON_VERSION=3.13.15
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      build-essential ca-certificates cmake curl git ninja-build pkg-config \
+      build-essential gcc-14 g++-14 ca-certificates cmake curl git ninja-build pkg-config \
       software-properties-common unzip \
       libgl1-mesa-dev libglu1-mesa-dev libshaderc-dev libvulkan-dev \
+      mesa-vulkan-drivers \
       libx11-dev libxcursor-dev libxext-dev libxi-dev libxinerama-dev \
       libxrandr-dev libxt-dev libxkbcommon-x11-0 \
+      libfontconfig1 libfreetype6 xauth xvfb \
+      libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+      libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
       python3.13 python3.13-dev python3.13-venv \
+    && ln -s libshaderc.so \
+      /usr/lib/x86_64-linux-gnu/libshaderc_combined.so \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --branch "${VULKAN_HEADERS_VERSION}" --depth 1 \

@@ -181,6 +181,19 @@ graphics runtime without a persisted passing loader observation. The probe
 requires the loader's canonical API entry point, needs no Vulkan SDK utility,
 and never infers physical-device or render success.
 
+**Implemented 2026-08-15 — physical-device and render probe slice:** after the
+required loaders pass, `runtime validate` creates a minimal native device probe
+for every declared graphics API. The approved Linux OpenGL path creates a GLX
+pbuffer context and records the real renderer; Vulkan creates a 1.0 instance and
+enumerates physical devices directly through the loader, without an SDK
+utility. A missing Linux display is a truthful `not-run`, not a failure. When
+the selected Hgi backend has a device, the command runs OpenUSD's own
+`usdrecord` against a generated sphere and requires a non-empty 64-pixel PNG;
+Vulkan selection is fixed with OpenUSD's `HGI_ENABLE_VULKAN=1`. Device and
+render outcomes remain independent digest-significant fields. Producer-owned
+build runtimes persist observations, while artifact consumers report local
+checks without rewriting the immutable producer claim.
+
 **Implemented 2026-08-14 — automatic managed dependency-capture slice:** managed
 `build_usd.py` execution now observes each source archive that the upstream
 script actually selects after platform, variant, option, and mirror-fallback
@@ -203,16 +216,15 @@ an identical retry before the successful manifest is written.
 - Every published artifact carries or references its source revision, resolved
   dependencies, workflow identity, third-party attribution, SBOM, evidence
   digests, and SLSA-compatible provenance.
-- Extend the separated state contract with physical-device and render probes;
-  no probe may infer a later state from compile/link or loader success.
+- The separated state contract now has native physical-device and actual-frame
+  render probes; no later state is inferred from compile/link or loader success.
 
 #### P2 - artifact diagnostics
 
 - Inspection reports the selected profile, ABI/provider choices, graphics
   capabilities, tag, digest, evidence status, and split OpenUSD verification
-  state. The OpenGL/Vulkan loader checks are implemented above; add the physical
-  device checks needed to explain whether the host can consume an artifact.
-  DCC-specific probing waits for v0.23.0.
+  state. OpenGL/Vulkan loader, physical-device, and actual-frame checks are
+  implemented above. DCC-specific probing waits for v0.23.0.
 
 ### Artifact-policy exit criteria
 
