@@ -42,6 +42,11 @@ device/render acceptance when no GPU is passed into the container), and
 `shaderc_combined` remain Ubuntu packages. The image also installs Ubuntu's
 versioned GCC 14 packages, which resolve to GCC 14.2 and satisfy the CY2026
 compiler constraint instead of inheriting Ubuntu 24.04's default GCC 13.
+Ubuntu's static `shaderc_combined` archive does not publish its glslang closure
+to CMake's imported Vulkan target, so the builder exposes the package's
+self-contained shared `libshaderc.so` under the combined lookup name. The
+linked runtime records the real `libshaderc.so.1` SONAME and avoids unresolved
+glslang symbols at plugin load time.
 OpenStrata also selects OpenUSD's `--onetbb` path and replaces its older
 upstream default archive with the exact oneTBB 2022.1.0 source required by the
 CY2026 `2022.x` cell. The fetched archive digest remains part of the captured

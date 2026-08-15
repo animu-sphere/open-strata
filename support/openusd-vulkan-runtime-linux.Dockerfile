@@ -20,6 +20,8 @@ RUN apt-get update \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
       python3.13 python3.13-dev python3.13-venv \
+    && ln -s libshaderc.so \
+      /usr/lib/x86_64-linux-gnu/libshaderc_combined.so \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --branch "${VULKAN_HEADERS_VERSION}" --depth 1 \
