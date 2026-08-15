@@ -3663,7 +3663,10 @@ if _ost_script_dir not in _ost_sys.path:
     _ost_sys.path.insert(0, _ost_script_dir)
 with open(_ost_script, "r", encoding="utf-8") as _ost_file:
     _ost_source = _ost_file.read()
-_ost_marker = "try:\n    # Download and install 3rd-Party dependencies"
+_ost_markers = (
+    "try:\n    # Download and install 3rd-Party dependencies",
+    "try:\n    # Download and install 3rd-party dependencies",
+)
 _ost_hook = r'''
 import hashlib as _ost_hashlib
 import json as _ost_json
@@ -3694,13 +3697,29 @@ def DownloadURL(*args, **kwargs):
             }, sort_keys=True) + "\n")
     return result
 '''
-if _ost_source.count(_ost_marker) != 1:
+_ost_matches = [
+    marker
+    for marker in _ost_markers
+    for _ in range(_ost_source.count(marker))
+]
+if len(_ost_matches) != 1:
     raise RuntimeError("build_usd.py install marker changed; dependency capture cannot run safely")
+_ost_marker = _ost_matches[0]
 _ost_source = _ost_source.replace(_ost_marker, _ost_hook + "\n" + _ost_marker, 1)
 exec(compile(_ost_source, _ost_script, "exec"), {"__file__": _ost_script, "__name__": "__main__"})
 "#;
 
-const BUILD_USD_INSTALL_MARKER: &str = "try:\n    # Download and install 3rd-Party dependencies";
+const BUILD_USD_INSTALL_MARKERS: &[&str] = &[
+    "try:\n    # Download and install 3rd-Party dependencies",
+    "try:\n    # Download and install 3rd-party dependencies",
+];
+
+fn build_usd_install_marker_count(source: &str) -> usize {
+    BUILD_USD_INSTALL_MARKERS
+        .iter()
+        .map(|marker| source.matches(marker).count())
+        .sum()
+}
 
 /// Drive the source tree's `build_scripts/build_usd.py` and return the exact
 /// source archives its selected dependency installers consumed.
@@ -3718,7 +3737,7 @@ fn build_with_script(
     }
     let script_source = std::fs::read_to_string(script.as_std_path())
         .map_err(|error| Error::io(script.to_string(), error))?;
-    if script_source.matches(BUILD_USD_INSTALL_MARKER).count() != 1 {
+    if build_usd_install_marker_count(&script_source) != 1 {
         return Err(Error::coded(
             "OPENUSD_DEPENDENCY_CAPTURE_UNSUPPORTED",
             ost_core::Category::Configuration,
@@ -5333,6 +5352,18 @@ mod tests {
     }
 
     #[test]
+    fn build_usd_capture_accepts_supported_install_markers_only_once() {
+        for marker in BUILD_USD_INSTALL_MARKERS {
+            assert_eq!(build_usd_install_marker_count(marker), 1);
+        }
+        assert_eq!(build_usd_install_marker_count("no install loop here"), 0);
+        assert_eq!(
+            build_usd_install_marker_count(&BUILD_USD_INSTALL_MARKERS.join("\n")),
+            2
+        );
+    }
+
+    #[test]
     fn capture_runner_observes_the_download_selected_by_the_upstream_script() {
         let Some(python) = tools::which("python").or_else(|| tools::which("python3")) else {
             return;
@@ -5367,7 +5398,7 @@ class Dependency:
 context = Context()
 dep = Dependency()
 try:
-    # Download and install 3rd-Party dependencies
+    # Download and install 3rd-party dependencies, followed by USD.
     DownloadURL("https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.12.0.zip", context, False)
 except Exception:
     raise
