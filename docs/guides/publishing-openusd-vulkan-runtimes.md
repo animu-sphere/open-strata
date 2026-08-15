@@ -36,7 +36,9 @@ Vulkan-Headers and Vulkan-Utility-Libraries 1.4.350 plus Vulkan Memory
 Allocator 3.4.0 because Ubuntu's headers are older than the HgiVulkan API used
 by OpenUSD 26.05/26.08; the Vulkan loader, Mesa Vulkan ICD (used for
 device/render acceptance when no GPU is passed into the container), and
-`shaderc_combined` remain Ubuntu packages.
+`shaderc_combined` remain Ubuntu packages. The image also installs Ubuntu's
+versioned GCC 14 packages, which resolve to GCC 14.2 and satisfy the CY2026
+compiler constraint instead of inheriting Ubuntu 24.04's default GCC 13.
 
 Keep the Windows `-WorkRoot` short. OpenUSD 26.08's Exec examples create deeply
 nested MSVC tracking-log paths, so the default is `C:\usd\ovp`.

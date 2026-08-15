@@ -10,7 +10,7 @@ ARG VMA_VERSION=v3.4.0
 ARG PYTHON_VERSION=3.13.15
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      build-essential ca-certificates cmake curl git ninja-build pkg-config \
+      build-essential gcc-14 g++-14 ca-certificates cmake curl git ninja-build pkg-config \
       software-properties-common unzip \
       libgl1-mesa-dev libglu1-mesa-dev libshaderc-dev libvulkan-dev \
       mesa-vulkan-drivers \
