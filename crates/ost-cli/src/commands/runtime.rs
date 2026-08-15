@@ -26,11 +26,12 @@ use ost_core::variant::Abi;
 use ost_core::{tools, Error, Host, Result, Variant};
 use ost_platform::version_satisfies_constraint;
 use ost_runtime::{
-    graphics_device_status, graphics_loader_status, probe_graphics_devices, probe_graphics_loaders,
-    python_minor, EnvSet, ExtensionRecord, GraphicsApi, HostPackageManager, HostRequirement,
-    OpenUsdBuilder, OpenUsdVariantId, OpenUsdVerification, OpenUsdVerificationStatus,
-    ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility, ResolvedSourceIdentity,
-    RuntimeManifest, RuntimeSource, Validation, MANIFEST_FILE,
+    graphics_device_status, graphics_loader_probes_supported, graphics_loader_status,
+    probe_graphics_devices, probe_graphics_loaders, python_minor, EnvSet, ExtensionRecord,
+    GraphicsApi, HostPackageManager, HostRequirement, OpenUsdBuilder, OpenUsdVariantId,
+    OpenUsdVerification, OpenUsdVerificationStatus, ResolvedDependencyIdentity,
+    ResolvedOpenUsdCompatibility, ResolvedSourceIdentity, RuntimeManifest, RuntimeSource,
+    Validation, MANIFEST_FILE,
 };
 
 use crate::commands::resolve;
@@ -2194,6 +2195,13 @@ fn append_graphics_loader_checks(
     let Some(compatibility) = &manifest.openusd_compatibility else {
         return None;
     };
+    if !graphics_loader_probes_supported() {
+        report.checks.push(ost_runtime::Check::skip(
+            "openusd-graphics-loader",
+            "the static musl ost binary cannot dynamically load host graphics libraries",
+        ));
+        return None;
+    }
     let probes = probe_graphics_loaders(&compatibility.capabilities);
     if probes.is_empty() {
         report.checks.push(ost_runtime::Check::skip(

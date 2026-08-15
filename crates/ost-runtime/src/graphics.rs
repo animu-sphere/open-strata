@@ -43,6 +43,13 @@ pub struct GraphicsDeviceProbe {
     pub detail: String,
 }
 
+/// Static musl binaries cannot dynamically load host graphics libraries.
+/// Keep that packaging limitation explicit so runtime validation can skip the
+/// host-loader probes instead of reporting a false runtime failure.
+pub fn graphics_loader_probes_supported() -> bool {
+    !cfg!(all(target_os = "linux", target_env = "musl"))
+}
+
 /// Probe only the graphics loaders named by a normalized capability set.
 ///
 /// An empty result means the compatibility cell requires no graphics loader.

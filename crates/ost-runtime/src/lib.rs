@@ -16,8 +16,9 @@ mod validate;
 
 pub use env::{usd_python_dir, usd_python_dir_for, EnvOp, EnvSet, EnvVar, Shell};
 pub use graphics::{
-    graphics_device_status, graphics_loader_status, probe_graphics_devices, probe_graphics_loaders,
-    GraphicsApi, GraphicsDeviceProbe, GraphicsLoaderProbe,
+    graphics_device_status, graphics_loader_probes_supported, graphics_loader_status,
+    probe_graphics_devices, probe_graphics_loaders, GraphicsApi, GraphicsDeviceProbe,
+    GraphicsLoaderProbe,
 };
 pub use manifest::{
     ExtensionRecord, HostPackageManager, HostRequirement, RuntimeManifest, RuntimeSource,
