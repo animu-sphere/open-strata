@@ -13,8 +13,8 @@ The v0.19.0 composition and reach milestone is shipped in
 renderer-workflow milestone is shipped in [v0.20.0](../releases/v0.20.0.md).
 DCC host integration is split: discovery and the v0.20.0 dogfooding closure
 shipped in [v0.21.0](../releases/v0.21.0.md); the OpenUSD artifact foundation is
-active in v0.22.0; and the adapters and host matrix follow in v0.23.0. Both open
-milestones are specified in [current.md](current.md).
+shipped in [v0.22.0](../releases/v0.22.0.md); and the adapters and host matrix
+are active in v0.23.0, specified in [current.md](current.md).
 
 The Formation scope below is **Half B** of v0.19.0, narrowed to
 `resolve|inspect|run|lock`. It is gated on Half A (artifact closure, staged-byte
@@ -23,8 +23,8 @@ Formation's own acceptance criteria — three dogfoods run from packaged,
 digest-pinned artifacts on a clean machine — cannot pass while a packaged bundle
 from a split workspace is not independently installable. If Half A consumes the
 milestone. Formation shipped across v0.19.0 and v0.20.0; DCC host discovery
-shipped in v0.21.0, the artifact/provider contract follows in v0.22.0, and the
-host adapters consume both in v0.23.0.
+shipped in v0.21.0, the artifact/provider contract shipped in v0.22.0, and the
+active host adapters consume both in v0.23.0.
 
 - ✅ **v0.19.0 Half B - Formation composition.** Turn the reference-project
   ecosystem documented in v0.18.0 into an executable contract. A **Formation** is a
@@ -62,18 +62,19 @@ host adapters consume both in v0.23.0.
   with deterministic Maya and Houdini detectors that never mutate a host install
   or accept ambient PATH guesses — plus the corrective work from the v0.20.0
   dogfooding intake.
-- 🚧 **v0.22.0 - OpenUSD artifact build and distribution foundation.** Active
-  in [current.md](current.md). Normalize the OpenUSD artifact identity across
-  VFX profile, platform/architecture, toolchain/libc/CRT, Python ABI/provider,
-  TBB family/provider, build variant, Hgi capabilities, exact dependencies,
-  verification, SBOM, provenance, and immutable digest. Prove the complete
+- ✅ **v0.22.0 - OpenUSD artifact build and distribution foundation.** Shipped
+  in [v0.22.0](../releases/v0.22.0.md). It normalized the OpenUSD artifact
+  identity across VFX profile, platform/architecture, toolchain/libc/CRT,
+  Python ABI/provider, TBB family/provider, build variant, Hgi capabilities,
+  exact dependencies, verification, SBOM, provenance, and immutable digest. It
+  proved the complete
   profile → deterministic build → manifest → OCI publish → digest resolution →
   clean pull → compatibility validation path for a constrained initial matrix.
-  The v0.21.0 dogfooding intake remains release work: resilient resumable pulls,
+  The v0.21.0 dogfooding intake also shipped: resilient resumable pulls,
   explicit workspace discovery and package provenance, transfer evidence, and
   renderer evidence hardening. DCC-relevant providers and requirements are
-  modeled here, but concrete DCC execution and matrix work are excluded.
-- ⬜ **v0.23.0 - DCC host adapters and matrix (Phase 10, second half).** Moved
+  modeled here, while concrete DCC execution and matrix work remain excluded.
+- 🚧 **v0.23.0 - DCC host adapters and matrix (Phase 10, second half).** Moved
   from v0.22.0 on 2026-08-09. Consume v0.21.0 host discovery and the v0.22.0
   artifact/provider contract to run minimal headless load/open/validate probes
   with preserved output and explained SKIP results; generate Maya `.mod` and

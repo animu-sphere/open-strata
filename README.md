@@ -31,22 +31,19 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.21.0** — DCC host *discovery* through
-`ost host discover|list|inspect` (versioned host records for Maya and Houdini,
-recorded with evidence), a `kind: workspace` CI cell that builds plain libraries
-and executables, workspace-built tools as product members, and a runtime that
-checks what a consumer needs (`runtime validate`'s `consumer-configure` gate, a
-measured macOS ABI floor).
+The current release is **v0.22.0** — normalized OpenUSD artifact compatibility
+cells, deterministic source/dependency identity, resilient OCI distribution,
+evidence-gated digest pulls, and independent compile/link/loader/device/render
+verification. The release closes the path from an approved build profile through
+an immutable OCI digest to compatibility and SBOM/provenance validation in a
+clean consumer environment.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.22.0** milestone makes OpenUSD artifact identity, compatibility
-profiles, deterministic build variants, OCI publication, digest resolution,
-provider/ABI validation, and provenance one end-to-end contract. DCC-relevant
-provider metadata is modeled now; headless host adapters, host-standard
-packaging, and the support matrix move to **v0.23.0**. Sessions, GPU/AI, and
-broader DCC matrices remain ahead.
+The active **v0.23.0** milestone consumes that artifact/provider foundation for
+headless DCC host adapters, host-standard packaging, and a pinned support matrix.
+Sessions, GPU/AI, and broader DCC matrices remain ahead.
 Linux x86_64 is the first-class target; other OS targets are modeled and
 partially working — these examples were exercised on Windows.
 
