@@ -94,9 +94,6 @@ if ! kill -0 "${xvfb_pid}" 2>/dev/null; then
   exit 2
 fi
 ost runtime validate cy2026 --profile usd
-cleanup_xvfb
-trap - EXIT
-unset DISPLAY
 python /src/open-strata/support/validate-openusd-vulkan-runtime.py \
   "${runtime_root}" --version "${version}" --platform linux \
   | tee "${output_root}/feature-validation.json"
@@ -109,3 +106,7 @@ ost runtime export cy2026 \
   --jobs "${jobs}" \
   --json \
   | tee "${output_root}/export.json"
+
+cleanup_xvfb
+trap - EXIT
+unset DISPLAY

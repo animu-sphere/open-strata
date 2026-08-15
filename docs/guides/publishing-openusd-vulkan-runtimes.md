@@ -47,11 +47,12 @@ to CMake's imported Vulkan target, so the builder exposes the package's
 self-contained shared `libshaderc.so` under the combined lookup name. The
 linked runtime records the real `libshaderc.so.1` SONAME and avoids unresolved
 glslang symbols at plugin load time.
-The Linux producer starts an isolated Xvfb display only for `runtime validate`.
-This supplies the auxiliary Qt/OpenGL context required by OpenUSD 26.05's
-`usdrecord`; the actual normalized render remains Vulkan through
-`HGI_ENABLE_VULKAN=1`, backed by the enumerated Mesa device when no GPU is
-passed into Docker.
+The Linux producer starts an isolated Xvfb display for `runtime validate` and
+keeps it alive through `runtime export`, which deliberately re-runs the current
+validation report before packing. This supplies the auxiliary Qt/OpenGL
+context required by OpenUSD 26.05's `usdrecord`; the actual normalized render
+remains Vulkan through `HGI_ENABLE_VULKAN=1`, backed by the enumerated Mesa
+device when no GPU is passed into Docker.
 OpenStrata also selects OpenUSD's `--onetbb` path and replaces its older
 upstream default archive with the exact oneTBB 2022.1.0 source required by the
 CY2026 `2022.x` cell. The fetched archive digest remains part of the captured
