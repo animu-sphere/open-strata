@@ -16,6 +16,9 @@ RUN apt-get update \
       mesa-vulkan-drivers \
       libx11-dev libxcursor-dev libxext-dev libxi-dev libxinerama-dev \
       libxrandr-dev libxt-dev libxkbcommon-x11-0 \
+      libfontconfig1 libfreetype6 xauth xvfb \
+      libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+      libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y --no-install-recommends \

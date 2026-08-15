@@ -79,7 +79,24 @@ ost runtime pull cy2026 \
   --force \
   "${build_args[@]}"
 
+xvfb_log="${output_root}/xvfb.log"
+Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >"${xvfb_log}" 2>&1 &
+xvfb_pid=$!
+cleanup_xvfb() {
+  kill "${xvfb_pid}" 2>/dev/null || true
+  wait "${xvfb_pid}" 2>/dev/null || true
+}
+trap cleanup_xvfb EXIT
+export DISPLAY=:99
+sleep 1
+if ! kill -0 "${xvfb_pid}" 2>/dev/null; then
+  echo "Xvfb failed to start; see ${xvfb_log}" >&2
+  exit 2
+fi
 ost runtime validate cy2026 --profile usd
+cleanup_xvfb
+trap - EXIT
+unset DISPLAY
 python /src/open-strata/support/validate-openusd-vulkan-runtime.py \
   "${runtime_root}" --version "${version}" --platform linux \
   | tee "${output_root}/feature-validation.json"
