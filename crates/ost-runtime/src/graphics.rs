@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Host graphics-loader probes for normalized OpenUSD runtimes.
+//! Host graphics probes for normalized OpenUSD runtimes.
 //!
-//! These checks deliberately stop at loading the API loader. They do not infer
-//! that a physical device exists or that OpenUSD can render a frame; those are
-//! separate verification stages.
+//! Loader and physical-device checks are deliberately separate. Loading an API
+//! entry point does not prove that a device exists, so the latter creates the
+//! smallest native API object needed to enumerate real devices. Rendering is
+//! still a separate OpenUSD-owned probe in the CLI.
 
 use std::ffi::{c_void, CString};
 
@@ -33,6 +34,15 @@ pub struct GraphicsLoaderProbe {
     pub detail: String,
 }
 
+/// The observed result of enumerating a physical device for one graphics API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphicsDeviceProbe {
+    pub api: GraphicsApi,
+    pub passed: bool,
+    pub skipped: bool,
+    pub detail: String,
+}
+
 /// Probe only the graphics loaders named by a normalized capability set.
 ///
 /// An empty result means the compatibility cell requires no graphics loader.
@@ -45,6 +55,20 @@ pub fn probe_graphics_loaders(capabilities: &[String]) -> Vec<GraphicsLoaderProb
         .collect()
 }
 
+/// Enumerate physical devices for every graphics API required by a normalized
+/// compatibility cell.
+///
+/// The currently approved OpenUSD cells are Linux x86_64. Their OpenGL path is
+/// probed through GLX, while Vulkan uses the loader API directly and therefore
+/// needs no SDK utility. Other hosts retain a truthful failed observation if a
+/// future cell reaches this function before its native context adapter exists.
+pub fn probe_graphics_devices(capabilities: &[String]) -> Vec<GraphicsDeviceProbe> {
+    required_graphics_apis(capabilities)
+        .into_iter()
+        .map(probe_graphics_device)
+        .collect()
+}
+
 /// Reduce actual loader observations to the independent verification field.
 ///
 /// No required probes means no observation (`None`), not success. Any failed
@@ -52,6 +76,17 @@ pub fn probe_graphics_loaders(capabilities: &[String]) -> Vec<GraphicsLoaderProb
 /// remain outside this function by construction.
 pub fn graphics_loader_status(probes: &[GraphicsLoaderProbe]) -> Option<OpenUsdVerificationStatus> {
     if probes.is_empty() {
+        None
+    } else if probes.iter().all(|probe| probe.passed) {
+        Some(OpenUsdVerificationStatus::Passed)
+    } else {
+        Some(OpenUsdVerificationStatus::Failed)
+    }
+}
+
+/// Reduce actual device observations to the independent verification field.
+pub fn graphics_device_status(probes: &[GraphicsDeviceProbe]) -> Option<OpenUsdVerificationStatus> {
+    if probes.is_empty() || probes.iter().any(|probe| probe.skipped) {
         None
     } else if probes.iter().all(|probe| probe.passed) {
         Some(OpenUsdVerificationStatus::Passed)
@@ -101,6 +136,265 @@ fn probe_graphics_loader(api: GraphicsApi) -> GraphicsLoaderProbe {
     }
 }
 
+fn probe_graphics_device(api: GraphicsApi) -> GraphicsDeviceProbe {
+    #[cfg(target_os = "linux")]
+    if api == GraphicsApi::OpenGl
+        && std::env::var_os("DISPLAY").is_none()
+        && std::env::var_os("WAYLAND_DISPLAY").is_none()
+    {
+        return GraphicsDeviceProbe {
+            api,
+            passed: false,
+            skipped: true,
+            detail: "no DISPLAY or WAYLAND_DISPLAY is available for an OpenGL context".into(),
+        };
+    }
+    #[cfg(not(target_os = "linux"))]
+    if api == GraphicsApi::OpenGl {
+        return GraphicsDeviceProbe {
+            api,
+            passed: false,
+            skipped: true,
+            detail:
+                "physical OpenGL device probing is currently supported for approved Linux cells"
+                    .into(),
+        };
+    }
+    let result = match api {
+        GraphicsApi::OpenGl => probe_opengl_device(),
+        GraphicsApi::Vulkan => probe_vulkan_device(),
+    };
+    match result {
+        Ok(detail) => GraphicsDeviceProbe {
+            api,
+            passed: true,
+            skipped: false,
+            detail,
+        },
+        Err(detail) => GraphicsDeviceProbe {
+            api,
+            passed: false,
+            skipped: false,
+            detail,
+        },
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn probe_opengl_device() -> Result<String, String> {
+    use std::ffi::CStr;
+
+    type Display = c_void;
+    type GlxFbConfig = *mut c_void;
+    type GlxContext = *mut c_void;
+    type GlxPbuffer = usize;
+
+    type XOpenDisplay = unsafe extern "C" fn(*const i8) -> *mut Display;
+    type XDefaultScreen = unsafe extern "C" fn(*mut Display) -> i32;
+    type XCloseDisplay = unsafe extern "C" fn(*mut Display) -> i32;
+    type XFree = unsafe extern "C" fn(*mut c_void) -> i32;
+    type GlxChooseFbConfig =
+        unsafe extern "C" fn(*mut Display, i32, *const i32, *mut i32) -> *mut GlxFbConfig;
+    type GlxCreatePbuffer =
+        unsafe extern "C" fn(*mut Display, GlxFbConfig, *const i32) -> GlxPbuffer;
+    type GlxCreateNewContext =
+        unsafe extern "C" fn(*mut Display, GlxFbConfig, i32, GlxContext, i32) -> GlxContext;
+    type GlxMakeContextCurrent =
+        unsafe extern "C" fn(*mut Display, GlxPbuffer, GlxPbuffer, GlxContext) -> i32;
+    type GlxDestroyPbuffer = unsafe extern "C" fn(*mut Display, GlxPbuffer);
+    type GlxDestroyContext = unsafe extern "C" fn(*mut Display, GlxContext);
+    type GlGetString = unsafe extern "C" fn(u32) -> *const u8;
+
+    const GLX_RENDER_TYPE: i32 = 0x8011;
+    const GLX_RGBA_BIT: i32 = 0x0001;
+    const GLX_DRAWABLE_TYPE: i32 = 0x8010;
+    const GLX_PBUFFER_BIT: i32 = 0x0004;
+    const GLX_X_RENDERABLE: i32 = 0x8012;
+    const GLX_RGBA_TYPE: i32 = 0x8014;
+    const GLX_PBUFFER_HEIGHT: i32 = 0x8040;
+    const GLX_PBUFFER_WIDTH: i32 = 0x8041;
+    const GL_RENDERER: u32 = 0x1f01;
+
+    let x11 = NativeLibrary::open(&["libX11.so.6"])?;
+    let gl = NativeLibrary::open(&["libGL.so.1", "libOpenGL.so.0"])?;
+    // SAFETY: every symbol is resolved from the live library that defines the
+    // matching C ABI. The handles outlive all calls below.
+    let x_open_display: XOpenDisplay = unsafe { x11.function("XOpenDisplay")? };
+    let x_default_screen: XDefaultScreen = unsafe { x11.function("XDefaultScreen")? };
+    let x_close_display: XCloseDisplay = unsafe { x11.function("XCloseDisplay")? };
+    let x_free: XFree = unsafe { x11.function("XFree")? };
+    let choose: GlxChooseFbConfig = unsafe { gl.function("glXChooseFBConfig")? };
+    let create_pbuffer: GlxCreatePbuffer = unsafe { gl.function("glXCreatePbuffer")? };
+    let create_context: GlxCreateNewContext = unsafe { gl.function("glXCreateNewContext")? };
+    let make_current: GlxMakeContextCurrent = unsafe { gl.function("glXMakeContextCurrent")? };
+    let destroy_pbuffer: GlxDestroyPbuffer = unsafe { gl.function("glXDestroyPbuffer")? };
+    let destroy_context: GlxDestroyContext = unsafe { gl.function("glXDestroyContext")? };
+    let get_string: GlGetString = unsafe { gl.function("glGetString")? };
+
+    // SAFETY: the null name requests DISPLAY. Every successful resource is
+    // released on all later paths before its defining library is dropped.
+    let display = unsafe { x_open_display(std::ptr::null()) };
+    if display.is_null() {
+        return Err("could not open an X11 display for the OpenGL device probe".into());
+    }
+    let screen = unsafe { x_default_screen(display) };
+    let attributes = [
+        GLX_X_RENDERABLE,
+        1,
+        GLX_DRAWABLE_TYPE,
+        GLX_PBUFFER_BIT,
+        GLX_RENDER_TYPE,
+        GLX_RGBA_BIT,
+        0,
+    ];
+    let mut count = 0;
+    let configs = unsafe { choose(display, screen, attributes.as_ptr(), &mut count) };
+    if configs.is_null() || count == 0 {
+        unsafe {
+            x_close_display(display);
+        }
+        return Err("GLX reported no framebuffer configuration for a pbuffer".into());
+    }
+    let config = unsafe { *configs };
+    let pbuffer_attributes = [GLX_PBUFFER_WIDTH, 1, GLX_PBUFFER_HEIGHT, 1, 0];
+    let pbuffer = unsafe { create_pbuffer(display, config, pbuffer_attributes.as_ptr()) };
+    let context =
+        unsafe { create_context(display, config, GLX_RGBA_TYPE, std::ptr::null_mut(), 1) };
+    unsafe {
+        x_free(configs.cast::<c_void>());
+    }
+    if pbuffer == 0 || context.is_null() {
+        unsafe {
+            if pbuffer != 0 {
+                destroy_pbuffer(display, pbuffer);
+            }
+            if !context.is_null() {
+                destroy_context(display, context);
+            }
+            x_close_display(display);
+        }
+        return Err("GLX could not create a physical-device context".into());
+    }
+    let current = unsafe { make_current(display, pbuffer, pbuffer, context) } != 0;
+    let renderer = if current {
+        let value = unsafe { get_string(GL_RENDERER) };
+        if value.is_null() {
+            None
+        } else {
+            Some(
+                unsafe { CStr::from_ptr(value.cast::<i8>()) }
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        }
+    } else {
+        None
+    };
+    unsafe {
+        make_current(display, 0, 0, std::ptr::null_mut());
+        destroy_context(display, context);
+        destroy_pbuffer(display, pbuffer);
+        x_close_display(display);
+    }
+    match renderer {
+        Some(renderer) => Ok(format!("created an OpenGL context on '{renderer}'")),
+        None => Err("GLX created a context but no physical OpenGL renderer was observable".into()),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn probe_opengl_device() -> Result<String, String> {
+    Err("physical OpenGL device probing is currently supported for approved Linux cells".into())
+}
+
+fn probe_vulkan_device() -> Result<String, String> {
+    #[repr(C)]
+    struct VkApplicationInfo {
+        structure_type: u32,
+        next: *const c_void,
+        application_name: *const i8,
+        application_version: u32,
+        engine_name: *const i8,
+        engine_version: u32,
+        api_version: u32,
+    }
+    #[repr(C)]
+    struct VkInstanceCreateInfo {
+        structure_type: u32,
+        next: *const c_void,
+        flags: u32,
+        application: *const VkApplicationInfo,
+        layer_count: u32,
+        layers: *const *const i8,
+        extension_count: u32,
+        extensions: *const *const i8,
+    }
+    type VkInstance = *mut c_void;
+    type VkPhysicalDevice = *mut c_void;
+    type VkCreateInstance = unsafe extern "system" fn(
+        *const VkInstanceCreateInfo,
+        *const c_void,
+        *mut VkInstance,
+    ) -> i32;
+    type VkDestroyInstance = unsafe extern "system" fn(VkInstance, *const c_void);
+    type VkEnumeratePhysicalDevices =
+        unsafe extern "system" fn(VkInstance, *mut u32, *mut VkPhysicalDevice) -> i32;
+
+    const VK_SUCCESS: i32 = 0;
+    const VK_STRUCTURE_TYPE_APPLICATION_INFO: u32 = 0;
+    const VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO: u32 = 1;
+    const VK_API_VERSION_1_0: u32 = 1 << 22;
+
+    let library = NativeLibrary::open(loader_candidates(GraphicsApi::Vulkan))?;
+    // SAFETY: signatures are the Vulkan 1.0 loader ABI, resolved from the live
+    // loader library retained through instance destruction.
+    let create: VkCreateInstance = unsafe { library.function("vkCreateInstance")? };
+    let enumerate: VkEnumeratePhysicalDevices =
+        unsafe { library.function("vkEnumeratePhysicalDevices")? };
+    let destroy: VkDestroyInstance = unsafe { library.function("vkDestroyInstance")? };
+    let name = CString::new("OpenStrata device probe").expect("literal has no NUL");
+    let application = VkApplicationInfo {
+        structure_type: VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        next: std::ptr::null(),
+        application_name: name.as_ptr(),
+        application_version: 1,
+        engine_name: name.as_ptr(),
+        engine_version: 1,
+        api_version: VK_API_VERSION_1_0,
+    };
+    let create_info = VkInstanceCreateInfo {
+        structure_type: VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        next: std::ptr::null(),
+        flags: 0,
+        application: &application,
+        layer_count: 0,
+        layers: std::ptr::null(),
+        extension_count: 0,
+        extensions: std::ptr::null(),
+    };
+    let mut instance = std::ptr::null_mut();
+    let result = unsafe { create(&create_info, std::ptr::null(), &mut instance) };
+    if result != VK_SUCCESS || instance.is_null() {
+        return Err(format!(
+            "Vulkan could not create an instance for device enumeration (VkResult {result})"
+        ));
+    }
+    let mut count = 0;
+    let result = unsafe { enumerate(instance, &mut count, std::ptr::null_mut()) };
+    unsafe {
+        destroy(instance, std::ptr::null());
+    }
+    if result != VK_SUCCESS {
+        return Err(format!(
+            "Vulkan physical-device enumeration failed (VkResult {result})"
+        ));
+    }
+    if count == 0 {
+        return Err("Vulkan reported zero physical devices".into());
+    }
+    Ok(format!("Vulkan enumerated {count} physical device(s)"))
+}
+
 fn required_loader_symbol(api: GraphicsApi) -> &'static str {
     match api {
         GraphicsApi::OpenGl => "glGetString",
@@ -129,6 +423,188 @@ fn loader_candidates(api: GraphicsApi) -> &'static [&'static str] {
     match api {
         GraphicsApi::OpenGl => &["/System/Library/Frameworks/OpenGL.framework/OpenGL"],
         GraphicsApi::Vulkan => &["libvulkan.1.dylib", "libvulkan.dylib"],
+    }
+}
+
+/// A native dynamic-library handle kept alive while typed API functions run.
+struct NativeLibrary {
+    handle: *mut c_void,
+}
+
+impl NativeLibrary {
+    fn open(candidates: &[&str]) -> Result<Self, String> {
+        let mut failures = Vec::new();
+        for candidate in candidates {
+            match open_native_library(candidate) {
+                Ok(handle) => return Ok(Self { handle }),
+                Err(error) => failures.push(format!("{candidate}: {error}")),
+            }
+        }
+        Err(format!(
+            "could not load a native graphics library ({})",
+            failures.join("; ")
+        ))
+    }
+
+    /// Resolve a function with the caller-declared native ABI.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be the exact function-pointer signature exported under `name`.
+    unsafe fn function<T: Copy>(&self, name: &str) -> Result<T, String> {
+        let address = native_symbol(self.handle, name)?;
+        if std::mem::size_of::<T>() != std::mem::size_of::<*mut c_void>() {
+            return Err(format!("function pointer '{name}' has an unexpected size"));
+        }
+        // SAFETY: the size check above and this method's contract establish
+        // that `T` is the function-pointer representation of `address`.
+        Ok(unsafe { std::mem::transmute_copy::<*mut c_void, T>(&address) })
+    }
+}
+
+impl Drop for NativeLibrary {
+    fn drop(&mut self) {
+        // SAFETY: `handle` was returned by `open_native_library` and is closed
+        // once, after all functions borrowed from the library have returned.
+        unsafe {
+            close_native_library(self.handle);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_native_library(name: &str) -> Result<*mut c_void, String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
+    }
+    const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+    let wide: Vec<u16> = std::ffi::OsStr::new(name)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let handle = unsafe {
+        LoadLibraryExW(
+            wide.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_SYSTEM32,
+        )
+    };
+    if handle.is_null() {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(handle)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn native_symbol(handle: *mut c_void, name: &str) -> Result<*mut c_void, String> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+    }
+    let name = CString::new(name).map_err(|_| "symbol name contains NUL".to_string())?;
+    let address = unsafe { GetProcAddress(handle, name.as_ptr().cast::<u8>()) };
+    if address.is_null() {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(address)
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn close_native_library(handle: *mut c_void) {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn FreeLibrary(module: *mut c_void) -> i32;
+    }
+    unsafe {
+        FreeLibrary(handle);
+    }
+}
+
+#[cfg(unix)]
+fn open_native_library(name: &str) -> Result<*mut c_void, String> {
+    use std::ffi::CStr;
+
+    #[cfg(target_os = "linux")]
+    #[link(name = "dl")]
+    extern "C" {
+        fn dlopen(filename: *const i8, flags: i32) -> *mut c_void;
+        fn dlerror() -> *const i8;
+    }
+    #[cfg(target_os = "macos")]
+    extern "C" {
+        fn dlopen(filename: *const i8, flags: i32) -> *mut c_void;
+        fn dlerror() -> *const i8;
+    }
+    const RTLD_NOW: i32 = 2;
+    const RTLD_LOCAL: i32 = 0;
+    let name = CString::new(name).map_err(|_| "library name contains NUL".to_string())?;
+    let handle = unsafe { dlopen(name.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
+    if handle.is_null() {
+        let error = unsafe { dlerror() };
+        Err(if error.is_null() {
+            "unknown dynamic-loader error".into()
+        } else {
+            unsafe { CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned()
+        })
+    } else {
+        Ok(handle)
+    }
+}
+
+#[cfg(unix)]
+fn native_symbol(handle: *mut c_void, name: &str) -> Result<*mut c_void, String> {
+    use std::ffi::CStr;
+
+    #[cfg(target_os = "linux")]
+    #[link(name = "dl")]
+    extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const i8) -> *mut c_void;
+        fn dlerror() -> *const i8;
+    }
+    #[cfg(target_os = "macos")]
+    extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const i8) -> *mut c_void;
+        fn dlerror() -> *const i8;
+    }
+    let name = CString::new(name).map_err(|_| "symbol name contains NUL".to_string())?;
+    unsafe {
+        dlerror();
+    }
+    let address = unsafe { dlsym(handle, name.as_ptr()) };
+    let error = unsafe { dlerror() };
+    if address.is_null() || !error.is_null() {
+        Err(if error.is_null() {
+            "symbol address was null".into()
+        } else {
+            unsafe { CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned()
+        })
+    } else {
+        Ok(address)
+    }
+}
+
+#[cfg(unix)]
+unsafe fn close_native_library(handle: *mut c_void) {
+    #[cfg(target_os = "linux")]
+    #[link(name = "dl")]
+    extern "C" {
+        fn dlclose(handle: *mut c_void) -> i32;
+    }
+    #[cfg(target_os = "macos")]
+    extern "C" {
+        fn dlclose(handle: *mut c_void) -> i32;
+    }
+    unsafe {
+        dlclose(handle);
     }
 }
 
@@ -321,5 +797,52 @@ mod tests {
             ]),
             Some(OpenUsdVerificationStatus::Failed)
         );
+    }
+
+    #[test]
+    fn device_status_never_turns_no_observation_into_success() {
+        assert_eq!(graphics_device_status(&[]), None);
+        assert_eq!(
+            graphics_device_status(&[GraphicsDeviceProbe {
+                api: GraphicsApi::Vulkan,
+                passed: true,
+                skipped: false,
+                detail: "one device".into(),
+            }]),
+            Some(OpenUsdVerificationStatus::Passed)
+        );
+        assert_eq!(
+            graphics_device_status(&[
+                GraphicsDeviceProbe {
+                    api: GraphicsApi::OpenGl,
+                    passed: true,
+                    skipped: false,
+                    detail: "renderer".into(),
+                },
+                GraphicsDeviceProbe {
+                    api: GraphicsApi::Vulkan,
+                    passed: false,
+                    skipped: false,
+                    detail: "zero devices".into(),
+                },
+            ]),
+            Some(OpenUsdVerificationStatus::Failed)
+        );
+        assert_eq!(
+            graphics_device_status(&[GraphicsDeviceProbe {
+                api: GraphicsApi::OpenGl,
+                passed: false,
+                skipped: true,
+                detail: "headless".into(),
+            }]),
+            None
+        );
+    }
+
+    #[test]
+    fn the_platform_vulkan_device_can_be_observed_without_an_sdk_utility() {
+        let probe = probe_graphics_device(GraphicsApi::Vulkan);
+        assert_eq!(probe.api, GraphicsApi::Vulkan);
+        assert!(probe.detail.contains("Vulkan") || probe.detail.contains("vulkan"));
     }
 }

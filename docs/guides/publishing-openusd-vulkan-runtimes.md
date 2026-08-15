@@ -52,10 +52,13 @@ From the OpenStrata repository root:
 ```
 
 The script isolates the OpenUSD versions and operating systems into separate
-`OST_HOME` stores. It validates the normal OpenStrata runtime contract, then
-requires the installed HgiVulkan header, library, runtime plugin registration,
-and OpenUSD examples before export. For 26.08 it additionally requires the
-OpenExec/ExecIr examples.
+`OST_HOME` stores. It validates the normal OpenStrata runtime contract,
+including native loader/device observations and an actual `usdrecord` frame
+when the build host exposes the required GPU/display, then requires the
+installed HgiVulkan header, library, runtime plugin registration, and OpenUSD
+examples before export. Missing GPU/display prerequisites remain explicit
+`not-run` state rather than blocking a build-only producer. For 26.08 it
+additionally requires the OpenExec/ExecIr examples.
 
 Each run writes a new timestamped output directory and a `results.json`
 containing the OpenUSD source revision, OpenStrata producer revision, artifact
