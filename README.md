@@ -31,8 +31,9 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.22.1** — OpenUSD 26.08 dependency capture fixes,
-dependency refreshes, and release-pipeline maintenance on top of normalized
+The current release is **v0.22.2** — static musl graphics-loader probe handling
+on top of OpenUSD 26.08 dependency capture fixes, dependency refreshes, and
+release-pipeline maintenance on top of normalized
 OpenUSD artifact compatibility
 cells, deterministic source/dependency identity, resilient OCI distribution,
 evidence-gated digest pulls, and independent compile/link/loader/device/render
