@@ -13,6 +13,7 @@ pub mod formation;
 pub mod host;
 pub mod init;
 pub mod internal;
+pub mod library;
 pub mod lock;
 pub mod package;
 pub mod platform;

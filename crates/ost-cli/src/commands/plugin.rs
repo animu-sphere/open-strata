@@ -808,7 +808,7 @@ fn build(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_library_one(
+pub(crate) fn build_library_one(
     library: &Library,
     target: Option<String>,
     profile: Option<String>,
@@ -826,20 +826,8 @@ fn build_library_one(
     let id = tgt.id();
     let compiler = resolve_plugin_compiler(&library.root, &compiler_opts)?;
     let target_dir = target_state_dir(&library.root, &id);
-    std::fs::create_dir_all(target_dir.as_std_path())
-        .map_err(|error| Error::io(target_dir.to_string(), error))?;
     let toolchain = target_dir.join("toolchain.cmake");
     let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &tgt.python_version);
-    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
-    let mut toolchain_text =
-        ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref());
-    toolchain_text.push_str(&format!(
-        "\n# Source-workspace library install prefix.\nlist(PREPEND CMAKE_PREFIX_PATH \"{}\")\n",
-        cmake_path(workspace_prefix)
-    ));
-    std::fs::write(toolchain.as_std_path(), format!("{toolchain_text}\n"))
-        .map_err(|error| Error::io(toolchain.to_string(), error))?;
-
     let build_dir = target_build_dir(&library.root, &id);
     let cmake = tools::which("cmake");
     let ninja = ninja.map(PathBuf::from).or_else(|| tools::which("ninja"));
@@ -879,6 +867,17 @@ fn build_library_one(
         println!("cmake {}", install_args.join(" "));
         return Ok(());
     }
+    std::fs::create_dir_all(target_dir.as_std_path())
+        .map_err(|error| Error::io(target_dir.to_string(), error))?;
+    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
+    let mut toolchain_text =
+        ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref());
+    toolchain_text.push_str(&format!(
+        "\n# Source-workspace library install prefix.\nlist(PREPEND CMAKE_PREFIX_PATH \"{}\")\n",
+        cmake_path(workspace_prefix)
+    ));
+    std::fs::write(toolchain.as_std_path(), format!("{toolchain_text}\n"))
+        .map_err(|error| Error::io(toolchain.to_string(), error))?;
     if !r.pulled {
         return Err(Error::coded(
             "RUNTIME_NOT_FOUND",
@@ -8145,7 +8144,10 @@ fn report_package(outcome: &PackageOutcome, fmt: Format) {
 
 /// Determine platform+profile from explicit flags or the enclosing project.
 /// Returns `None` when neither is available.
-fn selection(target: Option<String>, profile: Option<String>) -> Option<(String, String)> {
+pub(crate) fn selection(
+    target: Option<String>,
+    profile: Option<String>,
+) -> Option<(String, String)> {
     if let Some(t) = target {
         return Some((t, profile.unwrap_or_else(|| "core".to_string())));
     }
@@ -8527,13 +8529,13 @@ fn invalidate_plugin_build_tree_if_compiler_changed(
 
 /// Per-target toolchain/state directory inside a bundle: `.strata/targets/<id>/`.
 /// Keyed by target id so each platform/profile/runtime keeps its own toolchain.
-fn target_state_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
+pub(crate) fn target_state_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
     root.join(STATE_DIR).join("targets").join(id)
 }
 
 /// Per-target CMake build tree inside a bundle: `build/<id>`. Keeping the build
 /// tree under the target id prevents one target reusing another's CMake cache.
-fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
+pub(crate) fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
     root.join("build").join(id)
 }
 

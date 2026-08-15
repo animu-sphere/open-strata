@@ -1103,30 +1103,26 @@ fn view(args: ViewArgs, fmt: Format) -> Result<()> {
     let (status, child_stdout, child_stderr) =
         run_renderer_child(&mut command, fmt.is_json(), usdview.as_str())?;
     let completed_unix = unix_now();
-    let record = serde_json::json!({
-        "schema": "openstrata.renderer-launch/v1",
-        "kind": "renderer-view",
-        "executable": usdview,
-        "target": platform,
-        "profile": profile,
-        "config": args.config,
-        "timeouts": {
-            "configure_seconds": args.configure_timeout,
-            "build_seconds": args.build_timeout,
-        },
-        "build_dir": build_dir,
-        "renderer": renderer,
-        "scene": scene,
-        "camera": selection.camera,
-        "camera_selection": selection.describe(),
-        "started_unix": started_unix,
-        "completed_unix": completed_unix,
-        "exit_code": status.code(),
-        "stdout": child_stdout,
-        "stderr": child_stderr,
-        "install_stdout": install_stdout,
-        "install_stderr": install_stderr,
-    });
+    let record = view_launch_record(
+        &usdview,
+        &platform,
+        &profile,
+        &args.config,
+        args.configure_timeout,
+        args.build_timeout,
+        &build_dir,
+        &renderer,
+        &scene,
+        selection.camera.as_deref(),
+        &selection.describe(),
+        started_unix,
+        completed_unix,
+        status.code(),
+        &child_stdout,
+        &child_stderr,
+        &install_stdout,
+        &install_stderr,
+    );
     let record_path = root
         .join(STATE_DIR)
         .join("renderer-view")
@@ -1147,6 +1143,59 @@ fn view(args: ViewArgs, fmt: Format) -> Result<()> {
         }));
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn view_launch_record(
+    executable: &Utf8Path,
+    platform: &str,
+    profile: &str,
+    config: &str,
+    configure_timeout: u64,
+    build_timeout: u64,
+    build_dir: &Utf8Path,
+    renderer: &str,
+    scene: &Utf8Path,
+    camera: Option<&str>,
+    camera_selection: &str,
+    started_unix: u64,
+    completed_unix: u64,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+    install_stdout: &str,
+    install_stderr: &str,
+) -> Value {
+    let success = exit_code == Some(0);
+    serde_json::json!({
+        "schema": "openstrata.renderer-launch/v1",
+        "kind": "renderer-view",
+        "executable": executable,
+        "target": platform,
+        "profile": profile,
+        "config": config,
+        "timeouts": {
+            "configure_seconds": configure_timeout,
+            "build_seconds": build_timeout,
+        },
+        "build_dir": build_dir,
+        "renderer": renderer,
+        "scene": scene,
+        "camera": camera,
+        "camera_selection": camera_selection,
+        "started_unix": started_unix,
+        "completed_unix": completed_unix,
+        "exit_code": exit_code,
+        "outcome": if success { "success" } else { "failure" },
+        "exit": {
+            "state": if success { "success" } else { "child-failure" },
+            "code": exit_code,
+        },
+        "stdout": stdout,
+        "stderr": stderr,
+        "install_stdout": install_stdout,
+        "install_stderr": install_stderr,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1407,11 +1456,6 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
     let backend = labeled_child_value(&child_stdout, "Selected backend:")
         .unwrap_or_else(|| manifest.composition.backend.clone());
     let device = labeled_child_value(&child_stdout, "Device:");
-    let device_status = if device.is_some() {
-        "reported"
-    } else {
-        "unreported"
-    };
     let presentation = labeled_child_value(&child_stdout, "Presentation:").or_else(|| {
         args.args
             .iter()
@@ -1423,45 +1467,33 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         .join("renderer-viewport")
         .join(target.id())
         .join("launch.json");
-    let record = serde_json::json!({
-        "schema": "openstrata.renderer-launch/v1",
-        "kind": "renderer-viewport",
-        "executable": executable,
-        "target": platform,
-        "profile": profile,
-        "config": args.config,
-        "timeouts": {
-            "configure_seconds": args.configure_timeout,
-            "build_seconds": args.build_timeout,
-        },
-        "build_dir": build_dir,
-        "intent": intent,
-        "preflight": preflight,
-        "args": args.args,
-        "started_unix": viewport_started_unix,
-        "completed_unix": completed_unix,
-        "exit_code": status.code(),
-        "outcome": outcome.as_str(),
-        "backend": backend,
-        "device": device,
-        "device_status": device_status,
-        "presentation": presentation,
-        "readiness": {
-            "reached": matches!(status.code(), Some(0 | 77)),
-            "reported": labeled_child_value(&child_stdout, "Ready:"),
-        },
-        "exit": {
-            "state": viewport_exit_state(status.code()),
-            "code": status.code(),
-        },
-        "renderer_reports": renderer_reports,
-        "outputs": {
-            "launch_record": record_path,
-            "build_log": root.join(STATE_DIR).join("targets").join(target.id()).join("build.log"),
-        },
-        "stdout": child_stdout,
-        "stderr": child_stderr,
-    });
+    let record = viewport_launch_record(
+        &executable,
+        &platform,
+        &profile,
+        &args.config,
+        args.configure_timeout,
+        args.build_timeout,
+        &build_dir,
+        &intent,
+        &preflight,
+        &args.args,
+        viewport_started_unix,
+        completed_unix,
+        status.code(),
+        &backend,
+        device.as_deref(),
+        presentation.as_deref(),
+        &renderer_reports,
+        &record_path,
+        &root
+            .join(STATE_DIR)
+            .join("targets")
+            .join(target.id())
+            .join("build.log"),
+        &child_stdout,
+        &child_stderr,
+    );
     write_launch_record(&record_path, &record)?;
     let evidence = serde_json::json!({
         "launch": record,
@@ -1491,6 +1523,72 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         .with_phase("renderer-viewport-host")
         .with_data(evidence)),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn viewport_launch_record(
+    executable: &Utf8Path,
+    platform: &str,
+    profile: &str,
+    config: &str,
+    configure_timeout: u64,
+    build_timeout: u64,
+    build_dir: &Utf8Path,
+    intent: &BuildIntent,
+    preflight: &Value,
+    args: &[String],
+    started_unix: u64,
+    completed_unix: u64,
+    exit_code: Option<i32>,
+    backend: &str,
+    device: Option<&str>,
+    presentation: Option<&str>,
+    renderer_reports: &[RendererEvidenceBinding],
+    launch_record: &Utf8Path,
+    build_log: &Utf8Path,
+    stdout: &str,
+    stderr: &str,
+) -> Value {
+    let outcome = viewport_session_outcome(exit_code);
+    serde_json::json!({
+        "schema": "openstrata.renderer-launch/v1",
+        "kind": "renderer-viewport",
+        "executable": executable,
+        "target": platform,
+        "profile": profile,
+        "config": config,
+        "timeouts": {
+            "configure_seconds": configure_timeout,
+            "build_seconds": build_timeout,
+        },
+        "build_dir": build_dir,
+        "intent": intent,
+        "preflight": preflight,
+        "args": args,
+        "started_unix": started_unix,
+        "completed_unix": completed_unix,
+        "exit_code": exit_code,
+        "outcome": outcome.as_str(),
+        "backend": backend,
+        "device": device,
+        "device_status": if device.is_some() { "reported" } else { "unreported" },
+        "presentation": presentation,
+        "readiness": {
+            "reached": matches!(exit_code, Some(0 | 77)),
+            "reported": labeled_child_value(stdout, "Ready:"),
+        },
+        "exit": {
+            "state": viewport_exit_state(exit_code),
+            "code": exit_code,
+        },
+        "renderer_reports": renderer_reports,
+        "outputs": {
+            "launch_record": launch_record,
+            "build_log": build_log,
+        },
+        "stdout": stdout,
+        "stderr": stderr,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2604,6 +2702,76 @@ validation:
         assert_eq!(viewport["launch"]["exit"]["state"], "build-failure");
         assert_eq!(viewport["launch"]["timeouts"]["build_seconds"], 47);
         assert!(Utf8Path::new(viewport["record"].as_str().unwrap()).is_file());
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn managed_launch_success_envelopes_persist_without_a_renderer_toolchain() {
+        let root = temp_dir("managed-launch-successes");
+        let view_path = root.join(".strata/renderer-view/sample-renderer/launch.json");
+        let view = view_launch_record(
+            Utf8Path::new("runtime/bin/usdview"),
+            "cy2026",
+            "usd",
+            "Release",
+            17,
+            23,
+            Utf8Path::new("build/cy2026-usd"),
+            "SampleRenderer",
+            Utf8Path::new("scene.usda"),
+            None,
+            "free camera",
+            100,
+            200,
+            Some(0),
+            "ready",
+            "",
+            "installed",
+            "",
+        );
+        write_launch_record(&view_path, &view).unwrap();
+        assert_eq!(view["kind"], "renderer-view");
+        assert_eq!(view["outcome"], "success");
+        assert_eq!(view["exit"]["state"], "success");
+        assert_eq!(view["timeouts"]["configure_seconds"], 17);
+        assert!(view_path.is_file());
+
+        let viewport_path =
+            root.join(".strata/renderer-viewport/cy2026-windows-x86_64-py313-usd/launch.json");
+        let intent = BuildIntent {
+            name: "renderer-viewport".into(),
+            cache: BTreeMap::new(),
+        };
+        let viewport = viewport_launch_record(
+            Utf8Path::new("build/viewport/sample.exe"),
+            "cy2026",
+            "usd",
+            "Release",
+            31,
+            47,
+            Utf8Path::new("build/viewport"),
+            &intent,
+            &serde_json::json!({"passed": true}),
+            &["--hidden".into()],
+            300,
+            400,
+            Some(0),
+            "vulkan",
+            Some("fixture-device"),
+            Some("hidden"),
+            &[],
+            &viewport_path,
+            Utf8Path::new(".strata/targets/fixture/build.log"),
+            "Ready: true",
+            "",
+        );
+        write_launch_record(&viewport_path, &viewport).unwrap();
+        assert_eq!(viewport["kind"], "renderer-viewport");
+        assert_eq!(viewport["outcome"], "success");
+        assert_eq!(viewport["exit"]["state"], "success");
+        assert_eq!(viewport["device_status"], "reported");
+        assert_eq!(viewport["timeouts"]["build_seconds"], 47);
+        assert!(viewport_path.is_file());
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

@@ -400,6 +400,32 @@ fn build_dry_run_writes_nothing_and_plans_commands() {
 }
 
 #[test]
+fn library_build_dry_run_writes_nothing() {
+    let sb = Sandbox::new("library-dryrun-no-writes");
+    init_and_pull(&sb);
+
+    let before_work = snapshot(&sb.work);
+    let before_home = snapshot(&sb.home);
+    let out = sb.ost(&["library", "build", ".", "--dry-run"]);
+
+    assert!(
+        out.status.success(),
+        "library dry-run should succeed:\n{}",
+        out_text(&out)
+    );
+    assert_eq!(
+        before_work,
+        snapshot(&sb.work),
+        "ost library build --dry-run must not modify the library tree"
+    );
+    assert_eq!(
+        before_home,
+        snapshot(&sb.home),
+        "ost library build --dry-run must not modify the runtime store"
+    );
+}
+
+#[test]
 fn named_build_intent_dry_run_is_typed_isolated_and_side_effect_free() {
     let sb = Sandbox::new("named-intent-dryrun");
     init_and_pull(&sb);
@@ -1034,6 +1060,134 @@ fn full_lifecycle_init_build_package() {
     assert!(
         manifest.is_some(),
         "a manifest.json should accompany the archive"
+    );
+}
+
+#[test]
+fn library_scoped_build_test_package_uses_only_its_install_tree() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping library_scoped_lifecycle: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("library-scoped-lifecycle");
+    init_and_pull(&sb);
+
+    let cmake_path = sb.work_file("CMakeLists.txt");
+    let mut cmake = std::fs::read_to_string(&cmake_path).unwrap();
+    cmake.push_str(
+        "\nenable_testing()\nadd_test(NAME library-managed-smoke COMMAND ${CMAKE_COMMAND} -E true)\n",
+    );
+    std::fs::write(&cmake_path, cmake).unwrap();
+
+    let build = sb.ost(&["library", "build", "."]);
+    assert!(
+        build.status.success(),
+        "library build failed:\n{}",
+        out_text(&build)
+    );
+    let target = single_target_dir(&sb.work);
+    let record_path = target.join("library-build.json");
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
+    assert_eq!(record["schema"], "openstrata.library-build/v1");
+    assert_eq!(record["library"]["id"], "work");
+    let prefix = PathBuf::from(record["install_prefix"].as_str().unwrap());
+    assert!(prefix.is_dir(), "isolated install prefix is missing");
+
+    let no_match = sb.ost(&[
+        "library",
+        "test",
+        ".",
+        "--filter",
+        "definitely-no-such-test",
+    ]);
+    assert!(
+        !no_match.status.success(),
+        "an empty filtered run must fail:\n{}",
+        out_text(&no_match)
+    );
+    assert!(
+        out_text(&no_match).contains("no tests ran"),
+        "empty test diagnostic should be actionable:\n{}",
+        out_text(&no_match)
+    );
+    assert!(
+        !target.join("library-test.json").exists(),
+        "an empty test run must not publish success evidence"
+    );
+
+    let test = sb.ost(&["library", "test", "."]);
+    assert!(
+        test.status.success(),
+        "library test failed:\n{}",
+        out_text(&test)
+    );
+    assert!(target.join("library-test.json").is_file());
+
+    let mut relocated = record.clone();
+    relocated["build_dir"] = serde_json::Value::String(
+        sb.work_file("foreign-build-tree")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    std::fs::write(&record_path, serde_json::to_vec_pretty(&relocated).unwrap()).unwrap();
+    let refused = sb.ost(&["library", "package", "."]);
+    assert!(
+        !refused.status.success(),
+        "a relocated build record must not package:\n{}",
+        out_text(&refused)
+    );
+    assert!(
+        out_text(&refused).contains("no longer matches"),
+        "relocated evidence diagnostic should be actionable:\n{}",
+        out_text(&refused)
+    );
+    std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+    let package = sb.ost(&["--json", "library", "package", "."]);
+    assert!(
+        package.status.success(),
+        "library package failed:\n{}",
+        out_text(&package)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&package.stdout).unwrap();
+    let archive = PathBuf::from(value["data"]["archive"].as_str().unwrap());
+    assert!(archive.is_file());
+    assert!(
+        archive
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("work-0.1.0-"),
+        "archive should be descriptor-named: {}",
+        archive.display()
+    );
+    let manifest = find_first(&sb.work.join("dist/work"), "manifest.json").unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+    assert_eq!(manifest["component"]["kind"], "library");
+    assert_eq!(
+        manifest["component"]["descriptor"],
+        "openstrata.library.yaml"
+    );
+
+    let installed = prefix.join(
+        snapshot(&prefix)
+            .into_keys()
+            .next()
+            .expect("library install contains at least one file"),
+    );
+    std::fs::write(&installed, b"changed after managed build").unwrap();
+    let refused = sb.ost(&["library", "package", "."]);
+    assert!(
+        !refused.status.success(),
+        "modified install tree must not package:\n{}",
+        out_text(&refused)
+    );
+    assert!(
+        out_text(&refused).contains("no longer matches"),
+        "drift diagnostic should be actionable:\n{}",
+        out_text(&refused)
     );
 }
 
