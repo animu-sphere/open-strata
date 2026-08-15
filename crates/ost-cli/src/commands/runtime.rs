@@ -705,6 +705,31 @@ struct PreparedOpenUsdBuild {
     build_env: Vec<(String, String)>,
 }
 
+const MANAGED_ONETBB_INPUTS: &[(&str, &str, &str)] = &[
+    (
+        "2021.x",
+        "2021.12.0",
+        "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.12.0.zip",
+    ),
+    (
+        "2022.x",
+        "2022.1.0",
+        "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2022.1.0.zip",
+    ),
+    (
+        "2023.x",
+        "2023.1.0",
+        "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2023.1.0.zip",
+    ),
+];
+
+fn managed_onetbb_input(constraint: &str) -> Option<(&'static str, &'static str)> {
+    MANAGED_ONETBB_INPUTS
+        .iter()
+        .find(|(supported, _, _)| *supported == constraint)
+        .map(|(_, version, url)| (*version, *url))
+}
+
 fn prepare_openusd_build(
     mut compatibility: ResolvedOpenUsdCompatibility,
     builder: OpenUsdBuilder,
@@ -745,8 +770,40 @@ fn prepare_openusd_build(
         ),
         format!("-DPython_EXECUTABLE={}", python.as_str().replace('\\', "/")),
     ];
+    let mut build_env = vec![
+        ("CC".into(), cc.to_string()),
+        ("CXX".into(), cxx.to_string()),
+    ];
     match builder {
         OpenUsdBuilder::BuildUsd => {
+            let (onetbb_version, onetbb_url) =
+                managed_onetbb_input(&compatibility.tbb.version_constraint).ok_or_else(|| {
+                    Error::coded(
+                        "OPENUSD_TBB_INPUT_UNSUPPORTED",
+                        ost_core::Category::Configuration,
+                        format!(
+                            "no deterministic oneTBB source is declared for CY constraint '{}'",
+                            compatibility.tbb.version_constraint
+                        ),
+                    )
+                    .with_hint("declare an exact managed oneTBB source before using build_usd.py")
+                })?;
+            if args.iter().any(|arg| option_name(arg) == Some("no-onetbb")) {
+                return Err(Error::coded(
+                    "OPENUSD_VARIANT_OVERRIDE",
+                    ost_core::Category::Configuration,
+                    format!(
+                        "--no-onetbb contradicts the CY oneTBB {} requirement",
+                        compatibility.tbb.version_constraint
+                    ),
+                )
+                .with_hint("remove --no-onetbb; the selected CY cell owns the TBB provider"));
+            }
+            if !args.iter().any(|arg| option_name(arg) == Some("onetbb")) {
+                args.push("--onetbb".into());
+            }
+            build_env.push(("OST_BUILD_USD_ONETBB_URL".into(), onetbb_url.into()));
+            build_env.push(("OST_BUILD_USD_ONETBB_VERSION".into(), onetbb_version.into()));
             if let Some(passthrough) = args
                 .iter_mut()
                 .find(|arg| arg.starts_with("--build-args=USD,"))
@@ -763,10 +820,7 @@ fn prepare_openusd_build(
     Ok(PreparedOpenUsdBuild {
         compatibility,
         python,
-        build_env: vec![
-            ("CC".into(), cc.to_string()),
-            ("CXX".into(), cxx.to_string()),
-        ],
+        build_env,
     })
 }
 
@@ -3671,6 +3725,11 @@ _ost_hook = r'''
 import hashlib as _ost_hashlib
 import json as _ost_json
 import os as _ost_os
+_ost_onetbb_url = _ost_os.environ.get("OST_BUILD_USD_ONETBB_URL")
+if _ost_onetbb_url:
+    if not globals().get("ONETBB_URL"):
+        raise RuntimeError("build_usd.py oneTBB input changed; managed override cannot run safely")
+    ONETBB_URL = _ost_onetbb_url
 _ost_original_download_url = DownloadURL
 def DownloadURL(*args, **kwargs):
     result = _ost_original_download_url(*args, **kwargs)
@@ -3790,7 +3849,7 @@ fn build_with_script(
     // successful manifest record only the remaining suffix of the closure. The
     // key isolates retries by exact script contents and argv.
     let capture_key = ost_core::digest::sha256_hex(
-        serde_json::to_string(&(&script_source, &script_args))
+        serde_json::to_string(&(&script_source, &script_args, &opts.build_env))
             .expect("build_usd capture identity serializes")
             .as_bytes(),
     );
@@ -5011,6 +5070,16 @@ mod tests {
     }
 
     #[test]
+    fn managed_onetbb_inputs_are_exact_and_satisfy_their_cy_constraints() {
+        for (constraint, version, url) in MANAGED_ONETBB_INPUTS {
+            assert!(version_satisfies_constraint(version, constraint));
+            assert_eq!(managed_onetbb_input(constraint), Some((*version, *url)));
+            assert!(url.ends_with(&format!("/v{version}.zip")));
+        }
+        assert_eq!(managed_onetbb_input("2024.x"), None);
+    }
+
+    #[test]
     fn tbb_version_probe_skips_forwarding_headers_without_version_macros() {
         let first = temp_dir("tbb-forwarder");
         let second = temp_dir("tbb-version");
@@ -5383,6 +5452,8 @@ import apple_utils
 
 assert apple_utils.SIBLING_IMPORT_WORKED
 
+ONETBB_URL = "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.12.0.zip"
+
 def DownloadURL(url, context, force, extractDir=None, dontExtract=None, destFileName=None, expectedSHA256=None):
     filename = destFileName or url.split("/")[-1]
     with open(os.path.join(context.srcDir, filename), "wb") as archive:
@@ -5399,7 +5470,7 @@ context = Context()
 dep = Dependency()
 try:
     # Download and install 3rd-party dependencies, followed by USD.
-    DownloadURL("https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.12.0.zip", context, False)
+    DownloadURL(ONETBB_URL, context, False)
 except Exception:
     raise
 "#,
@@ -5408,13 +5479,17 @@ except Exception:
         let status = Command::new(python)
             .args(["-c", BUILD_USD_CAPTURE_RUNNER, script.as_str()])
             .env("OST_BUILD_USD_DEPENDENCY_CAPTURE", capture.as_str())
+            .env(
+                "OST_BUILD_USD_ONETBB_URL",
+                "https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2022.1.0.zip",
+            )
             .status()
             .unwrap();
         assert!(status.success());
         let dependencies = read_build_usd_dependencies(&capture).unwrap();
         assert_eq!(dependencies.len(), 1);
         assert_eq!(dependencies[0].name, "oneTBB");
-        assert_eq!(dependencies[0].version, "2021.12.0");
+        assert_eq!(dependencies[0].version, "2022.1.0");
         assert!(dependencies[0].archive_digest.is_some());
         assert_eq!(
             dependencies[0].source.repository,

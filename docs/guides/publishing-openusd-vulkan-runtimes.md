@@ -39,6 +39,10 @@ device/render acceptance when no GPU is passed into the container), and
 `shaderc_combined` remain Ubuntu packages. The image also installs Ubuntu's
 versioned GCC 14 packages, which resolve to GCC 14.2 and satisfy the CY2026
 compiler constraint instead of inheriting Ubuntu 24.04's default GCC 13.
+OpenStrata also selects OpenUSD's `--onetbb` path and replaces its older
+upstream default archive with the exact oneTBB 2022.1.0 source required by the
+CY2026 `2022.x` cell. The fetched archive digest remains part of the captured
+dependency identity.
 
 Keep the Windows `-WorkRoot` short. OpenUSD 26.08's Exec examples create deeply
 nested MSVC tracking-log paths, so the default is `C:\usd\ovp`.
