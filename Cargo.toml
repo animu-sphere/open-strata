@@ -41,8 +41,8 @@ ost-host = { path = "crates/ost-host" }
 # longer needs to stay on edition <= 2021 (the toolchain is pinned to a current
 # stable in rust-toolchain.toml); relax or refresh these deliberately.
 anyhow = "=1.0.104"
-thiserror = "=2.0.19"
-clap = { version = "=4.6.5", features = ["derive"] }
+thiserror = "=2.0.20"
+clap = { version = "=4.6.6", features = ["derive"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 serde_yaml = "=0.9.34"
@@ -54,7 +54,7 @@ directories = "=6.0.0"
 sha2 = "=0.11.0"
 tar = "=0.4.46"
 zstd = { version = "=0.13.3", features = ["zstdmt"] }
-ureq = "=3.3.0"
+ureq = "=3.4.0"
 
 # The profile that 'dist' will build with
 [profile.dist]
