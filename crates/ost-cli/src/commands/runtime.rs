@@ -3717,9 +3717,11 @@ if _ost_script_dir not in _ost_sys.path:
     _ost_sys.path.insert(0, _ost_script_dir)
 with open(_ost_script, "r", encoding="utf-8") as _ost_file:
     _ost_source = _ost_file.read()
+_ost_source = _ost_source.replace("\r\n", "\n")
 _ost_markers = (
-    "try:\n    # Download and install 3rd-Party dependencies",
-    "try:\n    # Download and install 3rd-party dependencies",
+    "try:\n    # Download and install 3rd-Party dependencies\n",
+    "try:\n    # Download and install 3rd-party dependencies\n",
+    "try:\n    # Download and install 3rd-party dependencies, followed by USD.\n",
 )
 _ost_hook = r'''
 import hashlib as _ost_hashlib
@@ -3769,8 +3771,9 @@ exec(compile(_ost_source, _ost_script, "exec"), {"__file__": _ost_script, "__nam
 "#;
 
 const BUILD_USD_INSTALL_MARKERS: &[&str] = &[
-    "try:\n    # Download and install 3rd-Party dependencies",
-    "try:\n    # Download and install 3rd-party dependencies",
+    "try:\n    # Download and install 3rd-Party dependencies\n",
+    "try:\n    # Download and install 3rd-party dependencies\n",
+    "try:\n    # Download and install 3rd-party dependencies, followed by USD.\n",
 ];
 
 fn build_usd_install_marker_count(source: &str) -> usize {
@@ -3796,6 +3799,7 @@ fn build_with_script(
     }
     let script_source = std::fs::read_to_string(script.as_std_path())
         .map_err(|error| Error::io(script.to_string(), error))?;
+    let script_source = script_source.replace("\r\n", "\n");
     if build_usd_install_marker_count(&script_source) != 1 {
         return Err(Error::coded(
             "OPENUSD_DEPENDENCY_CAPTURE_UNSUPPORTED",
@@ -5426,10 +5430,9 @@ mod tests {
             assert_eq!(build_usd_install_marker_count(marker), 1);
         }
         assert_eq!(build_usd_install_marker_count("no install loop here"), 0);
-        assert_eq!(
-            build_usd_install_marker_count(&BUILD_USD_INSTALL_MARKERS.join("\n")),
-            2
-        );
+        assert_eq!(build_usd_install_marker_count(&BUILD_USD_INSTALL_MARKERS.join("\n")), 3);
+        let crlf_source = BUILD_USD_INSTALL_MARKERS.join("\r\n");
+        assert_eq!(build_usd_install_marker_count(&crlf_source.replace("\r\n", "\n")), 3);
     }
 
     #[test]
