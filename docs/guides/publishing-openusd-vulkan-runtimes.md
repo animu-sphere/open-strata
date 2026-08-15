@@ -24,7 +24,7 @@ OpenUSD 26.08's Exec examples, while excluding the source and build trees.
 ## Prerequisites
 
 - Windows x86_64 with Visual Studio's C++ workload.
-- PowerShell 7, Python 3.13.14, and `ost` 0.21.x on `PATH`.
+- PowerShell 7, Python 3.13.14, and `ost` 0.21.x or 0.22.x on `PATH`.
 - A Windows Vulkan SDK with `VULKAN_SDK` set.
 - WSL2 with a working Docker engine for the Linux builds.
 - Enough free space for two OpenUSD source builds per operating system.
@@ -34,8 +34,9 @@ preserves the target contract of the existing Linux tags; `ost runtime export`
 still measures and records the actual glibc floor. The image pins official
 Vulkan-Headers and Vulkan-Utility-Libraries 1.4.350 plus Vulkan Memory
 Allocator 3.4.0 because Ubuntu's headers are older than the HgiVulkan API used
-by OpenUSD 26.05/26.08; the Vulkan loader and `shaderc_combined` remain Ubuntu
-packages.
+by OpenUSD 26.05/26.08; the Vulkan loader, Mesa Vulkan ICD (used for
+device/render acceptance when no GPU is passed into the container), and
+`shaderc_combined` remain Ubuntu packages.
 
 Keep the Windows `-WorkRoot` short. OpenUSD 26.08's Exec examples create deeply
 nested MSVC tracking-log paths, so the default is `C:\usd\ovp`.

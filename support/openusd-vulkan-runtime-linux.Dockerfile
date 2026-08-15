@@ -13,6 +13,7 @@ RUN apt-get update \
       build-essential ca-certificates cmake curl git ninja-build pkg-config \
       software-properties-common unzip \
       libgl1-mesa-dev libglu1-mesa-dev libshaderc-dev libvulkan-dev \
+      mesa-vulkan-drivers \
       libx11-dev libxcursor-dev libxext-dev libxi-dev libxinerama-dev \
       libxrandr-dev libxt-dev libxkbcommon-x11-0 \
     && add-apt-repository -y ppa:deadsnakes/ppa \
