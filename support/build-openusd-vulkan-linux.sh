@@ -65,7 +65,7 @@ cat >"${metadata_file}" <<EOF
 EOF
 
 build_args=(
-  --build-arg --vulkan
+  --openusd-variant vulkan
   --build-arg --examples
 )
 if [[ "${version}" == "26.08" ]]; then

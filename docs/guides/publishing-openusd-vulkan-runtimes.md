@@ -10,8 +10,12 @@ used by animu-sphere:
 | 26.08 | Windows x86_64 | `26.08-windows-x86_64` |
 | 26.08 | Linux x86_64 | `26.08-linux-x86_64` |
 
-Every build explicitly forwards `--vulkan` and `--examples` to OpenUSD's
-`build_usd.py`. The 26.08 builds also forward
+The approved Linux build selects the normalized `vulkan` cell with
+`--openusd-variant vulkan`; Windows retains the existing explicit `--vulkan`
+builder flag until a Windows compatibility cell is declared. Both forward
+`--examples` to OpenUSD's `build_usd.py`. On Linux the selected cell supplies
+the compatibility-critical Vulkan builder arguments and becomes artifact
+selector identity. The 26.08 builds also forward
 `--python-install-dir=lib/python` to preserve the 26.05-compatible Python
 layout; 26.05 predates that option and already uses the required layout. The
 export uses OpenStrata 0.21's slim SDK layout. It retains `share/`, including
