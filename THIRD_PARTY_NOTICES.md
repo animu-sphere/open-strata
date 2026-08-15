@@ -20,6 +20,7 @@ not edit by hand.
 ## Apache License 2.0
 
 Used by:
+- ureq-proto 0.6.1 — https://github.com/algesten/ureq-proto
 - zeroize 1.9.0 — https://github.com/RustCrypto/utils
 
 ```
@@ -447,8 +448,8 @@ Used by:
 - anstyle-query 1.1.5 — https://github.com/rust-cli/anstyle.git
 - anstyle-wincon 3.0.11 — https://github.com/rust-cli/anstyle.git
 - anstyle 1.0.14 — https://github.com/rust-cli/anstyle.git
-- clap 4.6.5 — https://github.com/clap-rs/clap
-- clap_builder 4.6.5 — https://github.com/clap-rs/clap
+- clap 4.6.6 — https://github.com/clap-rs/clap
+- clap_builder 4.6.6 — https://github.com/clap-rs/clap
 - clap_derive 4.6.4 — https://github.com/clap-rs/clap
 - clap_lex 1.1.0 — https://github.com/clap-rs/clap
 - colorchoice 1.0.5 — https://github.com/rust-cli/anstyle.git
@@ -1300,7 +1301,7 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- base64 0.22.1 — https://github.com/marshallpierce/rust-base64
+- base64 0.23.1 — https://github.com/marshallpierce/rust-base64
 - bitflags 2.13.0 — https://github.com/bitflags/bitflags
 - camino 1.2.5 — https://github.com/camino-rs/camino
 - cc 1.2.65 — https://github.com/rust-lang/cc-rs
@@ -2199,10 +2200,9 @@ Used by:
 - serde_yaml 0.9.34+deprecated — https://github.com/dtolnay/serde-yaml
 - shlex 2.0.1 — https://github.com/comex/rust-shlex
 - syn 3.0.3 — https://github.com/dtolnay/syn
-- thiserror-impl 2.0.19 — https://github.com/dtolnay/thiserror
-- thiserror 2.0.19 — https://github.com/dtolnay/thiserror
+- thiserror-impl 2.0.20 — https://github.com/dtolnay/thiserror
+- thiserror 2.0.20 — https://github.com/dtolnay/thiserror
 - unicode-ident 1.0.24 — https://github.com/dtolnay/unicode-ident
-- ureq-proto 0.6.0 — https://github.com/algesten/ureq-proto
 - utf8-zero 0.8.1 — https://github.com/algesten/utf8-zero
 - utf8parse 0.2.2 — https://github.com/alacritty/vte
 - zstd-safe 7.2.4 — https://github.com/gyscos/zstd-rs
@@ -2502,7 +2502,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- ureq 3.3.0 — https://github.com/algesten/ureq
+- ureq 3.4.0 — https://github.com/algesten/ureq
 
 ```
 MIT License
