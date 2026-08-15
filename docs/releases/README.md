@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.22.1 | [v0.22.1.md](v0.22.1.md) | OpenUSD dependency capture fix + release maintenance |
 | v0.22.0 | [v0.22.0.md](v0.22.0.md) | OpenUSD artifact compatibility + trusted OCI distribution |
 | v0.21.0 | [v0.21.0.md](v0.21.0.md) | DCC host discovery + dogfooding closure |
 | v0.20.0 | [v0.20.0.md](v0.20.0.md) | Dogfood closure + renderer workflow |
