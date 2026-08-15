@@ -5430,9 +5430,15 @@ mod tests {
             assert_eq!(build_usd_install_marker_count(marker), 1);
         }
         assert_eq!(build_usd_install_marker_count("no install loop here"), 0);
-        assert_eq!(build_usd_install_marker_count(&BUILD_USD_INSTALL_MARKERS.join("\n")), 3);
+        assert_eq!(
+            build_usd_install_marker_count(&BUILD_USD_INSTALL_MARKERS.join("\n")),
+            3
+        );
         let crlf_source = BUILD_USD_INSTALL_MARKERS.join("\r\n");
-        assert_eq!(build_usd_install_marker_count(&crlf_source.replace("\r\n", "\n")), 3);
+        assert_eq!(
+            build_usd_install_marker_count(&crlf_source.replace("\r\n", "\n")),
+            3
+        );
     }
 
     #[test]
