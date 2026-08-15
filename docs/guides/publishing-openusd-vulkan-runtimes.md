@@ -42,11 +42,13 @@ Keep the Windows `-WorkRoot` short. OpenUSD 26.08's Exec examples create deeply
 nested MSVC tracking-log paths, so the default is `C:\usd\ovp`.
 
 OpenUSD records an exact Python patch version in `pxrConfig.cmake`. Use
-`-Python` to select the same 3.13 installation consumers use; the animu-sphere
-cy2026 runtimes use Python 3.13.14. The producer refuses a different patch
-version on both platforms rather than publishing misleading compatibility
-metadata. Use `-ExpectedPythonVersion` only when deliberately moving the public
-runtime and its consumers to a new patch release together.
+`-Python` to select the same Windows 3.13 installation consumers use; the
+Windows producer defaults to Python 3.13.14. The Linux container independently
+pins the current deadsnakes Python 3.13.15 package through
+`-LinuxPythonVersion`. Both exact versions satisfy the CY2026 `3.13.x` cell and
+are recorded in artifact identity. Each producer refuses a different patch
+rather than publishing misleading compatibility metadata; move its explicit
+pin only when deliberately moving that public runtime and its consumers.
 
 ## Build and export
 

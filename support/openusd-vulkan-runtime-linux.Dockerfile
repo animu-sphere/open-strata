@@ -7,7 +7,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG VULKAN_HEADERS_VERSION=v1.4.350
 ARG VULKAN_UTILITY_LIBRARIES_VERSION=v1.4.350
 ARG VMA_VERSION=v3.4.0
-ARG PYTHON_VERSION=3.13.14
+ARG PYTHON_VERSION=3.13.15
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       build-essential ca-certificates cmake curl git ninja-build pkg-config \
