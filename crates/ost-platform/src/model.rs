@@ -399,6 +399,18 @@ fn compare_numeric_versions(left: &[u64], right: &[u64]) -> std::cmp::Ordering {
         .unwrap_or(std::cmp::Ordering::Equal)
 }
 
+fn runtime_floor_constraint(value: &str) -> String {
+    let value = value.trim();
+    if [">=", "<=", ">", "<", "="]
+        .iter()
+        .any(|operator| value.starts_with(operator))
+    {
+        value.to_string()
+    } else {
+        format!(">={value}")
+    }
+}
+
 fn provider_is_verified(provider: &ResolvedOpenUsdProvider) -> bool {
     !provider.family.trim().is_empty()
         && !provider.provider.trim().is_empty()
@@ -586,7 +598,12 @@ impl Platform {
                         .get(&cell.toolchain.cxx_standard_from)
                         .cloned()
                         .unwrap_or_default(),
-                    runtime: provider(&cell.toolchain.runtime),
+                    runtime: {
+                        let mut runtime = provider(&cell.toolchain.runtime);
+                        runtime.version_constraint =
+                            runtime_floor_constraint(&runtime.version_constraint);
+                        runtime
+                    },
                 },
                 python: provider(&cell.python),
                 tbb: provider(&cell.tbb),
@@ -628,7 +645,7 @@ mod tests {
                 version: Some("14.2.0".into()),
                 version_constraint: "14.2".into(),
                 cxx_standard: "20".into(),
-                runtime: provider("glibc", "system", "2.28", "2.28"),
+                runtime: provider("glibc", "system", "2.28", ">=2.28"),
             },
             python: provider("cpython", "platform", "3.13.7", "3.13.x"),
             tbb: provider("onetbb", "platform", "2022.1.0", "2022.x"),

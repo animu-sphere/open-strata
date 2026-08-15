@@ -31,7 +31,10 @@ OpenUSD 26.08's Exec examples, while excluding the source and build trees.
 
 The Linux build runs in Docker under WSL2. Its Ubuntu 24.04 base deliberately
 preserves the target contract of the existing Linux tags; `ost runtime export`
-still measures and records the actual glibc floor. The image pins official
+still measures and records the actual glibc floor. OpenStrata normalizes the CY
+core's glibc value as a minimum constraint (for example, `>=2.28`) while the
+artifact target records the exact measured requirement, so a newer producer is
+never mislabeled as `glibc228`. The image pins official
 Vulkan-Headers and Vulkan-Utility-Libraries 1.4.350 plus Vulkan Memory
 Allocator 3.4.0 because Ubuntu's headers are older than the HgiVulkan API used
 by OpenUSD 26.05/26.08; the Vulkan loader, Mesa Vulkan ICD (used for
