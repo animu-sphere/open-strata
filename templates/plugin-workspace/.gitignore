@@ -1,8 +1,38 @@
-# OpenStrata-generated build state and tool-owned presets.
-/build/
+# OpenStrata and out-of-source build products.
 /.strata/
-CMakeUserPresets.json
+/build/
+/cmake-build-*/
+/dist/
+/install/
+/lib/
+/out/
+/CMakeUserPresets.json
+/compile_commands.json
 
-# Python bytecode.
+# Accidental in-source CMake and Ninja products.
+/CMakeCache.txt
+/CMakeFiles/
+/CTestTestfile.cmake
+/Testing/
+/build.ninja
+/cmake_install.cmake
+/install_manifest.txt
+/Makefile
+/.ninja_deps
+/.ninja_log
+
+# Python tooling and test caches.
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+
+# Local editor, compiler-index, and OS metadata.
+/.vs/
+/.idea/
+/.cache/clangd/
+*.suo
+*.user
+*.VC.db
+*.VC.VC.opendb
+.DS_Store
+Thumbs.db

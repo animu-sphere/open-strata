@@ -7,6 +7,6 @@ namespace {{Name}} {
 /// Returns the library version string.
 const char* version();
 
-}  // namespace {{Name}}
+} // namespace {{Name}}
 
-#endif  // {{NAME}}_HPP
+#endif // {{NAME}}_HPP

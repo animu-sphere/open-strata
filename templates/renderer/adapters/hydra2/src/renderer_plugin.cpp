@@ -13,9 +13,9 @@
 PXR_NAMESPACE_OPEN_SCOPE
 
 class Hd{{Name}}RendererPlugin final : public HdRendererPlugin {
- public:
+public:
   bool IsSupported(const HdRendererCreateArgs& args,
-                   std::string* reason_why_not) const override {
+      std::string* reason_why_not) const override {
     if (!args.gpuEnabled) {
       if (reason_why_not != nullptr) {
         *reason_why_not = "{{Name}} requires a Vulkan-capable GPU";

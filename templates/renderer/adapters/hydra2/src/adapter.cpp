@@ -49,7 +49,7 @@ std::filesystem::path PluginDirectory() {
   const auto address = reinterpret_cast<LPCWSTR>(&module_anchor);
   if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                          address, &module)) {
+          address, &module)) {
     throw std::runtime_error("could not locate the hd{{Name}} module");
   }
   std::wstring path(32768, L'\0');
@@ -71,10 +71,10 @@ std::filesystem::path PluginDirectory() {
 }
 
 void AppendHostEvidence(std::uint64_t frame_index,
-                        const {{Name}}::GpuFrameEvidence& frame,
-                        std::uint32_t width, std::uint32_t height,
-                        std::size_t buffers_written,
-                        std::uint64_t scene_revision) {
+    const {{Name}}::GpuFrameEvidence& frame,
+    std::uint32_t width, std::uint32_t height,
+    std::size_t buffers_written,
+    std::uint64_t scene_revision) {
   const char* path = std::getenv("{{NAME}}_HYDRA_EVIDENCE");
   if (path == nullptr || *path == '\0') {
     return;
@@ -93,7 +93,7 @@ void AppendHostEvidence(std::uint64_t frame_index,
 }
 
 class AdapterState {
- public:
+public:
   void SyncMesh(const SdfPath& id, bool renderable) {
     std::scoped_lock lock(mutex_);
     meshes_[id.GetString()] = renderable;
@@ -144,10 +144,10 @@ class AdapterState {
       bool wrote = false;
       if (binding.aovName == HdAovTokens->color) {
         wrote = buffer->WriteColor(frame.color.payload, frame.color.width,
-                                   frame.color.height);
+            frame.color.height);
       } else if (binding.aovName == HdAovTokens->depth) {
         wrote = buffer->WriteDepth(frame.depth.payload, frame.depth.width,
-                                   frame.depth.height);
+            frame.depth.height);
       } else if (binding.aovName == HdAovTokens->primId ||
                  binding.aovName == HdAovTokens->instanceId ||
                  binding.aovName == HdAovTokens->elementId) {
@@ -160,14 +160,14 @@ class AdapterState {
     }
     ++frame_index_;
     AppendHostEvidence(frame_index_, frame, width, height, buffers_written,
-                       snapshot.revision);
+        snapshot.revision);
   }
 
- private:
+private:
   void UpdateWorldLocked() {
     const bool any_renderable =
         std::any_of(meshes_.begin(), meshes_.end(),
-                    [](const auto& entry) { return entry.second; });
+            [](const auto& entry) { return entry.second; });
     world_.SetTriangleCount(any_renderable ? 1U : 0U);
   }
 
@@ -178,11 +178,14 @@ class AdapterState {
 };
 
 class Hd{{Name}}Mesh final : public HdMesh {
- public:
+public:
   Hd{{Name}}Mesh(const SdfPath& id, std::shared_ptr<AdapterState> state)
-      : HdMesh(id), state_(std::move(state)) {}
+      : HdMesh(id), state_(std::move(state)) {
+  }
 
-  ~Hd{{Name}}Mesh() override { state_->RemoveMesh(GetId()); }
+  ~Hd{{Name}}Mesh() override {
+    state_->RemoveMesh(GetId());
+  }
 
   HdDirtyBits GetInitialDirtyBitsMask() const override {
     return HdChangeTracker::DirtyPoints | HdChangeTracker::DirtyTopology |
@@ -191,21 +194,21 @@ class Hd{{Name}}Mesh final : public HdMesh {
   }
 
   void Sync(HdSceneDelegate* delegate, HdRenderParam* render_param,
-            HdDirtyBits* dirty_bits, const TfToken& repr_token) override {
+      HdDirtyBits* dirty_bits, const TfToken& repr_token) override {
     (void)render_param;
     (void)repr_token;
     const bool visible = delegate->GetVisible(GetId());
     const HdMeshTopology topology = GetMeshTopology(delegate);
     const bool has_face =
         std::any_of(topology.GetFaceVertexCounts().begin(),
-                    topology.GetFaceVertexCounts().end(),
-                    [](int count) { return count >= 3; });
+            topology.GetFaceVertexCounts().end(),
+            [](int count) { return count >= 3; });
     const bool has_points = !GetPoints(delegate).IsEmpty();
     state_->SyncMesh(GetId(), visible && has_face && has_points);
     *dirty_bits = HdChangeTracker::Clean;
   }
 
- protected:
+protected:
   HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override {
     return bits;
   }
@@ -215,25 +218,27 @@ class Hd{{Name}}Mesh final : public HdMesh {
     *dirty_bits |= GetInitialDirtyBitsMask();
   }
 
- private:
+private:
   std::shared_ptr<AdapterState> state_;
 };
 
 class Hd{{Name}}Camera final : public HdCamera {
- public:
-  explicit Hd{{Name}}Camera(const SdfPath& id) : HdCamera(id) {}
+public:
+  explicit Hd{{Name}}Camera(const SdfPath& id) : HdCamera(id) {
+  }
 };
 
 class Hd{{Name}}RenderPass final : public HdRenderPass {
- public:
+public:
   Hd{{Name}}RenderPass(HdRenderIndex* index,
-                       const HdRprimCollection& collection,
-                       std::shared_ptr<AdapterState> state)
-      : HdRenderPass(index, collection), state_(std::move(state)) {}
+      const HdRprimCollection& collection,
+      std::shared_ptr<AdapterState> state)
+      : HdRenderPass(index, collection), state_(std::move(state)) {
+  }
 
- private:
+private:
   void _Execute(const HdRenderPassStateSharedPtr& render_pass_state,
-                const TfTokenVector& render_tags) override {
+      const TfTokenVector& render_tags) override {
     (void)render_tags;
     state_->Render(render_pass_state->GetAovBindings());
   }
@@ -241,14 +246,15 @@ class Hd{{Name}}RenderPass final : public HdRenderPass {
   std::shared_ptr<AdapterState> state_;
 };
 
-}  // namespace
+} // namespace
 
 Hd{{Name}}RenderBuffer::Hd{{Name}}RenderBuffer(const SdfPath& id)
-    : HdRenderBuffer(id) {}
+    : HdRenderBuffer(id) {
+}
 
 bool Hd{{Name}}RenderBuffer::Allocate(const GfVec3i& dimensions,
-                                      HdFormat format,
-                                      bool multi_sampled) {
+    HdFormat format,
+    bool multi_sampled) {
   std::scoped_lock lock(mutex_);
   if (map_count_ != 0 || dimensions[0] < 0 || dimensions[1] < 0 ||
       dimensions[2] < 0 || multi_sampled || format == HdFormatInvalid) {
@@ -261,10 +267,10 @@ bool Hd{{Name}}RenderBuffer::Allocate(const GfVec3i& dimensions,
   if (pixel_size == 0 ||
       (width != 0 && height > std::numeric_limits<std::size_t>::max() / width) ||
       (width * height != 0 &&
-       depth > std::numeric_limits<std::size_t>::max() / (width * height)) ||
+          depth > std::numeric_limits<std::size_t>::max() / (width * height)) ||
       (width * height * depth != 0 &&
-       pixel_size > std::numeric_limits<std::size_t>::max() /
-                        (width * height * depth))) {
+          pixel_size > std::numeric_limits<std::size_t>::max() /
+                           (width * height * depth))) {
     return false;
   }
   dimensions_ = dimensions;
@@ -321,7 +327,8 @@ bool Hd{{Name}}RenderBuffer::IsMapped() const {
   return map_count_ != 0;
 }
 
-void Hd{{Name}}RenderBuffer::Resolve() {}
+void Hd{{Name}}RenderBuffer::Resolve() {
+}
 
 bool Hd{{Name}}RenderBuffer::IsConverged() const {
   std::scoped_lock lock(mutex_);
@@ -355,8 +362,8 @@ bool Hd{{Name}}RenderBuffer::WriteColor(
 }
 
 bool Hd{{Name}}RenderBuffer::WriteDepth(const std::vector<float>& depth,
-                                        std::uint32_t source_width,
-                                        std::uint32_t source_height) {
+    std::uint32_t source_width,
+    std::uint32_t source_height) {
   std::scoped_lock lock(mutex_);
   const std::uint32_t width = static_cast<std::uint32_t>(dimensions_[0]);
   const std::uint32_t height = static_cast<std::uint32_t>(dimensions_[1]);
@@ -371,7 +378,8 @@ bool Hd{{Name}}RenderBuffer::WriteDepth(const std::vector<float>& depth,
     for (std::uint32_t x = 0; x < width; ++x) {
       const std::uint32_t source_x = x * source_width / width;
       const float value = depth[static_cast<std::size_t>(source_y) *
-                                    source_width + source_x];
+                                    source_width +
+                                source_x];
       const std::size_t target =
           (static_cast<std::size_t>(y) * width + x) * sizeof(float);
       std::memcpy(data_.data() + target, &value, sizeof(value));
@@ -410,7 +418,7 @@ void Hd{{Name}}RenderBuffer::_Deallocate() {
 }
 
 class Hd{{Name}}RenderDelegate::Impl {
- public:
+public:
   std::shared_ptr<AdapterState> state = std::make_shared<AdapterState>();
 };
 
@@ -418,7 +426,8 @@ Hd{{Name}}RenderDelegate::Hd{{Name}}RenderDelegate(
     const HdRenderSettingsMap& settings)
     : HdRenderDelegate(settings),
       impl_(std::make_unique<Impl>()),
-      resources_(std::make_shared<HdResourceRegistry>()) {}
+      resources_(std::make_shared<HdResourceRegistry>()) {
+}
 
 Hd{{Name}}RenderDelegate::~Hd{{Name}}RenderDelegate() = default;
 
@@ -444,7 +453,7 @@ HdResourceRegistrySharedPtr Hd{{Name}}RenderDelegate::GetResourceRegistry() cons
 HdRenderPassSharedPtr Hd{{Name}}RenderDelegate::CreateRenderPass(
     HdRenderIndex* index, const HdRprimCollection& collection) {
   return std::make_shared<Hd{{Name}}RenderPass>(index, collection,
-                                                impl_->state);
+      impl_->state);
 }
 
 HdInstancer* Hd{{Name}}RenderDelegate::CreateInstancer(
@@ -459,17 +468,19 @@ void Hd{{Name}}RenderDelegate::DestroyInstancer(HdInstancer* instancer) {
 }
 
 HdRprim* Hd{{Name}}RenderDelegate::CreateRprim(const TfToken& type_id,
-                                                const SdfPath& rprim_id) {
+    const SdfPath& rprim_id) {
   if (type_id == HdPrimTypeTokens->mesh) {
     return new Hd{{Name}}Mesh(rprim_id, impl_->state);
   }
   return nullptr;
 }
 
-void Hd{{Name}}RenderDelegate::DestroyRprim(HdRprim* rprim) { delete rprim; }
+void Hd{{Name}}RenderDelegate::DestroyRprim(HdRprim* rprim) {
+  delete rprim;
+}
 
 HdSprim* Hd{{Name}}RenderDelegate::CreateSprim(const TfToken& type_id,
-                                                const SdfPath& sprim_id) {
+    const SdfPath& sprim_id) {
   if (type_id == HdPrimTypeTokens->camera) {
     return new Hd{{Name}}Camera(sprim_id);
   }
@@ -484,10 +495,12 @@ HdSprim* Hd{{Name}}RenderDelegate::CreateFallbackSprim(
   return nullptr;
 }
 
-void Hd{{Name}}RenderDelegate::DestroySprim(HdSprim* sprim) { delete sprim; }
+void Hd{{Name}}RenderDelegate::DestroySprim(HdSprim* sprim) {
+  delete sprim;
+}
 
 HdBprim* Hd{{Name}}RenderDelegate::CreateBprim(const TfToken& type_id,
-                                                const SdfPath& bprim_id) {
+    const SdfPath& bprim_id) {
   if (type_id == HdPrimTypeTokens->renderBuffer) {
     return new Hd{{Name}}RenderBuffer(bprim_id);
   }
@@ -503,7 +516,9 @@ HdBprim* Hd{{Name}}RenderDelegate::CreateFallbackBprim(
   return nullptr;
 }
 
-void Hd{{Name}}RenderDelegate::DestroyBprim(HdBprim* bprim) { delete bprim; }
+void Hd{{Name}}RenderDelegate::DestroyBprim(HdBprim* bprim) {
+  delete bprim;
+}
 
 void Hd{{Name}}RenderDelegate::CommitResources(HdChangeTracker* tracker) {
   (void)tracker;

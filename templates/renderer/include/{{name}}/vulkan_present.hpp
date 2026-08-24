@@ -18,7 +18,7 @@ namespace {{Name}} {
 struct PresentSurfaceProvider {
   std::vector<std::string> instance_extensions;
   std::int32_t (*create_surface)(void* user_data, std::uintptr_t instance,
-                                 std::uintptr_t* surface) = nullptr;
+      std::uintptr_t* surface) = nullptr;
   void* user_data = nullptr;
 };
 
@@ -44,7 +44,7 @@ struct PresentStatistics {
 // skeleton policy is intentionally small: one frame in flight, FIFO present
 // mode when vsync is on, IMMEDIATE (when available) otherwise.
 class PresentSession {
- public:
+public:
   virtual ~PresentSession() = default;
 
   // Render and present one frame at the window's current framebuffer extent.
@@ -52,9 +52,9 @@ class PresentSession {
   // and `presented` reports false. Swapchain recreation on resize or
   // out-of-date presentation is handled internally.
   [[nodiscard]] virtual bool RenderFrame(const DrawSummary& draw,
-                                         std::uint32_t width,
-                                         std::uint32_t height, bool& presented,
-                                         std::string& error) = 0;
+      std::uint32_t width,
+      std::uint32_t height, bool& presented,
+      std::string& error) = 0;
 
   [[nodiscard]] virtual const PresentStatistics& statistics() const = 0;
 };
@@ -69,4 +69,4 @@ class PresentSession {
     const std::string& fragment_shader, bool vsync, PresentSetupStatus& status,
     std::string& error);
 
-}  // namespace {{Name}}
+} // namespace {{Name}}

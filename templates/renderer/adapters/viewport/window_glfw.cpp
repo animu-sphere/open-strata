@@ -25,9 +25,9 @@ std::runtime_error GlfwError(std::string_view operation) {
 
 // Owns process-wide GLFW initialization; create at most one instance.
 class GlfwWindow final : public Window {
- public:
+public:
   GlfwWindow(std::string_view title, std::uint32_t width, std::uint32_t height,
-             bool visible) {
+      bool visible) {
     if (glfwInit() != GLFW_TRUE) {
       throw GlfwError("initialize GLFW");
     }
@@ -63,21 +63,29 @@ class GlfwWindow final : public Window {
     return true;
   }
 
-  void WaitForEvent() override { glfwWaitEvents(); }
+  void WaitForEvent() override {
+    glfwWaitEvents();
+  }
 
   void SetTitle(std::string_view title) override {
     const std::string owned(title);
     glfwSetWindowTitle(window_, owned.c_str());
   }
 
-  std::uint32_t width() const noexcept override { return width_; }
-  std::uint32_t height() const noexcept override { return height_; }
+  std::uint32_t width() const noexcept override {
+    return width_;
+  }
+  std::uint32_t height() const noexcept override {
+    return height_;
+  }
 
-  [[nodiscard]] GLFWwindow* native() const noexcept { return window_; }
+  [[nodiscard]] GLFWwindow* native() const noexcept {
+    return window_;
+  }
 
- private:
+private:
   void Initialize(std::string_view title, std::uint32_t width,
-                  std::uint32_t height, bool visible) {
+      std::uint32_t height, bool visible) {
     if (glfwVulkanSupported() != GLFW_TRUE) {
       throw GlfwError("query GLFW Vulkan support");
     }
@@ -86,8 +94,8 @@ class GlfwWindow final : public Window {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     const std::string owned_title(title);
     window_ = glfwCreateWindow(static_cast<int>(width),
-                               static_cast<int>(height), owned_title.c_str(),
-                               nullptr, nullptr);
+        static_cast<int>(height), owned_title.c_str(),
+        nullptr, nullptr);
     if (window_ == nullptr) {
       throw GlfwError("create GLFW viewport window");
     }
@@ -152,7 +160,7 @@ Handle DecodeHandle(std::uintptr_t handle) noexcept {
 }
 
 std::int32_t CreateSurface(void* user_data, std::uintptr_t encoded_instance,
-                           std::uintptr_t* encoded_surface) {
+    std::uintptr_t* encoded_surface) {
   if (user_data == nullptr || encoded_instance == 0 ||
       encoded_surface == nullptr) {
     return static_cast<std::int32_t>(VK_ERROR_INITIALIZATION_FAILED);
@@ -167,11 +175,11 @@ std::int32_t CreateSurface(void* user_data, std::uintptr_t encoded_instance,
   return static_cast<std::int32_t>(result);
 }
 
-}  // namespace
+} // namespace
 
 std::unique_ptr<Window> Window::Create(std::string_view title,
-                                       std::uint32_t width,
-                                       std::uint32_t height, bool visible) {
+    std::uint32_t width,
+    std::uint32_t height, bool visible) {
   return std::make_unique<GlfwWindow>(title, width, height, visible);
 }
 
@@ -191,4 +199,4 @@ PresentSurfaceProvider MakeSurfaceProvider(Window& window) {
   return provider;
 }
 
-}  // namespace {{Name}}::viewport
+} // namespace {{Name}}::viewport

@@ -10,6 +10,6 @@
 PXR_NAMESPACE_USING_DIRECTIVE
 
 TF_REGISTRY_FUNCTION(TfType) {
-    // Register your plugin's TfTypes here, e.g.:
-    //   TfType::Define<{{Name}}, TfType::Bases<...>>();
+  // Register your plugin's TfTypes here, e.g.:
+  //   TfType::Define<{{Name}}, TfType::Bases<...>>();
 }

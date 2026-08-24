@@ -32,6 +32,16 @@ backwards-compatible default for `usd-schema`.
 Skeletons have stable generation and lifecycle seams, but their domain
 architecture has not met the promotion evidence required of a template.
 
+Every C++ project, workspace, and plugin scaffold emits a root `.clang-format`
+with the catalog's shared C++17 baseline. Every template also emits the same
+reviewed `.gitignore` baseline for OpenStrata/CMake build trees, package and
+install outputs, tool-owned presets, in-source CMake/Ninja spill, Python caches,
+compiler indexes, editor state, and OS metadata. Template-specific generated
+outputs, such as renderer evidence, extend that baseline explicitly.
+Generator-owned compiled-schema baselines carry a nested
+`generated/.clang-format` with formatting disabled so recursive editor or CLI
+formatting keeps usdGenSchema byte verification authoritative.
+
 The renderer skeleton emits one project-level CMake build/install graph. Its
 core, extraction, backend, headless, and optional Hydra 2 and viewport
 directories are internal target boundaries, not separate package or plugin

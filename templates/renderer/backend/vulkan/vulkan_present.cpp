@@ -75,7 +75,7 @@ bool HasDeviceExtension(VkPhysicalDevice device, const char* name) {
   vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr);
   std::vector<VkExtensionProperties> extensions(count);
   vkEnumerateDeviceExtensionProperties(device, nullptr, &count,
-                                       extensions.data());
+      extensions.data());
   for (const VkExtensionProperties& extension : extensions) {
     if (std::string_view(extension.extensionName) == name) {
       return true;
@@ -85,7 +85,7 @@ bool HasDeviceExtension(VkPhysicalDevice device, const char* name) {
 }
 
 std::optional<std::uint32_t> FindGraphicsPresentQueue(VkPhysicalDevice device,
-                                                      VkSurfaceKHR surface) {
+    VkSurfaceKHR surface) {
   std::uint32_t count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
   std::vector<VkQueueFamilyProperties> properties(count);
@@ -97,7 +97,7 @@ std::optional<std::uint32_t> FindGraphicsPresentQueue(VkPhysicalDevice device,
     }
     VkBool32 present_supported = VK_FALSE;
     if (vkGetPhysicalDeviceSurfaceSupportKHR(device, index, surface,
-                                             &present_supported) ==
+            &present_supported) ==
             VK_SUCCESS &&
         present_supported == VK_TRUE) {
       return index;
@@ -107,25 +107,27 @@ std::optional<std::uint32_t> FindGraphicsPresentQueue(VkPhysicalDevice device,
 }
 
 class VulkanPresentSession final : public PresentSession {
- public:
-  ~VulkanPresentSession() override { Destroy(); }
+public:
+  ~VulkanPresentSession() override {
+    Destroy();
+  }
 
   PresentSetupStatus Initialize(const PresentSurfaceProvider& provider,
-                                const std::string& vertex_shader,
-                                const std::string& fragment_shader, bool vsync,
-                                std::string& error);
+      const std::string& vertex_shader,
+      const std::string& fragment_shader, bool vsync,
+      std::string& error);
 
   [[nodiscard]] bool RenderFrame(const DrawSummary& draw, std::uint32_t width,
-                                 std::uint32_t height, bool& presented,
-                                 std::string& error) override;
+      std::uint32_t height, bool& presented,
+      std::string& error) override;
 
   [[nodiscard]] const PresentStatistics& statistics() const override {
     return statistics_;
   }
 
- private:
+private:
   bool RecreateSwapchain(std::uint32_t width, std::uint32_t height,
-                         std::string& error);
+      std::string& error);
   void DestroySwapchainObjects();
   void Destroy();
 
@@ -177,7 +179,7 @@ PresentSetupStatus VulkanPresentSession::Initialize(
     instance_extensions.push_back(extension.c_str());
   }
   if (!CreateInstanceWithValidation("{{name}}-viewport", instance_extensions,
-                                    &validation_, instance_, error)) {
+          &validation_, instance_, error)) {
     return PresentSetupStatus::Unavailable;
   }
 
@@ -194,8 +196,8 @@ PresentSetupStatus VulkanPresentSession::Initialize(
 
   std::uint32_t physical_count = 0;
   if (!VulkanOk(vkEnumeratePhysicalDevices(instance_.instance, &physical_count,
-                                           nullptr),
-                "vkEnumeratePhysicalDevices", error)) {
+                    nullptr),
+          "vkEnumeratePhysicalDevices", error)) {
     return PresentSetupStatus::Error;
   }
   if (physical_count == 0) {
@@ -204,7 +206,7 @@ PresentSetupStatus VulkanPresentSession::Initialize(
   }
   std::vector<VkPhysicalDevice> physical_devices(physical_count);
   vkEnumeratePhysicalDevices(instance_.instance, &physical_count,
-                             physical_devices.data());
+      physical_devices.data());
   std::optional<std::uint32_t> queue_family;
   for (VkPhysicalDevice physical : physical_devices) {
     if (!HasDeviceExtension(physical, VK_KHR_SWAPCHAIN_EXTENSION_NAME) ||
@@ -227,10 +229,10 @@ PresentSetupStatus VulkanPresentSession::Initialize(
 
   std::uint32_t format_count = 0;
   vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_,
-                                       &format_count, nullptr);
+      &format_count, nullptr);
   std::vector<VkSurfaceFormatKHR> formats(format_count);
   vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_,
-                                       &format_count, formats.data());
+      &format_count, formats.data());
   if (formats.empty()) {
     error = "the presentation surface reports no color formats";
     return PresentSetupStatus::Unavailable;
@@ -248,12 +250,12 @@ PresentSetupStatus VulkanPresentSession::Initialize(
   if (!vsync) {
     std::uint32_t mode_count = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device_, surface_,
-                                              &mode_count, nullptr);
+        &mode_count, nullptr);
     std::vector<VkPresentModeKHR> modes(mode_count);
     vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device_, surface_,
-                                              &mode_count, modes.data());
+        &mode_count, modes.data());
     for (const VkPresentModeKHR preferred :
-         {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR}) {
+        {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR}) {
       if (std::find(modes.begin(), modes.end(), preferred) != modes.end()) {
         present_mode_ = preferred;
         break;
@@ -280,8 +282,8 @@ PresentSetupStatus VulkanPresentSession::Initialize(
   device_create.enabledExtensionCount = 1;
   device_create.ppEnabledExtensionNames = &swapchain_extension;
   if (!VulkanOk(vkCreateDevice(physical_device_, &device_create, nullptr,
-                               &device_),
-                "vkCreateDevice", error)) {
+                    &device_),
+          "vkCreateDevice", error)) {
     return PresentSetupStatus::Error;
   }
   vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
@@ -291,8 +293,8 @@ PresentSetupStatus VulkanPresentSession::Initialize(
   pool_create.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   pool_create.queueFamilyIndex = queue_family_;
   if (!VulkanOk(vkCreateCommandPool(device_, &pool_create, nullptr,
-                                    &command_pool_),
-                "vkCreateCommandPool", error)) {
+                    &command_pool_),
+          "vkCreateCommandPool", error)) {
     return PresentSetupStatus::Error;
   }
   VkCommandBufferAllocateInfo command_allocate{
@@ -301,8 +303,8 @@ PresentSetupStatus VulkanPresentSession::Initialize(
   command_allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   command_allocate.commandBufferCount = 1;
   if (!VulkanOk(vkAllocateCommandBuffers(device_, &command_allocate,
-                                         &command_),
-                "vkAllocateCommandBuffers", error)) {
+                    &command_),
+          "vkAllocateCommandBuffers", error)) {
     return PresentSetupStatus::Error;
   }
 
@@ -336,8 +338,8 @@ PresentSetupStatus VulkanPresentSession::Initialize(
   render_pass_create.dependencyCount = 1;
   render_pass_create.pDependencies = &dependency;
   if (!VulkanOk(vkCreateRenderPass(device_, &render_pass_create, nullptr,
-                                   &render_pass_),
-                "vkCreateRenderPass", error)) {
+                    &render_pass_),
+          "vkCreateRenderPass", error)) {
     return PresentSetupStatus::Error;
   }
 
@@ -385,7 +387,7 @@ PresentSetupStatus VulkanPresentSession::Initialize(
   blend.attachmentCount = 1;
   blend.pAttachments = &blend_attachment;
   const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                           VK_DYNAMIC_STATE_SCISSOR};
+      VK_DYNAMIC_STATE_SCISSOR};
   VkPipelineDynamicStateCreateInfo dynamic{
       VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
   dynamic.dynamicStateCount = 2;
@@ -393,8 +395,8 @@ PresentSetupStatus VulkanPresentSession::Initialize(
   VkPipelineLayoutCreateInfo layout_create{
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   if (!VulkanOk(vkCreatePipelineLayout(device_, &layout_create, nullptr,
-                                       &pipeline_layout_),
-                "vkCreatePipelineLayout", error)) {
+                    &pipeline_layout_),
+          "vkCreatePipelineLayout", error)) {
     vkDestroyShaderModule(device_, vertex_module, nullptr);
     vkDestroyShaderModule(device_, fragment_module, nullptr);
     return PresentSetupStatus::Error;
@@ -426,10 +428,10 @@ PresentSetupStatus VulkanPresentSession::Initialize(
   VkFenceCreateInfo fence_create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   fence_create.flags = VK_FENCE_CREATE_SIGNALED_BIT;
   if (!VulkanOk(vkCreateSemaphore(device_, &semaphore_create, nullptr,
-                                  &image_available_),
-                "vkCreateSemaphore", error) ||
+                    &image_available_),
+          "vkCreateSemaphore", error) ||
       !VulkanOk(vkCreateFence(device_, &fence_create, nullptr, &in_flight_),
-                "vkCreateFence", error)) {
+          "vkCreateFence", error)) {
     return PresentSetupStatus::Error;
   }
 
@@ -442,23 +444,23 @@ PresentSetupStatus VulkanPresentSession::Initialize(
 }
 
 bool VulkanPresentSession::RecreateSwapchain(std::uint32_t width,
-                                             std::uint32_t height,
-                                             std::string& error) {
+    std::uint32_t height,
+    std::string& error) {
   vkDeviceWaitIdle(device_);
   DestroySwapchainObjects();
 
   VkSurfaceCapabilitiesKHR capabilities{};
   if (!VulkanOk(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
                     physical_device_, surface_, &capabilities),
-                "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", error)) {
+          "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", error)) {
     return false;
   }
   VkExtent2D extent = capabilities.currentExtent;
   if (extent.width == std::numeric_limits<std::uint32_t>::max()) {
     extent.width = std::clamp(width, capabilities.minImageExtent.width,
-                              capabilities.maxImageExtent.width);
+        capabilities.maxImageExtent.width);
     extent.height = std::clamp(height, capabilities.minImageExtent.height,
-                               capabilities.maxImageExtent.height);
+        capabilities.maxImageExtent.height);
   }
   if (extent.width == 0 || extent.height == 0) {
     // Minimized between the caller's size query and now; skip this frame.
@@ -473,9 +475,9 @@ bool VulkanPresentSession::RecreateSwapchain(std::uint32_t width,
   VkCompositeAlphaFlagBitsKHR composite = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   if ((capabilities.supportedCompositeAlpha & composite) == 0) {
     for (const VkCompositeAlphaFlagBitsKHR candidate :
-         {VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
-          VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
-          VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR}) {
+        {VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+            VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+            VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR}) {
       if ((capabilities.supportedCompositeAlpha & candidate) != 0) {
         composite = candidate;
         break;
@@ -498,8 +500,8 @@ bool VulkanPresentSession::RecreateSwapchain(std::uint32_t width,
   swapchain_create.presentMode = present_mode_;
   swapchain_create.clipped = VK_TRUE;
   if (!VulkanOk(vkCreateSwapchainKHR(device_, &swapchain_create, nullptr,
-                                     &swapchain_),
-                "vkCreateSwapchainKHR", error)) {
+                    &swapchain_),
+          "vkCreateSwapchainKHR", error)) {
     return false;
   }
 
@@ -520,8 +522,8 @@ bool VulkanPresentSession::RecreateSwapchain(std::uint32_t width,
     view_create.subresourceRange.levelCount = 1;
     view_create.subresourceRange.layerCount = 1;
     if (!VulkanOk(vkCreateImageView(device_, &view_create, nullptr,
-                                    &views_[index]),
-                  "vkCreateImageView(swapchain)", error)) {
+                      &views_[index]),
+            "vkCreateImageView(swapchain)", error)) {
       return false;
     }
     VkFramebufferCreateInfo framebuffer_create{
@@ -533,15 +535,15 @@ bool VulkanPresentSession::RecreateSwapchain(std::uint32_t width,
     framebuffer_create.height = extent.height;
     framebuffer_create.layers = 1;
     if (!VulkanOk(vkCreateFramebuffer(device_, &framebuffer_create, nullptr,
-                                      &framebuffers_[index]),
-                  "vkCreateFramebuffer(swapchain)", error)) {
+                      &framebuffers_[index]),
+            "vkCreateFramebuffer(swapchain)", error)) {
       return false;
     }
     VkSemaphoreCreateInfo semaphore_create{
         VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     if (!VulkanOk(vkCreateSemaphore(device_, &semaphore_create, nullptr,
-                                    &render_finished_[index]),
-                  "vkCreateSemaphore(present)", error)) {
+                      &render_finished_[index]),
+            "vkCreateSemaphore(present)", error)) {
       return false;
     }
   }
@@ -555,9 +557,9 @@ bool VulkanPresentSession::RecreateSwapchain(std::uint32_t width,
 }
 
 bool VulkanPresentSession::RenderFrame(const DrawSummary& draw,
-                                       std::uint32_t width,
-                                       std::uint32_t height, bool& presented,
-                                       std::string& error) {
+    std::uint32_t width,
+    std::uint32_t height, bool& presented,
+    std::string& error) {
   presented = false;
   if (draw.draw_count != 1 || draw.triangle_count != 1) {
     error = "bootstrap extraction did not produce one triangle draw";
@@ -577,14 +579,14 @@ bool VulkanPresentSession::RenderFrame(const DrawSummary& draw,
   }
 
   if (!VulkanOk(vkWaitForFences(device_, 1, &in_flight_, VK_TRUE,
-                                kFrameTimeoutNs),
-                "vkWaitForFences", error)) {
+                    kFrameTimeoutNs),
+          "vkWaitForFences", error)) {
     return false;
   }
   std::uint32_t image_index = 0;
   const VkResult acquire =
       vkAcquireNextImageKHR(device_, swapchain_, kFrameTimeoutNs,
-                            image_available_, VK_NULL_HANDLE, &image_index);
+          image_available_, VK_NULL_HANDLE, &image_index);
   if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
     return RecreateSwapchain(width, height, error);
   }
@@ -592,17 +594,17 @@ bool VulkanPresentSession::RenderFrame(const DrawSummary& draw,
     return VulkanOk(acquire, "vkAcquireNextImageKHR", error);
   }
   if (!VulkanOk(vkResetFences(device_, 1, &in_flight_), "vkResetFences",
-                error)) {
+          error)) {
     return false;
   }
 
   if (!VulkanOk(vkResetCommandBuffer(command_, 0), "vkResetCommandBuffer",
-                error)) {
+          error)) {
     return false;
   }
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   if (!VulkanOk(vkBeginCommandBuffer(command_, &begin), "vkBeginCommandBuffer",
-                error)) {
+          error)) {
     return false;
   }
   VkClearValue clear{};
@@ -620,11 +622,11 @@ bool VulkanPresentSession::RenderFrame(const DrawSummary& draw,
   vkCmdBeginRenderPass(command_, &render_begin, VK_SUBPASS_CONTENTS_INLINE);
   vkCmdBindPipeline(command_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
   const VkViewport viewport{0.0F,
-                            0.0F,
-                            static_cast<float>(extent_.width),
-                            static_cast<float>(extent_.height),
-                            0.0F,
-                            1.0F};
+      0.0F,
+      static_cast<float>(extent_.width),
+      static_cast<float>(extent_.height),
+      0.0F,
+      1.0F};
   const VkRect2D scissor{{0, 0}, extent_};
   vkCmdSetViewport(command_, 0, 1, &viewport);
   vkCmdSetScissor(command_, 0, 1, &scissor);
@@ -645,7 +647,7 @@ bool VulkanPresentSession::RenderFrame(const DrawSummary& draw,
   submit.signalSemaphoreCount = 1;
   submit.pSignalSemaphores = &render_finished_[image_index];
   if (!VulkanOk(vkQueueSubmit(queue_, 1, &submit, in_flight_),
-                "vkQueueSubmit", error)) {
+          "vkQueueSubmit", error)) {
     return false;
   }
 
@@ -719,7 +721,7 @@ void VulkanPresentSession::Destroy() {
   DestroyInstance(instance_);
 }
 
-}  // namespace
+} // namespace
 
 std::unique_ptr<PresentSession> CreatePresentSession(
     const PresentSurfaceProvider& surface, const std::string& vertex_shader,
@@ -727,7 +729,7 @@ std::unique_ptr<PresentSession> CreatePresentSession(
     std::string& error) {
   auto session = std::make_unique<VulkanPresentSession>();
   status = session->Initialize(surface, vertex_shader, fragment_shader, vsync,
-                               error);
+      error);
   if (status != PresentSetupStatus::Ready) {
     return nullptr;
   }
@@ -736,4 +738,4 @@ std::unique_ptr<PresentSession> CreatePresentSession(
 
 #endif
 
-}  // namespace {{Name}}
+} // namespace {{Name}}

@@ -1,7 +1,7 @@
 schema: openstrata.template/v1alpha1
 template:
   id: renderer
-  version: 0.5.0
+  version: 0.5.1
   maturity: skeleton
   artifact_kind: project
 variables:
@@ -13,6 +13,7 @@ outputs:
     - CMakeLists.txt
     - README.md
     - .gitignore
+    - .clang-format
     - openstrata.renderer.yaml
     - cmake/{{Name}}Config.cmake.in
     - include/{{name}}/render_world.hpp

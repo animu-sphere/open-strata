@@ -1,3 +1,38 @@
-/build/
-/lib/
+# OpenStrata and out-of-source build products.
 /.strata/
+/build/
+/cmake-build-*/
+/dist/
+/install/
+/lib/
+/out/
+/CMakeUserPresets.json
+/compile_commands.json
+
+# Accidental in-source CMake and Ninja products.
+/CMakeCache.txt
+/CMakeFiles/
+/CTestTestfile.cmake
+/Testing/
+/build.ninja
+/cmake_install.cmake
+/install_manifest.txt
+/Makefile
+/.ninja_deps
+/.ninja_log
+
+# Python tooling and test caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local editor, compiler-index, and OS metadata.
+/.vs/
+/.idea/
+/.cache/clangd/
+*.suo
+*.user
+*.VC.db
+*.VC.VC.opendb
+.DS_Store
+Thumbs.db

@@ -15,43 +15,26 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $matrixPath = Join-Path $PSScriptRoot 'openusd-runtime-matrix.json'
+$planner = Join-Path $PSScriptRoot 'plan-openusd-runtimes.py'
 $validator = Join-Path $PSScriptRoot 'validate-openusd-runtime.py'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$matrix = Get-Content -LiteralPath $matrixPath -Raw | ConvertFrom-Json
 
 $hostOs = if ($IsWindows) { 'windows' } elseif ($IsMacOS) { 'macos' } else { 'linux' }
 $hostArch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x86_64' }
-$cell = @($matrix.cells | Where-Object { $_.os -eq $hostOs -and $_.arch -eq $hostArch })
-if ($cell.Count -ne 1) {
-    throw "the canonical matrix has no unique producer cell for $hostOs-$hostArch"
-}
-$allowed = @($cell[0].variants)
-$selectedVariants = @($Variant | Where-Object { $allowed -contains $_ })
-if ($selectedVariants.Count -eq 0) {
-    throw "none of the selected variants apply to $hostOs-$hostArch (allowed: $($allowed -join ', '))"
-}
-
-$plannedLeaves = foreach ($itemVersion in $Version) {
-    foreach ($itemVariant in $selectedVariants) {
-        [ordered]@{
-            openusd = $itemVersion
-            profile = 'usd'
-            variant = $itemVariant
-            os = $hostOs
-            arch = $hostArch
-            examples_required = $itemVariant -ne 'core'
-            tag = "$itemVersion-$itemVariant-$hostOs-$hostArch"
-        }
-    }
-}
+$python = (Get-Command python -ErrorAction Stop).Source
+$planArguments = @($planner, $matrixPath, '--host', $hostOs, '--arch', $hostArch)
+foreach ($itemVersion in $Version) { $planArguments += @('--version', $itemVersion) }
+foreach ($itemVariant in $Variant) { $planArguments += @('--variant', $itemVariant) }
+$planText = (& $python @planArguments) -join [Environment]::NewLine
+if ($LASTEXITCODE -ne 0) { throw 'canonical OpenUSD runtime planning failed' }
+$plannedLeaves = @(($planText | ConvertFrom-Json).jobs)
 if ($PlanOnly) {
-    [ordered]@{ schema = 1; jobs = @($plannedLeaves) } | ConvertTo-Json -Depth 8
+    $planText
     return
 }
 
 $ost = (Get-Command ost -ErrorAction Stop).Source
 $git = (Get-Command git -ErrorAction Stop).Source
-$python = (Get-Command python -ErrorAction Stop).Source
 $producerStatus = @(& $git -C $repositoryRoot status --porcelain --untracked-files=all)
 if ($LASTEXITCODE -ne 0) { throw 'could not inspect the OpenStrata producer checkout' }
 if ($producerStatus.Count -gt 0) {
@@ -84,7 +67,7 @@ $results = foreach ($job in $plannedLeaves) {
     $env:OST_HOME = $ostHome
     $pull = @('runtime', 'pull', 'cy2026', '--profile', 'usd', '--build', $source, '--openusd-variant', $job.variant, '--jobs', "$Jobs", '--force')
     if ($hostOs -eq 'macos') {
-        $pull += @('--sdk', "$($cell[0].sdk)", '--deployment-target', "$($cell[0].deployment_target)")
+        $pull += @('--sdk', "$($job.sdk)", '--deployment-target', "$($job.deployment_target)")
     }
     Invoke-Checked $ost $pull
     Invoke-Checked $ost @('runtime', 'validate', 'cy2026', '--profile', 'usd')

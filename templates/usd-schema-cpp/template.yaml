@@ -1,7 +1,7 @@
 schema: openstrata.template/v1alpha1
 template:
   id: usd-schema-cpp
-  version: 0.1.0
+  version: 0.1.1
   maturity: skeleton
   artifact_kind: plugin
 plugin_kind: usd-schema
@@ -15,9 +15,11 @@ outputs:
     - CMakeLists.txt
     - README.md
     - .gitignore
+    - .clang-format
     - cmake/OpenStrataPlugin.cmake
     - cmake/{{Name}}Config.cmake.in
     - schema.usda
+    - generated/.clang-format
     - generated/api.h
     - generated/contractAPI.h
     - generated/contractAPI.cpp

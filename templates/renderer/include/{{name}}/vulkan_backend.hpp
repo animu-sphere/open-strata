@@ -69,4 +69,4 @@ struct GpuFrameEvidence {
     const std::string& fragment_shader,
     std::uint32_t frame_count);
 
-}  // namespace {{Name}}
+} // namespace {{Name}}

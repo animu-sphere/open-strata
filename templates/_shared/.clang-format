@@ -1,0 +1,20 @@
+# Shared formatting baseline for generated C and C++ projects.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++17
+IndentWidth: 2
+ContinuationIndentWidth: 4
+TabWidth: 2
+UseTab: Never
+ColumnLimit: 0
+AccessModifierOffset: -2
+AlignAfterOpenBracket: DontAlign
+BreakAfterReturnType: None
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: None
+DerivePointerAlignment: false
+PointerAlignment: Left
+SortIncludes: Never
+NamespaceIndentation: None
+FixNamespaceComments: true
