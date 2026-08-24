@@ -48,6 +48,10 @@ const USD_FILEFORMAT_CPP: &[TemplateFile] = &[
         include_str!("../../../templates/usd-fileformat-cpp/.gitignore"),
     ),
     tf(
+        ".clang-format",
+        include_str!("../../../templates/_shared/.clang-format"),
+    ),
+    tf(
         "cmake/OpenStrataPlugin.cmake",
         include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake"),
     ),
@@ -144,6 +148,10 @@ const USD_SCHEMA_CPP: &[TemplateFile] = &[
         include_str!("../../../templates/usd-schema-cpp/.gitignore"),
     ),
     tf(
+        ".clang-format",
+        include_str!("../../../templates/_shared/.clang-format"),
+    ),
+    tf(
         "cmake/OpenStrataPlugin.cmake",
         include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake"),
     ),
@@ -158,6 +166,10 @@ const USD_SCHEMA_CPP: &[TemplateFile] = &[
     tf(
         "generated/api.h",
         include_str!("../../../templates/usd-schema-cpp/generated/api.h"),
+    ),
+    tf(
+        "generated/.clang-format",
+        include_str!("../../../templates/_shared/.clang-format-disable"),
     ),
     tf(
         "generated/contractAPI.h",
@@ -223,6 +235,10 @@ const USD_ASSET_RESOLVER_CPP: &[TemplateFile] = &[
         include_str!("../../../templates/usd-asset-resolver-cpp/.gitignore"),
     ),
     tf(
+        ".clang-format",
+        include_str!("../../../templates/_shared/.clang-format"),
+    ),
+    tf(
         "cmake/OpenStrataPlugin.cmake",
         include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake"),
     ),
@@ -273,6 +289,10 @@ const USD_PACKAGE_RESOLVER_CPP: &[TemplateFile] = &[
     tf(
         ".gitignore",
         include_str!("../../../templates/usd-package-resolver-cpp/.gitignore"),
+    ),
+    tf(
+        ".clang-format",
+        include_str!("../../../templates/_shared/.clang-format"),
     ),
     tf(
         "cmake/OpenStrataPlugin.cmake",
@@ -334,6 +354,10 @@ const USD_EXEC_CPP: &[TemplateFile] = &[
     tf(
         ".gitignore",
         include_str!("../../../templates/usd-exec-cpp/.gitignore"),
+    ),
+    tf(
+        ".clang-format",
+        include_str!("../../../templates/_shared/.clang-format"),
     ),
     tf(
         "cmake/OpenStrataPlugin.cmake",
@@ -1132,6 +1156,44 @@ fn append_schema_source(src: &str, source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_plugin_template_emits_ignore_hygiene_and_cpp_formatting() {
+        let ignore = include_str!("../../../templates/_shared/.gitignore");
+        let format = include_str!("../../../templates/_shared/.clang-format");
+        for (id, files, is_cpp) in [
+            ("usd-fileformat-cpp", USD_FILEFORMAT_CPP, true),
+            ("usd-schema-codeless", USD_SCHEMA_CODELESS, false),
+            ("usd-schema-cpp", USD_SCHEMA_CPP, true),
+            ("usd-asset-resolver-cpp", USD_ASSET_RESOLVER_CPP, true),
+            ("usd-package-resolver-cpp", USD_PACKAGE_RESOLVER_CPP, true),
+            ("usd-exec-cpp", USD_EXEC_CPP, true),
+        ] {
+            let actual_ignore = files
+                .iter()
+                .find(|file| file.path == ".gitignore")
+                .map(|file| file.contents);
+            assert_eq!(actual_ignore, Some(ignore), "{id}");
+
+            let actual_format = files
+                .iter()
+                .find(|file| file.path == ".clang-format")
+                .map(|file| file.contents);
+            assert_eq!(actual_format, is_cpp.then_some(format), "{id}");
+            if id == "usd-schema-cpp" {
+                let generated_format = files
+                    .iter()
+                    .find(|file| file.path == "generated/.clang-format")
+                    .map(|file| file.contents);
+                assert_eq!(
+                    generated_format,
+                    Some(include_str!(
+                        "../../../templates/_shared/.clang-format-disable"
+                    ))
+                );
+            }
+        }
+    }
 
     #[test]
     fn pascalizes_separated_names() {

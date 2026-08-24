@@ -122,6 +122,10 @@ const CPP_LIBRARY: &[TemplateFile] = &[
         include_str!("../../../templates/cpp-library/.gitignore"),
     ),
     tf(
+        ".clang-format",
+        include_str!("../../../templates/_shared/.clang-format"),
+    ),
+    tf(
         "include/{{name}}/{{name}}.hpp",
         include_str!("../../../templates/cpp-library/include/{{name}}/{{name}}.hpp"),
     ),
@@ -153,6 +157,10 @@ const RENDERER: &[TemplateFile] = &[
     tf(
         ".gitignore",
         include_str!("../../../templates/renderer/.gitignore"),
+    ),
+    tf(
+        ".clang-format",
+        include_str!("../../../templates/_shared/.clang-format"),
     ),
     tf(
         "openstrata.renderer.yaml",
@@ -308,6 +316,10 @@ const USD_PLUGIN: &[TemplateFile] = &[
         include_str!("../../../templates/usd-plugin/.gitignore"),
     ),
     tf(
+        ".clang-format",
+        include_str!("../../../templates/_shared/.clang-format"),
+    ),
+    tf(
         "src/{{name}}.cpp",
         include_str!("../../../templates/usd-plugin/src/{{name}}.cpp"),
     ),
@@ -338,6 +350,10 @@ const PLUGIN_WORKSPACE: &[TemplateFile] = &[
     tf(
         ".gitignore",
         include_str!("../../../templates/plugin-workspace/.gitignore"),
+    ),
+    tf(
+        ".clang-format",
+        include_str!("../../../templates/_shared/.clang-format"),
     ),
 ];
 
@@ -555,6 +571,40 @@ mod tests {
             assert!(outputs
                 .iter()
                 .any(|path| path.as_str() == SCAFFOLD_PROVENANCE));
+        }
+    }
+
+    #[test]
+    fn every_project_template_emits_formatting_and_ignore_hygiene() {
+        let format = include_str!("../../../templates/_shared/.clang-format");
+        let ignore = include_str!("../../../templates/_shared/.gitignore");
+        for template in [
+            Template::CppLibrary,
+            Template::Renderer,
+            Template::UsdPlugin,
+            Template::PluginWorkspace,
+        ] {
+            let files = template.files();
+            let actual_format = files
+                .iter()
+                .find(|file| file.path == ".clang-format")
+                .map(|file| file.contents);
+            assert_eq!(actual_format, Some(format), "{}", template.as_str());
+
+            let actual_ignore = files
+                .iter()
+                .find(|file| file.path == ".gitignore")
+                .map(|file| file.contents)
+                .expect("project template has .gitignore");
+            if template == Template::Renderer {
+                assert!(
+                    actual_ignore.starts_with(ignore),
+                    "renderer ignore baseline drifted"
+                );
+                assert!(actual_ignore.contains("renderer-*-report.json"));
+            } else {
+                assert_eq!(actual_ignore, ignore, "{}", template.as_str());
+            }
         }
     }
 

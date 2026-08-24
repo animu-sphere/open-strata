@@ -1,0 +1,2 @@
+# Preserve generator-owned source byte-for-byte for verification.
+DisableFormat: true
