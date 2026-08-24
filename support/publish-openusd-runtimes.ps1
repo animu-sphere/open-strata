@@ -63,6 +63,11 @@ $results = foreach ($job in $plannedLeaves) {
         Invoke-Checked $git @('-C', $source, 'fetch', '--depth', '1', 'origin', "refs/tags/v$($job.openusd):refs/tags/v$($job.openusd)")
         Invoke-Checked $git @('-C', $source, 'checkout', '--detach', "v$($job.openusd)")
     }
+    # build_usd.py imports from build_scripts/, so running one leaf leaves a
+    # __pycache__ behind and the next leaf of the same OpenUSD version would fail
+    # the check below. Clearing untracked residue first keeps the check meaning
+    # "the tracked tree is exactly the tag" instead of weakening it.
+    Invoke-Checked $git @('-C', $source, 'clean', '-xfdq')
     if ((& $git -C $source status --porcelain)) { throw "OpenUSD source checkout is dirty: $source" }
     $env:OST_HOME = $ostHome
     $pull = @('runtime', 'pull', 'cy2026', '--profile', 'usd', '--build', $source, '--openusd-variant', $job.variant, '--jobs', "$Jobs", '--force')
