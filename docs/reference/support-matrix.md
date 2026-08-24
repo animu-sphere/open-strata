@@ -32,11 +32,8 @@ Per-feature, per-platform support levels. Sourced from [`support/platforms.toml`
 | DCC host adapters and matrix [^8] | unsupported | unsupported | unsupported | unsupported |
 
 [^1]: macOS source builds can need full Xcode for upstream codesign; see the runtime build notes.
-[^2]: The GHCR user/password push path has not yet been round-tripped end to end;
-    see the [v0.11.0 known limitations](../releases/v0.11.0.md#known-limitations).
-[^3]: Windows source-CI is proven green end to end; the macOS lane is pending a
-    public-runtime republish; see the
-    [v0.12.0 remaining follow-ups](../releases/v0.12.0.md#known-limitations--remaining-follow-ups).
+[^2]: The GHCR user/password push path has not yet been round-tripped end to end; see the [v0.11.0 known limitations](../releases/v0.11.0.md#known-limitations).
+[^3]: Windows source-CI is proven green end to end; the macOS lane is pending a public-runtime republish; see the [v0.12.0 remaining follow-ups](../releases/v0.12.0.md#known-limitations--remaining-follow-ups).
 [^4]: A Unix concept; Windows has no execute bit to preserve.
 [^5]: Linux SDK soname chains; not part of the Windows packaging model.
 [^6]: A Linux-only concept (ELF scan of the runtime's binaries).
