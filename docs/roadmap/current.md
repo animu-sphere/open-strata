@@ -3,51 +3,45 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## v0.23.0 - DCC host adapters and matrix
+## v0.22.3 - artifact contract hardening
 
-**Status:** 🚧 next milestone; moved from v0.22.0 on 2026-08-09 · **Depends
-on:** v0.21.0 host discovery and the v0.22.0 artifact compatibility,
-distribution, provider, and evidence contracts.
+**Status:** 🚧 next milestone · **Depends on:** the v0.22.0-v0.22.2 OpenUSD
+artifact, compatibility, provider, distribution and evidence contracts.
 
-v0.21.0 answered *which hosts are installed*. This milestone is everything that
-*runs* one: a host adapter boundary executing minimal headless
-load/open/validate probes with preserved output and an explained SKIP for an
-unavailable license, display, or capability. The adapter's `environment`
-capability contributes to Formation resolution rather than composing paths on
-its own, so a host probe and a runtime-native app share one environment
-contract. Host-standard packaging (Maya `.mod`, Houdini package JSON) belongs to
-this slice; editing `Maya.env` or any user configuration does not.
+This starts the
+[v0.22.x runtime-composition series](runtime-composition.md). Before several
+artifacts can become one runtime, every needed component must be independently
+buildable, packageable, attributable and explicit about its dependencies and
+release membership. The milestone is driven by the 2026-08-24 USD VRM
+[release-artifact membership report](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/35-2026-08-24-v0.22.2-release-artifact-membership.md).
 
-Support-matrix cells follow the adapters, because a matrix cell pins host
-evidence that only a host probe can produce. A cell carries a pinned host record
-and artifact digests, stable/nightly/release/legacy tiers, and trusted release
-candidates fed in without weakening the artifact publisher boundary. A cell is
-one production-guaranteed runtime set, and cross-DCC data contracts are edges —
-the matrix is a graph, not a Cartesian product.
+### P1 acceptance
 
-Host integration consumes Formation as its environment and component-assembly
-layer and reuses the v0.22.0 artifact resolver/provider model and the renderer
-identity/evidence model. OpenStrata never installs, updates, licenses, or
-modifies a host, and no DCC API is abstracted: differences are pushed into host
-adapters, never leaked into the core. Sessions, GPU/AI, and broader DCC matrices
-remain later work still. Direction:
-[dcc-hosts.md](../design/proposed/dcc-hosts.md).
+- `ost library build|test|package` consumes the `requires.libraries` graph it
+  validates, so a non-leaf adapter resolves its sibling install prefixes through
+  normal CMake package discovery.
+- Shared profiles/configuration have a data-only artifact/member contract (or an
+  equivalent project-relative install mapping) and ship once under the correct
+  owner rather than being copied below one tool.
+- Root `ost build` outputs and package members carry coherent managed provenance.
 
-### Carried acceptance
+### P2/P3 hardening
 
-- **Linux and macOS host discovery passes.** v0.21.0's discovery slice was
-  accepted on Windows against a real Maya 2024 and Houdini 20.5.522. The Linux
-  and macOS install layouts — and, for Houdini on macOS, the framework root
-  shape — are encoded from documentation rather than demonstrated. They travel
-  with the adapters because both need a real install to exercise.
+- Workspace discovery and aggregate-product membership are separate decisions;
+  the project declares or pins the exact release set and packaging prints it.
+- OST-upgrade record migrations, missing tool staging and managed-build
+  mismatches name their cause and affected member.
+- A workstation/CI OST pin mismatch that changes discovery or membership is
+  reported before it becomes a release-lane surprise.
 
-### DCC exit criteria
+### Exit criteria
 
-A pinned, verified OpenUSD artifact and plugin set resolves against supported
-Maya and Houdini host records, packages in each host's standard form, completes
-minimal headless probes, and records reproducible matrix evidence. Unavailable
-host prerequisites produce an explained SKIP; compatibility failures are
-actionable pre-launch errors.
+The USD VRM workspace packages a non-leaf adapter and its shared motion profiles
+from declared dependencies, fails on an unexpected aggregate membership change,
+and emits member-specific provenance and diagnostics. The complete intake and
+the ordered v0.22.4-v0.22.9 slices are in
+[runtime-composition.md](runtime-composition.md). DCC host adapters and their
+matrix remain deferred to v0.23.0 in the [backlog](backlog.md).
 
 ## Shipped: v0.21.0 - host discovery and dogfooding closure
 
@@ -169,7 +163,7 @@ macOS, where the install layouts (and, for Houdini on macOS, the framework root
 shape) are encoded from documentation rather than demonstrated.
 
 **Moved out of v0.21.0 on 2026-07-27 and replanned on 2026-08-09** in the
-[v0.23.0 milestone](#v0230---dcc-host-adapters-and-matrix) above: the headless
+[v0.23.0 milestone](backlog.md#milestone-ladder-beyond-next): the headless
 host adapters, host-standard packaging, and the support-matrix cells that carry
 pinned host evidence. The discovery foundation is shipped and unaffected —
 `ost host discover | list | inspect` resolves real Maya and Houdini installs

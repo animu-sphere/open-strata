@@ -121,6 +121,17 @@ The report used the pinned `ost 0.21.0` available to the workspace while
 preparing for v0.22.0. It intentionally does not claim validation against an
 unreleased v0.22.0 binary.
 
+The later
+[HTTP resolver pre-implementation report](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/04-2026-08-16-usd-http-resolver-preimplementation.md)
+exercised `ost 0.22.2` against the external `usd-http-resolver` skeleton. Runtime
+resolution and its empty build passed; `ci validate` and `test` correctly
+reported the missing matrix and tests. The report requests no OpenStrata change.
+It is instead the readiness gate for the
+[USD Geospatial Runtime](usd-geospatial-runtime.md): Tier 2 HTTP/COPC
+interoperability waits for a resolver bundle, HTTP backend, stable identity
+metadata and registered tests, then repeats the report with range-read, cache
+reuse and invalidation evidence.
+
 ## Current boundaries
 
 - The downstream capability matrix is the source of truth for supported LAS,
@@ -139,6 +150,8 @@ unreleased v0.22.0 binary.
   [`animu-sphere/usd-pointcloud-plugins`](https://github.com/animu-sphere/usd-pointcloud-plugins).
 - PLY CI dogfooding report:
   [report 01](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/01-2026-08-11-v0.22.0-ply-fileformat-ci.md).
+- HTTP resolver pre-implementation report:
+  [report 04](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/04-2026-08-16-usd-http-resolver-preimplementation.md).
 - Downstream capability matrix:
   [`docs/reference/CAPABILITY_MATRIX.md`](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reference/CAPABILITY_MATRIX.md).
 - OpenStrata plugin-workspace contract:
