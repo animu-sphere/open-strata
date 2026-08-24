@@ -52,6 +52,11 @@ if ($PlanOnly) {
 $ost = (Get-Command ost -ErrorAction Stop).Source
 $git = (Get-Command git -ErrorAction Stop).Source
 $python = (Get-Command python -ErrorAction Stop).Source
+$producerStatus = @(& $git -C $repositoryRoot status --porcelain --untracked-files=all)
+if ($LASTEXITCODE -ne 0) { throw 'could not inspect the OpenStrata producer checkout' }
+if ($producerStatus.Count -gt 0) {
+    throw "OpenStrata producer checkout is dirty; commit or remove these changes before publishing:`n$($producerStatus -join [Environment]::NewLine)"
+}
 $openStrataRevision = (& $git -C $repositoryRoot rev-parse HEAD) -join ''
 if ($LASTEXITCODE -ne 0) { throw 'could not resolve the OpenStrata revision' }
 $openStrataRevision = $openStrataRevision.Trim()
@@ -108,9 +113,23 @@ $results = foreach ($job in $plannedLeaves) {
     }
     if ($VerifyPublished) {
         if (-not $ociDigest) { throw '-VerifyPublished requires -Publish in the same run' }
-        $verifyHome = Join-Path $runRoot 'verify-home'
-        $env:OST_HOME = $verifyHome
-        Invoke-Checked $ost @('artifact', 'pull', "$Registry@$ociDigest", '--expect-artifact', $artifactDigest, '--require-kind', 'runtime')
+        $verifyHome = Join-Path $runRoot "verify-home-$([Guid]::NewGuid().ToString('N'))"
+        $savedUser = $env:OST_REGISTRY_USER
+        $savedPassword = $env:OST_REGISTRY_PASSWORD
+        $savedToken = $env:OST_REGISTRY_TOKEN
+        try {
+            Remove-Item Env:OST_REGISTRY_USER -ErrorAction SilentlyContinue
+            Remove-Item Env:OST_REGISTRY_PASSWORD -ErrorAction SilentlyContinue
+            Remove-Item Env:OST_REGISTRY_TOKEN -ErrorAction SilentlyContinue
+            $env:OST_HOME = $verifyHome
+            Invoke-Checked $ost @('artifact', 'pull', "$Registry@$ociDigest", '--expect-artifact', $artifactDigest, '--require-kind', 'runtime')
+        }
+        finally {
+            if ($null -eq $savedUser) { Remove-Item Env:OST_REGISTRY_USER -ErrorAction SilentlyContinue } else { $env:OST_REGISTRY_USER = $savedUser }
+            if ($null -eq $savedPassword) { Remove-Item Env:OST_REGISTRY_PASSWORD -ErrorAction SilentlyContinue } else { $env:OST_REGISTRY_PASSWORD = $savedPassword }
+            if ($null -eq $savedToken) { Remove-Item Env:OST_REGISTRY_TOKEN -ErrorAction SilentlyContinue } else { $env:OST_REGISTRY_TOKEN = $savedToken }
+            $env:OST_HOME = $ostHome
+        }
     }
     [ordered]@{ tag = $slug; artifact_digest = $artifactDigest; oci_digest = $ociDigest; source_revision = $sourceRevision }
 }

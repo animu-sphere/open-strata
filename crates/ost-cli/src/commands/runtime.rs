@@ -1525,15 +1525,21 @@ pub(crate) fn detect_openusd_version(root: &Utf8Path) -> Option<String> {
 
 /// Read the release declared by an OpenUSD source checkout before the build.
 /// Supported upstream releases define the numeric components in
-/// `pxr/pxrConfig.cmake`; archives and Git checkouts therefore behave alike.
+/// `cmake/defaults/Version.cmake`; archives and Git checkouts therefore behave
+/// alike without relying on a generated build-tree `pxrConfig.cmake`.
 fn detect_openusd_source_version(root: &Utf8Path) -> Option<String> {
-    let source = std::fs::read_to_string(root.join("pxr/pxrConfig.cmake").as_std_path()).ok()?;
+    let source =
+        std::fs::read_to_string(root.join("cmake/defaults/Version.cmake").as_std_path()).ok()?;
     let value = |name: &str| {
         source.lines().find_map(|line| {
             let line = line.trim();
             let rest = line.strip_prefix("set(")?;
             let rest = rest.strip_prefix(name)?.trim_start();
-            rest.split([' ', ')']).next()?.parse::<u32>().ok()
+            rest.split([' ', ')'])
+                .next()?
+                .trim_matches(['\'', '"'])
+                .parse::<u32>()
+                .ok()
         })
     };
     let minor = value("PXR_MINOR_VERSION")?;
@@ -2313,17 +2319,16 @@ fn check_exportable(manifest: &RuntimeManifest) -> Result<()> {
         )
         .with_hint("run `ost runtime validate <platform> --profile <profile>` first"));
     }
-    let requires_graphics_loader =
-        manifest
-            .openusd_compatibility
-            .as_ref()
-            .is_some_and(|compatibility| {
-                compatibility
-                    .capabilities
-                    .iter()
-                    .any(|capability| matches!(capability.as_str(), "opengl" | "vulkan"))
-            });
-    if requires_graphics_loader
+    let requires_graphics = manifest
+        .openusd_compatibility
+        .as_ref()
+        .is_some_and(|compatibility| {
+            compatibility
+                .capabilities
+                .iter()
+                .any(|capability| matches!(capability.as_str(), "opengl" | "vulkan" | "metal"))
+        });
+    if requires_graphics
         && manifest.openusd_verification.loader != OpenUsdVerificationStatus::Passed
     {
         return Err(Error::coded(
@@ -2340,6 +2345,42 @@ fn check_exportable(manifest: &RuntimeManifest) -> Result<()> {
              that carries one or rebuild the runtime from source on the publishing host"
         } else {
             "run `ost runtime validate <platform> --profile <profile>` on the publishing host"
+        }));
+    }
+    if requires_graphics
+        && manifest.openusd_verification.physical_device != OpenUsdVerificationStatus::Passed
+    {
+        return Err(Error::coded(
+            "EXPORT_OPENUSD_DEVICE_VERIFICATION_REQUIRED",
+            ost_core::Category::Validation,
+            format!(
+                "runtime '{}' requires a physical graphics device observation but its OpenUSD device verification is {}",
+                manifest.id,
+                manifest.openusd_verification.physical_device.as_str()
+            ),
+        )
+        .with_hint(if manifest.source == RuntimeSource::Artifact {
+            "the immutable artifact producer made no passing physical-device claim; select an artifact that carries one or rebuild the runtime from source on the publishing host"
+        } else {
+            "run `ost runtime validate <platform> --profile <profile>` on a publishing host with the selected graphics device available"
+        }));
+    }
+    if requires_graphics
+        && manifest.openusd_verification.render != OpenUsdVerificationStatus::Passed
+    {
+        return Err(Error::coded(
+            "EXPORT_OPENUSD_RENDER_VERIFICATION_REQUIRED",
+            ost_core::Category::Validation,
+            format!(
+                "runtime '{}' requires a rendered OpenUSD frame but its render verification is {}",
+                manifest.id,
+                manifest.openusd_verification.render.as_str()
+            ),
+        )
+        .with_hint(if manifest.source == RuntimeSource::Artifact {
+            "the immutable artifact producer made no passing render claim; select an artifact that carries one or rebuild the runtime from source on the publishing host"
+        } else {
+            "run `ost runtime validate <platform> --profile <profile>` on a publishing host that can render through the selected Hgi backend"
         }));
     }
     Ok(())
@@ -4986,7 +5027,7 @@ mod tests {
     }
 
     #[test]
-    fn graphics_runtime_export_requires_persisted_loader_evidence() {
+    fn graphics_runtime_export_requires_all_persisted_backend_evidence() {
         let mut standard = exportable_manifest();
         standard
             .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Gl)))
@@ -5002,6 +5043,26 @@ mod tests {
             Some(OpenUsdVerificationStatus::Passed),
             None,
             None,
+        )
+        .unwrap();
+        let error = check_exportable(&standard).unwrap_err();
+        assert_eq!(error.code(), "EXPORT_OPENUSD_DEVICE_VERIFICATION_REQUIRED");
+
+        persist_graphics_observations(
+            &mut standard,
+            None,
+            Some(OpenUsdVerificationStatus::Passed),
+            None,
+        )
+        .unwrap();
+        let error = check_exportable(&standard).unwrap_err();
+        assert_eq!(error.code(), "EXPORT_OPENUSD_RENDER_VERIFICATION_REQUIRED");
+
+        persist_graphics_observations(
+            &mut standard,
+            None,
+            None,
+            Some(OpenUsdVerificationStatus::Passed),
         )
         .unwrap();
         assert!(check_exportable(&standard).is_ok());
@@ -5961,6 +6022,31 @@ except Exception:
         // Missing header → no guess.
         std::fs::remove_dir_all(root.as_std_path()).ok();
         assert_eq!(detect_openusd_version(&root), None);
+    }
+
+    #[test]
+    fn detects_openusd_source_version_from_upstream_version_cmake() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut root = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
+        root.push(format!("ost-openusd-source-{}-{nanos}", std::process::id()));
+        let cmake_dir = root.join("cmake/defaults");
+        std::fs::create_dir_all(cmake_dir.as_std_path()).unwrap();
+        std::fs::write(
+            cmake_dir.join("Version.cmake").as_std_path(),
+            "set(PXR_MAJOR_VERSION \"0\")\n\
+             set(PXR_MINOR_VERSION \"26\")\n\
+             set(PXR_PATCH_VERSION \"8\")\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_openusd_source_version(&root),
+            Some("26.08".to_string())
+        );
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[test]

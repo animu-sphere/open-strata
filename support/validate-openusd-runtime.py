@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -51,18 +52,54 @@ def plugin_info(root: Path, plugin: str) -> Path:
     ) or require_file(root, f"lib/usd/{plugin}/resources/plugInfo.json")
 
 
-def validate_relocation(root: Path, libraries: list[Path], platform: str) -> None:
-    if platform != "macos":
-        return
-    for library in libraries:
+def mach_o_files(root: Path) -> list[Path]:
+    candidates = (
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and (
+            path.suffix in {".dylib", ".so", ".bundle"}
+            or path.stat().st_mode & stat.S_IXUSR
+        )
+    )
+    binaries: list[Path] = []
+    for path in candidates:
         result = subprocess.run(
-            ["otool", "-L", str(library)], capture_output=True, text=True, check=False
+            ["file", "-b", str(path)], capture_output=True, text=True, check=False
         )
         if result.returncode != 0:
-            raise RuntimeError(f"otool failed for {library}: {result.stderr.strip()}")
-        forbidden = [line.strip() for line in result.stdout.splitlines()[1:] if "/build/" in line or "/work/" in line]
+            raise RuntimeError(f"file failed for {path}: {result.stderr.strip()}")
+        if "Mach-O" in result.stdout:
+            binaries.append(path)
+    return binaries
+
+
+def validate_relocation(root: Path, platform: str) -> None:
+    if platform != "macos":
+        return
+    binaries = mach_o_files(root)
+    if not binaries:
+        raise RuntimeError(f"no Mach-O binaries were found below {root}")
+    for binary in binaries:
+        result = subprocess.run(
+            ["otool", "-L", str(binary)], capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"otool failed for {binary}: {result.stderr.strip()}")
+        dependencies = [
+            line.strip().split(" (compatibility version", 1)[0]
+            for line in result.stdout.splitlines()[1:]
+            if line.strip()
+        ]
+        forbidden = [
+            dependency
+            for dependency in dependencies
+            if not dependency.startswith(("@", "/System/Library/", "/usr/lib/"))
+        ]
         if forbidden:
-            raise RuntimeError(f"non-relocatable dylib dependency in {library}: {forbidden[0]}")
+            raise RuntimeError(
+                f"non-relocatable Mach-O dependency in {binary}: {forbidden[0]}"
+            )
 
 
 def validate(root: Path, version: str, variant: str, platform: str, arch: str) -> dict[str, object]:
@@ -102,7 +139,7 @@ def validate(root: Path, version: str, variant: str, platform: str, arch: str) -
         if any(path.exists() for path in forbidden):
             raise RuntimeError("core runtime unexpectedly contains the imaging surface")
 
-    validate_relocation(root, libraries, platform)
+    validate_relocation(root, platform)
     return {
         "status": "passed",
         "runtime_root": str(root),

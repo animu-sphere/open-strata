@@ -127,6 +127,7 @@ OpenStrata aggregate plugin product contract
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `data` | array | no |  |
 | `install` | object | yes |  |
 | `members` | array | yes |  |
 | `name` | string | yes |  |

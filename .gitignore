@@ -2,6 +2,7 @@
 **/*.rs.bk
 .strata/
 .tmp/
+support/.openusd-runtime-work/
 
 # Local Claude Code config (not shared)
 .claude/
