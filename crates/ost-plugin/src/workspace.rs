@@ -237,6 +237,65 @@ impl WorkspaceValidation {
         }
         Some(ordered)
     }
+
+    /// Return the selected plain library's transitive library closure in
+    /// deterministic build order (deepest dependencies first).
+    ///
+    /// This is the library-primary counterpart to
+    /// [`library_dependency_order`](Self::library_dependency_order). Keeping
+    /// both queries on the validated graph prevents `ost library` from
+    /// accepting one dependency graph and executing a separately inferred one.
+    pub fn library_prerequisite_order(&self, library_id: &str) -> Option<Vec<String>> {
+        if !self.passed
+            || !self
+                .libraries
+                .iter()
+                .any(|library| library.id == library_id)
+        {
+            return None;
+        }
+
+        let mut adjacency: BTreeMap<&str, Vec<&str>> = self
+            .libraries
+            .iter()
+            .map(|library| (library.id.as_str(), Vec::new()))
+            .collect();
+        for edge in self
+            .library_edges
+            .iter()
+            .filter(|edge| edge.from_kind == "library")
+        {
+            adjacency
+                .entry(edge.from.as_str())
+                .or_default()
+                .push(edge.to.as_str());
+        }
+        for dependencies in adjacency.values_mut() {
+            dependencies.sort_unstable();
+            dependencies.dedup();
+        }
+
+        fn visit<'a>(
+            id: &'a str,
+            adjacency: &BTreeMap<&'a str, Vec<&'a str>>,
+            visited: &mut BTreeSet<&'a str>,
+            ordered: &mut Vec<String>,
+        ) {
+            if let Some(dependencies) = adjacency.get(id) {
+                for dependency in dependencies {
+                    if visited.insert(dependency) {
+                        visit(dependency, adjacency, visited, ordered);
+                        ordered.push((*dependency).to_string());
+                    }
+                }
+            }
+        }
+
+        let mut visited = BTreeSet::new();
+        let mut ordered = Vec::new();
+        visit(library_id, &adjacency, &mut visited, &mut ordered);
+        Some(ordered)
+    }
 }
 
 /// Validate bundle identity and dependency contracts without changing build
@@ -836,6 +895,34 @@ mod tests {
         );
         assert_eq!(report.libraries.len(), 2);
         assert_eq!(report.library_edges.len(), 2);
+        assert_eq!(
+            report.library_prerequisite_order("container").unwrap(),
+            vec!["bytes"]
+        );
+        assert_eq!(
+            report.library_prerequisite_order("bytes").unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(report.library_prerequisite_order("missing"), None);
+    }
+
+    #[test]
+    fn orders_a_library_primary_without_any_bundle_nodes() {
+        let adapter = library(
+            "adapter",
+            "1.0.0",
+            "requires:\n  libraries:\n    - { id: base, version: '>=2.0,<3.0' }\n",
+        );
+        let base = library("base", "2.1.0", "");
+
+        let report = validate_workspace_with_libraries(&[], &[adapter, base]);
+
+        assert!(report.passed, "{:?}", report.issues);
+        assert!(report.nodes.is_empty());
+        assert_eq!(
+            report.library_prerequisite_order("adapter").unwrap(),
+            vec!["base"]
+        );
     }
 
     #[test]

@@ -771,6 +771,7 @@ fn build(
             ninja.clone(),
             compiler_opts.clone(),
             &prefix,
+            &[],
         )?;
     }
     for dependency in &dependencies {
@@ -815,7 +816,8 @@ pub(crate) fn build_library_one(
     dry_run: bool,
     ninja: Option<String>,
     compiler_opts: CompilerOpts,
-    workspace_prefix: &Utf8Path,
+    install_prefix: &Utf8Path,
+    dependency_prefixes: &[Utf8PathBuf],
 ) -> Result<()> {
     let (platform, profile) = selection(target, profile).ok_or_else(|| {
         Error::usage(
@@ -840,7 +842,7 @@ pub(crate) fn build_library_one(
         "Ninja".to_string(),
         format!("-DCMAKE_TOOLCHAIN_FILE={}", cmake_path(&toolchain)),
         "-DCMAKE_BUILD_TYPE=Release".to_string(),
-        format!("-DCMAKE_INSTALL_PREFIX={}", cmake_path(workspace_prefix)),
+        format!("-DCMAKE_INSTALL_PREFIX={}", cmake_path(install_prefix)),
     ];
     if let Some(ninja) = &ninja {
         configure_args.push(format!(
@@ -853,7 +855,7 @@ pub(crate) fn build_library_one(
         "--install".to_string(),
         cmake_path(&build_dir),
         "--prefix".to_string(),
-        cmake_path(workspace_prefix),
+        cmake_path(install_prefix),
         "--config".to_string(),
         "Release".to_string(),
     ];
@@ -872,9 +874,14 @@ pub(crate) fn build_library_one(
     crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
     let mut toolchain_text =
         ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref());
+    let mut cmake_prefixes = dependency_prefixes
+        .iter()
+        .map(|prefix| format!("\"{}\"", cmake_path(prefix)))
+        .collect::<Vec<_>>();
+    cmake_prefixes.push(format!("\"{}\"", cmake_path(install_prefix)));
     toolchain_text.push_str(&format!(
-        "\n# Source-workspace library install prefix.\nlist(PREPEND CMAKE_PREFIX_PATH \"{}\")\n",
-        cmake_path(workspace_prefix)
+        "\n# Validated source-workspace library prefixes.\nlist(PREPEND CMAKE_PREFIX_PATH {})\n",
+        cmake_prefixes.join(" ")
     ));
     std::fs::write(toolchain.as_std_path(), format!("{toolchain_text}\n"))
         .map_err(|error| Error::io(toolchain.to_string(), error))?;
@@ -6483,6 +6490,102 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
         libraries,
         graph,
     }))
+}
+
+/// Resolve one descriptor-owned library's validated sibling closure.
+///
+/// Library verbs intentionally enter workspace discovery only when the
+/// descriptor declares an edge. A leaf library therefore remains independent
+/// of unrelated or stale sibling descriptors, matching the selected-bundle
+/// behavior above. Once an edge is declared, the complete workspace is loaded
+/// fail-closed and the exact graph accepted by validation supplies build order.
+pub(crate) fn selected_workspace_libraries_for_library(primary: &Library) -> Result<Vec<Library>> {
+    if primary.manifest.requires.libraries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let parent = primary.root.parent().ok_or_else(|| {
+        Error::coded(
+            "WORKSPACE_LIBRARY_ROOT_INVALID",
+            Category::Precondition,
+            format!("library '{}' has no parent directory", primary.root),
+        )
+    })?;
+    let project_root = find_project_root(primary.root.as_std_path())
+        .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
+    let root = project_root.as_deref().unwrap_or(parent);
+    let members = discover_workspace_members(root)?;
+    let bundles = members
+        .bundles
+        .iter()
+        .map(|path| Bundle::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let libraries = members
+        .libraries
+        .iter()
+        .map(|path| Library::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    for path in &members.tools {
+        ost_plugin::Tool::load(path)?;
+    }
+    if !libraries.iter().any(|library| library.root == primary.root) {
+        return Err(Error::coded(
+            "WORKSPACE_LIBRARY_NOT_DECLARED",
+            Category::Validation,
+            format!(
+                "library '{}' is not in the workspace member set at '{root}'",
+                primary.id()
+            ),
+        )
+        .with_hint("add the library root to [workspace].members in openstrata.toml"));
+    }
+
+    let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
+    if !graph.passed {
+        let details = graph
+            .issues
+            .iter()
+            .take(8)
+            .map(|issue| format!("[{}] {}", issue.code, issue.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(Error::coded(
+            "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+            Category::Validation,
+            format!("workspace dependency graph at '{root}' is invalid: {details}"),
+        )
+        .with_hint(
+            "fix the named library descriptors or [workspace].members, then rerun the library command",
+        ));
+    }
+    let order = graph
+        .library_prerequisite_order(primary.id())
+        .ok_or_else(|| {
+            Error::coded(
+                "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+                Category::Validation,
+                format!(
+                    "library '{}' is absent from the validated workspace graph at '{root}'",
+                    primary.id()
+                ),
+            )
+        })?;
+    let by_id = libraries
+        .into_iter()
+        .map(|library| (library.id().to_string(), library))
+        .collect::<BTreeMap<_, _>>();
+    order
+        .into_iter()
+        .map(|id| {
+            by_id.get(&id).cloned().ok_or_else(|| {
+                Error::coded(
+                    "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+                    Category::Validation,
+                    format!("validated workspace library '{id}' could not be loaded"),
+                )
+            })
+        })
+        .collect()
 }
 
 fn has_materialized_package_library_closure(bundle: &Bundle) -> bool {

@@ -122,7 +122,18 @@ struct LibraryBuildRecord {
     descriptor_sha256: String,
     build_dir: String,
     install_prefix: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dependencies: Vec<LibraryDependencyRecord>,
     files: Vec<LibraryFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct LibraryDependencyRecord {
+    id: String,
+    version: String,
+    descriptor_sha256: String,
+    install_prefix: String,
+    build_record_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,50 +188,46 @@ fn build(
     fmt: Format,
 ) -> Result<()> {
     let library = Library::load(root)?;
+    let dependencies = plugin::selected_workspace_libraries_for_library(&library)?;
     let (platform, profile) = selection(target, profile)?;
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
-    let prefix = isolated_prefix(&library, &id);
-
-    if !dry_run {
-        remove_existing_prefix(&prefix)?;
+    let runtime = if dry_run {
+        None
+    } else {
+        Some(runtime_identity(&resolved.prefix, &target.runtime_id)?)
+    };
+    let mut record = None;
+    for member in dependencies.iter().chain(std::iter::once(&library)) {
+        let prerequisites = plugin::selected_workspace_libraries_for_library(member)?;
+        let prerequisite_prefixes = prerequisites
+            .iter()
+            .map(|dependency| isolated_prefix(dependency, &id))
+            .collect::<Vec<_>>();
+        if !fmt.is_json() && member.id() != library.id() {
+            println!("== build prerequisite {} ==", member.id());
+        }
+        let built = build_library_member(
+            member,
+            &platform,
+            &profile,
+            &id,
+            runtime.as_ref(),
+            &prerequisites,
+            &prerequisite_prefixes,
+            dry_run,
+            ninja.clone(),
+            compiler.clone(),
+        )?;
+        if member.id() == library.id() {
+            record = built;
+        }
     }
-    plugin::build_library_one(
-        &library,
-        Some(platform),
-        Some(profile),
-        dry_run,
-        ninja,
-        compiler,
-        &prefix,
-    )?;
     if dry_run {
         return Ok(());
     }
-
-    let files = snapshot_files(&prefix)?;
-    if files.is_empty() {
-        return Err(Error::validation(format!(
-            "library '{}' installed no files into '{prefix}'",
-            library.id()
-        ))
-        .with_hint("add CMake install rules for the library target, headers, and config package"));
-    }
-    let runtime = runtime_identity(&resolved.prefix, &target.runtime_id)?;
-    let record = LibraryBuildRecord {
-        schema: LIBRARY_BUILD_SCHEMA.into(),
-        library: LibraryIdentity {
-            id: library.id().into(),
-            version: library.version().into(),
-        },
-        target: id.clone(),
-        runtime,
-        descriptor_sha256: descriptor_digest(&library)?,
-        build_dir: portable(&plugin::target_build_dir(&library.root, &id)),
-        install_prefix: portable(&prefix),
-        files,
-    };
-    write_json(&build_record_path(&library, &id), &record)?;
+    let record = record.expect("the primary library is always built last");
+    let prefix = isolated_prefix(&library, &id);
 
     if fmt.is_json() {
         output::success(&serde_json::json!({
@@ -230,6 +237,7 @@ fn build(
             "runtime": record.runtime,
             "build_dir": record.build_dir,
             "install_prefix": record.install_prefix,
+            "dependencies": record.dependencies,
             "files": record.files.len(),
             "record": build_record_path(&library, &id),
         }));
@@ -237,10 +245,69 @@ fn build(
         println!("Built library {} {}", library.id(), library.version());
         println!("  target:  {id}");
         println!("  install: {prefix}");
+        println!("  dependencies: {}", record.dependencies.len());
         println!("  files:   {}", record.files.len());
         println!("  record:  {}", build_record_path(&library, &id));
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_library_member(
+    library: &Library,
+    platform: &str,
+    profile: &str,
+    target_id: &str,
+    runtime: Option<&RuntimeIdentity>,
+    prerequisites: &[Library],
+    prerequisite_prefixes: &[Utf8PathBuf],
+    dry_run: bool,
+    ninja: Option<String>,
+    compiler: CompilerOpts,
+) -> Result<Option<LibraryBuildRecord>> {
+    let prefix = isolated_prefix(library, target_id);
+    if !dry_run {
+        remove_existing_prefix(&prefix)?;
+    }
+    plugin::build_library_one(
+        library,
+        Some(platform.to_string()),
+        Some(profile.to_string()),
+        dry_run,
+        ninja,
+        compiler,
+        &prefix,
+        prerequisite_prefixes,
+    )?;
+    if dry_run {
+        return Ok(None);
+    }
+    let runtime = runtime.expect("a non-dry build resolves runtime identity");
+
+    let files = snapshot_files(&prefix)?;
+    if files.is_empty() {
+        return Err(Error::validation(format!(
+            "library '{}' installed no files into '{prefix}'",
+            library.id()
+        ))
+        .with_hint("add CMake install rules for the library target, headers, and config package"));
+    }
+    let record = LibraryBuildRecord {
+        schema: LIBRARY_BUILD_SCHEMA.into(),
+        library: LibraryIdentity {
+            id: library.id().into(),
+            version: library.version().into(),
+        },
+        target: target_id.into(),
+        runtime: runtime.clone(),
+        descriptor_sha256: descriptor_digest(library)?,
+        build_dir: portable(&plugin::target_build_dir(&library.root, target_id)),
+        install_prefix: portable(&prefix),
+        dependencies: dependency_records(prerequisites, target_id)?,
+        files,
+    };
+    write_json(&build_record_path(library, target_id), &record)?;
+    Ok(Some(record))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -402,6 +469,14 @@ fn package(
                 "package": library.manifest.cmake.package,
                 "target": library.manifest.cmake.target,
             },
+            "dependencies": {
+                "libraries": record.dependencies.iter().map(|dependency| serde_json::json!({
+                    "id": dependency.id,
+                    "version": dependency.version,
+                    "descriptor_sha256": dependency.descriptor_sha256,
+                    "build_record_sha256": dependency.build_record_sha256,
+                })).collect::<Vec<_>>(),
+            },
         },
         "provenance": {
             "runtime": record.runtime,
@@ -435,6 +510,7 @@ fn package(
             "target": target.id(),
             "archive": archive,
             "archive_digest": packed.archive_digest,
+            "dependencies": record.dependencies,
             "files": packed.files.len(),
         }));
     } else {
@@ -442,6 +518,7 @@ fn package(
         println!("  target:  {}", target.id());
         println!("  archive: {archive}");
         println!("  digest:  {}", packed.archive_digest);
+        println!("  dependencies: {}", record.dependencies.len());
         println!("  files:   {}", packed.files.len());
     }
     Ok(())
@@ -492,6 +569,11 @@ fn validated_build_record(
             .with_hint(format!("rerun `ost library build {}`", library.root))
     })?;
     let runtime = runtime_identity(runtime_prefix, runtime_id)?;
+    let prerequisites = plugin::selected_workspace_libraries_for_library(library)?;
+    for prerequisite in &prerequisites {
+        validated_build_record(prerequisite, target_id, runtime_id, runtime_prefix)?;
+    }
+    let expected_dependencies = dependency_records(&prerequisites, target_id)?;
     let expected_descriptor = descriptor_digest(library)?;
     let expected_build_dir = plugin::target_build_dir(&library.root, target_id);
     let expected_prefix = isolated_prefix(library, target_id);
@@ -504,6 +586,7 @@ fn validated_build_record(
         || record.descriptor_sha256 != expected_descriptor
         || !recorded_path_matches(&record.build_dir, &expected_build_dir)
         || !recorded_path_matches(&record.install_prefix, &expected_prefix)
+        || record.dependencies != expected_dependencies
         || record.files != observed_files
     {
         return Err(Error::precondition(format!(
@@ -513,6 +596,36 @@ fn validated_build_record(
         .with_hint(format!("rerun `ost library build {}`", library.root)));
     }
     Ok(record)
+}
+
+fn dependency_records(
+    prerequisites: &[Library],
+    target_id: &str,
+) -> Result<Vec<LibraryDependencyRecord>> {
+    prerequisites
+        .iter()
+        .map(|dependency| {
+            let record_path = build_record_path(dependency, target_id);
+            Ok(LibraryDependencyRecord {
+                id: dependency.id().into(),
+                version: dependency.version().into(),
+                descriptor_sha256: descriptor_digest(dependency)?,
+                install_prefix: portable(&isolated_prefix(dependency, target_id)),
+                build_record_sha256: file_digest(&record_path)
+                    .map_err(|error| {
+                        Error::precondition(format!(
+                            "library '{}' prerequisite build evidence is unavailable: {error}",
+                            dependency.id()
+                        ))
+                        .with_hint(format!(
+                            "rerun `ost library build {}` so its declared closure is rebuilt",
+                            dependency.root
+                        ))
+                    })?
+                    .0,
+            })
+        })
+        .collect()
 }
 
 fn runtime_identity(prefix: &Utf8Path, expected_id: &str) -> Result<RuntimeIdentity> {

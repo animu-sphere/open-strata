@@ -173,12 +173,19 @@ ost library test adapters/ply
 ost library package adapters/ply
 ```
 
-The build installs only that descriptor into a target-specific private prefix
-and records the descriptor, runtime, and every installed byte. `test` consumes
-that exact record. `package` refuses descriptor/runtime/install-tree drift and
-writes `dist/<id>/<version>/<target>/<id>-<version>-<target>.tar.zst` with its
-manifest, checksums, SBOM, and available provenance. Re-run `ost library build`
-after changing the descriptor, runtime, or installed output.
+For a non-leaf library, the build resolves the same `requires.libraries` graph
+accepted by workspace validation, rebuilds prerequisites deepest first into
+owner-specific target prefixes, and exposes those prefixes through normal
+CMake package discovery. The selected descriptor is installed separately and
+its record binds the resolved dependency identities and build evidence along
+with the descriptor, runtime, and every installed byte. `test` consumes that
+exact closure and record. `package` refuses dependency/descriptor/runtime/
+install-tree drift and writes
+`dist/<id>/<version>/<target>/<id>-<version>-<target>.tar.zst`; the archive
+contains only the selected library while its manifest records the dependency
+evidence, checksums, SBOM, and available provenance. Re-run `ost library build`
+after changing any member of the declared closure, the runtime, or installed
+output.
 
 `verify: graph` is the cheap early PR gate, and it gets a job of its own
 (`pr-workspace-graph`) that stops after the checkout: the graph alone, with

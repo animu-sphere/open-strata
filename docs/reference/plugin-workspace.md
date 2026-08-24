@@ -177,6 +177,14 @@ graph rather than asking each caller to restate it:
 - `plugin build <bundle>` builds source dependencies in deterministic
   topological order, installs them to an OST-owned target-specific prefix, and
   passes that prefix through normal CMake package discovery;
+- `library build <library>` resolves the selected library's transitive sibling
+  closure from this same validated graph, builds each prerequisite deepest
+  first into its own managed prefix, and exposes those prefixes through
+  `CMAKE_PREFIX_PATH` while configuring the consumer;
+- `library test|package <library>` re-resolves that closure and refuses stale or
+  missing prerequisite build evidence; the library package records dependency
+  identities and evidence digests but contains only the selected library's
+  install tree;
 - plain-library runtime directories materialized below that prefix are added to
   the loader environment for selected test/run/view sessions;
 - `plugin inspect --json` and test report `dependencies.json` expose selected
@@ -198,6 +206,14 @@ Dependency builds install, deepest dependency first, into
 prefix to `CMAKE_PREFIX_PATH`, so consumers use normal installed CMake package
 discovery. The prefix is target-specific and rebuilt for a composed build; it
 is not part of a bundle's installed interface.
+
+The descriptor-scoped `ost library` lifecycle instead uses one
+`library-prefix` below each member's target state directory. A non-leaf build
+rebuilds its declared closure into those owner-specific prefixes and prepends
+the exact transitive set for each configure. This keeps dependency payloads out
+of the selected library's archive: dependency edges and their build-record
+digests are recorded in its build/package manifests rather than flattened into
+one install tree.
 
 The primary bundle keeps priority in the plugin and loader search paths;
 resolved dependencies follow in a stable order, then the runtime. Duplicate
