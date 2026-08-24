@@ -698,13 +698,14 @@ fn resolve_openusd_requirement(value: &str) -> Result<ost_platform::ResolvedOpen
         }
     };
     let variant = match parts[3] {
-        "headless" => ost_platform::OpenUsdVariantId::Headless,
-        "standard" => ost_platform::OpenUsdVariantId::Standard,
+        "core" | "headless" => ost_platform::OpenUsdVariantId::Core,
+        "gl" | "standard" => ost_platform::OpenUsdVariantId::Gl,
         "vulkan" => ost_platform::OpenUsdVariantId::Vulkan,
+        "metal" => ost_platform::OpenUsdVariantId::Metal,
         other => {
             return Err(Error::usage(format!(
-                "unknown OpenUSD requirement variant '{other}' (expected headless, standard, or vulkan)"
-            )))
+            "unknown OpenUSD requirement variant '{other}' (expected core, gl, vulkan, or metal)"
+        )))
         }
     };
     let platform = ost_platform::load_one(parts[0])?;
@@ -1345,13 +1346,38 @@ mod tests {
 
     #[test]
     fn openusd_requirement_resolves_only_declared_platform_cells() {
-        let required = resolve_openusd_requirement("cy2026/linux/x86_64/vulkan").unwrap();
-        assert_eq!(required.platform, "cy2026");
-        assert_eq!(required.variant, ost_platform::OpenUsdVariantId::Vulkan);
-        assert_eq!(required.python.version_constraint, "3.13.x");
-        assert!(required.capabilities.iter().any(|value| value == "vulkan"));
+        for (requirement, expected) in [
+            (
+                "cy2026/linux/x86_64/core",
+                ost_platform::OpenUsdVariantId::Core,
+            ),
+            (
+                "cy2026/windows/x86_64/gl",
+                ost_platform::OpenUsdVariantId::Gl,
+            ),
+            (
+                "cy2026/linux/x86_64/vulkan",
+                ost_platform::OpenUsdVariantId::Vulkan,
+            ),
+            (
+                "cy2026/macos/arm64/metal",
+                ost_platform::OpenUsdVariantId::Metal,
+            ),
+        ] {
+            let required = resolve_openusd_requirement(requirement).unwrap();
+            assert_eq!(required.platform, "cy2026");
+            assert_eq!(required.variant, expected);
+            assert_eq!(required.python.version_constraint, "3.13.x");
+        }
 
-        let error = resolve_openusd_requirement("cy2026/windows/x86_64/vulkan").unwrap_err();
+        assert_eq!(
+            resolve_openusd_requirement("cy2026/linux/x86_64/standard")
+                .unwrap()
+                .variant,
+            ost_platform::OpenUsdVariantId::Gl
+        );
+
+        let error = resolve_openusd_requirement("cy2026/macos/arm64/vulkan").unwrap_err();
         assert!(error.to_string().contains("declares no approved OpenUSD"));
     }
 

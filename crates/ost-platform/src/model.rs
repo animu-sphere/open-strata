@@ -81,7 +81,20 @@ pub struct OpenUsdCell {
     pub toolchain: OpenUsdToolchain,
     pub python: OpenUsdProvider,
     pub tbb: OpenUsdProvider,
+    /// Apple SDK/deployment boundary for macOS producer cells. Absent on
+    /// Linux and Windows, where the native runtime provider carries the ABI
+    /// floor instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos: Option<OpenUsdMacos>,
     pub variants: Vec<OpenUsdVariant>,
+}
+
+/// Compatibility-critical macOS SDK and deployment boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenUsdMacos {
+    pub sdk: OpenUsdProvider,
+    pub deployment_target_from: String,
 }
 
 /// A compatibility-critical component supplied by a named provider. Its exact
@@ -105,22 +118,59 @@ pub struct OpenUsdToolchain {
     pub runtime: OpenUsdProvider,
 }
 
-/// The constrained initial OpenUSD build variants from the v0.22.0 roadmap.
+/// Canonical OpenUSD graphics variants plus the schema-1 legacy spellings.
+///
+/// New declarations and identities use `core`, `gl`, `vulkan`, or `metal`.
+/// `headless` and `standard` remain readable so old runtime/artifact manifests
+/// can be migrated without making up capabilities they did not record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OpenUsdVariantId {
-    Headless,
-    Standard,
+    Core,
+    Gl,
     Vulkan,
+    Metal,
+    #[doc(hidden)]
+    Headless,
+    #[doc(hidden)]
+    Standard,
 }
 
 impl OpenUsdVariantId {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Core => "core",
+            Self::Gl => "gl",
+            Self::Vulkan => "vulkan",
+            Self::Metal => "metal",
             Self::Headless => "headless",
             Self::Standard => "standard",
-            Self::Vulkan => "vulkan",
         }
+    }
+
+    /// Normalize a reader-facing legacy value using the capabilities recorded
+    /// beside it. `standard` always meant the GL imaging cell. `headless` is
+    /// only safe to call `core` when no imaging capability was recorded.
+    pub fn canonical(self, capabilities: &[String]) -> Option<Self> {
+        match self {
+            Self::Core | Self::Gl | Self::Vulkan | Self::Metal => Some(self),
+            Self::Standard => Some(Self::Gl),
+            Self::Headless
+                if capabilities.iter().all(|capability| {
+                    !matches!(
+                        capability.as_str(),
+                        "imaging" | "opengl" | "vulkan" | "metal"
+                    )
+                }) =>
+            {
+                Some(Self::Core)
+            }
+            Self::Headless => None,
+        }
+    }
+
+    pub fn is_canonical(self) -> bool {
+        matches!(self, Self::Core | Self::Gl | Self::Vulkan | Self::Metal)
     }
 }
 
@@ -220,6 +270,10 @@ impl OpenUsdVerification {
 pub struct ResolvedOpenUsdCompatibility {
     pub schema: u32,
     pub platform: String,
+    /// Capability profile remains an identity axis separate from graphics.
+    /// `None` on schema-1 records means legacy/unknown, never inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     pub os: Os,
     pub arch: Arch,
     pub toolchain: ResolvedOpenUsdToolchain,
@@ -227,6 +281,22 @@ pub struct ResolvedOpenUsdCompatibility {
     pub tbb: ResolvedOpenUsdProvider,
     pub variant: OpenUsdVariantId,
     pub capabilities: Vec<String>,
+    /// Exact producer OpenUSD release, populated after the built tree reports
+    /// its version. Kept optional for migration-safe schema-1 reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_openusd_version: Option<String>,
+    /// Consumer-side release constraint used when selecting this producer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer_openusd_constraint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos: Option<ResolvedOpenUsdMacos>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedOpenUsdMacos {
+    pub sdk: ResolvedOpenUsdProvider,
+    pub deployment_target: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -421,9 +491,8 @@ fn provider_is_verified(provider: &ResolvedOpenUsdProvider) -> bool {
 }
 
 impl ResolvedOpenUsdCompatibility {
-    /// Whether every compatibility-critical provider carries an observed exact
-    /// version that satisfies its non-empty CY constraint.
-    pub fn is_verified(&self) -> bool {
+    /// Provider facts shared by legacy schema-1 and canonical schema-2 cells.
+    pub fn providers_are_verified(&self) -> bool {
         !self.platform.trim().is_empty()
             && !self.toolchain.family.trim().is_empty()
             && !self.toolchain.provider.trim().is_empty()
@@ -435,6 +504,31 @@ impl ResolvedOpenUsdCompatibility {
             && provider_is_verified(&self.toolchain.runtime)
             && provider_is_verified(&self.python)
             && provider_is_verified(&self.tbb)
+    }
+
+    /// Whether every compatibility-critical provider carries an observed exact
+    /// version that satisfies its non-empty CY constraint.
+    pub fn is_verified(&self) -> bool {
+        !self.platform.trim().is_empty()
+            && self.profile.as_deref() == Some("usd")
+            && self
+                .producer_openusd_version
+                .as_deref()
+                .is_some_and(|version| !version.trim().is_empty())
+            && self
+                .consumer_openusd_constraint
+                .as_deref()
+                .is_some_and(|constraint| !constraint.trim().is_empty())
+            && self.variant.canonical(&self.capabilities).is_some()
+            && self.providers_are_verified()
+            && match (&self.macos, self.os) {
+                (Some(macos), Os::Macos) => {
+                    provider_is_verified(&macos.sdk) && !macos.deployment_target.trim().is_empty()
+                }
+                (None, Os::Macos) => false,
+                (None, _) => true,
+                (Some(_), _) => false,
+            }
     }
 
     /// A deterministic, OCI-tag-safe selector for this exact compatibility
@@ -453,6 +547,9 @@ impl ResolvedOpenUsdCompatibility {
         source: Option<&ResolvedSourceIdentity>,
         dependencies: &[ResolvedDependencyIdentity],
     ) -> Option<String> {
+        if self.schema == 1 {
+            return self.legacy_selector(artifact_target, openusd_version, source, dependencies);
+        }
         if !self.is_verified()
             || artifact_target.trim().is_empty()
             || openusd_version.trim().is_empty()
@@ -469,13 +566,16 @@ impl ResolvedOpenUsdCompatibility {
             os: Os,
             arch: Arch,
             artifact_target: &'a str,
-            openusd_version: &'a str,
+            profile: &'a str,
+            producer_openusd_version: &'a str,
+            consumer_openusd_constraint: &'a str,
             source: Option<&'a ResolvedSourceIdentity>,
             dependencies: Vec<&'a ResolvedDependencyIdentity>,
             toolchain: &'a ResolvedOpenUsdToolchain,
             python: &'a ResolvedOpenUsdProvider,
             tbb: &'a ResolvedOpenUsdProvider,
             variant: OpenUsdVariantId,
+            macos: Option<&'a ResolvedOpenUsdMacos>,
             capabilities: Vec<&'a str>,
         }
 
@@ -489,19 +589,27 @@ impl ResolvedOpenUsdCompatibility {
         let mut dependencies = dependencies.iter().collect::<Vec<_>>();
         dependencies.sort_unstable();
         dependencies.dedup();
+        let canonical_variant = self.variant.canonical(&self.capabilities)?;
+        let producer_version = self.producer_openusd_version.as_deref()?;
+        if producer_version != openusd_version {
+            return None;
+        }
         let identity = SelectorIdentity {
             schema: self.schema,
             platform: &self.platform,
             os: self.os,
             arch: self.arch,
             artifact_target,
-            openusd_version,
+            profile: self.profile.as_deref()?,
+            producer_openusd_version: producer_version,
+            consumer_openusd_constraint: self.consumer_openusd_constraint.as_deref()?,
             source,
             dependencies,
             toolchain: &self.toolchain,
             python: &self.python,
             tbb: &self.tbb,
-            variant: self.variant,
+            variant: canonical_variant,
+            macos: self.macos.as_ref(),
             capabilities,
         };
         let bytes = serde_json::to_vec(&identity).expect("selector identity serializes");
@@ -515,7 +623,7 @@ impl ResolvedOpenUsdCompatibility {
             self.platform,
             self.os.as_str(),
             self.arch.as_str(),
-            self.variant.as_str()
+            canonical_variant.as_str()
         );
         let mut prefix = String::with_capacity(readable.len());
         let mut previous_separator = false;
@@ -543,6 +651,77 @@ impl ResolvedOpenUsdCompatibility {
             prefix.pop();
         }
         Some(format!("{prefix}-{hash}"))
+    }
+
+    fn legacy_selector(
+        &self,
+        artifact_target: &str,
+        openusd_version: &str,
+        source: Option<&ResolvedSourceIdentity>,
+        dependencies: &[ResolvedDependencyIdentity],
+    ) -> Option<String> {
+        if !self.providers_are_verified()
+            || artifact_target.trim().is_empty()
+            || openusd_version.trim().is_empty()
+            || source.is_some_and(|value| !value.is_verified())
+            || dependencies.iter().any(|value| !value.is_verified())
+        {
+            return None;
+        }
+        #[derive(Serialize)]
+        struct LegacySelectorIdentity<'a> {
+            schema: u32,
+            platform: &'a str,
+            os: Os,
+            arch: Arch,
+            artifact_target: &'a str,
+            openusd_version: &'a str,
+            source: Option<&'a ResolvedSourceIdentity>,
+            dependencies: Vec<&'a ResolvedDependencyIdentity>,
+            toolchain: &'a ResolvedOpenUsdToolchain,
+            python: &'a ResolvedOpenUsdProvider,
+            tbb: &'a ResolvedOpenUsdProvider,
+            variant: OpenUsdVariantId,
+            capabilities: Vec<&'a str>,
+        }
+        let mut capabilities = self
+            .capabilities
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        capabilities.sort_unstable();
+        capabilities.dedup();
+        let mut dependencies = dependencies.iter().collect::<Vec<_>>();
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        let identity = LegacySelectorIdentity {
+            schema: self.schema,
+            platform: &self.platform,
+            os: self.os,
+            arch: self.arch,
+            artifact_target,
+            openusd_version,
+            source,
+            dependencies,
+            toolchain: &self.toolchain,
+            python: &self.python,
+            tbb: &self.tbb,
+            variant: self.variant,
+            capabilities,
+        };
+        let bytes = serde_json::to_vec(&identity).expect("legacy selector identity serializes");
+        let digest = digest::sha256_hex(&bytes);
+        let hash = digest
+            .strip_prefix("sha256:")
+            .expect("sha256 has algorithm");
+        let readable = format!(
+            "openusd-{}-{}-{}-{}",
+            self.platform,
+            self.os.as_str(),
+            self.arch.as_str(),
+            self.variant.as_str()
+        );
+        Some(format!("{readable}-{hash}"))
     }
 }
 
@@ -582,6 +761,7 @@ impl Platform {
             ResolvedOpenUsdCompatibility {
                 schema: policy.schema,
                 platform: self.id.clone(),
+                profile: Some("usd".into()),
                 os,
                 arch,
                 toolchain: ResolvedOpenUsdToolchain {
@@ -609,6 +789,16 @@ impl Platform {
                 tbb: provider(&cell.tbb),
                 variant: variant_id,
                 capabilities: variant.capabilities.clone(),
+                producer_openusd_version: None,
+                consumer_openusd_constraint: Some(">=26.05,<26.09".into()),
+                macos: cell.macos.as_ref().map(|macos| ResolvedOpenUsdMacos {
+                    sdk: provider(&macos.sdk),
+                    deployment_target: self
+                        .core
+                        .get(&macos.deployment_target_from)
+                        .cloned()
+                        .unwrap_or_default(),
+                }),
             },
             variant,
         ))
@@ -635,8 +825,9 @@ mod tests {
             }
         };
         ResolvedOpenUsdCompatibility {
-            schema: 1,
+            schema: 2,
             platform: "cy2026".into(),
+            profile: Some("usd".into()),
             os: Os::Linux,
             arch: Arch::X86_64,
             toolchain: ResolvedOpenUsdToolchain {
@@ -651,6 +842,9 @@ mod tests {
             tbb: provider("onetbb", "platform", "2022.1.0", "2022.x"),
             variant: OpenUsdVariantId::Vulkan,
             capabilities: vec!["usd-core".into(), "vulkan".into(), "opengl".into()],
+            producer_openusd_version: Some("26.05".into()),
+            consumer_openusd_constraint: Some(">=26.05,<26.09".into()),
+            macos: None,
         }
     }
 

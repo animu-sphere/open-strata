@@ -9,13 +9,17 @@
 mod diff;
 mod loader;
 mod model;
+mod openusd;
 
 pub use diff::{diff, ComponentChange, PlatformDiff};
 pub use loader::{load_all, load_one, Catalog};
 pub use model::{
-    version_satisfies_constraint, OpenUsdBuilder, OpenUsdCell, OpenUsdPolicy, OpenUsdProvider,
-    OpenUsdToolchain, OpenUsdVariant, OpenUsdVariantId, OpenUsdVerification,
+    version_satisfies_constraint, OpenUsdBuilder, OpenUsdCell, OpenUsdMacos, OpenUsdPolicy,
+    OpenUsdProvider, OpenUsdToolchain, OpenUsdVariant, OpenUsdVariantId, OpenUsdVerification,
     OpenUsdVerificationStatus, Platform, ResolvedDependencyIdentity, ResolvedOpenUsdCompatibility,
-    ResolvedOpenUsdProvider, ResolvedOpenUsdToolchain, ResolvedSourceIdentity, Source, SourceKind,
-    Status,
+    ResolvedOpenUsdMacos, ResolvedOpenUsdProvider, ResolvedOpenUsdToolchain,
+    ResolvedSourceIdentity, Source, SourceKind, Status,
+};
+pub use openusd::{
+    canonical_openusd_leaf_tag, OpenUsdBuildPlan, OpenUsdPlanError, CANONICAL_OPENUSD_VERSIONS,
 };

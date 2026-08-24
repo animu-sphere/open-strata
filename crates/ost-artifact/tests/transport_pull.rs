@@ -458,7 +458,7 @@ fn make_openusd_runtime_bundle_with_selector_schema(
 ) -> (Bundle, String) {
     let archive = tar_zst(&[("lib/libusd.so", content)]);
     let archive_name = "openstrata-cy2026-usd.tar.zst".to_string();
-    let compatibility = serde_json::json!({
+    let mut compatibility = serde_json::json!({
         "schema": 1,
         "platform": "cy2026",
         "os": "linux",
@@ -491,6 +491,13 @@ fn make_openusd_runtime_bundle_with_selector_schema(
         "variant": "standard",
         "capabilities": ["usd-core", "imaging", "opengl"]
     });
+    if selector_schema.is_some() {
+        compatibility["schema"] = serde_json::json!(2);
+        compatibility["profile"] = serde_json::json!("usd");
+        compatibility["variant"] = serde_json::json!("gl");
+        compatibility["producer_openusd_version"] = serde_json::json!("26.05");
+        compatibility["consumer_openusd_constraint"] = serde_json::json!(">=26.05,<26.09");
+    }
     let mut producer = serde_json::json!({
         "schema": 1,
         "kind": "openstrata.runtime",
@@ -996,7 +1003,7 @@ fn pull_matches_an_approved_openusd_consumer_cell_before_import() {
         .resolve_openusd(
             ost_core::host::Os::Linux,
             ost_core::host::Arch::X86_64,
-            ost_platform::OpenUsdVariantId::Standard,
+            ost_platform::OpenUsdVariantId::Gl,
         )
         .unwrap();
     let root = tmp_root("openusd-requirement-match");
@@ -1030,7 +1037,7 @@ fn pull_reports_openusd_python_tbb_and_graphics_mismatches_by_dimension() {
         .resolve_openusd(
             ost_core::host::Os::Linux,
             ost_core::host::Arch::X86_64,
-            ost_platform::OpenUsdVariantId::Standard,
+            ost_platform::OpenUsdVariantId::Gl,
         )
         .unwrap();
     let (vulkan, _) = platform

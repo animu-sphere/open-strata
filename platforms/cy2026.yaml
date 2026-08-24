@@ -23,9 +23,15 @@ core:
   cxx_standard: "20"
   gcc: "14.2"
   glibc: "2.28"
+  msvc: "19.40"
+  msvc_runtime: "14.40"
+  apple_clang: "17.x"
+  libcxx: "17.x"
+  macos_sdk: "15.5"
+  macos_deployment_target: "13.0"
 
 openusd:
-  schema: 1
+  schema: 2
   cells:
     - os: linux
       arch: x86_64
@@ -38,22 +44,47 @@ openusd:
       python: { family: cpython, provider: platform, version_from: python }
       tbb: { family: onetbb, provider: platform, version_from: tbb }
       variants:
-        - id: headless
+        - id: core
           builders: [build-usd, cmake]
-          build_usd_args: [--no-imaging]
-          cmake_args: [-DPXR_BUILD_IMAGING=OFF, -DPXR_BUILD_USD_IMAGING=OFF]
           capabilities: [usd-core]
-        - id: standard
+        - id: gl
           builders: [build-usd, cmake]
-          build_usd_args: [--imaging]
-          cmake_args: [-DPXR_BUILD_IMAGING=ON, -DPXR_BUILD_USD_IMAGING=ON, -DPXR_ENABLE_VULKAN_SUPPORT=OFF]
           capabilities: [usd-core, imaging, opengl]
         - id: vulkan
           builders: [build-usd, cmake]
-          build_usd_args: [--imaging]
-          cmake_args: [-DPXR_BUILD_IMAGING=ON, -DPXR_BUILD_USD_IMAGING=ON, -DPXR_ENABLE_VULKAN_SUPPORT=ON]
           capabilities: [usd-core, imaging, opengl, vulkan]
+    - os: windows
+      arch: x86_64
+      toolchain:
+        family: msvc
+        provider: visual-studio
+        version_from: msvc
+        cxx_standard_from: cxx_standard
+        runtime: { family: msvc-runtime, provider: visual-studio, version_from: msvc_runtime }
+      python: { family: cpython, provider: platform, version_from: python }
+      tbb: { family: onetbb, provider: platform, version_from: tbb }
+      variants:
+        - { id: core, builders: [build-usd, cmake], capabilities: [usd-core] }
+        - { id: gl, builders: [build-usd, cmake], capabilities: [usd-core, imaging, opengl] }
+        - { id: vulkan, builders: [build-usd, cmake], capabilities: [usd-core, imaging, opengl, vulkan] }
+    - os: macos
+      arch: arm64
+      toolchain:
+        family: apple-clang
+        provider: xcode
+        version_from: apple_clang
+        cxx_standard_from: cxx_standard
+        runtime: { family: libcxx, provider: xcode, version_from: libcxx }
+      python: { family: cpython, provider: platform, version_from: python }
+      tbb: { family: onetbb, provider: platform, version_from: tbb }
+      macos:
+        sdk: { family: macos-sdk, provider: xcode, version_from: macos_sdk }
+        deployment_target_from: macos_deployment_target
+      variants:
+        - { id: core, builders: [build-usd, cmake], capabilities: [usd-core] }
+        - { id: gl, builders: [build-usd, cmake], capabilities: [usd-core, imaging, opengl] }
+        - { id: metal, builders: [build-usd, cmake], capabilities: [usd-core, imaging, metal] }
 
 notes: >
-  CY2026 moves to Python 3.13, the GCC 14.2 / C++20 toolchain, and NumPy 2.x.
-  This is the primary target for the first OpenStrata vertical slice.
+  CY2026 moves to Python 3.13 and C++20. OpenUSD 26.05 and 26.08 canonical
+  runtimes are produced for Linux x86_64, Windows x86_64, and macOS arm64.

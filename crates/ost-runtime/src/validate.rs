@@ -372,11 +372,7 @@ mod tests {
         let mut m = manifest(RuntimeSource::Mock, vec!["bin".into(), "lib".into()]);
         let platform = ost_platform::load_one("cy2026").unwrap();
         let (compatibility, _) = platform
-            .resolve_openusd(
-                Os::Linux,
-                Arch::X86_64,
-                ost_platform::OpenUsdVariantId::Standard,
-            )
+            .resolve_openusd(Os::Linux, Arch::X86_64, ost_platform::OpenUsdVariantId::Gl)
             .unwrap();
         m.openusd_compatibility = Some(compatibility);
 

@@ -16,7 +16,28 @@ members = [
   "libs/vrmContainer",
   "tools/converter",
 ]
+release_members = ["vrmSchema", "vrmFormat", "vrmTool"]
+release_exclude = ["developerFixture"]
+
+[[workspace.install_data]]
+source = "profiles/motion"
+destination = "share/vrm/motion"
 ```
+
+`members` controls source discovery; it does not implicitly decide aggregate
+release membership. When `release_members` is present, packaging subtracts the
+explicit `release_exclude` set from discovered bundle/tool ids and requires the
+result to equal the pinned release set. Any newly discovered, missing, or stale
+id fails with `AGGREGATE_MEMBERSHIP_MISMATCH` before the aggregate is written.
+Human and JSON packaging output print the resolved release members.
+
+`install_data` gives shared project data a product-level owner without attaching
+duplicate copies to a plugin or tool. Each source is one regular file or
+directory below the project root; packaging expands it to a digest-and-size
+inventory, preserves directory structure, and installs it exactly once below
+the declared `share/` directory. Product verification checks every file before
+installation. Sources, destinations, globs, parent escapes, symlinks, empty
+directories, and destination collisions fail closed.
 
 Each selected directory must contain exactly one of
 `openstrata.plugin.yaml`, `openstrata.library.yaml`, or

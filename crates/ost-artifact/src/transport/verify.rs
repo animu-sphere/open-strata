@@ -15,7 +15,8 @@ use camino::Utf8Path;
 
 use ost_core::{digest, Category, Error, Result};
 use ost_platform::{
-    version_satisfies_constraint, ResolvedOpenUsdCompatibility, ResolvedOpenUsdProvider,
+    version_satisfies_constraint, ResolvedOpenUsdCompatibility, ResolvedOpenUsdMacos,
+    ResolvedOpenUsdProvider,
 };
 
 use crate::evidence::{
@@ -556,6 +557,41 @@ fn verify_openusd_requirement(
         &required.tbb,
     )?;
 
+    let macos_ok = macos_matches(selected.macos.as_ref(), required.macos.as_ref());
+    if !macos_ok {
+        let describe = |value: Option<&ResolvedOpenUsdMacos>| {
+            value.map_or_else(
+                || "none".to_string(),
+                |macos| {
+                    format!(
+                        "{}@{} {} with deployment target {}",
+                        macos.sdk.family,
+                        macos.sdk.provider,
+                        macos
+                            .sdk
+                            .version
+                            .as_deref()
+                            .unwrap_or(&macos.sdk.version_constraint),
+                        macos.deployment_target
+                    )
+                },
+            )
+        };
+        return Err(openusd_mismatch(
+            "ARTIFACT_OPENUSD_MACOS_MISMATCH",
+            "macos",
+            record,
+            required,
+            required_version,
+            format!(
+                "uses macOS {}, but the consumer requires {}",
+                describe(selected.macos.as_ref()),
+                describe(required.macos.as_ref()),
+            ),
+            "resolve an artifact built with the required macOS SDK and deployment target",
+        ));
+    }
+
     let missing = required
         .capabilities
         .iter()
@@ -634,6 +670,20 @@ fn provider_matches(
         )
 }
 
+fn macos_matches(
+    selected: Option<&ResolvedOpenUsdMacos>,
+    required: Option<&ResolvedOpenUsdMacos>,
+) -> bool {
+    match (selected, required) {
+        (None, None) => true,
+        (Some(selected), Some(required)) => {
+            provider_matches(&selected.sdk, &required.sdk)
+                && selected.deployment_target == required.deployment_target
+        }
+        _ => false,
+    }
+}
+
 fn version_matches(selected: Option<&str>, exact: Option<&str>, constraint: &str) -> bool {
     let Some(selected) = selected else {
         return false;
@@ -685,4 +735,38 @@ fn openusd_mismatch(
             "capabilities": required.capabilities,
         },
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn macos(
+        version: Option<&str>,
+        constraint: &str,
+        deployment_target: &str,
+    ) -> ResolvedOpenUsdMacos {
+        ResolvedOpenUsdMacos {
+            sdk: ResolvedOpenUsdProvider {
+                family: "macos-sdk".into(),
+                provider: "xcode".into(),
+                version: version.map(str::to_string),
+                version_constraint: constraint.into(),
+            },
+            deployment_target: deployment_target.into(),
+        }
+    }
+
+    #[test]
+    fn macos_requirement_matches_sdk_and_deployment_target() {
+        let selected = macos(Some("15.5"), "15.5", "13.0");
+        let required = macos(None, "15.5", "13.0");
+        assert!(macos_matches(Some(&selected), Some(&required)));
+
+        let wrong_sdk = macos(None, "16.x", "13.0");
+        assert!(!macos_matches(Some(&selected), Some(&wrong_sdk)));
+        let wrong_floor = macos(None, "15.5", "14.0");
+        assert!(!macos_matches(Some(&selected), Some(&wrong_floor)));
+        assert!(!macos_matches(Some(&selected), None));
+    }
 }

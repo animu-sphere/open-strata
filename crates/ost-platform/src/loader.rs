@@ -64,9 +64,9 @@ fn validate_openusd(platform: &Platform) -> Result<()> {
     let Some(policy) = &platform.openusd else {
         return Ok(());
     };
-    if policy.schema != 1 {
+    if !matches!(policy.schema, 1 | 2) {
         return Err(Error::InvalidManifest(format!(
-            "platform '{}' has unsupported openusd schema {} (expected 1)",
+            "platform '{}' has unsupported openusd schema {} (expected 1 or 2)",
             platform.id, policy.schema
         )));
     }
@@ -93,6 +93,22 @@ fn validate_openusd(platform: &Platform) -> Result<()> {
                 )));
             }
         }
+        if let Some(macos) = &cell.macos {
+            for reference in [&macos.sdk.version_from, &macos.deployment_target_from] {
+                if !platform.core.contains_key(reference) {
+                    return Err(Error::InvalidManifest(format!(
+                        "platform '{}' OpenUSD cell references missing core component '{}'",
+                        platform.id, reference
+                    )));
+                }
+            }
+        }
+        if (cell.os == ost_core::host::Os::Macos) != cell.macos.is_some() {
+            return Err(Error::InvalidManifest(format!(
+                "platform '{}' OpenUSD cell {}-{} must declare macos ABI facts only for macOS",
+                platform.id, key.0, key.1
+            )));
+        }
         let mut variants = std::collections::BTreeSet::new();
         for variant in &cell.variants {
             if !variants.insert(variant.id.as_str()) {
@@ -108,6 +124,14 @@ fn validate_openusd(platform: &Platform) -> Result<()> {
                 return Err(Error::InvalidManifest(format!(
                     "platform '{}' OpenUSD variant '{}' declares no supported builder",
                     platform.id,
+                    variant.id.as_str()
+                )));
+            }
+            if policy.schema >= 2 && !variant.id.is_canonical() {
+                return Err(Error::InvalidManifest(format!(
+                    "platform '{}' OpenUSD schema {} cannot declare legacy variant '{}'",
+                    platform.id,
+                    policy.schema,
                     variant.id.as_str()
                 )));
             }
@@ -133,10 +157,10 @@ mod tests {
     use ost_core::host::{Arch, Os};
 
     #[test]
-    fn cy2026_resolves_exact_standard_compatibility() {
+    fn cy2026_resolves_exact_gl_compatibility() {
         let platform = parse("cy2026", BUILTINS[1].1).unwrap();
         let (resolved, variant) = platform
-            .resolve_openusd(Os::Linux, Arch::X86_64, OpenUsdVariantId::Standard)
+            .resolve_openusd(Os::Linux, Arch::X86_64, OpenUsdVariantId::Gl)
             .unwrap();
         assert_eq!(resolved.toolchain.family, "gcc");
         assert_eq!(resolved.toolchain.version, None);
@@ -148,7 +172,8 @@ mod tests {
         assert_eq!(resolved.python.version_constraint, "3.13.x");
         assert_eq!(resolved.tbb.version, None);
         assert_eq!(resolved.tbb.version_constraint, "2022.x");
-        assert_eq!(resolved.variant, OpenUsdVariantId::Standard);
+        assert_eq!(resolved.profile.as_deref(), Some("usd"));
+        assert_eq!(resolved.variant, OpenUsdVariantId::Gl);
         assert_eq!(resolved.capabilities, ["usd-core", "imaging", "opengl"]);
         assert!(variant.builders.contains(&OpenUsdBuilder::BuildUsd));
         assert!(variant.builders.contains(&OpenUsdBuilder::Cmake));
@@ -169,7 +194,13 @@ mod tests {
     fn undeclared_cartesian_cell_does_not_resolve() {
         let platform = parse("cy2026", BUILTINS[1].1).unwrap();
         assert!(platform
-            .resolve_openusd(Os::Windows, Arch::X86_64, OpenUsdVariantId::Standard)
+            .resolve_openusd(Os::Windows, Arch::X86_64, OpenUsdVariantId::Gl)
+            .is_some());
+        assert!(platform
+            .resolve_openusd(Os::Macos, Arch::Arm64, OpenUsdVariantId::Metal)
+            .is_some());
+        assert!(platform
+            .resolve_openusd(Os::Macos, Arch::Arm64, OpenUsdVariantId::Vulkan)
             .is_none());
     }
 }
