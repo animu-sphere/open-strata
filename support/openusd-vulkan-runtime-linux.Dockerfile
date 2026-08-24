@@ -63,6 +63,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --profile minimal --default-toolchain 1.96.0
 
 WORKDIR /src/open-strata
+RUN git config --system --add safe.directory /src/open-strata
 COPY . .
 RUN cargo build --locked --release -p ost-cli \
     && install -m 0755 target/release/ost /usr/local/bin/ost
