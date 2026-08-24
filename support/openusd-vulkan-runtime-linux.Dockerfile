@@ -1,7 +1,13 @@
 # syntax=docker/dockerfile:1
 # The published Linux runtime intentionally matches GitHub's ubuntu-24.04
 # consumer lane. ost measures and records the actual glibc floor at export.
-FROM ubuntu:24.04
+#
+# PowerShell is part of the producer contract because the canonical core/gl/
+# vulkan entry points all delegate to publish-openusd-runtimes.ps1. Pin the
+# amd64 Microsoft image by digest so a later 7.5 tag move cannot change an
+# already recorded producer environment. The filename is retained for the
+# v0.22.0-v0.22.2 Vulkan maintenance entry point.
+FROM mcr.microsoft.com/powershell:7.5-ubuntu-24.04@sha256:042240d57ec9e47e511033b92625a8d95875ee5860af3015992c248b58a8be81
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG VULKAN_HEADERS_VERSION=v1.4.350
