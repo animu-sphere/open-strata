@@ -31,7 +31,7 @@ VKAPI_ATTR inline VkBool32 VKAPI_CALL ValidationCallback(
   const bool renderer_warning =
       (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0 &&
       (message_type & (VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)) != 0;
+                          VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)) != 0;
   // General loader/environment warnings remain observable outside this report,
   // but do not become renderer validation failures.
   if (!error && !renderer_warning) {
@@ -61,7 +61,7 @@ inline VkDebugUtilsMessengerCreateInfoEXT DebugMessengerCreateInfo(
 }
 
 inline bool VulkanOk(VkResult result, const char* operation,
-                     std::string& detail) {
+    std::string& detail) {
   if (result == VK_SUCCESS) {
     return true;
   }
@@ -103,7 +103,7 @@ inline bool CreateInstanceWithValidation(
   vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
   std::vector<VkExtensionProperties> extensions(extension_count);
   vkEnumerateInstanceExtensionProperties(nullptr, &extension_count,
-                                         extensions.data());
+      extensions.data());
   bool has_debug_utils = false;
   for (const VkExtensionProperties& extension : extensions) {
     if (std::string_view(extension.extensionName) ==
@@ -135,21 +135,21 @@ inline bool CreateInstanceWithValidation(
       static_cast<std::uint32_t>(enabled_extensions.size());
   instance_create.ppEnabledExtensionNames = enabled_extensions.data();
   if (!VulkanOk(vkCreateInstance(&instance_create, nullptr, &state.instance),
-                "vkCreateInstance", detail)) {
+          "vkCreateInstance", detail)) {
     return false;
   }
   if (enable_validation) {
     const auto create_debug =
         reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
             vkGetInstanceProcAddr(state.instance,
-                                  "vkCreateDebugUtilsMessengerEXT"));
+                "vkCreateDebugUtilsMessengerEXT"));
     state.destroy_debug_messenger =
         reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
             vkGetInstanceProcAddr(state.instance,
-                                  "vkDestroyDebugUtilsMessengerEXT"));
+                "vkDestroyDebugUtilsMessengerEXT"));
     if (create_debug != nullptr && state.destroy_debug_messenger != nullptr &&
         create_debug(state.instance, &debug_create, nullptr,
-                     &state.debug_messenger) == VK_SUCCESS) {
+            &state.debug_messenger) == VK_SUCCESS) {
       state.validation_available = true;
     } else {
       state.validation_detail =
@@ -168,7 +168,7 @@ inline void DestroyInstance(InstanceState& state) {
     if (state.destroy_debug_messenger != nullptr &&
         state.debug_messenger != VK_NULL_HANDLE) {
       state.destroy_debug_messenger(state.instance, state.debug_messenger,
-                                    nullptr);
+          nullptr);
     }
     vkDestroyInstance(state.instance, nullptr);
     state.instance = VK_NULL_HANDLE;
@@ -191,15 +191,15 @@ inline bool SupportsShaderDrawParameters(VkPhysicalDevice device) {
 }
 
 inline std::uint32_t FindMemoryType(VkPhysicalDevice device,
-                                    std::uint32_t allowed,
-                                    VkMemoryPropertyFlags required,
-                                    VkMemoryPropertyFlags preferred,
-                                    bool* coherent = nullptr) {
+    std::uint32_t allowed,
+    VkMemoryPropertyFlags required,
+    VkMemoryPropertyFlags preferred,
+    bool* coherent = nullptr) {
   VkPhysicalDeviceMemoryProperties properties{};
   vkGetPhysicalDeviceMemoryProperties(device, &properties);
   const auto find = [&](VkMemoryPropertyFlags wanted) {
     for (std::uint32_t index = 0; index < properties.memoryTypeCount;
-         ++index) {
+        ++index) {
       if ((allowed & (1U << index)) != 0 &&
           (properties.memoryTypes[index].propertyFlags & wanted) == wanted) {
         return index;
@@ -214,13 +214,13 @@ inline std::uint32_t FindMemoryType(VkPhysicalDevice device,
   if (coherent != nullptr &&
       index != std::numeric_limits<std::uint32_t>::max()) {
     *coherent = (properties.memoryTypes[index].propertyFlags &
-                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
   }
   return index;
 }
 
 inline bool LoadSpirv(const std::string& path,
-                      std::vector<std::uint32_t>& words, std::string& detail) {
+    std::vector<std::uint32_t>& words, std::string& detail) {
   std::ifstream input(path, std::ios::binary | std::ios::ate);
   if (!input) {
     detail = "cannot open SPIR-V shader: " + path;
@@ -241,17 +241,17 @@ inline bool LoadSpirv(const std::string& path,
 }
 
 inline VkShaderModule CreateShader(VkDevice device,
-                                   const std::vector<std::uint32_t>& words,
-                                   std::string& detail) {
+    const std::vector<std::uint32_t>& words,
+    std::string& detail) {
   VkShaderModuleCreateInfo create{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
   create.codeSize = words.size() * sizeof(std::uint32_t);
   create.pCode = words.data();
   VkShaderModule shader = VK_NULL_HANDLE;
   if (!VulkanOk(vkCreateShaderModule(device, &create, nullptr, &shader),
-                "vkCreateShaderModule", detail)) {
+          "vkCreateShaderModule", detail)) {
     return VK_NULL_HANDLE;
   }
   return shader;
 }
 
-}  // namespace {{Name}}::vulkan_internal
+} // namespace {{Name}}::vulkan_internal

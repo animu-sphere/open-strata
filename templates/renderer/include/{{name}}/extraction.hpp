@@ -15,4 +15,4 @@ struct DrawSummary {
 
 [[nodiscard]] DrawSummary ExtractDrawSummary(const FrameSnapshot& snapshot);
 
-}  // namespace {{Name}}
+} // namespace {{Name}}

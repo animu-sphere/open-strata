@@ -10,7 +10,9 @@ void RenderWorld::SetTriangleCount(std::uint32_t triangle_count) {
   }
 }
 
-void RenderWorld::MarkChanged() { dirty_ = true; }
+void RenderWorld::MarkChanged() {
+  dirty_ = true;
+}
 
 void RenderWorld::SetBootstrapTriangle() {
   SetTriangleCount(1);
@@ -24,4 +26,4 @@ FrameSnapshot RenderWorld::Commit() {
   return FrameSnapshot{revision_, triangle_count_};
 }
 
-}  // namespace {{Name}}
+} // namespace {{Name}}

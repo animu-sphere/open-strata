@@ -40,12 +40,24 @@ std::string Escape(std::string_view value) {
   std::string escaped;
   for (const char character : value) {
     switch (character) {
-      case '\\': escaped += "\\\\"; break;
-      case '"': escaped += "\\\""; break;
-      case '\n': escaped += "\\n"; break;
-      case '\r': escaped += "\\r"; break;
-      case '\t': escaped += "\\t"; break;
-      default: escaped += character; break;
+    case '\\':
+      escaped += "\\\\";
+      break;
+    case '"':
+      escaped += "\\\"";
+      break;
+    case '\n':
+      escaped += "\\n";
+      break;
+    case '\r':
+      escaped += "\\r";
+      break;
+    case '\t':
+      escaped += "\\t";
+      break;
+    default:
+      escaped += character;
+      break;
     }
   }
   return escaped;
@@ -66,9 +78,9 @@ struct Session {
 };
 
 bool WriteReport(const std::string& path,
-                 const std::vector<Check>& checks,
-                 const {{Name}}::GpuFrameEvidence& frame,
-                 const Session& session) {
+    const std::vector<Check>& checks,
+    const {{Name}}::GpuFrameEvidence& frame,
+    const Session& session) {
   // Write to a sibling temp file and rename into place, so a run killed
   // mid-write leaves no partial overlay for `ost renderer merge` to pick up.
   const std::filesystem::path final_path(path);
@@ -120,14 +132,17 @@ bool WriteReport(const std::string& path,
 
 std::string Status({{Name}}::FrameStatus status) {
   switch (status) {
-    case {{Name}}::FrameStatus::Pass: return "pass";
-    case {{Name}}::FrameStatus::Fail: return "fail";
-    case {{Name}}::FrameStatus::Skip: return "skip";
+  case {{Name}}::FrameStatus::Pass:
+    return "pass";
+  case {{Name}}::FrameStatus::Fail:
+    return "fail";
+  case {{Name}}::FrameStatus::Skip:
+    return "skip";
   }
   return "fail";
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
   Session session;
@@ -202,30 +217,30 @@ int main(int argc, char** argv) {
 
   std::vector<Check> checks;
   checks.push_back({"renderer.core.boundary", core_ok ? "pass" : "fail",
-                    core_ok ? "" : "commit/extraction contract mismatch"});
+      core_ok ? "" : "commit/extraction contract mismatch"});
   checks.push_back({"renderer.backend.capability",
-                    capability.available ? "pass" : "skip", capability.detail});
+      capability.available ? "pass" : "skip", capability.detail});
   checks.push_back({"renderer.gpu.frame", Status(frame.status), frame.detail});
   if (frame.validation_available) {
     checks.push_back({"renderer.validation.messages",
-                      frame.validation_message_count == 0 ? "pass" : "fail",
-                      frame.validation_message_count == 0
-                          ? ""
-                          : frame.validation_detail});
+        frame.validation_message_count == 0 ? "pass" : "fail",
+        frame.validation_message_count == 0
+            ? ""
+            : frame.validation_detail});
   } else {
     checks.push_back({"renderer.validation.messages", "skip",
-                      frame.validation_detail.empty()
-                          ? "Vulkan validation capture was unavailable"
-                          : frame.validation_detail});
+        frame.validation_detail.empty()
+            ? "Vulkan validation capture was unavailable"
+            : frame.validation_detail});
   }
   if (frame.status == {{Name}}::FrameStatus::Pass) {
     checks.push_back({"renderer.render_product.color", color_ok ? "pass" : "fail",
-                      color_ok ? "" : "RGBA8 metadata or center pixel mismatch"});
+        color_ok ? "" : "RGBA8 metadata or center pixel mismatch"});
     checks.push_back({"renderer.render_product.depth", depth_ok ? "pass" : "fail",
-                      depth_ok ? "" : "depth metadata or numeric payload mismatch"});
+        depth_ok ? "" : "depth metadata or numeric payload mismatch"});
     checks.push_back({"renderer.frame.persistence",
-                      persistence_ok ? "pass" : "fail",
-                      persistence_ok ? "" : "1,000-frame completion count mismatch"});
+        persistence_ok ? "pass" : "fail",
+        persistence_ok ? "" : "1,000-frame completion count mismatch"});
   } else {
     const std::string dependent = "renderer.gpu.frame did not pass: " + frame.detail;
     checks.push_back({"renderer.render_product.color", "skip", dependent});
@@ -233,7 +248,7 @@ int main(int argc, char** argv) {
     checks.push_back({"renderer.frame.persistence", "skip", dependent});
   }
   checks.push_back({"renderer.install_tree", install_tree ? "pass" : "skip",
-                    install_tree ? "" : "run the renderer install-tree CTest"});
+      install_tree ? "" : "run the renderer install-tree CTest"});
 #if defined({{NAME}}_HAS_HYDRA2)
   const std::string hydra_detail =
       "the co-built Hydra adapter is exercised by its OpenUSD CTests";
@@ -248,9 +263,9 @@ int main(int argc, char** argv) {
   checks.push_back({"renderer.host.stable_update", "skip", hydra_detail});
 
   const bool failed = std::any_of(checks.begin(), checks.end(),
-                                  [](const Check& check) {
-                                    return check.status == "fail";
-                                  });
+      [](const Check& check) {
+        return check.status == "fail";
+      });
 
   // The session concludes here, with every check already decided — the report
   // is published only once this run has actually finished, and it says so.

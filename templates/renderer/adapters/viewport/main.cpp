@@ -96,14 +96,14 @@ Arguments ParseArguments(int argc, char** argv) {
 }
 
 std::string WindowTitle(std::string_view device, std::uint32_t width,
-                        std::uint32_t height, std::uint64_t frames) {
+    std::uint32_t height, std::uint64_t frames) {
   std::ostringstream title;
   title << "{{name}}-viewport | " << device << " | " << width << 'x' << height
         << " | " << frames << " frames";
   return title.str();
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
   try {
@@ -148,21 +148,21 @@ int main(int argc, char** argv) {
     bool running = true;
     auto title_update = Clock::now();
     while (running && (arguments.frame_limit == 0 ||
-                       session->statistics().frames_presented <
-                           arguments.frame_limit)) {
+                          session->statistics().frames_presented <
+                              arguments.frame_limit)) {
       {{Name}}::viewport::Event event;
       while (window->PollEvent(event)) {
         switch (event.type) {
-          case {{Name}}::viewport::EventType::Close:
+        case {{Name}}::viewport::EventType::Close:
+          running = false;
+          break;
+        case {{Name}}::viewport::EventType::KeyDown:
+          if (event.key == {{Name}}::viewport::Key::Escape) {
             running = false;
-            break;
-          case {{Name}}::viewport::EventType::KeyDown:
-            if (event.key == {{Name}}::viewport::Key::Escape) {
-              running = false;
-            }
-            break;
-          case {{Name}}::viewport::EventType::Resize:
-            break;
+          }
+          break;
+        case {{Name}}::viewport::EventType::Resize:
+          break;
         }
       }
       if (!running) {
@@ -182,8 +182,8 @@ int main(int argc, char** argv) {
       const auto now = Clock::now();
       if (now - title_update >= std::chrono::milliseconds(250)) {
         window->SetTitle(WindowTitle(session->statistics().device_name, width,
-                                     height,
-                                     session->statistics().frames_presented));
+            height,
+            session->statistics().frames_presented));
         title_update = now;
       }
     }

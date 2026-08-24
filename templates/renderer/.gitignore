@@ -1,6 +1,7 @@
 # OpenStrata and out-of-source build products.
 /.strata/
 /build/
+/cmake-build-*/
 /dist/
 /install/
 /lib/

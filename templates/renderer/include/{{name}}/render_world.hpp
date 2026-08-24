@@ -11,16 +11,16 @@ struct FrameSnapshot {
 };
 
 class RenderWorld {
- public:
+public:
   void SetTriangleCount(std::uint32_t triangle_count);
   void MarkChanged();
   void SetBootstrapTriangle();
   [[nodiscard]] FrameSnapshot Commit();
 
- private:
+private:
   std::uint64_t revision_ = 0;
   std::uint32_t triangle_count_ = 0;
   bool dirty_ = false;
 };
 
-}  // namespace {{Name}}
+} // namespace {{Name}}

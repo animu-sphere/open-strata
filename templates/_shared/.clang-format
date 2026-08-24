@@ -7,10 +7,14 @@ IndentWidth: 2
 ContinuationIndentWidth: 4
 TabWidth: 2
 UseTab: Never
-ColumnLimit: 100
+ColumnLimit: 0
+AccessModifierOffset: -2
+AlignAfterOpenBracket: DontAlign
+BreakAfterReturnType: None
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: None
 DerivePointerAlignment: false
 PointerAlignment: Left
-SortIncludes: CaseSensitive
-IncludeBlocks: Regroup
+SortIncludes: Never
 NamespaceIndentation: None
 FixNamespaceComments: true

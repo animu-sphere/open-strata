@@ -20,19 +20,19 @@ class ArAsset;
 /// container's entry table and bounded random access.
 class {{Name}}PackageResolver final : public ArPackageResolver {
 public:
-    {{Name}}PackageResolver() = default;
-    ~{{Name}}PackageResolver() override = default;
+  {{Name}}PackageResolver() = default;
+  ~{{Name}}PackageResolver() override = default;
 
-    std::string Resolve(
-        const std::string& resolvedPackagePath,
-        const std::string& packagedPath) override;
+  std::string Resolve(
+      const std::string& resolvedPackagePath,
+      const std::string& packagedPath) override;
 
-    std::shared_ptr<ArAsset> OpenAsset(
-        const std::string& resolvedPackagePath,
-        const std::string& resolvedPackagedPath) override;
+  std::shared_ptr<ArAsset> OpenAsset(
+      const std::string& resolvedPackagePath,
+      const std::string& resolvedPackagedPath) override;
 
-    void BeginCacheScope(VtValue* cacheScopeData) override;
-    void EndCacheScope(VtValue* cacheScopeData) override;
+  void BeginCacheScope(VtValue* cacheScopeData) override;
+  void EndCacheScope(VtValue* cacheScopeData) override;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

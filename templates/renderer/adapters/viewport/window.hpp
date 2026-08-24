@@ -32,12 +32,12 @@ struct Event {
 };
 
 class Window {
- public:
+public:
   // Throws std::runtime_error when the windowing environment is unavailable
   // (no display, no Vulkan-capable GLFW); callers report that as a skip.
   static std::unique_ptr<Window> Create(std::string_view title,
-                                        std::uint32_t width,
-                                        std::uint32_t height, bool visible);
+      std::uint32_t width,
+      std::uint32_t height, bool visible);
   virtual ~Window() = default;
 
   [[nodiscard]] virtual bool PollEvent(Event& event) = 0;
@@ -52,4 +52,4 @@ class Window {
 // session created from the returned provider.
 [[nodiscard]] PresentSurfaceProvider MakeSurfaceProvider(Window& window);
 
-}  // namespace {{Name}}::viewport
+} // namespace {{Name}}::viewport

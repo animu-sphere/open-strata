@@ -122,11 +122,11 @@ std::optional<std::uint32_t> FindGraphicsQueue(VkPhysicalDevice device) {
 }
 
 bool CreateImage(Context& context,
-                 VkFormat format,
-                 VkImageUsageFlags usage,
-                 VkImage& image,
-                 VkDeviceMemory& memory,
-                 std::string& detail) {
+    VkFormat format,
+    VkImageUsageFlags usage,
+    VkImage& image,
+    VkDeviceMemory& memory,
+    std::string& detail) {
   VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   create.imageType = VK_IMAGE_TYPE_2D;
   create.format = format;
@@ -139,14 +139,14 @@ bool CreateImage(Context& context,
   create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   create.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   if (!VulkanOk(vkCreateImage(context.device, &create, nullptr, &image),
-                "vkCreateImage", detail)) {
+          "vkCreateImage", detail)) {
     return false;
   }
   VkMemoryRequirements requirements{};
   vkGetImageMemoryRequirements(context.device, image, &requirements);
   const std::uint32_t memory_type =
       FindMemoryType(context.physical_device, requirements.memoryTypeBits,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
   if (memory_type == std::numeric_limits<std::uint32_t>::max()) {
     detail = "no device-local image memory type is available";
     return false;
@@ -155,26 +155,26 @@ bool CreateImage(Context& context,
   allocate.allocationSize = requirements.size;
   allocate.memoryTypeIndex = memory_type;
   if (!VulkanOk(vkAllocateMemory(context.device, &allocate, nullptr, &memory),
-                "vkAllocateMemory(image)", detail) ||
+          "vkAllocateMemory(image)", detail) ||
       !VulkanOk(vkBindImageMemory(context.device, image, memory, 0),
-                "vkBindImageMemory", detail)) {
+          "vkBindImageMemory", detail)) {
     return false;
   }
   return true;
 }
 
 bool CreateReadbackBuffer(Context& context,
-                          VkDeviceSize size,
-                          VkBuffer& buffer,
-                          VkDeviceMemory& memory,
-                          bool& coherent,
-                          std::string& detail) {
+    VkDeviceSize size,
+    VkBuffer& buffer,
+    VkDeviceMemory& memory,
+    bool& coherent,
+    std::string& detail) {
   VkBufferCreateInfo create{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   create.size = size;
   create.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   if (!VulkanOk(vkCreateBuffer(context.device, &create, nullptr, &buffer),
-                "vkCreateBuffer", detail)) {
+          "vkCreateBuffer", detail)) {
     return false;
   }
   VkMemoryRequirements requirements{};
@@ -191,18 +191,18 @@ bool CreateReadbackBuffer(Context& context,
   allocate.allocationSize = requirements.size;
   allocate.memoryTypeIndex = memory_type;
   if (!VulkanOk(vkAllocateMemory(context.device, &allocate, nullptr, &memory),
-                "vkAllocateMemory(readback)", detail) ||
+          "vkAllocateMemory(readback)", detail) ||
       !VulkanOk(vkBindBufferMemory(context.device, buffer, memory, 0),
-                "vkBindBufferMemory", detail)) {
+          "vkBindBufferMemory", detail)) {
     return false;
   }
   return true;
 }
 
 bool InvalidateIfNeeded(VkDevice device,
-                        VkDeviceMemory memory,
-                        bool coherent,
-                        std::string& detail) {
+    VkDeviceMemory memory,
+    bool coherent,
+    std::string& detail) {
   if (coherent) {
     return true;
   }
@@ -211,16 +211,16 @@ bool InvalidateIfNeeded(VkDevice device,
   range.offset = 0;
   range.size = VK_WHOLE_SIZE;
   return VulkanOk(vkInvalidateMappedMemoryRanges(device, 1, &range),
-                   "vkInvalidateMappedMemoryRanges", detail);
+      "vkInvalidateMappedMemoryRanges", detail);
 }
 
-}  // namespace
+} // namespace
 #endif
 
 GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
-                                 const std::string& vertex_shader,
-                                 const std::string& fragment_shader,
-                                 std::uint32_t frame_count) {
+    const std::string& vertex_shader,
+    const std::string& fragment_shader,
+    std::uint32_t frame_count) {
 #if !defined({{NAME}}_HAS_VULKAN)
   (void)draw;
   (void)vertex_shader;
@@ -235,7 +235,7 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
 #else
   if (draw.draw_count != 1 || draw.triangle_count != 1) {
     return Evidence(FrameStatus::Fail,
-                    "bootstrap extraction did not produce one triangle draw");
+        "bootstrap extraction did not produce one triangle draw");
   }
   if (frame_count == 0) {
     return Evidence(FrameStatus::Fail, "frame_count must be at least 1");
@@ -251,14 +251,14 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
 
   Context context;
   if (!CreateInstanceWithValidation("{{name}}-headless", {}, &context.validation,
-                                    context.instance_state, detail)) {
+          context.instance_state, detail)) {
     return Evidence(FrameStatus::Skip, detail);
   }
   const VkInstance instance = context.instance_state.instance;
 
   std::uint32_t physical_count = 0;
   if (!VulkanOk(vkEnumeratePhysicalDevices(instance, &physical_count, nullptr),
-                "vkEnumeratePhysicalDevices", detail)) {
+          "vkEnumeratePhysicalDevices", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
   if (physical_count == 0) {
@@ -277,21 +277,21 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   }
   if (!queue_family) {
     return Evidence(FrameStatus::Skip,
-                    "no Vulkan physical device exposes a graphics queue");
+        "no Vulkan physical device exposes a graphics queue");
   }
 
   if (!SupportsShaderDrawParameters(context.physical_device)) {
     return Evidence(FrameStatus::Skip,
-                    "the device does not support shaderDrawParameters, which "
-                    "the Slang vertex-index lowering requires");
+        "the device does not support shaderDrawParameters, which "
+        "the Slang vertex-index lowering requires");
   }
 
   VkFormatProperties color_properties{};
   VkFormatProperties depth_properties{};
   vkGetPhysicalDeviceFormatProperties(context.physical_device, kColorFormat,
-                                      &color_properties);
+      &color_properties);
   vkGetPhysicalDeviceFormatProperties(context.physical_device, kDepthFormat,
-                                      &depth_properties);
+      &depth_properties);
   const VkFormatFeatureFlags color_required =
       VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
   const VkFormatFeatureFlags depth_required =
@@ -300,7 +300,7 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   if ((color_properties.optimalTilingFeatures & color_required) != color_required ||
       (depth_properties.optimalTilingFeatures & depth_required) != depth_required) {
     return Evidence(FrameStatus::Skip,
-                    "required RGBA8/depth32 attachment readback formats are unavailable");
+        "required RGBA8/depth32 attachment readback formats are unavailable");
   }
 
   const float priority = 1.0F;
@@ -316,8 +316,8 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   device_create.queueCreateInfoCount = 1;
   device_create.pQueueCreateInfos = &queue_create;
   if (!VulkanOk(vkCreateDevice(context.physical_device, &device_create, nullptr,
-                               &context.device),
-                "vkCreateDevice", detail)) {
+                    &context.device),
+          "vkCreateDevice", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
   vkGetDeviceQueue(context.device, *queue_family, 0, &context.queue);
@@ -325,19 +325,19 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   VkCommandPoolCreateInfo pool_create{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool_create.queueFamilyIndex = *queue_family;
   if (!VulkanOk(vkCreateCommandPool(context.device, &pool_create, nullptr,
-                                    &context.command_pool),
-                "vkCreateCommandPool", detail)) {
+                    &context.command_pool),
+          "vkCreateCommandPool", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
 
   if (!CreateImage(context, kColorFormat,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                   context.color_image, context.color_memory, detail) ||
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+              VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+          context.color_image, context.color_memory, detail) ||
       !CreateImage(context, kDepthFormat,
-                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                   context.depth_image, context.depth_memory, detail)) {
+          VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+              VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+          context.depth_image, context.depth_memory, detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
 
@@ -351,27 +351,27 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   view_create.format = kColorFormat;
   view_create.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   if (!VulkanOk(vkCreateImageView(context.device, &view_create, nullptr,
-                                  &context.color_view),
-                "vkCreateImageView(color)", detail)) {
+                    &context.color_view),
+          "vkCreateImageView(color)", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
   view_create.image = context.depth_image;
   view_create.format = kDepthFormat;
   view_create.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
   if (!VulkanOk(vkCreateImageView(context.device, &view_create, nullptr,
-                                  &context.depth_view),
-                "vkCreateImageView(depth)", detail)) {
+                    &context.depth_view),
+          "vkCreateImageView(depth)", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
 
   const VkDeviceSize color_bytes = kWidth * kHeight * 4U;
   const VkDeviceSize depth_bytes = kWidth * kHeight * sizeof(float);
   if (!CreateReadbackBuffer(context, color_bytes, context.color_readback,
-                            context.color_readback_memory,
-                            context.color_readback_coherent, detail) ||
+          context.color_readback_memory,
+          context.color_readback_coherent, detail) ||
       !CreateReadbackBuffer(context, depth_bytes, context.depth_readback,
-                            context.depth_readback_memory,
-                            context.depth_readback_coherent, detail)) {
+          context.depth_readback_memory,
+          context.depth_readback_coherent, detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
 
@@ -394,7 +394,7 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   attachments[1].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   VkAttachmentReference color_reference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
   VkAttachmentReference depth_reference{1,
-                                        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
   VkSubpassDescription subpass{};
   subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
   subpass.colorAttachmentCount = 1;
@@ -424,13 +424,13 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   render_pass_create.dependencyCount = 2;
   render_pass_create.pDependencies = dependencies;
   if (!VulkanOk(vkCreateRenderPass(context.device, &render_pass_create, nullptr,
-                                   &context.render_pass),
-                "vkCreateRenderPass", detail)) {
+                    &context.render_pass),
+          "vkCreateRenderPass", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
 
   const VkImageView framebuffer_attachments[] = {context.color_view,
-                                                 context.depth_view};
+      context.depth_view};
   VkFramebufferCreateInfo framebuffer_create{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
   framebuffer_create.renderPass = context.render_pass;
   framebuffer_create.attachmentCount = 2;
@@ -439,8 +439,8 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   framebuffer_create.height = kHeight;
   framebuffer_create.layers = 1;
   if (!VulkanOk(vkCreateFramebuffer(context.device, &framebuffer_create, nullptr,
-                                    &context.framebuffer),
-                "vkCreateFramebuffer", detail)) {
+                    &context.framebuffer),
+          "vkCreateFramebuffer", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
 
@@ -466,7 +466,7 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
       VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
   input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
   VkViewport viewport{0.0F, 0.0F, static_cast<float>(kWidth),
-                      static_cast<float>(kHeight), 0.0F, 1.0F};
+      static_cast<float>(kHeight), 0.0F, 1.0F};
   VkRect2D scissor{{0, 0}, {kWidth, kHeight}};
   VkPipelineViewportStateCreateInfo viewport_state{
       VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -499,8 +499,8 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   blend.pAttachments = &blend_attachment;
   VkPipelineLayoutCreateInfo layout_create{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   if (!VulkanOk(vkCreatePipelineLayout(context.device, &layout_create, nullptr,
-                                       &context.pipeline_layout),
-                "vkCreatePipelineLayout", detail)) {
+                    &context.pipeline_layout),
+          "vkCreatePipelineLayout", detail)) {
     vkDestroyShaderModule(context.device, vertex_module, nullptr);
     vkDestroyShaderModule(context.device, fragment_module, nullptr);
     return Evidence(FrameStatus::Fail, detail);
@@ -535,12 +535,12 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   command_allocate.commandBufferCount = 1;
   VkCommandBuffer command = VK_NULL_HANDLE;
   if (!VulkanOk(vkAllocateCommandBuffers(context.device, &command_allocate, &command),
-                "vkAllocateCommandBuffers", detail)) {
+          "vkAllocateCommandBuffers", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
   VkCommandBufferBeginInfo command_begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   if (!VulkanOk(vkBeginCommandBuffer(command, &command_begin),
-                "vkBeginCommandBuffer", detail)) {
+          "vkBeginCommandBuffer", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
   VkClearValue clear[2]{};
@@ -566,15 +566,15 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   color_copy.imageSubresource.layerCount = 1;
   color_copy.imageExtent = {kWidth, kHeight, 1};
   vkCmdCopyImageToBuffer(command, context.color_image,
-                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         context.color_readback, 1, &color_copy);
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      context.color_readback, 1, &color_copy);
   VkBufferImageCopy depth_copy{};
   depth_copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
   depth_copy.imageSubresource.layerCount = 1;
   depth_copy.imageExtent = {kWidth, kHeight, 1};
   vkCmdCopyImageToBuffer(command, context.depth_image,
-                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         context.depth_readback, 1, &depth_copy);
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      context.depth_readback, 1, &depth_copy);
   VkBufferMemoryBarrier host_barriers[2]{};
   for (VkBufferMemoryBarrier& barrier : host_barriers) {
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -588,16 +588,16 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   host_barriers[0].buffer = context.color_readback;
   host_barriers[1].buffer = context.depth_readback;
   vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                       VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 2,
-                       host_barriers, 0, nullptr);
+      VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 2,
+      host_barriers, 0, nullptr);
   if (!VulkanOk(vkEndCommandBuffer(command), "vkEndCommandBuffer", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
 
   VkFenceCreateInfo fence_create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   if (!VulkanOk(vkCreateFence(context.device, &fence_create, nullptr,
-                              &context.fence),
-                "vkCreateFence", detail)) {
+                    &context.fence),
+          "vkCreateFence", detail)) {
     return Evidence(FrameStatus::Fail, detail);
   }
   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -607,14 +607,14 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   for (std::uint32_t frame = 0; frame < frame_count; ++frame) {
     if (frame > 0 &&
         !VulkanOk(vkResetFences(context.device, 1, &context.fence),
-                  "vkResetFences", detail)) {
+            "vkResetFences", detail)) {
       return Evidence(FrameStatus::Fail, detail);
     }
     if (!VulkanOk(vkQueueSubmit(context.queue, 1, &submit, context.fence),
-                  "vkQueueSubmit", detail) ||
+            "vkQueueSubmit", detail) ||
         !VulkanOk(vkWaitForFences(context.device, 1, &context.fence, VK_TRUE,
-                                  10'000'000'000ULL),
-                  "vkWaitForFences", detail)) {
+                      10'000'000'000ULL),
+            "vkWaitForFences", detail)) {
       return Evidence(FrameStatus::Fail, detail);
     }
     ++completion;
@@ -623,15 +623,15 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   void* color_data = nullptr;
   void* depth_data = nullptr;
   if (!VulkanOk(vkMapMemory(context.device, context.color_readback_memory, 0,
-                            color_bytes, 0, &color_data),
-                "vkMapMemory(color)", detail) ||
+                    color_bytes, 0, &color_data),
+          "vkMapMemory(color)", detail) ||
       !VulkanOk(vkMapMemory(context.device, context.depth_readback_memory, 0,
-                            depth_bytes, 0, &depth_data),
-                "vkMapMemory(depth)", detail) ||
+                    depth_bytes, 0, &depth_data),
+          "vkMapMemory(depth)", detail) ||
       !InvalidateIfNeeded(context.device, context.color_readback_memory,
-                          context.color_readback_coherent, detail) ||
+          context.color_readback_coherent, detail) ||
       !InvalidateIfNeeded(context.device, context.depth_readback_memory,
-                          context.depth_readback_coherent, detail)) {
+          context.depth_readback_coherent, detail)) {
     if (color_data != nullptr) {
       vkUnmapMemory(context.device, context.color_readback_memory);
     }
@@ -658,7 +658,7 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   evidence.color.color_space = "linear";
   evidence.color.payload.resize(static_cast<std::size_t>(color_bytes));
   std::memcpy(evidence.color.payload.data(), color_data,
-              evidence.color.payload.size());
+      evidence.color.payload.size());
   evidence.depth.width = kWidth;
   evidence.depth.height = kHeight;
   evidence.depth.row_pitch = kWidth * sizeof(float);
@@ -666,7 +666,7 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
   evidence.depth.origin = "top-left";
   evidence.depth.payload.resize(kWidth * kHeight);
   std::memcpy(evidence.depth.payload.data(), depth_data,
-              static_cast<std::size_t>(depth_bytes));
+      static_cast<std::size_t>(depth_bytes));
   vkUnmapMemory(context.device, context.color_readback_memory);
   vkUnmapMemory(context.device, context.depth_readback_memory);
 
@@ -689,4 +689,4 @@ GpuFrameEvidence RenderOffscreen(const DrawSummary& draw,
 #endif
 }
 
-}  // namespace {{Name}}
+} // namespace {{Name}}
