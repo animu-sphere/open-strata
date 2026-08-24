@@ -120,13 +120,11 @@ drove v0.18.0 are indexed in the [delivery reports](../reports/README.md).
 
 The 2026-08-24
 [v0.22.2 release-artifact membership report](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/35-2026-08-24-v0.22.2-release-artifact-membership.md)
-is the primary v0.22.3 runtime-composition intake. It verifies that recursive
-adapter discovery and the `ost library` lifecycle now exist, but shows that the
-library verb does not compose `requires.libraries`; shared motion profiles have
-no correct data-artifact owner; discovery silently changes aggregate-product
-membership; and provenance/warnings vary among members from one root build. The
-eight asks are tracked in the
-[v0.22.x runtime-composition roadmap](../roadmap/runtime-composition.md).
+drove the v0.22.3 runtime and component-artifact contracts. The release composes
+ordinary-library dependencies, installs project-owned shared data, and pins
+aggregate membership while preserving per-member evidence. Re-running the
+downstream release lane with the v0.22.3 binary is tracked as post-release
+validation in the [current roadmap](../roadmap/current.md).
 
 ## Current limitations
 
@@ -134,10 +132,10 @@ eight asks are tracked in the
 - Cross-repository composition with a renderer (VRM rendered by hdMerlin) is a
   **planned** Formation workflow, not a current capability — see
   [combined-formations.md](combined-formations.md).
-- Aggregate product packaging is available. Explicit membership, non-leaf
-  ordinary-library composition, data-only ownership and consistent member
-  provenance remain open for v0.22.3; a release lane pinned to OST 0.21.0 and a
-  workstation on 0.22.2 currently discover different tool sets.
+- Aggregate product packaging now supports explicit membership, non-leaf
+  ordinary-library composition, project-owned shared data, and per-member
+  evidence. The authoritative release lane still needs to adopt and validate
+  the v0.22.3 binary.
 - The authoritative, current feature and platform support matrix lives in the
   repository, not here.
 
