@@ -326,6 +326,21 @@ fn test(
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
     validated_build_record(&library, &id, &target.runtime_id, &resolved.prefix)?;
+    let prerequisites = plugin::selected_workspace_libraries_for_library(&library)?;
+    let mut runtime_directories = library.installed_runtime_dirs(&isolated_prefix(&library, &id));
+    runtime_directories.extend(prerequisites.iter().flat_map(|prerequisite| {
+        prerequisite.installed_runtime_dirs(&isolated_prefix(prerequisite, &id))
+    }));
+    let runtime_directory_refs = runtime_directories
+        .iter()
+        .map(Utf8PathBuf::as_path)
+        .collect::<Vec<_>>();
+    let test_env = ost_plugin::session_env_from_with_library_dirs(
+        &resolved.env,
+        &[],
+        &runtime_directory_refs,
+        target.os(),
+    );
     let ctest = ctest
         .map(Utf8PathBuf::from)
         .or_else(|| tools::which("ctest").and_then(|path| Utf8PathBuf::from_path_buf(path).ok()))
@@ -376,7 +391,7 @@ fn test(
     let started_unix = unix_now();
     let mut command = Command::new(ctest.as_std_path());
     command.args(&args).current_dir(library.root.as_std_path());
-    resolved.env.apply(&mut command);
+    test_env.apply(&mut command);
     let status = command
         .status()
         .map_err(|error| Error::io(format!("run {ctest}"), error))?;

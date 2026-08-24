@@ -1298,13 +1298,18 @@ fn non_leaf_library_build_resolves_cmake_package_and_packages_only_primary() {
     )
     .unwrap();
     std::fs::write(
+        adapter.join("smoke.cpp"),
+        "extern int adapter_value(); int main() { return adapter_value() == 42 ? 0 : 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
         adapter.join("adapterConfig.cmake"),
         "include(CMakeFindDependencyMacro)\nfind_dependency(base CONFIG)\ninclude(\"${CMAKE_CURRENT_LIST_DIR}/adapterTargets.cmake\")\n",
     )
     .unwrap();
     std::fs::write(
         adapter.join("CMakeLists.txt"),
-        "cmake_minimum_required(VERSION 3.23)\nproject(adapter LANGUAGES CXX)\nset(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)\nfind_package(base CONFIG REQUIRED)\nadd_library(adapter SHARED adapter.cpp)\ntarget_link_libraries(adapter PRIVATE base::base)\ninstall(TARGETS adapter EXPORT adapterTargets RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)\ninstall(EXPORT adapterTargets NAMESPACE adapter:: DESTINATION lib/cmake/adapter)\ninstall(FILES adapterConfig.cmake DESTINATION lib/cmake/adapter)\n",
+        "cmake_minimum_required(VERSION 3.23)\nproject(adapter LANGUAGES CXX)\nset(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)\nfind_package(base CONFIG REQUIRED)\nadd_library(adapter SHARED adapter.cpp)\ntarget_link_libraries(adapter PRIVATE base::base)\nadd_executable(adapter_smoke smoke.cpp)\ntarget_link_libraries(adapter_smoke PRIVATE adapter)\nenable_testing()\nadd_test(NAME adapter-runtime-closure COMMAND adapter_smoke)\ninstall(TARGETS adapter EXPORT adapterTargets RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)\ninstall(EXPORT adapterTargets NAMESPACE adapter:: DESTINATION lib/cmake/adapter)\ninstall(FILES adapterConfig.cmake DESTINATION lib/cmake/adapter)\n",
     )
     .unwrap();
 
@@ -1324,6 +1329,14 @@ fn non_leaf_library_build_resolves_cmake_package_and_packages_only_primary() {
     assert!(adapter_record["dependencies"][0]["build_record_sha256"]
         .as_str()
         .is_some_and(|digest| digest.len() == 64));
+
+    let test = sb.ost(&["library", "test", "libs/adapter"]);
+    assert!(
+        test.status.success(),
+        "non-leaf test failed:\n{}",
+        out_text(&test)
+    );
+    assert!(adapter_target.join("library-test.json").is_file());
 
     let package = sb.ost(&["library", "package", "libs/adapter"]);
     assert!(
