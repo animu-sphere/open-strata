@@ -1109,8 +1109,15 @@ fn find_msvc_toolchain(constraint: &str) -> Result<NativeToolchain> {
         .vars
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case("VCToolsVersion"))
-        .map(|(_, value)| value.trim_end_matches(['\\', '/']))
+        .map(|(_, value)| value.clone())
+        // A caller may deliberately enter an older side-by-side toolset with
+        // `vcvars64 -vcvars_ver=...` before launching ost. In that case the
+        // bootstrap capture contains the same VCToolsVersion as the parent and
+        // correctly omits it from its environment delta. The inherited value
+        // is still the authoritative toolset selected for child processes.
+        .or_else(|| std::env::var("VCToolsVersion").ok())
         .ok_or_else(|| provider_version_mismatch("MSVC", constraint, "VCToolsVersion missing"))?;
+    let tools_version = tools_version.trim_end_matches(['\\', '/']);
     let mut parts = tools_version.split('.');
     let _toolset_major = parts.next();
     let minor = parts
