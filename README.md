@@ -44,11 +44,13 @@ Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.23.0** milestone consumes that artifact/provider foundation for
-headless DCC host adapters, host-standard packaging, and a pinned support matrix.
-Sessions, GPU/AI, and broader DCC matrices remain ahead.
-Linux x86_64 is the first-class target; other OS targets are modeled and
-partially working — these examples were exercised on Windows.
+The active **v0.22.3** milestone establishes the canonical OpenUSD 26.05/26.08
+CY2026 runtime matrix (`core` / `gl` / `vulkan` / `metal`), generalizes runtime
+production and backend-aware verification across Linux, Windows and macOS, and
+closes the artifact boundaries needed by the v0.22.x runtime-composition series.
+Headless DCC host adapters remain deferred to v0.23.0. See the
+[current roadmap](docs/roadmap/current.md) and the
+[canonical runtime proposal](docs/design/proposed/canonical-openusd-runtimes.md).
 
 ## Reference projects
 
@@ -69,6 +71,14 @@ boundaries:
   OpenUSD 26.08 workspace, digest-pinned generated CI across three operating
   systems, and strict file-format argument handling in the generic verification
   pyramid.
+- [**USD HTTP Resolver**](https://github.com/animu-sphere/usd-http-resolver) — a
+  released random-access HTTP/HTTPS `ArResolver` with aligned memory/disk caches,
+  stable asset identity and measured transfer evidence. It demonstrates the
+  transport provider boundary consumed by independently released file formats.
+- [**USD Raster Plugins**](https://github.com/animu-sphere/usd-raster-plugins) —
+  an early GeoTIFF/raster plugin workspace with OpenUSD-independent core
+  libraries, explicit georeferencing and windowed reads. It demonstrates the
+  raster side of transport-neutral runtime composition.
 - [**USD VRM Plugins**](https://github.com/animu-sphere/usd-vrm-plugins) — a
   multi-bundle OpenUSD plugin workspace (typed schemas, a VRM file-format plugin,
   a package resolver, a shared container library). It demonstrates workspace
@@ -80,9 +90,9 @@ boundaries:
   evidence, capability-aware validation, runtime artifact adoption, and the
   managed `usdview` workflow.
 
-Together they exercise three distinct plugin-workspace shapes and the renderer
-side of the ecosystem, including the cross-repository **Formation** composition
-surface shipped in v0.19.0 and extended in v0.20.0. See
+Together they exercise plugin, ordinary-library, resolver, transport, raster,
+point-cloud and renderer boundaries, including cross-repository **Formation**
+composition and the planned distributable geospatial runtime. See
 [docs/projects/](docs/projects/README.md).
 
 ## Install

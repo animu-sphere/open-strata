@@ -230,7 +230,8 @@ ost platform diff cy2025 cy2026
 
 ## 4.2 Runtime
 
-Platform + OS/arch + Python ABI + profile + resolved artifacts の実体。
+A concrete instance of a platform, OS/architecture, Python ABI, profile and
+resolved artifacts.
 
 ```yaml
 id: openstrata-cy2026-linux-x86_64-py313-usd
@@ -246,18 +247,29 @@ digest: sha256:...
 validation: passed
 ```
 
-Runtime は OpenUSD の install prefix そのものではない。実行時に必要な
-OpenUSD、plugin、library、tool、environment contribution、compatibility
-evidence を一つの identity の下で解決・検証した object である。
+A runtime is not merely an OpenUSD install prefix. It resolves and validates the
+OpenUSD, plugins, libraries, tools, environment contributions and compatibility
+evidence needed for execution under one identity.
 
-v0.22.3 以降の runtime composition では、個別の immutable OST artifact
-を同じ dependency / capability / provider graph から解決し、lock し、
-predictable な SDK layout へ materialize した結果も runtime artifact として
-配布可能にする。実行目的ごとの Formation と、配布可能な composed runtime
-は区別するが、resolver、environment、lock、diagnostics は共有し、二つ目の
-composition mechanism は作らない。未実装部分を含む契約と段階的な受入条件は
-[runtime composition proposal](proposed/runtime-composition.md) と
-[v0.22.x roadmap](../roadmap/runtime-composition.md) が所有する。
+From v0.22.3, runtime composition resolves individual immutable OST artifacts
+from the same dependency/capability/provider graph, locks them, materializes them
+into a predictable SDK layout, and can distribute the result as a runtime
+artifact. A purpose-specific Formation remains distinct from a distributable
+composed runtime, but both share the resolver, environment, lock and diagnostic
+contracts; OpenStrata does not add a second composition mechanism. The
+[runtime composition proposal](proposed/runtime-composition.md) and
+[v0.22.x roadmap](../roadmap/runtime-composition.md) own the not-yet-implemented
+contract and staged acceptance criteria.
+
+The OpenUSD base runtime treats `profile` and graphics `variant` as separate
+identity axes. The canonical variants for `profile = usd` are `core`, `gl`,
+`vulkan` and `metal`; legacy `standard` normalizes to `gl`. A variant is a
+runtime capability contract, not an alias for build flags. The
+[canonical OpenUSD runtime proposal](proposed/canonical-openusd-runtimes.md) owns
+the OpenUSD 26.05/26.08 CY2026 primary matrix, the mandatory upstream examples
+build for imaging variants (`core` is exempt), macOS deployment target,
+backend-aware verification, and the separation of OCI tag, compatibility
+selector and immutable digest.
 
 ## 4.3 Profile
 
