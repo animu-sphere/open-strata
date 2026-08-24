@@ -12,6 +12,12 @@ python support/plan-openusd-runtimes.py
 python support/plan-openusd-runtimes.py --github
 ```
 
+The planner validates the complete producer contract, including ordered
+versions and variants, runner/adapter identity, macOS SDK floors, release gates,
+repository and leaf-publication policy. Host publishers consume this exact
+expanded plan rather than reconstructing a second matrix in PowerShell. CI runs
+the planner's regression suite and exercises the PowerShell `-PlanOnly` bridge.
+
 On a primary producer host, inspect just the applicable local leaves:
 
 ```powershell

@@ -3,6 +3,7 @@
 .strata/
 .tmp/
 support/.openusd-runtime-work/
+__pycache__/
 
 # Local Claude Code config (not shared)
 .claude/

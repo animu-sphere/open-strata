@@ -19,6 +19,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  canonical-runtime-matrix:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test canonical runtime planner
+        run: python -m unittest discover -s support/tests -p 'test_*.py'
+
+      - name: Expand canonical runtime matrix
+        run: python support/plan-openusd-runtimes.py --github
+
+      - name: Exercise publisher planning integration
+        shell: pwsh
+        run: ./support/publish-openusd-runtimes.ps1 -PlanOnly
+
   fmt:
     runs-on: ubuntu-22.04
     steps:
