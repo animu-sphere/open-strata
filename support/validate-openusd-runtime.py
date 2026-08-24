@@ -74,12 +74,43 @@ def mach_o_files(root: Path) -> list[Path]:
     return binaries
 
 
+def contractual_absolute_dependencies(root: Path) -> tuple[str, ...]:
+    """Absolute Mach-O dependencies the CY contract explicitly permits.
+
+    A runtime may only reach outside `@rpath`/`/System/Library`/`/usr/lib` for a
+    dependency the contract declares. CY2026 declares CPython with
+    `provider: platform`, so the platform interpreter of exactly the recorded
+    version is allowed and nothing else is -- a Homebrew TBB or an OpenImageIO
+    left in a build prefix still fails, because neither matches these suffixes.
+
+    Matching on the suffix rather than a fixed prefix keeps this provider
+    agnostic: a python.org framework and a Homebrew one differ in location but
+    agree on the framework/dylib name for a given series.
+    """
+    manifest_path = root / "runtime.json"
+    if not manifest_path.is_file():
+        return ()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    python = manifest.get("openusd_compatibility", {}).get("python", {})
+    if python.get("family") != "cpython" or python.get("provider") != "platform":
+        return ()
+    parts = str(python.get("version", "")).split(".")
+    if len(parts) < 2 or not all(part.isdigit() for part in parts[:2]):
+        return ()
+    series = f"{parts[0]}.{parts[1]}"
+    return (
+        f"/Python.framework/Versions/{series}/Python",
+        f"/libpython{series}.dylib",
+    )
+
+
 def validate_relocation(root: Path, platform: str) -> None:
     if platform != "macos":
         return
     binaries = mach_o_files(root)
     if not binaries:
         raise RuntimeError(f"no Mach-O binaries were found below {root}")
+    contractual = contractual_absolute_dependencies(root)
     for binary in binaries:
         result = subprocess.run(
             ["otool", "-L", str(binary)], capture_output=True, text=True, check=False
@@ -95,6 +126,7 @@ def validate_relocation(root: Path, platform: str) -> None:
             dependency
             for dependency in dependencies
             if not dependency.startswith(("@", "/System/Library/", "/usr/lib/"))
+            and not dependency.endswith(contractual)
         ]
         if forbidden:
             raise RuntimeError(
