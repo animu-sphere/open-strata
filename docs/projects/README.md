@@ -16,7 +16,10 @@ and link back to the project for everything else.
 ```text
 OpenStrata ecosystem
 ├── open-strata
-│   └── runtime, build, test, package, artifact, CI, validation, and (planned) formation
+│   └── runtime, build, test, package, artifact, CI, validation, and formation
+│
+├── usd-geospatial-runtime
+│   └── reference composed-runtime acceptance repository (bootstrap)
 │
 ├── usd-3dgs-plugins
 │   └── reference Gaussian file-format workspace
@@ -41,12 +44,19 @@ every build unit into an artificial package abstraction.
 
 | Project | Category | What it proves | Main OpenStrata workflows |
 | --- | --- | --- | --- |
-| [OpenStrata](../concepts/overview.md) | Toolchain | Runtime, artifact, CI, validation, and (planned) Formation | `runtime`, `build`, `artifact`, `ci` |
+| [OpenStrata](../concepts/overview.md) | Toolchain | Runtime, artifact, CI, validation, and Formation | `runtime`, `build`, `artifact`, `formation`, `ci` |
+| [USD Geospatial Runtime](usd-geospatial-runtime.md) | Runtime composition | Locked multi-repository runtime, SDK layout, clean-consumer reconstruction (bootstrap; repository currently empty) | planned `runtime compose` / `validate` / `export` / `pull` / `exec` |
 | [USD 3DGS Plugins](usd-3dgs-plugins.md) | Plugin workspace | Fresh scaffold, bundle-to-library edge, Gaussian PLY import | `plugin build` / `test` / `run` / `view` / `package` |
 | [USD Point Cloud Plugins](usd-pointcloud-plugins.md) | Plugin workspace | Four geospatial file formats, shared authoring/tiling stack, format arguments | `configure` / `build` / `test`, `plugin build` / `test` / `view` |
 | [USD VRM Plugins](usd-vrm-plugins.md) | Plugin workspace | Typed schemas, file formats, resolver, bundle graph | `plugin build` / `test` / `run` / `view` / `package` |
 | [hdMerlin](hydra-merlin.md) | Renderer project | Managed renderer build, evidence, Hydra discovery | `build`, `validate`, `renderer view` |
 
+- **[USD Geospatial Runtime](usd-geospatial-runtime.md)** —
+  [`animu-sphere/usd-geospatial-runtime`](https://github.com/animu-sphere/usd-geospatial-runtime):
+  the first runtime-composition acceptance repository, currently empty. It will
+  own a declarative geospatial capability set, component pins, locks, fixtures
+  and clean-consumer evidence while OpenStrata owns the generic resolution,
+  materialization and verification machinery.
 - **[USD 3DGS Plugins](usd-3dgs-plugins.md)** —
   [`animu-sphere/usd-3dgs-plugins`](https://github.com/animu-sphere/usd-3dgs-plugins):
   a read-only Gaussian PLY `SdfFileFormat` bundle backed by a
@@ -75,22 +85,24 @@ every build unit into an artificial package abstraction.
 
 ## Cross-project story
 
-The strongest narrative is not that four downstream projects independently use
+The strongest narrative is not that downstream projects independently use
 `ost`. It is that **independently released OpenUSD components can be resolved,
-validated, and composed into one reproducible execution environment**. The two
-original plugin workspaces exercise a single file-format bundle with an ordinary
-library dependency and a multi-bundle avatar stack; USD Point Cloud Plugins adds
-a four-format geospatial workspace with a shared authoring and tiling stack,
-while hdMerlin exercises the renderer boundary. One concrete planned composition
-is a VRM file opened through the VRM bundles and rendered by hdMerlin in a single
-Vulkan viewport; Gaussian and point-cloud stage inspection supply independent
-plugin dogfoods without claiming renderer compatibility.
+validated, and composed into one reproducible execution environment**. The
+plugin workspaces exercise format, schema, resolver and ordinary-library
+boundaries; hdMerlin exercises the renderer boundary; and USD Geospatial Runtime
+will exercise the additional boundary from a locked component graph to one
+distributable runtime/SDK. One separate Formation case is a VRM file opened
+through the VRM bundles and rendered by hdMerlin in a single Vulkan viewport;
+Gaussian and point-cloud stage inspection remain independent plugin dogfoods
+without claiming renderer compatibility.
 
-That composition is the planned [Formation](../design/proposed/formations.md)
-model. `ost formation resolve|inspect|lock|run` shipped in v0.19.0 and
-`ost formation env|doctor` shipped in v0.20.0; the
-cross-repository workflows are documented — clearly labeled as examples —
-in [combined-formations.md](combined-formations.md).
+Per-command composition is the [Formation](../design/proposed/formations.md)
+model: `ost formation resolve|inspect|lock|run` shipped in v0.19.0 and
+`ost formation env|doctor` shipped in v0.20.0. Materializing a resolved graph as
+an independently distributable runtime is the proposed
+[runtime-composition](../design/proposed/runtime-composition.md) layer; it reuses
+Formation rather than replacing it. Cross-repository Formation workflows are in
+[combined-formations.md](combined-formations.md).
 
 ## Adopting OpenStrata for your own project
 

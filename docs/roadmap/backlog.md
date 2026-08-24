@@ -12,19 +12,22 @@ The v0.19.0 composition and reach milestone is shipped in
 [v0.19.0](../releases/v0.19.0.md). The v0.20.0 dogfood-closure and
 renderer-workflow milestone is shipped in [v0.20.0](../releases/v0.20.0.md).
 DCC host integration is split: discovery and the v0.20.0 dogfooding closure
-shipped in [v0.21.0](../releases/v0.21.0.md); the OpenUSD artifact foundation is
-shipped in [v0.22.0](../releases/v0.22.0.md); and the adapters and host matrix
-are active in v0.23.0, specified in [current.md](current.md).
+shipped in [v0.21.0](../releases/v0.21.0.md), and the OpenUSD artifact foundation
+shipped in [v0.22.0](../releases/v0.22.0.md). Before the adapters and host matrix,
+v0.22.3-v0.22.9 establish and dogfood the
+[runtime-composition foundation](runtime-composition.md). v0.22.3 is active in
+[current.md](current.md); the remaining slices and v0.23.0 are ordered below.
 
 The Formation scope below is **Half B** of v0.19.0, narrowed to
 `resolve|inspect|run|lock`. It is gated on Half A (artifact closure, staged-byte
 reach, external-provenance reach, producer-session publication) because
 Formation's own acceptance criteria — three dogfoods run from packaged,
 digest-pinned artifacts on a clean machine — cannot pass while a packaged bundle
-from a split workspace is not independently installable. If Half A consumes the
-milestone. Formation shipped across v0.19.0 and v0.20.0; DCC host discovery
-shipped in v0.21.0, the artifact/provider contract shipped in v0.22.0, and the
-active host adapters consume both in v0.23.0.
+from a split workspace is not independently installable. Formation shipped
+across v0.19.0 and v0.20.0; DCC host discovery shipped in v0.21.0 and the
+artifact/provider contract shipped in v0.22.0. Runtime composition reuses both
+the Formation resolver/environment model and the artifact contract before
+v0.23.0 host adapters consume the same substrate.
 
 - ✅ **v0.19.0 Half B - Formation composition.** Turn the reference-project
   ecosystem documented in v0.18.0 into an executable contract. A **Formation** is a
@@ -74,16 +77,43 @@ active host adapters consume both in v0.23.0.
   explicit workspace discovery and package provenance, transfer evidence, and
   renderer evidence hardening. DCC-relevant providers and requirements are
   modeled here, while concrete DCC execution and matrix work remain excluded.
-- 🚧 **v0.23.0 - DCC host adapters and matrix (Phase 10, second half).** Moved
-  from v0.22.0 on 2026-08-09. Consume v0.21.0 host discovery and the v0.22.0
-  artifact/provider contract to run minimal headless load/open/validate probes
-  with preserved output and explained SKIP results; generate Maya `.mod` and
-  Houdini package JSON layouts; and publish support-matrix cells with pinned
-  host records, artifact digests, tiers, and execution evidence. Host integration
-  consumes Formation and the existing renderer identity/evidence model rather
-  than introducing parallel composition, environment, artifact, or provenance
-  mechanisms. The Linux/macOS discovery acceptance passes remain owed.
-  Direction: [dcc-hosts.md](../design/proposed/dcc-hosts.md).
+- ⬜ **v0.22.4 - runtime component model.** Resolve versioned runtime, plugin,
+  library, tool, renderer and data artifacts through explicit dependency,
+  capability/provider and environment-contribution metadata. Emit one canonical
+  composition model and diagnose conflicts before materialization. Reuse
+  Formation resolution and activation rather than adding a second solver.
+- ⬜ **v0.22.5 - locked composed runtime.** Pin providers, component digests,
+  immutable sources, dependency edges, target/variant and compatibility
+  decisions; derive a runtime identity; export it with evidence; reconstruct the
+  same identity on a clean machine.
+- ⬜ **v0.22.6 - runtime SDK layout.** Materialize predictable `bin`, `lib`,
+  `include`, `share`, `plugins`, `python`, `node` and `metadata` roots with
+  owner-recorded activation, and prove ordinary CMake SDK consumption from an
+  isolated prefix.
+- ⬜ **v0.22.7 - geospatial runtime dogfood.** In parallel with
+  [`usd-geospatial-runtime`](https://github.com/animu-sphere/usd-geospatial-runtime),
+  compose OpenUSD 26.08, the HTTP resolver, point-cloud plugins and raster
+  plugins from published artifacts. The runtime repository owns the declarative
+  capability set, pins, fixtures and evidence, not a monolithic replacement
+  build. HTTP/COPC Tier 2 waits for the resolver readiness gate.
+- ⬜ **v0.22.8 - consumer packaging foundation.** Define Python, npm/Wasm and
+  native SDK packages as consumer entry points derived from canonical OST/OCI
+  artifacts, preserving one runtime identity and provenance graph.
+- ⬜ **v0.22.9 - runtime UX and diagnostics.** Stabilize the runtime
+  compose/explain/doctor/exec lifecycle and machine-readable diagnostics, finish
+  the geospatial clean-consumer pass and decide whether the proposed runtime
+  composition design is ready for acceptance. Detailed exit criteria:
+  [runtime-composition.md](runtime-composition.md).
+- ⬜ **v0.23.0 - DCC host adapters and matrix (Phase 10, second half).** Deferred
+  until the v0.22.x runtime foundation is dogfooded. Consume v0.21.0 host
+  discovery and the runtime/artifact/Formation contracts to run minimal headless
+  load/open/validate probes with preserved output and explained SKIP results;
+  generate Maya `.mod` and Houdini package JSON layouts; and publish
+  support-matrix cells with pinned host records, artifact digests, tiers and
+  execution evidence. OpenStrata never installs, updates, licenses or mutates a
+  host, and host adapters do not abstract DCC APIs. Linux/macOS discovery
+  acceptance remains owed. Direction:
+  [dcc-hosts.md](../design/proposed/dcc-hosts.md).
 - ⬜ **v1.0.0 (after the DCC host milestones).** Cut once the produce → trust →
   provenance → trusted-CI arc, cross-repository Formation composition, and the
   initial DCC host matrix are shipped and dogfooded — i.e. "build it, publish it,

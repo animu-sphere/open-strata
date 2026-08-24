@@ -246,6 +246,19 @@ digest: sha256:...
 validation: passed
 ```
 
+Runtime は OpenUSD の install prefix そのものではない。実行時に必要な
+OpenUSD、plugin、library、tool、environment contribution、compatibility
+evidence を一つの identity の下で解決・検証した object である。
+
+v0.22.3 以降の runtime composition では、個別の immutable OST artifact
+を同じ dependency / capability / provider graph から解決し、lock し、
+predictable な SDK layout へ materialize した結果も runtime artifact として
+配布可能にする。実行目的ごとの Formation と、配布可能な composed runtime
+は区別するが、resolver、environment、lock、diagnostics は共有し、二つ目の
+composition mechanism は作らない。未実装部分を含む契約と段階的な受入条件は
+[runtime composition proposal](proposed/runtime-composition.md) と
+[v0.22.x roadmap](../roadmap/runtime-composition.md) が所有する。
+
 ## 4.3 Profile
 
 よく使う capability 群を runtime layer として表す。
@@ -893,9 +906,9 @@ Must come from Strata runtime:
 
 # 10. Artifact Strategy
 
-## 10.1 Initial format
+## 10.1 Artifact format
 
-MVP:
+Canonical local archive:
 
 ```text
 tar.zst
@@ -904,13 +917,17 @@ tar.zst
 + validation report
 ```
 
-Later:
+Remote transport:
 
 ```text
 OCI layout
 OCI registry
 oras-compatible push/pull
 ```
+
+OCI transport は実装済みであり、local archive と同じ artifact identity、
+manifest、verification contract を運ぶ。Registry location や mutable tag は
+artifact identity ではない。
 
 ## 10.2 Artifact contents
 
@@ -923,7 +940,14 @@ fixtures
 validation metadata
 checksums
 provenance
+SBOM / attribution
+dependency and activation metadata
 ```
+
+Plugin、ordinary library、tool、renderer、data layer、composed runtime など、
+consumer に配布する build result は同じ artifact contract へ収束させる。
+各 kind は project-owned identity を保ち、composition は provenance や
+dependency edge を opaque archive へ潰さない。
 
 ## 10.3 Content-addressed identity
 
