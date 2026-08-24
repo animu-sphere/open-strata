@@ -426,6 +426,68 @@ fn library_build_dry_run_writes_nothing() {
 }
 
 #[test]
+fn library_build_dry_run_consumes_the_validated_sibling_closure() {
+    let sb = Sandbox::new("library-dependency-dryrun");
+    init_and_pull(&sb);
+
+    let project = sb.work_file("openstrata.toml");
+    let mut project_source = std::fs::read_to_string(&project).unwrap();
+    project_source.push_str("\n[workspace]\nmembers = ['.', 'libs/*']\n");
+    std::fs::write(&project, project_source).unwrap();
+
+    for (id, requirements) in [
+        ("base", ""),
+        (
+            "adapter",
+            "requires:\n  libraries:\n    - { id: base, version: '>=1.0,<2.0' }\n",
+        ),
+    ] {
+        let root = sb.work_file(&format!("libs/{id}"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("openstrata.library.yaml"),
+            format!(
+                "schema: openstrata.library/v1alpha1\nlibrary: {{ id: {id}, version: 1.0.0 }}\ncmake: {{ package: {id}, target: '{id}::{id}' }}\n{requirements}"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.23)\nproject(dry_run LANGUAGES CXX)\n",
+        )
+        .unwrap();
+    }
+
+    let before_work = snapshot(&sb.work);
+    let before_home = snapshot(&sb.home);
+    let out = sb.ost(&["library", "build", "libs/adapter", "--dry-run"]);
+    assert!(
+        out.status.success(),
+        "dependency plan failed:\n{}",
+        out_text(&out)
+    );
+    assert_eq!(
+        before_work,
+        snapshot(&sb.work),
+        "dry-run modified workspace"
+    );
+    assert_eq!(
+        before_home,
+        snapshot(&sb.home),
+        "dry-run modified runtime store"
+    );
+
+    let plan = out_text(&out);
+    let base = plan.find("libs/base").expect("base configure plan");
+    let adapter = plan.find("libs/adapter").expect("adapter configure plan");
+    assert!(base < adapter, "prerequisite must configure first:\n{plan}");
+    assert!(
+        plan.contains("library-prefix"),
+        "each member should use a managed isolated prefix:\n{plan}"
+    );
+}
+
+#[test]
 fn named_build_intent_dry_run_is_typed_isolated_and_side_effect_free() {
     let sb = Sandbox::new("named-intent-dryrun");
     init_and_pull(&sb);
@@ -1188,6 +1250,125 @@ fn library_scoped_build_test_package_uses_only_its_install_tree() {
         out_text(&refused).contains("no longer matches"),
         "drift diagnostic should be actionable:\n{}",
         out_text(&refused)
+    );
+}
+
+#[test]
+fn non_leaf_library_build_resolves_cmake_package_and_packages_only_primary() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping non_leaf_library_lifecycle: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("non-leaf-library-lifecycle");
+    init_and_pull(&sb);
+    let project = sb.work_file("openstrata.toml");
+    let mut project_source = std::fs::read_to_string(&project).unwrap();
+    project_source.push_str("\n[workspace]\nmembers = ['.', 'libs/*']\n");
+    std::fs::write(&project, project_source).unwrap();
+
+    let base = sb.work_file("libs/base");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(
+        base.join("openstrata.library.yaml"),
+        "schema: openstrata.library/v1alpha1\nlibrary: { id: base, version: 1.0.0 }\ncmake: { package: base, target: 'base::base' }\n",
+    )
+    .unwrap();
+    std::fs::write(base.join("base.cpp"), "int base_value() { return 41; }\n").unwrap();
+    std::fs::write(
+        base.join("baseConfig.cmake"),
+        "include(\"${CMAKE_CURRENT_LIST_DIR}/baseTargets.cmake\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        base.join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.23)\nproject(base LANGUAGES CXX)\nset(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)\nadd_library(base SHARED base.cpp)\ninstall(TARGETS base EXPORT baseTargets RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)\ninstall(EXPORT baseTargets NAMESPACE base:: DESTINATION lib/cmake/base)\ninstall(FILES baseConfig.cmake DESTINATION lib/cmake/base)\n",
+    )
+    .unwrap();
+
+    let adapter = sb.work_file("libs/adapter");
+    std::fs::create_dir_all(&adapter).unwrap();
+    std::fs::write(
+        adapter.join("openstrata.library.yaml"),
+        "schema: openstrata.library/v1alpha1\nlibrary: { id: adapter, version: 1.0.0 }\ncmake: { package: adapter, target: 'adapter::adapter' }\nrequires:\n  libraries:\n    - { id: base, version: '>=1.0,<2.0' }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        adapter.join("adapter.cpp"),
+        "extern int base_value(); int adapter_value() { return base_value() + 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        adapter.join("smoke.cpp"),
+        "extern int adapter_value(); int main() { return adapter_value() == 42 ? 0 : 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        adapter.join("adapterConfig.cmake"),
+        "include(CMakeFindDependencyMacro)\nfind_dependency(base CONFIG)\ninclude(\"${CMAKE_CURRENT_LIST_DIR}/adapterTargets.cmake\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        adapter.join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.23)\nproject(adapter LANGUAGES CXX)\nset(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)\nfind_package(base CONFIG REQUIRED)\nadd_library(adapter SHARED adapter.cpp)\ntarget_link_libraries(adapter PRIVATE base::base)\nadd_executable(adapter_smoke smoke.cpp)\ntarget_link_libraries(adapter_smoke PRIVATE adapter)\nenable_testing()\nadd_test(NAME adapter-runtime-closure COMMAND adapter_smoke)\ninstall(TARGETS adapter EXPORT adapterTargets RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)\ninstall(EXPORT adapterTargets NAMESPACE adapter:: DESTINATION lib/cmake/adapter)\ninstall(FILES adapterConfig.cmake DESTINATION lib/cmake/adapter)\n",
+    )
+    .unwrap();
+
+    let build = sb.ost(&["library", "build", "libs/adapter"]);
+    assert!(
+        build.status.success(),
+        "non-leaf build failed:\n{}",
+        out_text(&build)
+    );
+    let adapter_target = single_target_dir(&adapter);
+    let adapter_record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(adapter_target.join("library-build.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(adapter_record["dependencies"][0]["id"], "base");
+    assert_eq!(adapter_record["dependencies"][0]["version"], "1.0.0");
+    assert!(adapter_record["dependencies"][0]["build_record_sha256"]
+        .as_str()
+        .map(|digest| digest.strip_prefix("sha256:").unwrap_or(digest))
+        .is_some_and(|digest| digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit())));
+
+    let test = sb.ost(&["library", "test", "libs/adapter"]);
+    assert!(
+        test.status.success(),
+        "non-leaf test failed:\n{}",
+        out_text(&test)
+    );
+    assert!(adapter_target.join("library-test.json").is_file());
+
+    let package = sb.ost(&["library", "package", "libs/adapter"]);
+    assert!(
+        package.status.success(),
+        "non-leaf package failed:\n{}",
+        out_text(&package)
+    );
+    let manifest = find_first(&adapter.join("dist"), "manifest.json").unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+    assert_eq!(
+        manifest["component"]["dependencies"]["libraries"][0]["id"],
+        "base"
+    );
+    let packaged_paths = manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|file| file["path"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        packaged_paths.iter().any(|path| path.contains("adapter")),
+        "adapter payload missing: {packaged_paths:?}"
+    );
+    assert!(
+        packaged_paths.iter().all(|path| {
+            Utf8PathBuf::from(*path)
+                .file_name()
+                .is_none_or(|name| !name.to_ascii_lowercase().contains("base"))
+        }),
+        "dependency payload leaked into adapter artifact: {packaged_paths:?}"
     );
 }
 

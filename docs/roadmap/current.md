@@ -17,9 +17,10 @@ release membership. The milestone is driven by the 2026-08-24 USD VRM
 
 ### P1 acceptance
 
-- `ost library build|test|package` consumes the `requires.libraries` graph it
-  validates, so a non-leaf adapter resolves its sibling install prefixes through
-  normal CMake package discovery.
+- Dogfood the implemented descriptor-scoped
+  [`requires.libraries` lifecycle](../reference/plugin-workspace.md#source-workspace-composition)
+  against the USD VRM non-leaf adapter and retain clean build/test/package
+  evidence from the release-lane OST version.
 - Shared profiles/configuration have a data-only artifact/member contract (or an
   equivalent project-relative install mapping) and ship once under the correct
   owner rather than being copied below one tool.

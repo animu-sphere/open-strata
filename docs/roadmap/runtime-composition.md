@@ -25,10 +25,11 @@ artifact without changing its project ownership.
 
 ### P1
 
-- Compose `requires.libraries` for `ost library build|test|package`: resolve the
-  declared sibling closure, build or explicitly refuse missing prerequisites,
-  and expose installed prefixes through normal CMake discovery. The verb must
-  consume the same graph that workspace validation accepts.
+- Dogfood the implemented descriptor-scoped
+  [`requires.libraries` lifecycle](../reference/plugin-workspace.md#source-workspace-composition)
+  against the USD VRM non-leaf adapter using the release-lane OST pin, and
+  retain build/test/package evidence that normal CMake discovery resolved the
+  declared sibling closure.
 - Add a data-only artifact/member contract, or an equivalent project-relative
   source-to-install mapping, so shared profiles and configuration can be staged
   once under `share/` and declared as a dependency. A tool-owned duplicate is
