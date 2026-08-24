@@ -18,7 +18,7 @@ The first target is a locked runtime assembled from independently released
 artifacts:
 
 ```text
-OpenUSD 26.08
+canonical OpenUSD 26.08 cell
   + usd-http-resolver
   + usd-pointcloud-plugins
   + usd-raster-plugins
@@ -61,17 +61,18 @@ turning temporary source-tree composition into a public contract.
 
 - **Runtime repository:** empty as of 2026-08-24; no implementation or release
   claim exists yet.
-- **HTTP resolver:** the 2026-08-16
+- **HTTP resolver:** v0.4.0 now includes the HTTP backend, `ArResolver` bundle,
+  CI/test suites, block cache, stable identity/validation tokens and persistent
+  cache. The 2026-08-16
   [pre-implementation report](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/04-2026-08-16-usd-http-resolver-preimplementation.md)
-  found a buildable skeleton but no resolver bundle, HTTP backend, CI matrix or
-  tests. This requested no OST change. Until a first resolver artifact ships,
-  the geospatial runtime keeps HTTP/COPC Tier 2 acceptance gated and retains
-  self-contained test doubles downstream.
+  is retained as historical evidence, not current readiness. Immutable component
+  publication, digest pinning and clean-consumer COPC integration remain gates.
 - **Point-cloud plugins:** local LAS/LAZ/COPC/PLY behavior remains owned and
   documented by `usd-pointcloud-plugins`; the composed runtime verifies reach
   and interoperability, not the formats' internal capability matrix.
-- **Raster plugins:** component identity and readiness must be pinned by the
-  composition repository before the first runnable runtime claim.
+- **Raster plugins:** the core model, GeoTIFF metadata and initial uncompressed
+  window reads exist, but no release is tagged. Component publication and the
+  raster read/authoring acceptance selected by the runtime remain gates.
 
 ## Acceptance evidence
 
@@ -81,8 +82,8 @@ runtime from immutable artifacts and demonstrates:
 - OpenUSD tool and Python reachability;
 - plugin, resolver and schema discovery;
 - local point-cloud and raster fixture opening;
-- HTTP metadata/range access, cache reuse and invalidation after the resolver
-  readiness gate opens;
+- HTTP metadata/range access, cache reuse and invalidation through the packaged
+  resolver and format artifacts;
 - normal CMake consumption of at least one exported runtime library; and
 - a composition report binding every result to component and runtime digests.
 
@@ -94,5 +95,7 @@ runtime from immutable artifacts and demonstrates:
   [v0.22.x runtime composition](../roadmap/runtime-composition.md).
 - Existing point-cloud reference workspace:
   [USD Point Cloud Plugins](usd-pointcloud-plugins.md).
+- Transport provider: [USD HTTP Resolver](usd-http-resolver.md).
+- Raster workspace: [USD Raster Plugins](usd-raster-plugins.md).
 - Formation execution/composition model:
   [formations.md](../design/proposed/formations.md).

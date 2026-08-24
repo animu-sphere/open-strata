@@ -31,6 +31,13 @@ document records the intended contract and the boundaries that the staged work
 must preserve. It does not describe commands or schemas as shipped before they
 exist.
 
+The OpenUSD base component is selected from the
+[canonical CY2026 runtime matrix](canonical-openusd-runtimes.md). That contract
+keeps `profile = usd` separate from the normalized graphics variant, and owns
+OpenUSD producer, backend-verification and OCI leaf policy. Runtime composition
+consumes those artifacts and their capabilities; it does not recreate their
+build matrix or reinterpret `core`, `gl`, `vulkan` and `metal`.
+
 ## Why this is a separate contract
 
 The current artifact and Formation foundations solve important but different
@@ -190,7 +197,7 @@ locking, activation or verification.
 The first target graph is:
 
 ```text
-OpenUSD 26.08
+canonical OpenUSD 26.08 cell
   + usd-http-resolver
   + usd-pointcloud-plugins
   + usd-raster-plugins
@@ -199,11 +206,14 @@ OpenUSD 26.08
 
 The repository is currently empty. Its first useful commit should pin scope,
 capabilities and acceptance fixtures, then consume each OST slice as it becomes
-available. The HTTP resolver remains a readiness gate: the 2026-08-16
+available. The 2026-08-16
 [pre-implementation report](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/04-2026-08-16-usd-http-resolver-preimplementation.md)
-found an intentionally empty build/test/CI skeleton and requested no OST change.
-Tier 2 geospatial acceptance starts only after that resolver ships a bundle,
-backend, stable identity metadata and registered tests.
+is now historical: `usd-http-resolver` v0.4.0 has a resolver bundle, HTTP
+backend, registered test/CI suites, stable identity/validation tokens and a
+persistent cache. Tier 2 geospatial acceptance now gates on immutable component
+publication and clean-consumer composition with the point-cloud and raster
+artifacts. `usd-raster-plugins` remains pre-release; its selected GeoTIFF
+read/authoring contract must ship before the first runtime support claim.
 
 ## Non-goals for v0.22.x
 

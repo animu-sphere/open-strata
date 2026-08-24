@@ -126,11 +126,11 @@ The later
 exercised `ost 0.22.2` against the external `usd-http-resolver` skeleton. Runtime
 resolution and its empty build passed; `ci validate` and `test` correctly
 reported the missing matrix and tests. The report requests no OpenStrata change.
-It is instead the readiness gate for the
-[USD Geospatial Runtime](usd-geospatial-runtime.md): Tier 2 HTTP/COPC
-interoperability waits for a resolver bundle, HTTP backend, stable identity
-metadata and registered tests, then repeats the report with range-read, cache
-reuse and invalidation evidence.
+It is now historical: [USD HTTP Resolver](usd-http-resolver.md) v0.4.0 has the
+resolver bundle, HTTP backend, identity metadata and test/CI substrate. The
+[USD Geospatial Runtime](usd-geospatial-runtime.md) gate has moved to immutable
+artifact composition and clean-consumer range-read, cache reuse and invalidation
+evidence.
 
 ## Current boundaries
 
@@ -152,6 +152,7 @@ reuse and invalidation evidence.
   [report 01](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/01-2026-08-11-v0.22.0-ply-fileformat-ci.md).
 - HTTP resolver pre-implementation report:
   [report 04](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/04-2026-08-16-usd-http-resolver-preimplementation.md).
+- Resolver reference project: [USD HTTP Resolver](usd-http-resolver.md).
 - Downstream capability matrix:
   [`docs/reference/CAPABILITY_MATRIX.md`](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reference/CAPABILITY_MATRIX.md).
 - OpenStrata plugin-workspace contract:

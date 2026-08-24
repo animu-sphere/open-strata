@@ -34,6 +34,7 @@ defined in [contributing/documentation.md](../contributing/documentation.md).
 | Document | Purpose |
 | --- | --- |
 | [proposed/formations.md](proposed/formations.md) | Cross-repository Formation composition (`ost formation`) — the v0.19.0/v0.20.0 MVP resolves, locks, composes and runs independently released components; broader direction remains proposed. |
+| [proposed/canonical-openusd-runtimes.md](proposed/canonical-openusd-runtimes.md) | Define the canonical OpenUSD 26.05/26.08 CY2026 runtime matrix, normalized graphics variants, generic producer, backend-aware verification and OCI publication policy for v0.22.3. |
 | [proposed/runtime-composition.md](proposed/runtime-composition.md) | Compose independently published component artifacts into a locked, distributable, SDK-consumable runtime (v0.22.3+ direction). |
 | [proposed/dcc-hosts.md](proposed/dcc-hosts.md) | Third-party DCC host support (Maya/Houdini/Nuke) — discovery, headless run/package, cross-DCC USD compatibility; consumes Formation. |
 | [proposed/kubernetes.md](proposed/kubernetes.md) | Kubernetes as a pluggable execution backend (`ost submit` / `ost jobs`). |

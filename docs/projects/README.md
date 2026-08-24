@@ -27,6 +27,12 @@ OpenStrata ecosystem
 ├── usd-pointcloud-plugins
 │   └── reference multi-format point-cloud workspace
 │
+├── usd-http-resolver
+│   └── reference random-access HTTP resolver workspace
+│
+├── usd-raster-plugins
+│   └── reference GeoTIFF/raster plugin workspace
+│
 ├── usd-vrm-plugins
 │   └── reference multi-bundle OpenUSD plugin workspace
 │
@@ -48,6 +54,8 @@ every build unit into an artificial package abstraction.
 | [USD Geospatial Runtime](usd-geospatial-runtime.md) | Runtime composition | Locked multi-repository runtime, SDK layout, clean-consumer reconstruction (bootstrap; repository currently empty) | planned `runtime compose` / `validate` / `export` / `pull` / `exec` |
 | [USD 3DGS Plugins](usd-3dgs-plugins.md) | Plugin workspace | Fresh scaffold, bundle-to-library edge, Gaussian PLY import | `plugin build` / `test` / `run` / `view` / `package` |
 | [USD Point Cloud Plugins](usd-pointcloud-plugins.md) | Plugin workspace | Four geospatial file formats, shared authoring/tiling stack, format arguments | `configure` / `build` / `test`, `plugin build` / `test` / `view` |
+| [USD HTTP Resolver](usd-http-resolver.md) | Resolver workspace | Random-access HTTP transport, cache identity, resolver/file-format separation | `runtime pull`, `build`, `test` |
+| [USD Raster Plugins](usd-raster-plugins.md) | Plugin workspace | Windowed GeoTIFF reads, explicit georeferencing, transport-neutral raster boundary | `configure`, `build`, `test` |
 | [USD VRM Plugins](usd-vrm-plugins.md) | Plugin workspace | Typed schemas, file formats, resolver, bundle graph | `plugin build` / `test` / `run` / `view` / `package` |
 | [hdMerlin](hydra-merlin.md) | Renderer project | Managed renderer build, evidence, Hydra discovery | `build`, `validate`, `renderer view` |
 
@@ -70,6 +78,17 @@ every build unit into an artificial package abstraction.
   libraries and authoring tools. Read it for a larger multi-format workspace,
   OpenUSD 26.08 generated CI, cross-platform verification, and a concrete case
   where a smoke fixture needs file-format arguments.
+- **[USD HTTP Resolver](usd-http-resolver.md)** —
+  [`animu-sphere/usd-http-resolver`](https://github.com/animu-sphere/usd-http-resolver):
+  a released random-access HTTP/HTTPS `ArResolver` and transport substrate. Read
+  it for library-first builds, resolver bundle integration, cache identity,
+  validation tokens, measured range-transfer evidence, and the boundary between
+  transport and file formats.
+- **[USD Raster Plugins](usd-raster-plugins.md)** —
+  [`animu-sphere/usd-raster-plugins`](https://github.com/animu-sphere/usd-raster-plugins):
+  an early GeoTIFF/raster workspace with OpenUSD-independent core libraries,
+  explicit georeferencing and windowed reads. Read it for the raster side of the
+  resolver/file-format boundary and the staged path to packaged USD authoring.
 - **[USD VRM Plugins](usd-vrm-plugins.md)** —
   [`animu-sphere/usd-vrm-plugins`](https://github.com/animu-sphere/usd-vrm-plugins):
   a multi-bundle OpenUSD plugin workspace (schema bundle, `SdfFileFormat` plugin,
@@ -88,13 +107,13 @@ every build unit into an artificial package abstraction.
 The strongest narrative is not that downstream projects independently use
 `ost`. It is that **independently released OpenUSD components can be resolved,
 validated, and composed into one reproducible execution environment**. The
-plugin workspaces exercise format, schema, resolver and ordinary-library
-boundaries; hdMerlin exercises the renderer boundary; and USD Geospatial Runtime
-will exercise the additional boundary from a locked component graph to one
-distributable runtime/SDK. One separate Formation case is a VRM file opened
-through the VRM bundles and rendered by hdMerlin in a single Vulkan viewport;
-Gaussian and point-cloud stage inspection remain independent plugin dogfoods
-without claiming renderer compatibility.
+plugin workspaces exercise format, schema and ordinary-library boundaries; the
+HTTP resolver owns transport; the raster and point-cloud projects consume that
+transport without coupling formats to it; hdMerlin exercises the renderer
+boundary; and USD Geospatial Runtime will bind those artifacts into one locked,
+distributable runtime/SDK. A separate Formation case opens VRM through the VRM
+bundles and renders it with hdMerlin; other stage inspections do not imply
+renderer compatibility.
 
 Per-command composition is the [Formation](../design/proposed/formations.md)
 model: `ost formation resolve|inspect|lock|run` shipped in v0.19.0 and
