@@ -87,6 +87,10 @@ $results = foreach ($job in $plannedLeaves) {
             identity = [ordered]@{ matrix = 'support/openusd-runtime-matrix.json'; leaf = $slug; host = "$hostOs-$hostArch" }
         }
     }
+    # `runtime pull --force` above rebuilds this leaf unconditionally, so the
+    # export has to be repeatable too; `runtime export` refuses a non-empty
+    # --dist, which made every re-run fail on the first already-exported leaf.
+    if (Test-Path -LiteralPath $dist) { Remove-Item -LiteralPath $dist -Recurse -Force }
     $metadataPath = Join-Path $runRoot 'build-metadata.json'
     [IO.File]::WriteAllText($metadataPath, (($metadata | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
     $exportText = (& $ost runtime export cy2026 --profile usd --dist $dist --build-metadata $metadataPath --slim --jobs $Jobs --json) -join [Environment]::NewLine
