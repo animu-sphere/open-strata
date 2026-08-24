@@ -2550,7 +2550,13 @@ fn append_graphics_device_checks(
         };
         ost_runtime::Check {
             name,
-            passed: probe.passed,
+            // The two `passed` fields do not mean the same thing: a probe's
+            // means "a device was observed", a `Check`'s means "this does not
+            // fail validation" -- which is why `Check::skip` sets it true. A
+            // probe that could not run (no DISPLAY on Linux, no supported
+            // OpenGL device probe off Linux) proves nothing, but must not fail
+            // the report; a probe that ran and failed still must.
+            passed: probe.passed || probe.skipped,
             skipped: probe.skipped,
             detail: Some(probe.detail),
         }
@@ -5116,6 +5122,40 @@ mod tests {
             .unwrap()
             .contains("immutable artifact producer"));
         assert!(!error.hint().unwrap().contains("runtime validate"));
+    }
+
+    /// A device probe that could not run must not fail the report. Off Linux
+    /// there is no supported OpenGL device probe, and on headless Linux there
+    /// is no DISPLAY; both report `passed: false, skipped: true` in the probe's
+    /// own vocabulary, which is not what `Check::passed` means.
+    #[test]
+    fn an_unrunnable_device_probe_skips_without_failing_validation() {
+        let mut manifest = exportable_manifest();
+        manifest
+            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Gl)))
+            .unwrap();
+        let mut report = ost_runtime::ValidationReport { checks: Vec::new() };
+
+        let status = append_graphics_loader_checks(&mut report, &manifest);
+        let (_device_status, render_backend_ready) =
+            append_graphics_device_checks(&mut report, &manifest, status);
+
+        let device = report
+            .checks
+            .iter()
+            .find(|check| check.name == "openusd-opengl-device")
+            .expect("a gl cell probes an OpenGL device");
+        if device.skipped {
+            assert!(
+                device.passed,
+                "a skipped check must not fail validation: {:?}",
+                device.detail
+            );
+            assert_eq!(device.status(), "skip");
+            assert!(report.passed(), "a skipped device probe fails the report");
+            // It still proves nothing, so the render stage stays unclaimed.
+            assert!(!render_backend_ready);
+        }
     }
 
     #[test]
