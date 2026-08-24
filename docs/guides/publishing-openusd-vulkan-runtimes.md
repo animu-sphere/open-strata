@@ -1,11 +1,8 @@
-# Publish Vulkan-enabled OpenUSD cy2026 runtimes
+# Maintain legacy Vulkan-enabled OpenUSD cy2026 runtimes
 
-> **Current producer:** this guide documents the implemented Vulkan-specific
-> bootstrap. v0.22.3 will generalize it into the data-driven multi-variant,
-> multi-platform producer defined by the
-> [canonical OpenUSD runtime proposal](../design/proposed/canonical-openusd-runtimes.md).
-> Until that work ships, the commands and legacy tags below remain the factual
-> procedure; they are not the final canonical naming contract.
+> **Legacy producer:** this procedure is retained for v0.22.0-v0.22.2 tag
+> maintenance. New leaves use the
+> [canonical matrix producer](publishing-canonical-openusd-runtimes.md).
 
 The producer script builds and exports the four public cy2026 runtime variants
 used by animu-sphere:

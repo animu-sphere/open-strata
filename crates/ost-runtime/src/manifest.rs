@@ -234,11 +234,10 @@ pub struct RuntimeManifest {
     pub artifact_digest: Option<String>,
 }
 
-// Bumped to 7 when independent OpenUSD verification stages became runtime
-// identity. Older manifests deserialize with every stage `not-run`, but the
-// schema gate still requires an explicit rebuild before publication as a
-// normalized v0.22 artifact.
-const SCHEMA: u32 = 7;
+// Bumped to 8 for canonical OpenUSD profile/graphics identity, exact producer
+// release, consumer constraint, and macOS SDK/deployment facts. Older manifests
+// remain deserializable but require migration before canonical publication.
+const SCHEMA: u32 = 8;
 
 impl RuntimeManifest {
     /// Build a manifest for a resolved runtime, computing the digest.
@@ -553,7 +552,7 @@ mod tests {
             .resolve_openusd(
                 Os::Linux,
                 Arch::X86_64,
-                ost_platform::OpenUsdVariantId::Headless,
+                ost_platform::OpenUsdVariantId::Core,
             )
             .unwrap();
         let mut manifest = sample();
@@ -563,6 +562,7 @@ mod tests {
         compatibility.toolchain.runtime.version = Some("2.28".into());
         compatibility.python.version = Some("3.13.7".into());
         compatibility.tbb.version = Some("2022.1.0".into());
+        compatibility.producer_openusd_version = Some("26.08".into());
         manifest
             .set_openusd_compatibility(Some(compatibility))
             .unwrap();
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(manifest.compute_digest(), manifest.digest);
         assert_eq!(
             manifest.openusd_compatibility.as_ref().unwrap().variant,
-            ost_platform::OpenUsdVariantId::Headless
+            ost_platform::OpenUsdVariantId::Core
         );
     }
 
@@ -578,11 +578,7 @@ mod tests {
     fn unresolved_openusd_compatibility_cannot_be_stamped() {
         let platform = ost_platform::load_one("cy2026").unwrap();
         let (compatibility, _) = platform
-            .resolve_openusd(
-                Os::Linux,
-                Arch::X86_64,
-                ost_platform::OpenUsdVariantId::Standard,
-            )
+            .resolve_openusd(Os::Linux, Arch::X86_64, ost_platform::OpenUsdVariantId::Gl)
             .unwrap();
         let mut manifest = sample();
         let error = manifest

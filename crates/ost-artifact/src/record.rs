@@ -50,8 +50,10 @@ pub const RUNTIME_KIND: &str = "openstrata.runtime";
 /// may still carry the legacy selector annotation.
 pub const OPENUSD_SELECTOR_SCHEMA_FIELD: &str = "openusd_selector_schema";
 
-/// Current source/dependency-aware OpenUSD selector algorithm.
-pub const OPENUSD_SELECTOR_SCHEMA: u32 = 2;
+/// Current normalized OpenUSD selector algorithm. Schema 3 adds the separate
+/// profile/graphics axes, producer release, consumer constraint, and macOS ABI
+/// facts. Schema 2 remains readable for already-published leaves.
+pub const OPENUSD_SELECTOR_SCHEMA: u32 = 3;
 
 /// What an artifact is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,9 +477,9 @@ fn validate_openusd_selector_schema(
             "only runtime producer manifests may carry '{OPENUSD_SELECTOR_SCHEMA_FIELD}'"
         )));
     }
-    if value.as_u64() != Some(OPENUSD_SELECTOR_SCHEMA.into()) {
+    if !matches!(value.as_u64(), Some(2 | 3)) {
         return Err(Error::InvalidManifest(format!(
-            "producer manifest carries unsupported OpenUSD selector schema {} (expected {OPENUSD_SELECTOR_SCHEMA})",
+            "producer manifest carries unsupported OpenUSD selector schema {} (expected 2 or {OPENUSD_SELECTOR_SCHEMA})",
             value
         )));
     }
@@ -624,13 +626,18 @@ fn normalize_openusd_compatibility(
                 "producer manifest 'openusd_compatibility' is invalid: {error}"
             ))
         })?;
-    if compatibility.schema != 1 {
+    if !matches!(compatibility.schema, 1 | 2) {
         return Err(Error::InvalidManifest(format!(
-            "producer manifest carries unsupported OpenUSD compatibility schema {} (expected 1)",
+            "producer manifest carries unsupported OpenUSD compatibility schema {} (expected 1 or 2)",
             compatibility.schema
         )));
     }
-    if !compatibility.is_verified() {
+    let verified = if compatibility.schema == 1 {
+        compatibility.providers_are_verified()
+    } else {
+        compatibility.is_verified()
+    };
+    if !verified {
         return Err(Error::InvalidManifest(
             "producer manifest OpenUSD compatibility identity has unverified or contradictory provider versions"
                 .to_string(),
@@ -906,10 +913,12 @@ mod tests {
         let mut manifest = package_manifest();
         manifest["kind"] = serde_json::json!(RUNTIME_KIND);
         manifest["name"] = serde_json::json!("openstrata-cy2026-usd");
+        manifest["version"] = serde_json::json!("26.05");
         manifest["target"] = serde_json::json!("linux-x86_64-glibc228-py313");
         let compatibility = serde_json::json!({
-            "schema": 1,
+            "schema": 2,
             "platform": "cy2026",
+            "profile": "usd",
             "os": "linux",
             "arch": "x86_64",
             "toolchain": {
@@ -938,7 +947,9 @@ mod tests {
                 "version_constraint": "2022.x"
             },
             "variant": "vulkan",
-            "capabilities": ["hgi-gl", "hgi-vulkan"]
+            "capabilities": ["hgi-gl", "hgi-vulkan"],
+            "producer_openusd_version": "26.05",
+            "consumer_openusd_constraint": ">=26.05,<26.09"
         });
         manifest["openusd_compatibility"] = compatibility.clone();
         let verification = serde_json::json!({

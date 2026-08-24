@@ -8,13 +8,35 @@
 
 use std::ffi::{c_void, CString};
 
-use ost_platform::OpenUsdVerificationStatus;
+use ost_platform::{OpenUsdVariantId, OpenUsdVerificationStatus};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphicsVerifierKind {
+    NoGraphics,
+    OpenGl,
+    Vulkan,
+    Metal,
+}
+
+pub fn graphics_verifier_kind(
+    variant: OpenUsdVariantId,
+    capabilities: &[String],
+) -> Option<GraphicsVerifierKind> {
+    match variant.canonical(capabilities)? {
+        OpenUsdVariantId::Core => Some(GraphicsVerifierKind::NoGraphics),
+        OpenUsdVariantId::Gl => Some(GraphicsVerifierKind::OpenGl),
+        OpenUsdVariantId::Vulkan => Some(GraphicsVerifierKind::Vulkan),
+        OpenUsdVariantId::Metal => Some(GraphicsVerifierKind::Metal),
+        OpenUsdVariantId::Headless | OpenUsdVariantId::Standard => unreachable!(),
+    }
+}
 
 /// A graphics API whose loader is required by an OpenUSD compatibility cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphicsApi {
     OpenGl,
     Vulkan,
+    Metal,
 }
 
 impl GraphicsApi {
@@ -22,6 +44,7 @@ impl GraphicsApi {
         match self {
             Self::OpenGl => "opengl",
             Self::Vulkan => "vulkan",
+            Self::Metal => "metal",
         }
     }
 }
@@ -62,6 +85,16 @@ pub fn probe_graphics_loaders(capabilities: &[String]) -> Vec<GraphicsLoaderProb
         .collect()
 }
 
+pub fn probe_graphics_loaders_for_variant(
+    variant: OpenUsdVariantId,
+    capabilities: &[String],
+) -> Vec<GraphicsLoaderProbe> {
+    verifier_graphics_apis(variant, capabilities)
+        .into_iter()
+        .map(probe_graphics_loader)
+        .collect()
+}
+
 /// Enumerate physical devices for every graphics API required by a normalized
 /// compatibility cell.
 ///
@@ -74,6 +107,25 @@ pub fn probe_graphics_devices(capabilities: &[String]) -> Vec<GraphicsDeviceProb
         .into_iter()
         .map(probe_graphics_device)
         .collect()
+}
+
+pub fn probe_graphics_devices_for_variant(
+    variant: OpenUsdVariantId,
+    capabilities: &[String],
+) -> Vec<GraphicsDeviceProbe> {
+    verifier_graphics_apis(variant, capabilities)
+        .into_iter()
+        .map(probe_graphics_device)
+        .collect()
+}
+
+fn verifier_graphics_apis(variant: OpenUsdVariantId, capabilities: &[String]) -> Vec<GraphicsApi> {
+    match graphics_verifier_kind(variant, capabilities) {
+        Some(GraphicsVerifierKind::NoGraphics) | None => Vec::new(),
+        Some(GraphicsVerifierKind::OpenGl) => vec![GraphicsApi::OpenGl],
+        Some(GraphicsVerifierKind::Vulkan) => vec![GraphicsApi::OpenGl, GraphicsApi::Vulkan],
+        Some(GraphicsVerifierKind::Metal) => vec![GraphicsApi::Metal],
+    }
 }
 
 /// Reduce actual loader observations to the independent verification field.
@@ -109,6 +161,9 @@ fn required_graphics_apis(capabilities: &[String]) -> Vec<GraphicsApi> {
     }
     if capabilities.iter().any(|value| value == "vulkan") {
         required.push(GraphicsApi::Vulkan);
+    }
+    if capabilities.iter().any(|value| value == "metal") {
+        required.push(GraphicsApi::Metal);
     }
     required
 }
@@ -170,6 +225,7 @@ fn probe_graphics_device(api: GraphicsApi) -> GraphicsDeviceProbe {
     let result = match api {
         GraphicsApi::OpenGl => probe_opengl_device(),
         GraphicsApi::Vulkan => probe_vulkan_device(),
+        GraphicsApi::Metal => probe_metal_device(),
     };
     match result {
         Ok(detail) => GraphicsDeviceProbe {
@@ -402,10 +458,30 @@ fn probe_vulkan_device() -> Result<String, String> {
     Ok(format!("Vulkan enumerated {count} physical device(s)"))
 }
 
+#[cfg(target_os = "macos")]
+fn probe_metal_device() -> Result<String, String> {
+    type MtlCreateSystemDefaultDevice = unsafe extern "C" fn() -> *mut c_void;
+    let library = NativeLibrary::open(loader_candidates(GraphicsApi::Metal))?;
+    let create: MtlCreateSystemDefaultDevice =
+        unsafe { library.function("MTLCreateSystemDefaultDevice")? };
+    let device = unsafe { create() };
+    if device.is_null() {
+        Err("Metal returned no system default MTLDevice".into())
+    } else {
+        Ok("Metal created the system default MTLDevice".into())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn probe_metal_device() -> Result<String, String> {
+    Err("Metal device probing is available only on macOS".into())
+}
+
 fn required_loader_symbol(api: GraphicsApi) -> &'static str {
     match api {
         GraphicsApi::OpenGl => "glGetString",
         GraphicsApi::Vulkan => "vkGetInstanceProcAddr",
+        GraphicsApi::Metal => "MTLCreateSystemDefaultDevice",
     }
 }
 
@@ -414,6 +490,7 @@ fn loader_candidates(api: GraphicsApi) -> &'static [&'static str] {
     match api {
         GraphicsApi::OpenGl => &["opengl32.dll"],
         GraphicsApi::Vulkan => &["vulkan-1.dll"],
+        GraphicsApi::Metal => &[],
     }
 }
 
@@ -422,6 +499,7 @@ fn loader_candidates(api: GraphicsApi) -> &'static [&'static str] {
     match api {
         GraphicsApi::OpenGl => &["libOpenGL.so.0", "libGL.so.1"],
         GraphicsApi::Vulkan => &["libvulkan.so.1"],
+        GraphicsApi::Metal => &[],
     }
 }
 
@@ -430,6 +508,7 @@ fn loader_candidates(api: GraphicsApi) -> &'static [&'static str] {
     match api {
         GraphicsApi::OpenGl => &["/System/Library/Frameworks/OpenGL.framework/OpenGL"],
         GraphicsApi::Vulkan => &["libvulkan.1.dylib", "libvulkan.dylib"],
+        GraphicsApi::Metal => &["/System/Library/Frameworks/Metal.framework/Metal"],
     }
 }
 

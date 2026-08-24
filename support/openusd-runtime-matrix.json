@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "profile": "usd",
+  "repository": "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd",
+  "versions": ["26.05", "26.08"],
+  "cells": [
+    { "os": "linux", "arch": "x86_64", "runner": "ubuntu-24.04", "adapter": "build/openusd-linux.sh", "variants": ["core", "gl", "vulkan"] },
+    { "os": "windows", "arch": "x86_64", "runner": "windows-2025", "adapter": "build/openusd-windows.ps1", "variants": ["core", "gl", "vulkan"] },
+    { "os": "macos", "arch": "arm64", "runner": "macos-15", "adapter": "build/openusd-macos.sh", "variants": ["core", "gl", "metal"], "sdk": "15.5", "deployment_target": "13.0" }
+  ],
+  "gates": ["build", "runtime", "graphics", "artifact", "distribution"],
+  "publication": {
+    "leaf_tags": "<openusd-version>-<variant>-<os>-<arch>",
+    "digest_pull_required": true,
+    "multi_platform_aliases": false
+  }
+}

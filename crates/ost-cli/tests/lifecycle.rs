@@ -3201,6 +3201,19 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         b"runtime dependency",
     )
     .unwrap();
+    let motion_profile = sb.work_file("profiles/motion/walk.json");
+    std::fs::create_dir_all(motion_profile.parent().unwrap()).unwrap();
+    std::fs::write(&motion_profile, br#"{"clip":"walk"}"#).unwrap();
+    let project_path = sb.work_file("openstrata.toml");
+    let mut project = std::fs::read_to_string(&project_path).unwrap();
+    project.push_str(
+        "\n[workspace]\n\
+         members = ['.', 'schema', 'consumer']\n\
+         [[workspace.install_data]]\n\
+         source = 'profiles/motion'\n\
+         destination = 'share/vrm/motion'\n",
+    );
+    std::fs::write(&project_path, project).unwrap();
 
     let out = sb.ost(&["--json", "plugin", "package", "--workspace", "--product"]);
     assert!(
@@ -3390,6 +3403,7 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     assert!(product_files
         .iter()
         .any(|path| path.starts_with("members/consumer/") && path.ends_with("manifest.json")));
+    assert!(product_files.contains(&"data/0000/walk.json"));
 
     let product_dist = product_manifest.parent().unwrap().to_str().unwrap();
     let verified = sb.ost(&["--json", "plugin", "product", "verify", product_dist]);
@@ -3405,6 +3419,7 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         verified["data"]["members"],
         serde_json::json!(["schema", "consumer"])
     );
+    assert_eq!(verified["data"]["data_files"], 1);
 
     let install_prefix = sb.work_file("installed-product");
     let install_prefix_arg = install_prefix.to_str().unwrap();
@@ -3432,12 +3447,17 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         "activate.sh",
         "openstrata_activate.py",
         "openstrata.product-install.json",
+        "share/vrm/motion/walk.json",
     ] {
         assert!(
             install_prefix.join(path).is_file(),
             "product install omitted {path}"
         );
     }
+    assert_eq!(
+        std::fs::read(install_prefix.join("share/vrm/motion/walk.json")).unwrap(),
+        br#"{"clip":"walk"}"#
+    );
     let aggregate_activation: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(install_prefix.join("openstrata.activation.json")).unwrap(),
     )

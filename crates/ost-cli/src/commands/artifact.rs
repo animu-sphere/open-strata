@@ -1351,7 +1351,7 @@ mod tests {
         assert_eq!(required.python.version_constraint, "3.13.x");
         assert!(required.capabilities.iter().any(|value| value == "vulkan"));
 
-        let error = resolve_openusd_requirement("cy2026/windows/x86_64/vulkan").unwrap_err();
+        let error = resolve_openusd_requirement("cy2026/macos/arm64/vulkan").unwrap_err();
         assert!(error.to_string().contains("declares no approved OpenUSD"));
     }
 

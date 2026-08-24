@@ -57,7 +57,7 @@
       "required": ["id", "builders", "capabilities"],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string", "enum": ["headless", "standard", "vulkan"] },
+        "id": { "type": "string", "enum": ["core", "gl", "vulkan", "metal", "headless", "standard"] },
         "builders": {
           "type": "array",
           "minItems": 1,
@@ -78,7 +78,7 @@
       "required": ["schema", "cells"],
       "additionalProperties": false,
       "properties": {
-        "schema": { "const": 1 },
+        "schema": { "type": "integer", "enum": [1, 2] },
         "cells": {
           "type": "array",
           "items": {
@@ -102,6 +102,15 @@
               },
               "python": { "$ref": "#/definitions/provider" },
               "tbb": { "$ref": "#/definitions/provider" },
+              "macos": {
+                "type": "object",
+                "required": ["sdk", "deployment_target_from"],
+                "additionalProperties": false,
+                "properties": {
+                  "sdk": { "$ref": "#/definitions/provider" },
+                  "deployment_target_from": { "type": "string", "minLength": 1 }
+                }
+              },
               "variants": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/variant" } }
             }
           }

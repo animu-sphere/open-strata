@@ -182,6 +182,27 @@ pub const DEFAULT_DISCOVERY_DEPTH: u8 = 2;
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
     pub members: Vec<String>,
+    /// Exact bundle/tool ids allowed into an aggregate release product.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_members: Option<Vec<String>>,
+    /// Discovered source members intentionally omitted from the release set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub release_exclude: Vec<String>,
+    /// Project-owned files or directories copied once into an aggregate
+    /// product's shared install tree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub install_data: Vec<WorkspaceInstallData>,
+}
+
+/// One project-relative source-to-install mapping for shared product data.
+///
+/// `destination` is a directory below `share/`. A file source keeps its base
+/// name; a directory source keeps its subtree below that destination.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceInstallData {
+    pub source: String,
+    pub destination: String,
 }
 
 /// Maximum member nesting accepted by explicit and fallback workspace discovery.
@@ -408,8 +429,98 @@ impl Project {
                 )));
             }
         }
+        let mut release_seen = std::collections::BTreeSet::new();
+        for id in workspace
+            .release_members
+            .iter()
+            .flatten()
+            .chain(workspace.release_exclude.iter())
+        {
+            if !portable_release_member_id(id) {
+                return Err(Error::InvalidManifest(format!(
+                    "workspace release member id '{id}' must match [A-Za-z0-9][A-Za-z0-9._-]*"
+                )));
+            }
+            if !release_seen.insert(id) {
+                return Err(Error::InvalidManifest(format!(
+                    "workspace release member id '{id}' is duplicated across release_members/release_exclude"
+                )));
+            }
+        }
+        if workspace
+            .release_members
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+        {
+            return Err(Error::InvalidManifest(
+                "workspace.release_members must not be empty when declared".into(),
+            ));
+        }
+        let mut data_sources = std::collections::BTreeSet::new();
+        let mut data_destinations = std::collections::BTreeSet::new();
+        for mapping in &workspace.install_data {
+            if let Some(reason) = workspace_data_path_problem(&mapping.source) {
+                return Err(Error::InvalidManifest(format!(
+                    "workspace.install_data source '{}' {reason}",
+                    mapping.source
+                )));
+            }
+            if let Some(reason) = workspace_data_path_problem(&mapping.destination) {
+                return Err(Error::InvalidManifest(format!(
+                    "workspace.install_data destination '{}' {reason}",
+                    mapping.destination
+                )));
+            }
+            if !mapping.destination.starts_with("share/") {
+                return Err(Error::InvalidManifest(format!(
+                    "workspace.install_data destination '{}' must be a directory below share/",
+                    mapping.destination
+                )));
+            }
+            if !data_sources.insert(&mapping.source) {
+                return Err(Error::InvalidManifest(format!(
+                    "workspace.install_data source '{}' is duplicated",
+                    mapping.source
+                )));
+            }
+            if !data_destinations.insert(&mapping.destination) {
+                return Err(Error::InvalidManifest(format!(
+                    "workspace.install_data destination '{}' is duplicated",
+                    mapping.destination
+                )));
+            }
+        }
         Ok(())
     }
+}
+
+fn workspace_data_path_problem(value: &str) -> Option<&'static str> {
+    if value.is_empty() {
+        return Some("must not be empty");
+    }
+    if value.trim() != value {
+        return Some("must not have leading or trailing whitespace");
+    }
+    if value.starts_with(['/', '\\']) || value.contains(':') || value.contains('\\') {
+        return Some("must be a portable project-relative path");
+    }
+    if value.contains(['*', '?']) {
+        return Some("must not contain glob patterns");
+    }
+    if value
+        .split('/')
+        .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return Some("must not contain empty, '.' or '..' components");
+    }
+    None
+}
+
+fn portable_release_member_id(value: &str) -> bool {
+    value
+        .bytes()
+        .enumerate()
+        .all(|(index, byte)| byte.is_ascii_alphanumeric() || (index > 0 && b"._-".contains(&byte)))
 }
 
 fn workspace_member_problem(member: &str) -> Option<&'static str> {
@@ -778,6 +889,53 @@ portability = "local-override"
             workspace.members,
             vec![".", "plugins/*", "adapters/*/*", "tools/converter"]
         );
+    }
+
+    #[test]
+    fn workspace_release_members_are_exact_and_disjoint() {
+        let src = format!(
+            "{SAMPLE}\n[workspace]\nmembers = ['plugins/*']\nrelease_members = ['schema', 'adapter']\nrelease_exclude = ['fixture']\n"
+        );
+        let workspace = Project::from_toml(&src).unwrap().workspace.unwrap();
+        assert_eq!(workspace.release_members.unwrap(), ["schema", "adapter"]);
+        assert_eq!(workspace.release_exclude, ["fixture"]);
+
+        let duplicate = format!(
+            "{SAMPLE}\n[workspace]\nmembers = ['plugins/*']\nrelease_members = ['adapter']\nrelease_exclude = ['adapter']\n"
+        );
+        assert!(Project::from_toml(&duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicated across"));
+    }
+
+    #[test]
+    fn workspace_install_data_is_project_relative_and_share_owned() {
+        let src = format!(
+            "{SAMPLE}\n[workspace]\nmembers = ['plugins/*']\n\
+             [[workspace.install_data]]\nsource = 'profiles/motion'\ndestination = 'share/vrm/motion'\n"
+        );
+        let workspace = Project::from_toml(&src).unwrap().workspace.unwrap();
+        assert_eq!(workspace.install_data.len(), 1);
+        assert_eq!(workspace.install_data[0].source, "profiles/motion");
+
+        for (source, destination, message) in [
+            ("../profiles", "share/vrm", "'..'"),
+            ("profiles/*", "share/vrm", "glob"),
+            ("profiles", "bundles/vrm", "below share/"),
+        ] {
+            let invalid = format!(
+                "{SAMPLE}\n[workspace]\nmembers = ['plugins/*']\n\
+                 [[workspace.install_data]]\nsource = '{source}'\ndestination = '{destination}'\n"
+            );
+            assert!(
+                Project::from_toml(&invalid)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(message),
+                "expected {message}"
+            );
+        }
     }
 
     #[test]

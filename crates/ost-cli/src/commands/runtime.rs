@@ -26,10 +26,9 @@ use ost_core::variant::Abi;
 use ost_core::{tools, Error, Host, Result, Variant};
 use ost_platform::version_satisfies_constraint;
 use ost_runtime::{
-    graphics_device_status, graphics_loader_probes_supported, graphics_loader_status,
-    probe_graphics_devices, probe_graphics_loaders, python_minor, EnvSet, ExtensionRecord,
-    GraphicsApi, HostPackageManager, HostRequirement, OpenUsdBuilder, OpenUsdVariantId,
-    OpenUsdVerification, OpenUsdVerificationStatus, ResolvedDependencyIdentity,
+    graphics_device_status, graphics_loader_probes_supported, graphics_loader_status, python_minor,
+    EnvSet, ExtensionRecord, GraphicsApi, HostPackageManager, HostRequirement, OpenUsdBuilder,
+    OpenUsdVariantId, OpenUsdVerification, OpenUsdVerificationStatus, ResolvedDependencyIdentity,
     ResolvedOpenUsdCompatibility, ResolvedSourceIdentity, RuntimeManifest, RuntimeSource,
     Validation, MANIFEST_FILE,
 };
@@ -75,7 +74,7 @@ pub enum RuntimeCmd {
         /// e.g. `--build-arg -DPXR_BUILD_TESTS=OFF`. Hyphen values allowed.
         #[arg(long = "build-arg", allow_hyphen_values = true)]
         build_args: Vec<String>,
-        /// Constrained OpenUSD build shape. Defaults to `standard` for managed
+        /// Constrained OpenUSD build shape. Defaults to `gl` for managed
         /// source builds. The selected CY cell supplies deterministic builder
         /// arguments and becomes part of runtime identity.
         #[arg(long = "openusd-variant", value_parser = parse_openusd_variant)]
@@ -413,6 +412,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
         fetch_from_artifact(&r, digest_ref)?
     } else if let Some(usd_src) = build_src {
         let usd_src = validate_openusd_source(&usd_src)?;
+        let source_version = detect_openusd_source_version(&usd_src);
         let platform_manifest = ost_platform::load_one(platform)?;
         let builder = if deps.is_empty() {
             OpenUsdBuilder::BuildUsd
@@ -423,6 +423,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             &platform_manifest,
             r.runtime.variant.os,
             r.runtime.variant.arch,
+            source_version.as_deref(),
             src.openusd_variant,
             builder,
             src.build_args,
@@ -530,11 +531,20 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
 
 fn parse_openusd_variant(value: &str) -> std::result::Result<OpenUsdVariantId, String> {
     match value {
-        "headless" => Ok(OpenUsdVariantId::Headless),
-        "standard" => Ok(OpenUsdVariantId::Standard),
+        "core" => Ok(OpenUsdVariantId::Core),
+        "gl" => Ok(OpenUsdVariantId::Gl),
         "vulkan" => Ok(OpenUsdVariantId::Vulkan),
+        "metal" => Ok(OpenUsdVariantId::Metal),
+        "headless" => {
+            eprintln!("warning: OpenUSD variant 'headless' is deprecated; using 'core'");
+            Ok(OpenUsdVariantId::Core)
+        }
+        "standard" => {
+            eprintln!("warning: OpenUSD variant 'standard' is deprecated; using 'gl'");
+            Ok(OpenUsdVariantId::Gl)
+        }
         _ => Err(format!(
-            "unknown OpenUSD variant '{value}' (expected headless, standard, or vulkan)"
+            "unknown OpenUSD variant '{value}' (expected core, gl, vulkan, or metal)"
         )),
     }
 }
@@ -553,11 +563,12 @@ fn resolve_openusd_build(
     platform: &ost_platform::Platform,
     os: Os,
     arch: ost_core::host::Arch,
+    source_version: Option<&str>,
     requested: Option<OpenUsdVariantId>,
     builder: OpenUsdBuilder,
     user_args: Vec<String>,
 ) -> Result<OpenUsdBuildSelection> {
-    let variant_id = requested.unwrap_or(OpenUsdVariantId::Standard);
+    let variant_id = requested.unwrap_or(OpenUsdVariantId::Gl);
     let Some((compatibility, variant)) = platform.resolve_openusd(os, arch, variant_id) else {
         if requested.is_none() {
             return Ok(OpenUsdBuildSelection {
@@ -605,12 +616,42 @@ fn resolve_openusd_build(
         }));
     }
 
-    let mut args = match builder {
-        OpenUsdBuilder::BuildUsd => variant.build_usd_args.clone(),
-        OpenUsdBuilder::Cmake => variant.cmake_args.clone(),
+    let Some(source_version) = source_version else {
+        if requested.is_none() {
+            return Ok(OpenUsdBuildSelection {
+                compatibility: None,
+                args: user_args,
+            });
+        }
+        return Err(Error::coded(
+            "OPENUSD_SOURCE_VERSION_UNKNOWN",
+            ost_core::Category::Configuration,
+            "could not determine the OpenUSD source version before selecting a canonical build plan",
+        ));
     };
-    if builder == OpenUsdBuilder::BuildUsd && !variant.cmake_args.is_empty() {
-        args.push(build_usd_cmake_arg(&variant.cmake_args));
+    let plan = match ost_platform::OpenUsdBuildPlan::new(source_version, &compatibility, builder) {
+        Ok(plan) => plan,
+        Err(_) if requested.is_none() => {
+            return Ok(OpenUsdBuildSelection {
+                compatibility: None,
+                args: user_args,
+            });
+        }
+        Err(error) => {
+            return Err(Error::coded(
+                "OPENUSD_BUILD_PLAN_UNSUPPORTED",
+                ost_core::Category::Configuration,
+                error.to_string(),
+            ));
+        }
+    };
+    let mut compatibility = compatibility;
+    compatibility.producer_openusd_version = Some(source_version.to_string());
+    let mut args = plan.build_arguments;
+    if builder == OpenUsdBuilder::BuildUsd && !plan.cmake_cache_entries.is_empty() {
+        args.push(build_usd_cmake_arg(&plan.cmake_cache_entries));
+    } else if builder == OpenUsdBuilder::Cmake {
+        args.extend(plan.cmake_cache_entries.clone());
     }
 
     let component_conflict = if builder == OpenUsdBuilder::BuildUsd {
@@ -638,8 +679,8 @@ fn resolve_openusd_build(
         .with_hint("remove the conflicting --build-arg or select the variant that declares the required capability"));
     }
 
-    let mut protected: BTreeSet<String> = variant
-        .cmake_args
+    let mut protected: BTreeSet<String> = plan
+        .cmake_cache_entries
         .iter()
         .flat_map(|arg| cmake_definition_keys(arg))
         .collect();
@@ -740,22 +781,35 @@ fn prepare_openusd_build(
         find_python_for_constraint(&compatibility.python.version_constraint)?;
     compatibility.python.version = Some(python_version);
 
-    if compatibility.toolchain.family != "gcc" || compatibility.os != Os::Linux {
-        return Err(Error::coded(
-            "OPENUSD_TOOLCHAIN_UNSUPPORTED",
-            ost_core::Category::Configuration,
-            format!(
-                "managed compatibility verification does not support {} on {}",
-                compatibility.toolchain.family,
-                compatibility.os.as_str()
-            ),
-        )
-        .with_hint(
-            "remove the explicit variant or add a verified toolchain adapter for this cell",
-        ));
-    }
-    let (cc, cxx, compiler_version) =
-        find_gcc_toolchain(&compatibility.toolchain.version_constraint)?;
+    let (cc, cxx, compiler_version, mut build_env) =
+        match (compatibility.os, compatibility.toolchain.family.as_str()) {
+            (Os::Linux, "gcc") => {
+                let (cc, cxx, version) =
+                    find_gcc_toolchain(&compatibility.toolchain.version_constraint)?;
+                let env = vec![
+                    ("CC".into(), cc.to_string()),
+                    ("CXX".into(), cxx.to_string()),
+                ];
+                (cc, cxx, version, env)
+            }
+            (Os::Windows, "msvc") => {
+                find_msvc_toolchain(&compatibility.toolchain.version_constraint)?
+            }
+            (Os::Macos, "apple-clang") => {
+                find_apple_clang_toolchain(&compatibility.toolchain.version_constraint)?
+            }
+            _ => {
+                return Err(Error::coded(
+                    "OPENUSD_TOOLCHAIN_UNSUPPORTED",
+                    ost_core::Category::Configuration,
+                    format!(
+                        "managed compatibility verification does not support {} on {}",
+                        compatibility.toolchain.family,
+                        compatibility.os.as_str()
+                    ),
+                ));
+            }
+        };
     compatibility.toolchain.version = Some(compiler_version);
 
     let pins = vec![
@@ -770,10 +824,6 @@ fn prepare_openusd_build(
             python.as_str().replace('\\', "/")
         ),
         format!("-DPython_EXECUTABLE={}", python.as_str().replace('\\', "/")),
-    ];
-    let mut build_env = vec![
-        ("CC".into(), cc.to_string()),
-        ("CXX".into(), cxx.to_string()),
     ];
     match builder {
         OpenUsdBuilder::BuildUsd => {
@@ -853,34 +903,126 @@ fn finalize_openusd_build(
     )?;
     compatibility.tbb.version = Some(tbb_version);
 
-    if compatibility.toolchain.runtime.family != "glibc" {
+    let produced_version = detect_openusd_version(prefix).ok_or_else(|| {
+        Error::coded(
+            "OPENUSD_PROVIDER_VERSION_UNKNOWN",
+            ost_core::Category::Validation,
+            "the produced tree does not report an OpenUSD version in include/pxr/pxr.h",
+        )
+    })?;
+    if compatibility.producer_openusd_version.as_deref() != Some(produced_version.as_str()) {
         return Err(Error::coded(
-            "OPENUSD_RUNTIME_BOUNDARY_UNSUPPORTED",
-            ost_core::Category::Configuration,
+            "OPENUSD_SOURCE_VERSION_MISMATCH",
+            ost_core::Category::Validation,
             format!(
-                "managed compatibility verification does not support runtime boundary '{}'",
-                compatibility.toolchain.runtime.family
+                "canonical build plan selected OpenUSD {}, but the produced tree reports {produced_version}",
+                compatibility.producer_openusd_version.as_deref().unwrap_or("<unknown>")
             ),
         ));
     }
+
     let files =
         ost_build::stage_files(prefix).map_err(|error| Error::io(prefix.to_string(), error))?;
-    let glibc = ost_build::max_glibc_floor(files.iter().map(Utf8PathBuf::as_path))
-        .map_err(|error| Error::io(prefix.to_string(), error))?
-        .ok_or_else(|| {
-            Error::coded(
-                "OPENUSD_RUNTIME_BOUNDARY_UNKNOWN",
-                ost_core::Category::Validation,
-                format!("no glibc symbol floor could be measured under '{prefix}'"),
-            )
-        })?
-        .to_string();
-    ensure_version_matches(
-        "glibc",
-        &glibc,
-        &compatibility.toolchain.runtime.version_constraint,
-    )?;
-    compatibility.toolchain.runtime.version = Some(glibc);
+    match (
+        compatibility.os,
+        compatibility.toolchain.runtime.family.as_str(),
+    ) {
+        (Os::Linux, "glibc") => {
+            let glibc = ost_build::max_glibc_floor(files.iter().map(Utf8PathBuf::as_path))
+                .map_err(|error| Error::io(prefix.to_string(), error))?
+                .ok_or_else(|| {
+                    Error::coded(
+                        "OPENUSD_RUNTIME_BOUNDARY_UNKNOWN",
+                        ost_core::Category::Validation,
+                        format!("no glibc symbol floor could be measured under '{prefix}'"),
+                    )
+                })?
+                .to_string();
+            ensure_version_matches(
+                "glibc",
+                &glibc,
+                &compatibility.toolchain.runtime.version_constraint,
+            )?;
+            compatibility.toolchain.runtime.version = Some(glibc);
+        }
+        (Os::Windows, "msvc-runtime") => {
+            let compiler = compatibility
+                .toolchain
+                .version
+                .as_deref()
+                .unwrap_or_default();
+            let runtime = compiler
+                .strip_prefix("19.")
+                .map(|minor| format!("14.{minor}"))
+                .ok_or_else(|| {
+                    provider_version_mismatch(
+                        "MSVC runtime",
+                        &compatibility.toolchain.runtime.version_constraint,
+                        compiler,
+                    )
+                })?;
+            ensure_version_matches(
+                "MSVC runtime",
+                &runtime,
+                &compatibility.toolchain.runtime.version_constraint,
+            )?;
+            compatibility.toolchain.runtime.version = Some(runtime);
+        }
+        (Os::Macos, "libcxx") => {
+            let floor = ost_build::max_macos_floor(files.iter().map(Utf8PathBuf::as_path))
+                .map_err(|error| Error::io(prefix.to_string(), error))?;
+            let macos = compatibility.macos.as_mut().ok_or_else(|| {
+                Error::coded(
+                    "OPENUSD_RUNTIME_BOUNDARY_UNKNOWN",
+                    ost_core::Category::Validation,
+                    "canonical macOS cell has no SDK/deployment identity",
+                )
+            })?;
+            let sdk = floor
+                .sdk
+                .ok_or_else(|| {
+                    Error::validation(
+                        "no macOS SDK identity was measurable from the produced dylibs",
+                    )
+                })?
+                .to_string();
+            let deployment = floor
+                .deployment_target
+                .ok_or_else(|| {
+                    Error::validation(
+                        "no macOS deployment target was measurable from the produced dylibs",
+                    )
+                })?
+                .to_string();
+            ensure_version_matches("macOS SDK", &sdk, &macos.sdk.version_constraint)?;
+            if deployment != macos.deployment_target {
+                return Err(provider_version_mismatch(
+                    "macOS deployment target",
+                    &macos.deployment_target,
+                    &deployment,
+                ));
+            }
+            macos.sdk.version = Some(sdk);
+            let libcxx = compatibility.toolchain.version.clone().unwrap_or_default();
+            ensure_version_matches(
+                "libc++",
+                &libcxx,
+                &compatibility.toolchain.runtime.version_constraint,
+            )?;
+            compatibility.toolchain.runtime.version = Some(libcxx);
+        }
+        _ => {
+            return Err(Error::coded(
+                "OPENUSD_RUNTIME_BOUNDARY_UNSUPPORTED",
+                ost_core::Category::Configuration,
+                format!(
+                    "managed compatibility verification does not support runtime boundary '{}' on {}",
+                    compatibility.toolchain.runtime.family,
+                    compatibility.os.as_str()
+                ),
+            ));
+        }
+    }
 
     if !compatibility.is_verified() {
         return Err(Error::coded(
@@ -954,6 +1096,67 @@ fn find_gcc_toolchain(constraint: &str) -> Result<(Utf8PathBuf, Utf8PathBuf, Str
         "GCC",
         constraint,
         &observed.join(", "),
+    ))
+}
+
+type NativeToolchain = (Utf8PathBuf, Utf8PathBuf, String, Vec<(String, String)>);
+
+fn find_msvc_toolchain(constraint: &str) -> Result<NativeToolchain> {
+    let environment = ost_build::msvc::bootstrap()
+        .map_err(|error| Error::io("resolve MSVC developer environment", error))?
+        .ok_or_else(|| provider_version_mismatch("MSVC", constraint, ""))?;
+    let tools_version = environment
+        .vars
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("VCToolsVersion"))
+        .map(|(_, value)| value.trim_end_matches(['\\', '/']))
+        .ok_or_else(|| provider_version_mismatch("MSVC", constraint, "VCToolsVersion missing"))?;
+    let mut parts = tools_version.split('.');
+    let _toolset_major = parts.next();
+    let minor = parts
+        .next()
+        .ok_or_else(|| provider_version_mismatch("MSVC", constraint, tools_version))?;
+    let compiler_version = format!("19.{minor}");
+    ensure_version_matches("MSVC", &compiler_version, constraint)?;
+    let cl = Utf8PathBuf::from("cl.exe");
+    Ok((cl.clone(), cl, compiler_version, environment.vars))
+}
+
+fn find_apple_clang_toolchain(constraint: &str) -> Result<NativeToolchain> {
+    let output = Command::new("xcrun")
+        .args(["--find", "clang"])
+        .output()
+        .map_err(|error| Error::io("resolve Apple Clang", error))?;
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || path.is_empty() {
+        return Err(provider_version_mismatch(
+            "Apple Clang",
+            constraint,
+            "xcrun failed",
+        ));
+    }
+    let cc = Utf8PathBuf::from(path);
+    let version_output = Command::new(cc.as_str())
+        .arg("--version")
+        .output()
+        .map_err(|error| Error::io("probe Apple Clang version", error))?;
+    let text = String::from_utf8_lossy(&version_output.stdout);
+    let version = text
+        .split_whitespace()
+        .skip_while(|token| *token != "version")
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
+    ensure_version_matches("Apple Clang", &version, constraint)?;
+    let cxx = cc.with_file_name("clang++");
+    Ok((
+        cc.clone(),
+        cxx.clone(),
+        version,
+        vec![
+            ("CC".into(), cc.to_string()),
+            ("CXX".into(), cxx.to_string()),
+        ],
     ))
 }
 
@@ -1317,6 +1520,24 @@ pub(crate) fn detect_openusd_version(root: &Utf8Path) -> Option<String> {
     };
     let minor = field("PXR_MINOR_VERSION")?;
     let patch = field("PXR_PATCH_VERSION")?;
+    Some(format!("{minor}.{patch:02}"))
+}
+
+/// Read the release declared by an OpenUSD source checkout before the build.
+/// Supported upstream releases define the numeric components in
+/// `pxr/pxrConfig.cmake`; archives and Git checkouts therefore behave alike.
+fn detect_openusd_source_version(root: &Utf8Path) -> Option<String> {
+    let source = std::fs::read_to_string(root.join("pxr/pxrConfig.cmake").as_std_path()).ok()?;
+    let value = |name: &str| {
+        source.lines().find_map(|line| {
+            let line = line.trim();
+            let rest = line.strip_prefix("set(")?;
+            let rest = rest.strip_prefix(name)?.trim_start();
+            rest.split([' ', ')']).next()?.parse::<u32>().ok()
+        })
+    };
+    let minor = value("PXR_MINOR_VERSION")?;
+    let patch = value("PXR_PATCH_VERSION")?;
     Some(format!("{minor}.{patch:02}"))
 }
 
@@ -2202,11 +2423,14 @@ fn append_graphics_loader_checks(
         ));
         return None;
     }
-    let probes = probe_graphics_loaders(&compatibility.capabilities);
+    let probes = ost_runtime::probe_graphics_loaders_for_variant(
+        compatibility.variant,
+        &compatibility.capabilities,
+    );
     if probes.is_empty() {
         report.checks.push(ost_runtime::Check::skip(
             "openusd-graphics-loader",
-            "the normalized OpenUSD cell requires no OpenGL or Vulkan loader",
+            "the normalized OpenUSD cell requires no graphics loader",
         ));
         return None;
     }
@@ -2216,6 +2440,7 @@ fn append_graphics_loader_checks(
         let name = match probe.api {
             GraphicsApi::OpenGl => "openusd-opengl-loader",
             GraphicsApi::Vulkan => "openusd-vulkan-loader",
+            GraphicsApi::Metal => "openusd-metal-loader",
         };
         ost_runtime::Check {
             name,
@@ -2247,7 +2472,7 @@ fn append_graphics_device_checks(
     if !compatibility
         .capabilities
         .iter()
-        .any(|capability| matches!(capability.as_str(), "opengl" | "vulkan"))
+        .any(|capability| matches!(capability.as_str(), "opengl" | "vulkan" | "metal"))
     {
         report.checks.push(ost_runtime::Check::skip(
             "openusd-physical-device",
@@ -2263,11 +2488,14 @@ fn append_graphics_device_checks(
         return (None, false);
     }
 
-    let probes = probe_graphics_devices(&compatibility.capabilities);
-    let render_api = if compatibility.variant == OpenUsdVariantId::Vulkan {
-        GraphicsApi::Vulkan
-    } else {
-        GraphicsApi::OpenGl
+    let probes = ost_runtime::probe_graphics_devices_for_variant(
+        compatibility.variant,
+        &compatibility.capabilities,
+    );
+    let render_api = match compatibility.variant.canonical(&compatibility.capabilities) {
+        Some(OpenUsdVariantId::Vulkan) => GraphicsApi::Vulkan,
+        Some(OpenUsdVariantId::Metal) => GraphicsApi::Metal,
+        _ => GraphicsApi::OpenGl,
     };
     let render_backend_ready = probes
         .iter()
@@ -2277,6 +2505,7 @@ fn append_graphics_device_checks(
         let name = match probe.api {
             GraphicsApi::OpenGl => "openusd-opengl-device",
             GraphicsApi::Vulkan => "openusd-vulkan-device",
+            GraphicsApi::Metal => "openusd-metal-device",
         };
         ost_runtime::Check {
             name,
@@ -2310,7 +2539,7 @@ fn append_graphics_render_check(
     if !compatibility
         .capabilities
         .iter()
-        .any(|capability| matches!(capability.as_str(), "opengl" | "vulkan"))
+        .any(|capability| matches!(capability.as_str(), "opengl" | "vulkan" | "metal"))
     {
         report.checks.push(ost_runtime::Check::skip(
             NAME,
@@ -2372,6 +2601,8 @@ fn append_graphics_render_check(
         .args(["--imageWidth", "64"]);
     if compatibility.variant == OpenUsdVariantId::Vulkan {
         command.env("HGI_ENABLE_VULKAN", "1");
+    } else if compatibility.variant == OpenUsdVariantId::Metal {
+        command.env("HGI_ENABLE_METAL", "1");
     }
     env.apply(&mut command);
     let log = match std::fs::File::create(log_path.as_std_path()) {
@@ -4730,6 +4961,7 @@ mod tests {
         compatibility.toolchain.runtime.version = Some("2.28".into());
         compatibility.python.version = Some("3.13.7".into());
         compatibility.tbb.version = Some("2022.1.0".into());
+        compatibility.producer_openusd_version = Some("26.08".into());
         compatibility
     }
 
@@ -4757,7 +4989,7 @@ mod tests {
     fn graphics_runtime_export_requires_persisted_loader_evidence() {
         let mut standard = exportable_manifest();
         standard
-            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Standard)))
+            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Gl)))
             .unwrap();
 
         let error = check_exportable(&standard).unwrap_err();
@@ -4776,7 +5008,7 @@ mod tests {
 
         let mut headless = exportable_manifest();
         headless
-            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Headless)))
+            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Core)))
             .unwrap();
         assert_eq!(
             headless.openusd_verification.loader,
@@ -4791,7 +5023,7 @@ mod tests {
         artifact.source = RuntimeSource::Artifact;
         artifact.artifact_digest = Some(format!("sha256:{}", "ab".repeat(32)));
         artifact
-            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Standard)))
+            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Gl)))
             .unwrap();
         let producer_digest = artifact.digest.clone();
 
@@ -4829,7 +5061,7 @@ mod tests {
     fn headless_loader_validation_skips_without_inferring_later_states() {
         let mut manifest = exportable_manifest();
         manifest
-            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Headless)))
+            .set_openusd_compatibility(Some(verified_compatibility(OpenUsdVariantId::Core)))
             .unwrap();
         let mut report = ost_runtime::ValidationReport { checks: Vec::new() };
 
@@ -4927,19 +5159,20 @@ mod tests {
     #[test]
     fn declared_openusd_variants_select_deterministic_builder_args() {
         let platform = ost_platform::load_one("cy2026").unwrap();
-        let headless = resolve_openusd_build(
+        let core = resolve_openusd_build(
             &platform,
             Os::Linux,
             Arch::X86_64,
-            Some(OpenUsdVariantId::Headless),
+            Some("26.08"),
+            Some(OpenUsdVariantId::Core),
             OpenUsdBuilder::BuildUsd,
             vec!["--no-tests".into()],
         )
         .unwrap();
-        assert!(headless.args.iter().any(|arg| arg == "--no-imaging"));
-        assert!(headless.args.iter().any(|arg| arg == "--no-tests"));
-        let compatibility = headless.compatibility.unwrap();
-        assert_eq!(compatibility.variant, OpenUsdVariantId::Headless);
+        assert!(core.args.iter().any(|arg| arg == "--no-imaging"));
+        assert!(core.args.iter().any(|arg| arg == "--no-tests"));
+        let compatibility = core.compatibility.unwrap();
+        assert_eq!(compatibility.variant, OpenUsdVariantId::Core);
         assert_eq!(compatibility.python.provider, "platform");
         assert_eq!(compatibility.tbb.provider, "platform");
 
@@ -4947,6 +5180,7 @@ mod tests {
             &platform,
             Os::Linux,
             Arch::X86_64,
+            Some("26.08"),
             Some(OpenUsdVariantId::Vulkan),
             OpenUsdBuilder::Cmake,
             Vec::new(),
@@ -4965,6 +5199,7 @@ mod tests {
             &platform,
             Os::Linux,
             Arch::X86_64,
+            Some("26.08"),
             Some(OpenUsdVariantId::Vulkan),
             OpenUsdBuilder::BuildUsd,
             Vec::new(),
@@ -4994,7 +5229,8 @@ mod tests {
                 &platform,
                 Os::Linux,
                 Arch::X86_64,
-                Some(OpenUsdVariantId::Standard),
+                Some("26.08"),
+                Some(OpenUsdVariantId::Gl),
                 builder,
                 vec![arg.into()],
             )
@@ -5005,11 +5241,12 @@ mod tests {
 
     #[test]
     fn implicit_variant_preserves_legacy_targets_without_approved_cell() {
-        let platform = ost_platform::load_one("cy2026").unwrap();
+        let platform = ost_platform::load_one("cy2025").unwrap();
         let legacy = resolve_openusd_build(
             &platform,
             Os::Windows,
             Arch::X86_64,
+            Some("26.08"),
             None,
             OpenUsdBuilder::BuildUsd,
             vec!["--no-tests".into()],

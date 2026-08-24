@@ -2017,6 +2017,7 @@ struct ProductOutcome {
     archive_path: Utf8PathBuf,
     packed: ost_build::PackResult,
     members: usize,
+    data_files: usize,
     stage_warnings: Vec<serde_json::Value>,
 }
 
@@ -2959,7 +2960,7 @@ fn package_workspace(
         tool_outcomes.push(outcome);
     }
 
-    let members: Vec<ProductMember<'_>> = order
+    let discovered_product_members: Vec<ProductMember<'_>> = order
         .iter()
         .zip(outcomes.iter())
         .map(|(id, outcome)| ProductMember::bundle(id.clone(), outcome))
@@ -2970,6 +2971,17 @@ fn package_workspace(
                 .map(|(tool, outcome)| ProductMember::tool(tool, outcome)),
         )
         .collect();
+    let members = resolve_product_members(discovered_product_members)?;
+    if !fmt.is_json() {
+        println!(
+            "Aggregate release members: {}",
+            members
+                .iter()
+                .map(|member| member.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     let product_outcome = if product {
         Some(package_workspace_product(&members, clean_stage)?)
     } else {
@@ -3019,6 +3031,7 @@ fn package_workspace(
                 "archive_digest": outcome.packed.archive_digest,
                 "archive_size": outcome.packed.archive_size,
                 "members": outcome.members,
+                "data_files": outcome.data_files,
             })
         });
         output::report(
@@ -3026,6 +3039,7 @@ fn package_workspace(
             &serde_json::json!({
                 "workspace": true,
                 "order": order,
+                "release_members": members.iter().map(|member| member.id.clone()).collect::<Vec<_>>(),
                 "tools": tool_outcomes.iter().map(|o| o.name.clone()).collect::<Vec<_>>(),
                 "packages": packages,
                 "product": product_json,
@@ -3063,6 +3077,67 @@ fn package_workspace(
         }
     }
     Ok(())
+}
+
+fn resolve_product_members<'a>(
+    discovered: Vec<ProductMember<'a>>,
+) -> Result<Vec<ProductMember<'a>>> {
+    let root = enclosing_project_root().ok_or_else(|| {
+        Error::precondition("workspace packaging requires an enclosing openstrata.toml project")
+    })?;
+    let project = load_project(&root)?;
+    let Some(workspace) = project.workspace else {
+        return Ok(discovered);
+    };
+    let Some(declared) = workspace.release_members else {
+        return Ok(discovered);
+    };
+
+    let discovered_ids = discovered
+        .iter()
+        .map(|member| member.id.clone())
+        .collect::<BTreeSet<_>>();
+    let excluded = workspace
+        .release_exclude
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let unknown_exclusions = excluded
+        .difference(&discovered_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unknown_exclusions.is_empty() {
+        return Err(Error::coded(
+            "AGGREGATE_MEMBERSHIP_MISMATCH",
+            Category::Validation,
+            format!(
+                "workspace.release_exclude names undiscovered member(s): {}",
+                unknown_exclusions.join(", ")
+            ),
+        ));
+    }
+    let expected = discovered_ids
+        .difference(&excluded)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let declared = declared.into_iter().collect::<BTreeSet<_>>();
+    if expected != declared {
+        let missing = expected.difference(&declared).cloned().collect::<Vec<_>>();
+        let unknown = declared.difference(&expected).cloned().collect::<Vec<_>>();
+        return Err(Error::coded(
+            "AGGREGATE_MEMBERSHIP_MISMATCH",
+            Category::Validation,
+            format!(
+                "resolved aggregate membership differs from workspace.release_members (undeclared: {}; unavailable: {})",
+                if missing.is_empty() { "none".into() } else { missing.join(", ") },
+                if unknown.is_empty() { "none".into() } else { unknown.join(", ") }
+            ),
+        )
+        .with_hint("update workspace.release_members/release_exclude deliberately before releasing"));
+    }
+    Ok(discovered
+        .into_iter()
+        .filter(|member| declared.contains(&member.id))
+        .collect())
 }
 
 /// One member of an aggregate product: a packaged bundle, or a packaged
@@ -3133,6 +3208,80 @@ impl<'a> ProductMember<'a> {
                 .unwrap_or(serde_json::Value::Null)
         }
     }
+}
+
+fn stage_workspace_data(
+    project_root: &Utf8Path,
+    mappings: &[ost_manifest::WorkspaceInstallData],
+    stage: &Utf8Path,
+) -> Result<Vec<serde_json::Value>> {
+    let mut files = Vec::new();
+    let mut destinations = BTreeSet::new();
+    for (index, mapping) in mappings.iter().enumerate() {
+        let source = project_root.join(&mapping.source);
+        let meta = std::fs::symlink_metadata(source.as_std_path())
+            .map_err(|error| Error::io(source.to_string(), error))?;
+        if meta.file_type().is_symlink() {
+            return Err(Error::validation(format!(
+                "workspace.install_data source '{}' must not be a symlink",
+                mapping.source
+            )));
+        }
+        let archive_root = Utf8Path::new("data").join(format!("{index:04}"));
+        if meta.is_file() {
+            let name = source.file_name().ok_or_else(|| {
+                Error::config(format!(
+                    "cannot determine workspace.install_data file name: {}",
+                    mapping.source
+                ))
+            })?;
+            copy_file_required(&source, &archive_root.join(name), stage)?;
+        } else if meta.is_dir() {
+            copy_tree_required(&source, &archive_root, stage)?;
+        } else {
+            return Err(Error::validation(format!(
+                "workspace.install_data source '{}' must be a regular file or directory",
+                mapping.source
+            )));
+        }
+
+        let archived_root = stage.join(&archive_root);
+        let archived = stage_files(&archived_root)
+            .map_err(|error| Error::io(archived_root.to_string(), error))?;
+        if archived.is_empty() {
+            return Err(Error::validation(format!(
+                "workspace.install_data source '{}' contains no files",
+                mapping.source
+            )));
+        }
+        for path in archived {
+            let relative = path.strip_prefix(&archived_root).map_err(|_| {
+                Error::validation(format!(
+                    "workspace.install_data file '{path}' escaped its staging root"
+                ))
+            })?;
+            let source_in_product = archive_root.join(relative);
+            let destination = Utf8Path::new(&mapping.destination).join(relative);
+            let destination = portable(&destination);
+            if !destinations.insert(destination.clone()) {
+                return Err(Error::coded(
+                    "PRODUCT_DATA_DESTINATION_COLLISION",
+                    Category::Validation,
+                    format!(
+                        "workspace.install_data maps more than one source file to '{destination}'"
+                    ),
+                ));
+            }
+            let (digest, size) = digest_file(&path)?;
+            files.push(serde_json::json!({
+                "source": portable(&source_in_product),
+                "destination": destination,
+                "sha256": digest,
+                "size": size,
+            }));
+        }
+    }
+    Ok(files)
 }
 
 /// Build one aggregate artifact from the exact per-bundle package outputs.
@@ -3289,6 +3438,17 @@ fn package_workspace_product(
         }));
     }
 
+    let data_files = stage_workspace_data(
+        &project_root,
+        project
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.install_data.as_slice())
+            .unwrap_or_default(),
+        &stage,
+    )?;
+    let data_file_count = data_files.len();
+
     let contract = serde_json::json!({
         "schema": "openstrata.plugin-product/v1alpha1",
         "name": name,
@@ -3305,6 +3465,7 @@ fn package_workspace_product(
             "contract": "run `ost plugin product verify`, then `ost plugin product install --prefix <dir>`; members are verified and installed in dependency order",
         },
         "members": members,
+        "data": data_files,
     });
     write_text(
         &stage.join("openstrata.product.json"),
@@ -3361,6 +3522,7 @@ fn package_workspace_product(
         "product": "openstrata.product.json",
         "install_order": order,
         "members": members,
+        "data_files": data_file_count,
         "files": packed.files.iter().map(|file| file.manifest_json()).collect::<Vec<_>>(),
     });
     let evidence = ost_artifact::generate_evidence(&dist_dir, &mut manifest)?;
@@ -3381,6 +3543,7 @@ fn package_workspace_product(
         archive_path,
         packed,
         members: members_in.len(),
+        data_files: data_file_count,
         stage_warnings,
     })
 }
@@ -3394,6 +3557,17 @@ struct PluginProductContract {
     target: String,
     install: PluginProductInstall,
     members: Vec<PluginProductMember>,
+    #[serde(default)]
+    data: Vec<PluginProductDataFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginProductDataFile {
+    source: String,
+    destination: String,
+    sha256: String,
+    size: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3563,6 +3737,7 @@ fn verify_plugin_product(
     for member in &contract.members {
         verify_product_member(&tree.path, &contract.target, member)?;
     }
+    verify_product_data(&tree.path, &contract.data)?;
 
     Ok(VerifiedPluginProduct {
         source,
@@ -3809,6 +3984,68 @@ fn validate_product_contract(contract: &PluginProductContract) -> Result<()> {
         return Err(Error::validation(format!(
             "plugin product install order {install_order:?} does not match member order {member_order:?}"
         )));
+    }
+    validate_product_data(&contract.data)?;
+    Ok(())
+}
+
+fn validate_product_data(files: &[PluginProductDataFile]) -> Result<()> {
+    let mut sources = BTreeSet::new();
+    let mut destinations = BTreeSet::new();
+    for file in files {
+        safe_product_join(Utf8Path::new("."), &file.source, "product data source")?;
+        safe_product_join(
+            Utf8Path::new("."),
+            &file.destination,
+            "product data destination",
+        )?;
+        if !file.source.starts_with("data/") {
+            return Err(Error::validation(format!(
+                "product data source '{}' must stay below data/",
+                file.source
+            )));
+        }
+        if !file.destination.starts_with("share/") {
+            return Err(Error::validation(format!(
+                "product data destination '{}' must stay below share/",
+                file.destination
+            )));
+        }
+        if !sources.insert(&file.source) {
+            return Err(Error::validation(format!(
+                "plugin product repeats data source '{}'",
+                file.source
+            )));
+        }
+        if !destinations.insert(&file.destination) {
+            return Err(Error::coded(
+                "PRODUCT_DATA_DESTINATION_COLLISION",
+                Category::Validation,
+                format!(
+                    "plugin product repeats data destination '{}'",
+                    file.destination
+                ),
+            ));
+        }
+        validate_sha256_digest(&file.sha256, "product data sha256")?;
+    }
+    Ok(())
+}
+
+fn verify_product_data(root: &Utf8Path, files: &[PluginProductDataFile]) -> Result<()> {
+    for file in files {
+        let path = safe_product_join(root, &file.source, "product data source")?;
+        let (digest, size) = digest_file(&path)?;
+        if digest != file.sha256 || size != file.size {
+            return Err(Error::coded(
+                "PRODUCT_DATA_DIGEST_MISMATCH",
+                Category::Validation,
+                format!(
+                    "product data '{}' is {digest} ({size} bytes), expected {} ({} bytes)",
+                    file.source, file.sha256, file.size
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -4235,6 +4472,13 @@ fn install_plugin_product(
         safe_product_join(Utf8Path::new("."), &relative, "product member destination")?;
         copy_tree_required(&expanded, Utf8Path::new(&relative), &staging.path)?;
     }
+    for file in &verified.contract.data {
+        copy_file_required(
+            &verified.tree.path.join(&file.source),
+            Utf8Path::new(&file.destination),
+            &staging.path,
+        )?;
+    }
     write_product_activation(&staging.path, &verified.contract)?;
     let receipt = serde_json::json!({
         "schema": "openstrata.plugin-product-install/v1alpha1",
@@ -4243,6 +4487,7 @@ fn install_plugin_product(
         "target": verified.contract.target,
         "archive_digest": verified.source.digest,
         "members": verified.contract.install.order,
+        "data": verified.contract.data.iter().map(|file| file.destination.clone()).collect::<Vec<_>>(),
         "layout": verified.contract.install.destination,
         "activation": verified.contract.install.activation,
     });
@@ -4264,6 +4509,7 @@ fn install_plugin_product(
             "archive_digest": verified.source.digest,
             "prefix": prefix,
             "members": verified.contract.install.order,
+            "data_files": verified.contract.data.len(),
             "activation": prefix.join("openstrata.activation.json"),
         }));
     } else {
@@ -4277,6 +4523,10 @@ fn install_plugin_product(
             "  members:    {} ({})",
             verified.contract.members.len(),
             verified.contract.install.order.join(", ")
+        );
+        println!(
+            "  data:       {} shared file(s)",
+            verified.contract.data.len()
         );
         println!(
             "  activation: {}",
@@ -4441,6 +4691,7 @@ fn report_product_verification(product: &VerifiedPluginProduct, fmt: Format) {
             "archive_digest": product.source.digest,
             "archive_size": product.source.size,
             "members": product.contract.install.order,
+            "data_files": product.contract.data.len(),
         }));
     } else {
         println!(
@@ -4454,6 +4705,7 @@ fn report_product_verification(product: &VerifiedPluginProduct, fmt: Format) {
             product.contract.members.len(),
             product.contract.install.order.join(", ")
         );
+        println!("  data:    {} shared file(s)", product.contract.data.len());
     }
 }
 

@@ -16,7 +16,7 @@ pub use lock::{Lock, LockExtension, LockPython, LockRuntime, Validation};
 pub use project::{
     add_extension, set_version_file, BuildCacheEntry, BuildCacheType, BuildCacheValue, BuildConfig,
     BuildIntentConfig, BuildPathPortability, HostConfig, HostDiscoveryConfig, Project, ProjectMeta,
-    Requires, WorkspaceConfig, DEFAULT_DISCOVERY_DEPTH, MAX_DISCOVERY_DEPTH,
+    Requires, WorkspaceConfig, WorkspaceInstallData, DEFAULT_DISCOVERY_DEPTH, MAX_DISCOVERY_DEPTH,
     MAX_WORKSPACE_MEMBER_DEPTH,
 };
 pub use renderer::{
