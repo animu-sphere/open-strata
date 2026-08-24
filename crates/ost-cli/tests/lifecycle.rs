@@ -1328,7 +1328,8 @@ fn non_leaf_library_build_resolves_cmake_package_and_packages_only_primary() {
     assert_eq!(adapter_record["dependencies"][0]["version"], "1.0.0");
     assert!(adapter_record["dependencies"][0]["build_record_sha256"]
         .as_str()
-        .is_some_and(|digest| digest.len() == 64));
+        .map(|digest| digest.strip_prefix("sha256:").unwrap_or(digest))
+        .is_some_and(|digest| digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit())));
 
     let test = sb.ost(&["library", "test", "libs/adapter"]);
     assert!(
