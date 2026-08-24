@@ -62,6 +62,13 @@ impl OpenUsdBuildPlan {
         if source_version == "26.08" {
             build_arguments.push("--python-install-dir=lib/python".into());
         }
+        if builder == OpenUsdBuilder::BuildUsd && compatibility.os == Os::Windows {
+            // Upstream 26.05/26.08 otherwise select the Visual Studio 17
+            // generator from the compiler version. CY2026 owns the MSVC 19.40
+            // toolset, not the installed Visual Studio product generation;
+            // Ninja consumes the already pinned vcvars environment directly.
+            build_arguments.push("--generator=Ninja".into());
+        }
 
         let mut cmake_cache_entries = vec![format!(
             "-DPXR_BUILD_IMAGING={}",
@@ -230,6 +237,21 @@ mod tests {
             assert!(plan.examples_required);
             assert!(plan.build_arguments.iter().any(|arg| arg == "--examples"));
         }
+    }
+
+    #[test]
+    fn windows_source_plans_use_ninja_with_the_pinned_msvc_environment() {
+        let plan = OpenUsdBuildPlan::new(
+            "26.05",
+            &compatibility(Os::Windows, OpenUsdVariantId::Core),
+            OpenUsdBuilder::BuildUsd,
+        )
+        .unwrap();
+
+        assert!(plan
+            .build_arguments
+            .iter()
+            .any(|argument| argument == "--generator=Ninja"));
     }
 
     #[test]
