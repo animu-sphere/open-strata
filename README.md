@@ -31,26 +31,22 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.22.2** — static musl graphics-loader probe handling
-on top of OpenUSD 26.08 dependency capture fixes, dependency refreshes, and
-release-pipeline maintenance on top of normalized
-OpenUSD artifact compatibility
-cells, deterministic source/dependency identity, resilient OCI distribution,
-evidence-gated digest pulls, and independent compile/link/loader/device/render
-verification. The release closes the path from an approved build profile through
-an immutable OCI digest to compatibility and SBOM/provenance validation in a
-clean consumer environment.
+The current release is **v0.22.3** — a canonical OpenUSD 26.05/26.08 CY2026
+runtime matrix across `core`, `gl`, `vulkan`, and `metal`, backed by one
+version-aware build plan and platform-local verification adapters. It also
+closes the component-artifact boundaries for non-leaf library dependencies,
+explicit aggregate membership, project-owned shared data, and coherent package
+evidence.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.22.3** milestone establishes the canonical OpenUSD 26.05/26.08
-CY2026 runtime matrix (`core` / `gl` / `vulkan` / `metal`), generalizes runtime
-production and backend-aware verification across Linux, Windows and macOS, and
-closes the artifact boundaries needed by the v0.22.x runtime-composition series.
-Headless DCC host adapters remain deferred to v0.23.0. See the
-[current roadmap](docs/roadmap/current.md) and the
-[canonical runtime proposal](docs/design/proposed/canonical-openusd-runtimes.md).
+The active **v0.22.4** milestone resolves canonical OpenUSD bases and independent
+plugin, library, tool, renderer, and data artifacts into one deterministic
+runtime component model, with explicit provider selection and pre-materialization
+conflict diagnostics. Headless DCC host adapters remain deferred to v0.23.0. See
+the [current roadmap](docs/roadmap/current.md) and the
+[runtime-composition plan](docs/roadmap/runtime-composition.md).
 
 ## Reference projects
 

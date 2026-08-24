@@ -9,14 +9,9 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-v0.22.3 is active. Detailed acceptance for the remaining v0.22.x runtime
+v0.22.4 is active. Detailed acceptance for the remaining v0.22.x runtime
 composition slices is in [runtime-composition.md](runtime-composition.md).
 
-- ⬜ **v0.22.4 - runtime component model.** Resolve the canonical OpenUSD base
-  runtime plus plugin, library, tool, renderer and data artifacts through
-  explicit dependency, capability/provider and environment metadata. Emit one
-  canonical model and diagnose conflicts before materialization, reusing
-  Formation resolution and activation.
 - ⬜ **v0.22.5 - locked composed runtime.** Pin providers, component digests,
   immutable sources, dependency edges, target/variant and compatibility
   decisions. Derive runtime identity, export it with evidence and reconstruct
