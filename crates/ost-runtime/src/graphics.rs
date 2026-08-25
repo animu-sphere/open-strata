@@ -211,7 +211,7 @@ fn probe_graphics_device(api: GraphicsApi) -> GraphicsDeviceProbe {
             detail: "no DISPLAY or WAYLAND_DISPLAY is available for an OpenGL context".into(),
         };
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     if api == GraphicsApi::OpenGl {
         return GraphicsDeviceProbe {
             api,
@@ -365,7 +365,195 @@ fn probe_opengl_device() -> Result<String, String> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+fn probe_opengl_device() -> Result<String, String> {
+    use std::ffi::CStr;
+
+    type Hwnd = *mut c_void;
+    type Hdc = *mut c_void;
+    type Hglrc = *mut c_void;
+
+    #[repr(C)]
+    struct PixelFormatDescriptor {
+        size: u16,
+        version: u16,
+        flags: u32,
+        pixel_type: u8,
+        color_bits: u8,
+        red_bits: u8,
+        red_shift: u8,
+        green_bits: u8,
+        green_shift: u8,
+        blue_bits: u8,
+        blue_shift: u8,
+        alpha_bits: u8,
+        alpha_shift: u8,
+        accum_bits: u8,
+        accum_red_bits: u8,
+        accum_green_bits: u8,
+        accum_blue_bits: u8,
+        accum_alpha_bits: u8,
+        depth_bits: u8,
+        stencil_bits: u8,
+        aux_buffers: u8,
+        layer_type: u8,
+        reserved: u8,
+        layer_mask: u32,
+        visible_mask: u32,
+        damage_mask: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn CreateWindowExW(
+            ex_style: u32,
+            class_name: *const u16,
+            window_name: *const u16,
+            style: u32,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            parent: Hwnd,
+            menu: *mut c_void,
+            instance: *mut c_void,
+            parameter: *mut c_void,
+        ) -> Hwnd;
+        fn DestroyWindow(window: Hwnd) -> i32;
+        fn GetDC(window: Hwnd) -> Hdc;
+        fn ReleaseDC(window: Hwnd, dc: Hdc) -> i32;
+    }
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn ChoosePixelFormat(dc: Hdc, descriptor: *const PixelFormatDescriptor) -> i32;
+        fn SetPixelFormat(dc: Hdc, format: i32, descriptor: *const PixelFormatDescriptor) -> i32;
+    }
+    #[link(name = "opengl32")]
+    extern "system" {
+        fn wglCreateContext(dc: Hdc) -> Hglrc;
+        fn wglDeleteContext(context: Hglrc) -> i32;
+        fn wglMakeCurrent(dc: Hdc, context: Hglrc) -> i32;
+        fn glGetString(name: u32) -> *const u8;
+    }
+
+    const WS_POPUP: u32 = 0x8000_0000;
+    const PFD_DOUBLEBUFFER: u32 = 0x0000_0001;
+    const PFD_DRAW_TO_WINDOW: u32 = 0x0000_0004;
+    const PFD_SUPPORT_OPENGL: u32 = 0x0000_0020;
+    const PFD_TYPE_RGBA: u8 = 0;
+    const PFD_MAIN_PLANE: u8 = 0;
+    const GL_RENDERER: u32 = 0x1f01;
+
+    let class_name: Vec<u16> = "STATIC".encode_utf16().chain(std::iter::once(0)).collect();
+    let window_name: Vec<u16> = "OpenStrata OpenGL probe"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let descriptor = PixelFormatDescriptor {
+        size: std::mem::size_of::<PixelFormatDescriptor>() as u16,
+        version: 1,
+        flags: PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,
+        pixel_type: PFD_TYPE_RGBA,
+        color_bits: 24,
+        red_bits: 0,
+        red_shift: 0,
+        green_bits: 0,
+        green_shift: 0,
+        blue_bits: 0,
+        blue_shift: 0,
+        alpha_bits: 8,
+        alpha_shift: 0,
+        accum_bits: 0,
+        accum_red_bits: 0,
+        accum_green_bits: 0,
+        accum_blue_bits: 0,
+        accum_alpha_bits: 0,
+        depth_bits: 24,
+        stencil_bits: 8,
+        aux_buffers: 0,
+        layer_type: PFD_MAIN_PLANE,
+        reserved: 0,
+        layer_mask: 0,
+        visible_mask: 0,
+        damage_mask: 0,
+    };
+
+    // SAFETY: all handles are created by the matching Win32 APIs and released
+    // before returning. The built-in STATIC class avoids registering global
+    // process state solely for this hidden one-pixel context.
+    unsafe {
+        let window = CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            window_name.as_ptr(),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+        if window.is_null() {
+            return Err(format!(
+                "Win32 could not create the hidden OpenGL probe window: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let dc = GetDC(window);
+        if dc.is_null() {
+            DestroyWindow(window);
+            return Err(format!(
+                "Win32 could not acquire a device context for OpenGL: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let format = ChoosePixelFormat(dc, &descriptor);
+        if format == 0 || SetPixelFormat(dc, format, &descriptor) == 0 {
+            let error = std::io::Error::last_os_error();
+            ReleaseDC(window, dc);
+            DestroyWindow(window);
+            return Err(format!(
+                "Win32 could not set an OpenGL pixel format: {error}"
+            ));
+        }
+        let context = wglCreateContext(dc);
+        if context.is_null() || wglMakeCurrent(dc, context) == 0 {
+            let error = std::io::Error::last_os_error();
+            if !context.is_null() {
+                wglDeleteContext(context);
+            }
+            ReleaseDC(window, dc);
+            DestroyWindow(window);
+            return Err(format!(
+                "WGL could not create a current OpenGL context: {error}"
+            ));
+        }
+        let value = glGetString(GL_RENDERER);
+        let renderer = if value.is_null() {
+            None
+        } else {
+            Some(
+                CStr::from_ptr(value.cast::<i8>())
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        };
+        wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut());
+        wglDeleteContext(context);
+        ReleaseDC(window, dc);
+        DestroyWindow(window);
+        renderer
+            .map(|renderer| format!("created a WGL context on '{renderer}'"))
+            .ok_or_else(|| {
+                "WGL created a context but no physical OpenGL renderer was observable".into()
+            })
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn probe_opengl_device() -> Result<String, String> {
     Err("physical OpenGL device probing is currently supported for approved Linux cells".into())
 }
