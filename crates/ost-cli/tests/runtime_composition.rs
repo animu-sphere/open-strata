@@ -74,6 +74,17 @@ impl Sandbox {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, content).unwrap();
         }
+        // `runtime export` re-validates, and bin-tools-executable is a real
+        // check on Unix: a fixture tool written without the bit fails it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                prefix.join("bin/usdcat"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
     }
 }
 
