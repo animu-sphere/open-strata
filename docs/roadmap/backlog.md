@@ -9,13 +9,9 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-v0.22.4 is active. Detailed acceptance for the remaining v0.22.x runtime
+v0.22.5 is active. Detailed acceptance for the remaining v0.22.x runtime
 composition slices is in [runtime-composition.md](runtime-composition.md).
 
-- ⬜ **v0.22.5 - locked composed runtime.** Pin providers, component digests,
-  immutable sources, dependency edges, target/variant and compatibility
-  decisions. Derive runtime identity, export it with evidence and reconstruct
-  the same identity on a clean machine.
 - ⬜ **v0.22.6 - runtime SDK layout.** Materialize predictable `bin`, `lib`,
   `include`, `share`, `plugins`, `python`, `node` and `metadata` roots with
   owner-recorded activation. Prove normal CMake SDK consumption from an isolated

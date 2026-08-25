@@ -4,8 +4,8 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-08-24
-updated: 2026-08-25
-applies_to: v0.22.4-v0.22.9
+updated: 2026-08-26
+applies_to: v0.22.5-v0.22.9
 ---
 
 # v0.22.x runtime composition
@@ -13,33 +13,13 @@ applies_to: v0.22.4-v0.22.9
 This is the execution plan for the proposed
 [runtime-composition contract](../design/proposed/runtime-composition.md). It
 contains only incomplete work. The v0.22.3 canonical runtime and artifact
-foundation is recorded in its [release record](../releases/v0.22.3.md). The next
+foundation and the v0.22.4 component model are recorded in their release records
+([v0.22.3](../releases/v0.22.3.md), [v0.22.4](../releases/v0.22.4.md)). The next
 release is summarized in [current.md](current.md); later slices are ordered in
 [backlog.md](backlog.md).
 
 The series advances one contract at a time. DCC host adapters remain v0.23.0
 work after this foundation has been dogfooded.
-
-## v0.22.4 - runtime component model
-
-**Objective:** several component artifacts can resolve into one runtime model.
-
-- Define versioned component requirements/provisions for runtime, plugin,
-  library, tool, renderer and data artifacts.
-- Extend artifact manifests with dependency and environment-contribution
-  metadata without forking existing plugin activation or Formation models.
-- Resolve capabilities to providers deterministically, with explicit provider
-  pins supported for release contracts.
-- Diagnose missing providers, version/ABI/OpenUSD conflicts, singleton
-  capability collisions, install-path collisions and incompatible environment
-  contributions before materialization.
-- Produce a canonical composition manifest and stable JSON inspection output.
-
-### Exit criteria
-
-A synthetic multi-artifact graph and the initial geospatial manifest resolve to
-the same ordered model on Windows, Linux and macOS; conflicts fail before files
-are written.
 
 ## v0.22.5 - locked composed runtime
 

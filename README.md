@@ -31,21 +31,21 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.22.3** — a canonical OpenUSD 26.05/26.08 CY2026
-runtime matrix across `core`, `gl`, `vulkan`, and `metal`, backed by one
-version-aware build plan and platform-local verification adapters. It also
-closes the component-artifact boundaries for non-leaf library dependencies,
-explicit aggregate membership, project-owned shared data, and coherent package
-evidence.
+The current release is **v0.22.4** — the runtime component model. Independently
+published runtime, plugin, library, tool, renderer, and data artifacts resolve
+into one deterministic component model via `ost runtime compose`, with explicit
+provider selection and coded conflict diagnostics before any file is
+materialized. It also carries the canonical OpenUSD CY2026 matrix corrections
+found by validating v0.22.3 on real hosts.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.22.4** milestone resolves canonical OpenUSD bases and independent
-plugin, library, tool, renderer, and data artifacts into one deterministic
-runtime component model, with explicit provider selection and pre-materialization
-conflict diagnostics. Headless DCC host adapters remain deferred to v0.23.0. See
-the [current roadmap](docs/roadmap/current.md) and the
+The active **v0.22.5** milestone locks a resolved composition: provider identity,
+digests, immutable sources, and compatibility decisions become a lock, and the
+composed runtime exports as an OST artifact that reconstructs to the same
+identity on a clean machine. Headless DCC host adapters remain deferred to
+v0.23.0. See the [current roadmap](docs/roadmap/current.md) and the
 [runtime-composition plan](docs/roadmap/runtime-composition.md).
 
 ## Reference projects
