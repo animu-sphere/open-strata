@@ -39,18 +39,28 @@ the declared `share/` directory. Product verification checks every file before
 installation. Sources, destinations, globs, parent escapes, symlinks, empty
 directories, and destination collisions fail closed.
 
-Each selected directory must contain exactly one of
+Each directory a **literal** pattern names must contain exactly one of
 `openstrata.plugin.yaml`, `openstrata.library.yaml`, or
-`openstrata.tool.yaml`. Patterns are portable project-relative paths, use `/`,
-and may contain `*` and `?` within a component. Recursive `**`, parent escapes,
-generated/state directories, and nesting deeper than eight components are
-rejected. Every pattern must match at least one directory.
+`openstrata.tool.yaml`; one that does not is
+`WORKSPACE_MEMBER_DESCRIPTOR_MISSING`, and the error names the pattern that
+selected it. A **wildcard** pattern is a filter over whatever the tree holds
+rather than an assertion about every directory it sweeps up, so a matched
+directory carrying no descriptor is skipped — a `__pycache__` a test run wrote,
+or any other residue, does not refuse the graph. A wildcard that reaches
+directories but selects no member is still `WORKSPACE_MEMBER_PATTERN_EMPTY`,
+and the error lists what it did reach.
 
-The declaration is fail-closed. A bounded scan of the project (at most eight
-levels, without following symlinks or entering hidden, `.strata`, `target`,
-`build`, `out`, or `node_modules` directories) reports any descriptor not covered by
-`members`. A malformed selected descriptor also fails loading. Thus a green
-`--graph-only` result cannot omit a source member or its dependency edges.
+Patterns are portable project-relative paths, use `/`, and may contain `*` and
+`?` within a component. Recursive `**`, parent escapes, generated/state
+directories, and nesting deeper than eight components are rejected. Every
+pattern must match at least one directory.
+
+The declaration is fail-closed where it counts. A bounded scan of the project
+(at most eight levels, without following symlinks or entering hidden, `.git`,
+`.strata`, `target`, `build`, `out`, `node_modules`, or `__pycache__`
+directories) reports any descriptor not covered by `members`. A malformed
+selected descriptor also fails loading. Thus a green `--graph-only` result
+cannot omit a source member or its dependency edges.
 
 Legacy projects without `[workspace]` use that bounded scan below the project
 root as a compatibility fallback; a root descriptor becomes a member only
@@ -409,8 +419,8 @@ written. Issues use stable codes:
 
 | Code | Meaning |
 | --- | --- |
-| `WORKSPACE_MEMBER_PATTERN_EMPTY` | A declared member pattern matches no directory. |
-| `WORKSPACE_MEMBER_DESCRIPTOR_MISSING` | A declared member directory has no OpenStrata member descriptor. |
+| `WORKSPACE_MEMBER_PATTERN_EMPTY` | A declared member pattern matches no directory, or reaches only directories carrying no descriptor. |
+| `WORKSPACE_MEMBER_DESCRIPTOR_MISSING` | A directory named by a *literal* member pattern has no OpenStrata member descriptor. |
 | `WORKSPACE_MEMBER_DESCRIPTOR_AMBIGUOUS` | One member directory contains more than one member descriptor kind. |
 | `WORKSPACE_DESCRIPTOR_NOT_DECLARED` | A bounded scan found a descriptor outside the authoritative member list. |
 | `WORKSPACE_BUNDLE_ID_INVALID` | A discovered plugin identity is not portable. |

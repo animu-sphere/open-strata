@@ -903,7 +903,7 @@ pub(crate) fn build_library_one(
         )
     })?;
     let lock_compiler = compiler::to_lock(&compiler, &r.artifact_prefix, tgt.os());
-    invalidate_plugin_build_tree_if_compiler_changed(&library.root, &id, &lock_compiler);
+    invalidate_plugin_build_tree_if_toolchain_moved(&library.root, &id, &lock_compiler);
     let build_env = maybe_bootstrap_msvc(tgt.os());
     run_step(PHASE_CONFIGURE, &cmake, &configure_args, &build_env)?;
     run_step(PHASE_COMPILE_LINK, &cmake, &build_args, &build_env)?;
@@ -1086,7 +1086,7 @@ fn build_one(
     // build/<id> is stale — drop it so this configure is clean (mirrors the
     // project-level invalidation in `ost configure`).
     let lock_compiler = compiler::to_lock(&compiler, &r.artifact_prefix, tgt.os());
-    invalidate_plugin_build_tree_if_compiler_changed(&bundle.root, &id, &lock_compiler);
+    invalidate_plugin_build_tree_if_toolchain_moved(&bundle.root, &id, &lock_compiler);
 
     // On Windows the `host` compiler policy + Ninja needs cl.exe/link.exe (and
     // Ninja itself) on PATH. When they aren't — a plain shell rather than a VS
@@ -6064,8 +6064,19 @@ struct WorkspaceMembers {
     tools: Vec<Utf8PathBuf>,
 }
 
-const WORKSPACE_SCAN_EXCLUDED: &[&str] =
-    &[".git", ".strata", "target", "build", "out", "node_modules"];
+/// Directory names that are build residue in every layout, skipped both when
+/// scanning for descriptors and when a member pattern selects directories.
+/// `__pycache__` is here because a test run writes one beside the sources it
+/// imports, so `tools/*` starts matching it the first time the suite runs.
+const WORKSPACE_SCAN_EXCLUDED: &[&str] = &[
+    ".git",
+    ".strata",
+    "target",
+    "build",
+    "out",
+    "node_modules",
+    "__pycache__",
+];
 
 /// Resolve the workspace's complete declared or discovered member set.
 ///
@@ -6090,6 +6101,10 @@ fn discover_workspace_members(root: &Utf8Path) -> Result<WorkspaceMembers> {
     let selected = if let Some(patterns) = explicit {
         let mut selected = BTreeMap::new();
         for pattern in patterns {
+            // A wildcard is a filter over whatever the tree happens to hold; a
+            // literal names one directory the author asserts is a member. Only
+            // the second can be wrong about a missing descriptor.
+            let is_wildcard = pattern.contains(['*', '?']);
             let matches = expand_workspace_member_pattern(&root, &pattern)?;
             if matches.is_empty() {
                 return Err(Error::coded(
@@ -6101,28 +6116,64 @@ fn discover_workspace_members(root: &Utf8Path) -> Result<WorkspaceMembers> {
                     "fix or remove the pattern under [workspace].members in openstrata.toml",
                 ));
             }
+            let mut skipped = Vec::new();
+            let mut covered = 0usize;
             for member_root in matches {
                 // Literal components retain the manifest's spelling. On a
                 // case-insensitive filesystem (and for Windows 8.3 aliases)
                 // that can differ from the path returned by the recursive
                 // read_dir scan even though both name the same directory.
                 let member_root = canonical_root(&member_root);
-                let kind = workspace_descriptor_kind(&member_root)?.ok_or_else(|| {
-                    Error::coded(
-                        "WORKSPACE_MEMBER_DESCRIPTOR_MISSING",
-                        Category::Validation,
-                        format!(
-                            "declared workspace member '{member_root}' has no OpenStrata member descriptor"
-                        ),
-                    )
-                    .with_hint(format!(
-                        "add {}, {}, or {}, or narrow [workspace].members",
-                        ost_plugin::PLUGIN_MANIFEST,
-                        ost_plugin::LIBRARY_MANIFEST,
-                        ost_plugin::TOOL_MANIFEST
-                    ))
-                })?;
+                let kind = match workspace_descriptor_kind(&member_root)? {
+                    Some(kind) => kind,
+                    // Residue a wildcard swept up: a cache directory a test run
+                    // wrote, a scratch tree nobody declared. Refusing the whole
+                    // graph over one is what forced projects to abandon
+                    // patterns and name every member by hand (report 36 §5.1).
+                    // Nothing is lost by skipping it — a descriptor no pattern
+                    // covers is still `WORKSPACE_DESCRIPTOR_NOT_DECLARED`
+                    // below, so the fail-closed half stands.
+                    None if is_wildcard => {
+                        skipped.push(member_root);
+                        continue;
+                    }
+                    None => {
+                        return Err(Error::coded(
+                            "WORKSPACE_MEMBER_DESCRIPTOR_MISSING",
+                            Category::Validation,
+                            format!(
+                                "declared workspace member '{member_root}' (from [workspace].members pattern '{pattern}') has no OpenStrata member descriptor"
+                            ),
+                        )
+                        .with_hint(format!(
+                            "add {}, {}, or {}, or narrow [workspace].members",
+                            ost_plugin::PLUGIN_MANIFEST,
+                            ost_plugin::LIBRARY_MANIFEST,
+                            ost_plugin::TOOL_MANIFEST
+                        )));
+                    }
+                };
                 selected.insert(member_root, kind);
+                covered += 1;
+            }
+            // A pattern that selects only residue is still a manifest bug, and
+            // saying which directories it did reach is what makes it fixable.
+            if covered == 0 && !skipped.is_empty() {
+                return Err(Error::coded(
+                    "WORKSPACE_MEMBER_PATTERN_EMPTY",
+                    Category::Validation,
+                    format!(
+                        "workspace member pattern '{pattern}' matched no directory carrying an OpenStrata member descriptor (matched: {})",
+                        skipped
+                            .iter()
+                            .map(|path| portable(path.strip_prefix(&root).unwrap_or(path)))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+                .with_hint(
+                    "fix or remove the pattern under [workspace].members in openstrata.toml",
+                ));
             }
         }
 
@@ -9132,24 +9183,57 @@ fn resolve_plugin_compiler(
 /// produces incoherent builds (or a hard `CMAKE_*_COMPILER changed` error). The
 /// previous compiler is read from `compiler.lock.json` beside the toolchain; a
 /// missing/unreadable record means nothing to invalidate.
-fn invalidate_plugin_build_tree_if_compiler_changed(
+/// Drop a per-member build tree whose cached toolchain no longer applies, so
+/// the next configure starts clean.
+///
+/// Two rules, and the second is the one that matters when a compiler is
+/// upgraded in place: the compiler `ost` resolved changed since this tree was
+/// configured (the recorded lock sees that), or the tree's own `CMakeCache.txt`
+/// names a `CMAKE_CXX_COMPILER` that is not on this machine any more.
+///
+/// The lock alone cannot see the second. Under the default `host` policy it
+/// records no compiler path at all — CMake finds `cl.exe` through the developer
+/// environment `ost` loads — so upgrading Visual Studio in place left the
+/// fingerprint identical while every cached `…/2022/…/cl.exe` path went away.
+/// `ost` then loaded the *new* toolchain's environment and handed CMake a cache
+/// naming the old one, one directory at a time, each failing as a raw `The
+/// CMAKE_CXX_COMPILER … is not a full path to an existing compiler tool` from
+/// inside the configure (report 36 §5.2). `ost` resolves the toolchain and owns
+/// the directory, so a cached compiler that no longer exists is a reconfigure,
+/// not an error to forward.
+fn invalidate_plugin_build_tree_if_toolchain_moved(
     bundle_root: &Utf8Path,
     id: &str,
     next: &ost_build::LockCompiler,
 ) {
+    let build_dir = target_build_dir(bundle_root, id);
+    if !build_dir.as_std_path().exists() {
+        return;
+    }
     let record = target_state_dir(bundle_root, id).join("compiler.lock.json");
     let previous = std::fs::read_to_string(record.as_std_path())
         .ok()
         .and_then(|s| serde_json::from_str::<ost_build::LockCompiler>(&s).ok());
 
-    if let Some(prev) = previous {
-        if prev.fingerprint() != next.fingerprint() {
-            let build_dir = target_build_dir(bundle_root, id);
-            if build_dir.as_std_path().exists() {
-                let _ = std::fs::remove_dir_all(build_dir.as_std_path());
-            }
-        }
-    }
+    let reason = if previous.is_some_and(|prev| prev.fingerprint() != next.fingerprint()) {
+        "the resolved compiler changed since it was configured".to_string()
+    } else if let Some(compiler) = stale_cached_compiler(&build_dir) {
+        format!("its cached CMAKE_CXX_COMPILER no longer exists ({compiler})")
+    } else {
+        return;
+    };
+    println!("==> dropping {build_dir}: {reason}");
+    let _ = std::fs::remove_dir_all(build_dir.as_std_path());
+}
+
+/// The `CMAKE_CXX_COMPILER` a build tree was configured with, when the file it
+/// names is gone. `None` for a tree with no cache, one whose compiler is still
+/// installed, or one whose cache records a bare command name rather than a path
+/// — CMake resolves those itself, so their absence here proves nothing.
+fn stale_cached_compiler(build_dir: &Utf8Path) -> Option<String> {
+    let cache = ost_build::CMakeCache::load(&build_dir.join("CMakeCache.txt")).ok()?;
+    let compiler = Utf8Path::new(cache.get("CMAKE_CXX_COMPILER")?);
+    (compiler.is_absolute() && !compiler.as_std_path().is_file()).then(|| compiler.to_string())
 }
 
 /// Per-target toolchain/state directory inside a bundle: `.strata/targets/<id>/`.
@@ -10420,5 +10504,54 @@ usd: { plug_info: plugin/resources/demo/plugInfo.json }
             requirement["capability"] == "component:materialx"
                 && requirement["version"] == ">=1.39,<1.40"
         }));
+    }
+
+    /// A compiler upgraded in place leaves every per-member build tree naming a
+    /// `cl.exe` that is gone, and the lock cannot see it: the `host` policy
+    /// records no compiler path, so its fingerprint is unchanged. The cache
+    /// CMake wrote is the ground truth, and dropping the tree is a reconfigure
+    /// rather than a raw CMake error forwarded to the user (report 36 §5.2).
+    #[test]
+    fn a_build_tree_whose_cached_compiler_is_gone_is_dropped() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir().join(format!("ost-stale-cc-{}-{nonce}", std::process::id())),
+        )
+        .unwrap();
+        let id = "cy2026-host";
+        let build_dir = target_build_dir(&root, id);
+        std::fs::create_dir_all(build_dir.as_std_path()).unwrap();
+        let absent = root.join("no-such-toolchain").join("cl.exe");
+        std::fs::write(
+            build_dir.join("CMakeCache.txt").as_std_path(),
+            format!("CMAKE_CXX_COMPILER:FILEPATH={absent}\n"),
+        )
+        .unwrap();
+
+        let host = ost_build::LockCompiler::default();
+        invalidate_plugin_build_tree_if_toolchain_moved(&root, id, &host);
+        assert!(
+            !build_dir.as_std_path().exists(),
+            "a tree cached against a compiler that no longer exists is dropped"
+        );
+
+        // The same tree configured against a compiler that *is* installed is
+        // left alone: reconfiguring every build would be worse than the bug.
+        std::fs::create_dir_all(build_dir.as_std_path()).unwrap();
+        let present = build_dir.join("CMakeCache.txt");
+        std::fs::write(
+            present.as_std_path(),
+            format!("CMAKE_CXX_COMPILER:FILEPATH={present}\n"),
+        )
+        .unwrap();
+        invalidate_plugin_build_tree_if_toolchain_moved(&root, id, &host);
+        assert!(
+            build_dir.as_std_path().exists(),
+            "a tree whose cached compiler still exists is kept"
+        );
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 }

@@ -2675,17 +2675,14 @@ fn append_graphics_render_check(
         ));
         return None;
     }
-    let Some(tool) = ["usdrecord.cmd", "usdrecord.exe", "usdrecord"]
-        .into_iter()
-        .map(|name| artifact_prefix.join("bin").join(name))
-        .find(|path| path.as_std_path().is_file())
-    else {
-        report.checks.push(ost_runtime::Check::skip(
-            NAME,
-            format!("usdrecord is not installed under {artifact_prefix}/bin"),
-        ));
-        return None;
+    let launch = match openusd_tool_launch(artifact_prefix, &manifest.python, "usdrecord") {
+        Ok(launch) => launch,
+        Err(reason) => {
+            report.checks.push(ost_runtime::Check::skip(NAME, reason));
+            return None;
+        }
     };
+    let tool = launch.tool.clone();
     let scratch = match scratch_dir("openusd-render") {
         Ok(scratch) => scratch,
         Err(error) => {
@@ -2707,15 +2704,7 @@ fn append_graphics_render_check(
         ));
         return None;
     }
-    let mut command = match openusd_tool_command(artifact_prefix, &manifest.python, &tool) {
-        Ok(command) => command,
-        Err(error) => {
-            report
-                .checks
-                .push(ost_runtime::Check::skip(NAME, error.to_string()));
-            return None;
-        }
-    };
+    let mut command = launch.command();
     command
         .arg(stage.as_std_path())
         .arg(image.as_std_path())
@@ -2725,7 +2714,7 @@ fn append_graphics_render_check(
     } else if compatibility.variant == OpenUsdVariantId::Metal {
         command.env("HGI_ENABLE_METAL", "1");
     }
-    env.apply(&mut command);
+    launch.env_over(env).apply(&mut command);
     let log = match std::fs::File::create(log_path.as_std_path()) {
         Ok(log) => log,
         Err(error) => {
@@ -2805,12 +2794,17 @@ fn append_graphics_render_check(
         skipped: false,
         detail: Some(if passed {
             format!(
-                "usdrecord rendered a 64px frame through {} ({image_bytes} bytes)",
-                compatibility.variant.as_str()
+                "usdrecord rendered a 64px frame through {}{} ({image_bytes} bytes)",
+                compatibility.variant.as_str(),
+                launch.interpreter_label()
             )
         } else {
+            // Name the interpreter on the failure path too: the probe's own
+            // environment is the likeliest cause of a failure here, and a
+            // traceback that names only the runtime reads as a runtime defect.
             format!(
-                "usdrecord did not produce a non-empty frame (exit {:?}, {image_bytes} bytes): {tail}",
+                "usdrecord did not produce a non-empty frame{} (exit {:?}, {image_bytes} bytes): {tail}",
+                launch.interpreter_label(),
                 status.code()
             )
         }),
@@ -2822,22 +2816,166 @@ fn append_graphics_render_check(
     })
 }
 
-fn openusd_tool_command(
+/// How an OpenUSD command-line tool under `<prefix>/bin` will be launched.
+#[derive(Debug)]
+struct OpenUsdToolLaunch {
+    /// The file that will be executed.
+    tool: Utf8PathBuf,
+    /// The interpreter `ost` pinned for it, or `None` for a native binary.
+    interpreter: Option<Vec<String>>,
+    /// Set only when the tool is a launcher shim that resolves `python` from
+    /// `PATH` itself: the pinned interpreter's directory, to prepend so it wins.
+    shim_path_prefix: Option<String>,
+}
+
+impl OpenUsdToolLaunch {
+    fn command(&self) -> Command {
+        let Some(argv) = &self.interpreter else {
+            return Command::new(self.tool.as_std_path());
+        };
+        let (head, rest) = argv
+            .split_first()
+            .expect("resolve_run_python never returns an empty argv");
+        let mut command = Command::new(head);
+        command.args(rest).arg(self.tool.as_std_path());
+        command
+    }
+
+    /// The runtime environment, plus the pinned interpreter's directory when a
+    /// shim is going to look `python` up on `PATH` for itself. `EnvSet`
+    /// composes repeated prepends, so appending the op puts that directory in
+    /// front of the runtime's own `bin`.
+    fn env_over(&self, env: &EnvSet) -> EnvSet {
+        let mut env = env.clone();
+        if let Some(directory) = &self.shim_path_prefix {
+            env.vars.push(ost_runtime::EnvVar {
+                key: "PATH".into(),
+                op: ost_runtime::EnvOp::Prepend(directory.clone()),
+            });
+        }
+        env
+    }
+
+    /// Which interpreter the tool ran under, for a check detail. Empty for a
+    /// native binary, which has none.
+    fn interpreter_label(&self) -> String {
+        match (&self.interpreter, &self.shim_path_prefix) {
+            (Some(argv), _) => format!(" under {}", argv.join(" ")),
+            (None, Some(directory)) => format!(" under the interpreter in {directory}"),
+            (None, None) => String::new(),
+        }
+    }
+}
+
+/// Locate an OpenUSD tool under `<prefix>/bin` and launch it under the
+/// runtime's *own* declared Python.
+///
+/// OpenUSD installs these tools as Python scripts behind two `PATH`-dependent
+/// launchers, and neither can be trusted on a consumer host: the Windows shim
+/// is literally `@python "%~dp0usdrecord" %*`, and the Unix shebang names the
+/// *producer's* interpreter path, which is absent here. So a hosted runner
+/// whose first `python` is 3.12 ran a py313 runtime's `usdrecord` under 3.12,
+/// and the resulting `ImportError: DLL load failed while importing _tf` was
+/// reported as the *runtime* failing validation (report 36 §9). The interpreter
+/// is part of what the runtime declares, so resolve it the way `ost plugin run`
+/// does and hand the script to it explicitly.
+///
+/// Every failure here is a probe that could not run rather than a runtime
+/// defect, so each returns the reason for a **skip** — the rule a device probe
+/// that could not run already follows.
+fn openusd_tool_launch(
     artifact_prefix: &Utf8Path,
     python_version: &str,
-    tool: &Utf8Path,
-) -> Result<Command> {
-    let extension = tool.extension().unwrap_or_default().to_ascii_lowercase();
-    if Host::detect().os != Os::Windows || matches!(extension.as_str(), "exe" | "cmd" | "bat") {
-        return Ok(Command::new(tool.as_std_path()));
+    stem: &str,
+) -> std::result::Result<OpenUsdToolLaunch, String> {
+    let bin = artifact_prefix.join("bin");
+    let Some(shape) = openusd_tool_shape(&bin, stem) else {
+        return Err(format!("{stem} is not installed under {bin}"));
+    };
+    // A native binary carries no interpreter dependency, so it is launchable on
+    // a host that has no CPython at all.
+    if let OpenUsdToolShape::Native(tool) = shape {
+        return Ok(OpenUsdToolLaunch {
+            tool,
+            interpreter: None,
+            shim_path_prefix: None,
+        });
     }
-    let python =
-        ost_build::resolve_for_runtime(artifact_prefix, python_version).ok_or_else(|| {
-            Error::precondition("a Python interpreter matching the OpenUSD runtime was not found")
+    let interpreter = ost_build::resolve_run_python(artifact_prefix, python_version)
+        .ok_or_else(|| {
+            let expected = ost_build::usd_python_requirement(artifact_prefix)
+                .or_else(|| ost_build::python::major_minor(python_version))
+                .unwrap_or_else(|| python_version.to_string());
+            format!(
+                "no Python interpreter satisfying the runtime's declared {expected} was found to run {stem} (searched: {})",
+                ost_build::run_python_search_paths(artifact_prefix, python_version).join(", ")
+            )
         })?;
-    let mut command = Command::new(&python.executable);
-    command.arg(tool.as_std_path());
-    Ok(command)
+    match shape {
+        OpenUsdToolShape::Script(tool) => Ok(OpenUsdToolLaunch {
+            tool,
+            interpreter: Some(interpreter),
+            shim_path_prefix: None,
+        }),
+        // A shim invokes bare `python` itself, so the pin has to be made
+        // through `PATH` rather than through argv.
+        OpenUsdToolShape::Shim(tool) => {
+            let directory = Utf8PathBuf::from(&interpreter[0])
+                .parent()
+                .map(|parent| parent.to_string().replace('\\', "/"))
+                .ok_or_else(|| format!("the interpreter resolved for {stem} has no directory"))?;
+            Ok(OpenUsdToolLaunch {
+                tool,
+                interpreter: None,
+                shim_path_prefix: Some(directory),
+            })
+        }
+        OpenUsdToolShape::Native(_) => unreachable!("the native shape returned above"),
+    }
+}
+
+/// Which of the three shapes an installed OpenUSD tool takes.
+enum OpenUsdToolShape {
+    /// A Python script, which `ost` supplies the interpreter for.
+    Script(Utf8PathBuf),
+    /// A native binary, which needs no interpreter.
+    Native(Utf8PathBuf),
+    /// A launcher shim that resolves `python` from `PATH` for itself.
+    Shim(Utf8PathBuf),
+}
+
+/// Classify `<bin>/<stem>` and its launchers, script first.
+///
+/// The script wins over a same-named `.exe` because OpenUSD ships these tools
+/// as scripts: an `.exe` beside one would be a launcher for it, and launching
+/// the launcher is what loses the interpreter pin.
+fn openusd_tool_shape(bin: &Utf8Path, stem: &str) -> Option<OpenUsdToolShape> {
+    let installed = |name: String| {
+        let path = bin.join(name);
+        path.as_std_path().is_file().then_some(path)
+    };
+    if let Some(script) = installed(stem.to_string()).filter(|path| is_shebang_script(path)) {
+        return Some(OpenUsdToolShape::Script(script));
+    }
+    if let Some(native) = installed(format!("{stem}.exe")) {
+        return Some(OpenUsdToolShape::Native(native));
+    }
+    installed(format!("{stem}.cmd"))
+        .or_else(|| installed(format!("{stem}.bat")))
+        .map(OpenUsdToolShape::Shim)
+}
+
+/// Whether `path` is an installed script rather than a native binary. OpenUSD
+/// substitutes a real shebang into every tool it installs — on Windows too,
+/// where the extensionless file sits beside the `.cmd` that calls it — so two
+/// bytes decide this without guessing from an extension.
+fn is_shebang_script(path: &Utf8Path) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path.as_std_path()) else {
+        return false;
+    };
+    let mut head = [0u8; 2];
+    file.read_exact(&mut head).is_ok() && &head == b"#!"
 }
 
 /// Persist producer-owned loader evidence without rewriting an immutable
@@ -6637,5 +6775,88 @@ set(X \"${ROOT}/buildinfo/x\")
         .unwrap();
         assert!(referenced_excluded_dirs(&[readme], &["src".to_string()]).is_empty());
         std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    /// The Windows shim is `@python "%~dp0usdrecord" %*` and the Unix shebang
+    /// names the *producer's* interpreter path. Either one hands the probe
+    /// whatever `python` the host happens to present, so the script — the only
+    /// shape `ost` can pin an interpreter to — has to win over both.
+    #[test]
+    fn an_installed_script_wins_over_its_path_dependent_launchers() {
+        let bin = temp_dir("tool-script");
+        std::fs::write(bin.join("usdrecord").as_std_path(), "#!/usr/bin/python\n").unwrap();
+        std::fs::write(
+            bin.join("usdrecord.cmd").as_std_path(),
+            "@python \"%~dp0usdrecord\" %*\n",
+        )
+        .unwrap();
+        std::fs::write(bin.join("usdrecord.exe").as_std_path(), b"MZ\x90\x00").unwrap();
+        assert!(matches!(
+            openusd_tool_shape(&bin, "usdrecord"),
+            Some(OpenUsdToolShape::Script(path)) if path == bin.join("usdrecord")
+        ));
+        std::fs::remove_dir_all(bin.as_std_path()).ok();
+    }
+
+    /// Two bytes decide script-or-binary, so an extensionless native tool is
+    /// not handed to an interpreter that could not run it.
+    #[test]
+    fn an_extensionless_binary_is_not_mistaken_for_a_script() {
+        let bin = temp_dir("tool-native");
+        std::fs::write(bin.join("usdrecord").as_std_path(), b"\x7fELF\x02\x01").unwrap();
+        std::fs::write(bin.join("usdrecord.exe").as_std_path(), b"MZ\x90\x00").unwrap();
+        assert!(matches!(
+            openusd_tool_shape(&bin, "usdrecord"),
+            Some(OpenUsdToolShape::Native(_))
+        ));
+        std::fs::remove_dir_all(bin.as_std_path()).ok();
+    }
+
+    /// A runtime carrying only the shim is still launchable: the pin moves from
+    /// argv to `PATH`, because the shim resolves `python` on its own.
+    #[test]
+    fn a_shim_without_its_script_is_still_a_launchable_shape() {
+        let bin = temp_dir("tool-shim");
+        std::fs::write(bin.join("usdrecord.cmd").as_std_path(), "@python x %*\n").unwrap();
+        assert!(matches!(
+            openusd_tool_shape(&bin, "usdrecord"),
+            Some(OpenUsdToolShape::Shim(_))
+        ));
+        assert!(openusd_tool_shape(&bin, "usdcat").is_none());
+        std::fs::remove_dir_all(bin.as_std_path()).ok();
+    }
+
+    /// A probe that could not run has observed nothing about the runtime, so a
+    /// host with no interpreter matching the runtime's declared Python is a
+    /// *skip* — the caller's only use of this error. Reporting it as a render
+    /// failure is what made a py313 runtime look broken on a 3.12 runner
+    /// (report 36 §9).
+    #[test]
+    fn no_satisfying_interpreter_is_a_skip_that_names_what_was_searched() {
+        let prefix = temp_dir("tool-nopy");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(bin.as_std_path()).unwrap();
+        std::fs::write(bin.join("usdrecord").as_std_path(), "#!/usr/bin/python\n").unwrap();
+        // No CPython 3.99 exists on any host, so this resolves on no machine.
+        let reason = openusd_tool_launch(&prefix, "3.99", "usdrecord").unwrap_err();
+        assert!(
+            reason.contains("3.99") && reason.contains("searched:"),
+            "the skip must name the declared Python and the interpreters tried: {reason}"
+        );
+        std::fs::remove_dir_all(prefix.as_std_path()).ok();
+    }
+
+    /// The interpreter is only resolved for the shapes that need one: a native
+    /// tool launches on a host that satisfies no Python contract at all.
+    #[test]
+    fn a_native_tool_launches_without_any_interpreter() {
+        let prefix = temp_dir("tool-nativelaunch");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(bin.as_std_path()).unwrap();
+        std::fs::write(bin.join("usdrecord.exe").as_std_path(), b"MZ\x90\x00").unwrap();
+        let launch = openusd_tool_launch(&prefix, "3.99", "usdrecord").unwrap();
+        assert!(launch.interpreter.is_none());
+        assert_eq!(launch.interpreter_label(), "");
+        std::fs::remove_dir_all(prefix.as_std_path()).ok();
     }
 }

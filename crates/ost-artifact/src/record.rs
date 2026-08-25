@@ -683,16 +683,15 @@ fn normalize_openusd_compatibility(
             compatibility.schema
         )));
     }
-    let verified = if compatibility.schema == 1 {
-        compatibility.providers_are_verified()
+    let failure = if compatibility.schema == 1 {
+        compatibility.providers_verification_failure()
     } else {
-        compatibility.is_verified()
+        compatibility.verification_failure()
     };
-    if !verified {
-        return Err(Error::InvalidManifest(
-            "producer manifest OpenUSD compatibility identity has unverified or contradictory provider versions"
-                .to_string(),
-        ));
+    if let Some(failure) = failure {
+        return Err(Error::InvalidManifest(format!(
+            "producer manifest OpenUSD compatibility identity is not verifiable: {failure}"
+        )));
     }
     if producer_platform != Some(compatibility.platform.as_str()) {
         return Err(Error::InvalidManifest(format!(
@@ -1346,9 +1345,13 @@ mod tests {
             "ost test",
         )
         .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unverified or contradictory provider versions"));
+        // The two halves point at opposite owners, so the message names which
+        // one held and for which provider (report 36 §7.1).
+        let message = error.to_string();
+        assert!(
+            message.contains("tbb") && message.contains("(unverified)"),
+            "a provider with no observed version is unverified: {message}"
+        );
 
         let mut mismatched_version = runtime_manifest_with_openusd();
         update_openusd_compatibility(&mut mismatched_version, |compatibility| {
@@ -1361,9 +1364,13 @@ mod tests {
             "ost test",
         )
         .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unverified or contradictory provider versions"));
+        let message = error.to_string();
+        assert!(
+            message.contains("python")
+                && message.contains("3.12.9")
+                && message.contains("(contradictory)"),
+            "an observed version that fails its own constraint is contradictory: {message}"
+        );
 
         let mut wrong_platform = runtime_manifest_with_openusd();
         update_openusd_compatibility(&mut wrong_platform, |compatibility| {

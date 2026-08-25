@@ -11,7 +11,7 @@ Legend: 🚧 in progress · ⬜ not started
 | --- | --- |
 | [current.md](current.md) | The next milestone and active carry-over work. |
 | [backlog.md](backlog.md) | Ordered but unscheduled work: the milestone ladder beyond next, future phases, and cross-cutting open items. |
-| [runtime-composition.md](runtime-composition.md) | The active v0.22.5-v0.22.9 runtime-composition slices. |
+| [runtime-composition.md](runtime-composition.md) | The active v0.22.6-v0.22.10 runtime-composition slices. |
 
 Delivery is phased and each release is a coherent slice cut from the phases.
 Linux x86_64 is the first-class implementation target; other OS targets are

@@ -349,14 +349,13 @@ impl RuntimeManifest {
         &mut self,
         compatibility: Option<ResolvedOpenUsdCompatibility>,
     ) -> ost_core::Result<()> {
-        if compatibility
+        if let Some(failure) = compatibility
             .as_ref()
-            .is_some_and(|value| !value.is_verified())
+            .and_then(|value| value.verification_failure())
         {
-            return Err(ost_core::Error::InvalidManifest(
-                "OpenUSD compatibility identity has unverified or contradictory provider versions"
-                    .to_string(),
-            ));
+            return Err(ost_core::Error::InvalidManifest(format!(
+                "OpenUSD compatibility identity is not verifiable: {failure}"
+            )));
         }
         self.openusd_compatibility = compatibility;
         self.digest = self.compute_digest();
@@ -584,9 +583,14 @@ mod tests {
         let error = manifest
             .set_openusd_compatibility(Some(compatibility))
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unverified or contradictory provider versions"));
+        // An unresolved cell has observed no versions yet, and the refusal says
+        // so in those words rather than in the two-owner phrase it used to
+        // (report 36 §7.1).
+        let message = error.to_string();
+        assert!(
+            message.contains("is not verifiable") && message.contains("(unverified)"),
+            "the refusal names the condition that held: {message}"
+        );
         assert!(manifest.openusd_compatibility.is_none());
     }
 

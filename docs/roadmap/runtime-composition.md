@@ -5,7 +5,7 @@ owners:
   - openstrata-maintainers
 created: 2026-08-24
 updated: 2026-08-26
-applies_to: v0.22.5-v0.22.9
+applies_to: v0.22.6-v0.22.10
 ---
 
 # v0.22.x runtime composition
@@ -21,7 +21,7 @@ release is summarized in [current.md](current.md); later slices are ordered in
 The series advances one contract at a time. DCC host adapters remain v0.23.0
 work after this foundation has been dogfooded.
 
-## v0.22.5 - locked composed runtime
+## v0.22.6 - locked composed runtime
 
 **Objective:** a resolved runtime is reproducible and independently
 transportable.
@@ -34,7 +34,7 @@ transportable.
 - Reconstruct the same identity on a clean machine from the lock and immutable
   artifacts; caches remain optional.
 
-## v0.22.6 - runtime SDK layout
+## v0.22.7 - runtime SDK layout
 
 **Objective:** applications consume a runtime through predictable native
 conventions.
@@ -48,7 +48,7 @@ conventions.
 - Validate loader, executable, plugin, resolver, schema and CMake-package
   reachability from an isolated prefix.
 
-## v0.22.7 - geospatial runtime dogfood
+## v0.22.8 - geospatial runtime dogfood
 
 **Objective:** build the first real composed runtime in parallel with
 [`animu-sphere/usd-geospatial-runtime`](https://github.com/animu-sphere/usd-geospatial-runtime).
@@ -75,7 +75,7 @@ and a bytes-fetched baseline. `usd-raster-plugins` is pre-release; its component
 artifact and selected GeoTIFF read/authoring contract must ship before the
 geospatial runtime claims raster support.
 
-## v0.22.8 - consumer packaging foundation
+## v0.22.9 - consumer packaging foundation
 
 **Objective:** one canonical runtime can serve ecosystem-native entry points.
 
@@ -86,7 +86,7 @@ geospatial runtime claims raster support.
 - Prove one native SDK consumer and specify the binder/loader contract for
   Python and JavaScript without leaking OST internals into their public API.
 
-## v0.22.9 - runtime UX and diagnostics
+## v0.22.10 - runtime UX and diagnostics
 
 **Objective:** using a composed runtime is ordinary for humans, CI and agents.
 

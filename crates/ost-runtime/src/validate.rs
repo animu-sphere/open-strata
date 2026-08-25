@@ -106,17 +106,19 @@ pub fn validate(prefix: &Utf8Path, manifest: &RuntimeManifest) -> ValidationRepo
         ));
     }
 
-    if manifest
+    match manifest
         .openusd_compatibility
         .as_ref()
-        .is_none_or(ost_platform::ResolvedOpenUsdCompatibility::is_verified)
+        .and_then(ost_platform::ResolvedOpenUsdCompatibility::verification_failure)
     {
-        checks.push(Check::pass("openusd-compatibility-identity"));
-    } else {
-        checks.push(Check::fail(
+        None => checks.push(Check::pass("openusd-compatibility-identity")),
+        // Name the provider and which of the two conditions held: a check that
+        // says only "unverified or contradictory" points at the artifact and at
+        // the tool reading it in the same breath (report 36 §7.1).
+        Some(failure) => checks.push(Check::fail(
             "openusd-compatibility-identity",
-            "OpenUSD compatibility identity contains unverified or contradictory provider versions",
-        ));
+            format!("OpenUSD compatibility identity is not verifiable: {failure}"),
+        )),
     }
 
     if manifest.openusd_verification.is_supported() {
