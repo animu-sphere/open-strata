@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.22.4 | [v0.22.4.md](v0.22.4.md) | Runtime component model + canonical matrix corrections |
 | v0.22.3 | [v0.22.3.md](v0.22.3.md) | Canonical OpenUSD runtimes + component artifact contracts |
 | v0.22.2 | [v0.22.2.md](v0.22.2.md) | Static musl graphics probe handling |
 | v0.22.1 | [v0.22.1.md](v0.22.1.md) | OpenUSD dependency capture fix + release maintenance |
