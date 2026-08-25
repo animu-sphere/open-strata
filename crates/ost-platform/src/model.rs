@@ -505,6 +505,50 @@ fn provider_is_verified(provider: &ResolvedOpenUsdProvider) -> bool {
         })
 }
 
+/// Why `provider` fails verification, or `None` when it does not.
+///
+/// Every message ends in the condition that held, because the two point at
+/// opposite owners: **unverified** is a predicate the *consumer* evaluates,
+/// **contradictory** is a claim about the *bytes*. Saying only "unverified or
+/// contradictory" sent a downstream consumer to republish a macOS runtime whose
+/// libc++ constraint was `>=17.x` — the artifact was correct and the wildcard
+/// comparison in one released `ost` was not (report 36 §7.1, §8).
+fn provider_verification_failure(
+    label: &str,
+    provider: &ResolvedOpenUsdProvider,
+) -> Option<String> {
+    let name = provider.provider.trim();
+    let named = if name.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label} provider '{name}'")
+    };
+    if provider.family.trim().is_empty() {
+        return Some(format!("{named} declares no family (unverified)"));
+    }
+    if name.is_empty() {
+        return Some(format!("{label} declares no provider (unverified)"));
+    }
+    if provider.version_constraint.trim().is_empty() {
+        return Some(format!(
+            "{named} declares no version constraint (unverified)"
+        ));
+    }
+    let Some(version) = provider.version.as_deref() else {
+        return Some(format!(
+            "{named} records no observed version to check against its constraint '{}' (unverified)",
+            provider.version_constraint
+        ));
+    };
+    if !version_satisfies_constraint(version, &provider.version_constraint) {
+        return Some(format!(
+            "{named} records version '{version}', which does not satisfy its declared constraint '{}' (contradictory)",
+            provider.version_constraint
+        ));
+    }
+    None
+}
+
 impl ResolvedOpenUsdCompatibility {
     /// Provider facts shared by legacy schema-1 and canonical schema-2 cells.
     pub fn providers_are_verified(&self) -> bool {
@@ -519,6 +563,86 @@ impl ResolvedOpenUsdCompatibility {
             && provider_is_verified(&self.toolchain.runtime)
             && provider_is_verified(&self.python)
             && provider_is_verified(&self.tbb)
+    }
+
+    /// Why [`providers_are_verified`](Self::providers_are_verified) refuses this
+    /// identity, or `None` when it does not — one named provider and which of
+    /// the two conditions held. See [`provider_verification_failure`].
+    pub fn providers_verification_failure(&self) -> Option<String> {
+        if self.platform.trim().is_empty() {
+            return Some(
+                "the compatibility identity declares no platform (unverified)".to_string(),
+            );
+        }
+        if self.toolchain.cxx_standard.trim().is_empty() {
+            return Some("the toolchain declares no C++ standard (unverified)".to_string());
+        }
+        let toolchain = ResolvedOpenUsdProvider {
+            family: self.toolchain.family.clone(),
+            provider: self.toolchain.provider.clone(),
+            version: self.toolchain.version.clone(),
+            version_constraint: self.toolchain.version_constraint.clone(),
+        };
+        provider_verification_failure("toolchain", &toolchain)
+            .or_else(|| provider_verification_failure("toolchain runtime", &self.toolchain.runtime))
+            .or_else(|| provider_verification_failure("python", &self.python))
+            .or_else(|| provider_verification_failure("tbb", &self.tbb))
+    }
+
+    /// Why [`is_verified`](Self::is_verified) refuses this identity, or `None`
+    /// when it does not.
+    pub fn verification_failure(&self) -> Option<String> {
+        if self.profile.as_deref() != Some("usd") {
+            return Some(format!(
+                "the compatibility identity declares profile '{}' rather than 'usd' (unverified)",
+                self.profile.as_deref().unwrap_or("<missing>")
+            ));
+        }
+        if self
+            .producer_openusd_version
+            .as_deref()
+            .is_none_or(|version| version.trim().is_empty())
+        {
+            return Some(
+                "the compatibility identity records no producer OpenUSD version (unverified)"
+                    .to_string(),
+            );
+        }
+        if self
+            .consumer_openusd_constraint
+            .as_deref()
+            .is_none_or(|constraint| constraint.trim().is_empty())
+        {
+            return Some(
+                "the compatibility identity declares no consumer OpenUSD constraint (unverified)"
+                    .to_string(),
+            );
+        }
+        if self.variant.canonical(&self.capabilities).is_none() {
+            return Some(format!(
+                "variant '{}' is not canonical for the declared capabilities (contradictory)",
+                self.variant.as_str()
+            ));
+        }
+        if let Some(failure) = self.providers_verification_failure() {
+            return Some(failure);
+        }
+        match (&self.macos, self.os) {
+            (Some(macos), Os::Macos) => provider_verification_failure("macos sdk", &macos.sdk)
+                .or_else(|| {
+                    macos.deployment_target.trim().is_empty().then(|| {
+                        "the macOS cell declares no deployment target (unverified)".to_string()
+                    })
+                }),
+            (None, Os::Macos) => {
+                Some("a macOS cell carries no 'macos' identity block (unverified)".to_string())
+            }
+            (None, _) => None,
+            (Some(_), _) => Some(format!(
+                "a '{}' cell carries a 'macos' identity block (contradictory)",
+                self.os.as_str()
+            )),
+        }
     }
 
     /// Whether every compatibility-critical provider carries an observed exact
@@ -861,6 +985,94 @@ mod tests {
             consumer_openusd_constraint: Some(">=26.05,<26.09".into()),
             macos: None,
         }
+    }
+
+    /// `verification_failure` is the message half of `is_verified`, and a
+    /// refusal with no reason (or a reason with no refusal) would be worse than
+    /// the vague sentence it replaces. Every condition is exercised in both
+    /// directions from one verified cell.
+    #[test]
+    fn every_verification_failure_agrees_with_the_predicate() {
+        let verified = verified_compatibility();
+        assert!(verified.is_verified());
+        assert_eq!(verified.verification_failure(), None);
+
+        type Mutation = (&'static str, Box<dyn Fn(&mut ResolvedOpenUsdCompatibility)>);
+        let mutations: Vec<Mutation> = vec![
+            ("platform", Box::new(|c| c.platform = String::new())),
+            ("profile", Box::new(|c| c.profile = None)),
+            (
+                "producer version",
+                Box::new(|c| c.producer_openusd_version = Some("  ".into())),
+            ),
+            (
+                "consumer constraint",
+                Box::new(|c| c.consumer_openusd_constraint = None),
+            ),
+            (
+                "variant",
+                Box::new(|c| c.variant = OpenUsdVariantId::Headless),
+            ),
+            (
+                "toolchain c++ standard",
+                Box::new(|c| c.toolchain.cxx_standard = String::new()),
+            ),
+            (
+                "toolchain version",
+                Box::new(|c| c.toolchain.version = None),
+            ),
+            (
+                "toolchain runtime constraint",
+                Box::new(|c| c.toolchain.runtime.version = Some("2.17".into())),
+            ),
+            (
+                "python family",
+                Box::new(|c| c.python.family = String::new()),
+            ),
+            (
+                "tbb version",
+                Box::new(|c| c.tbb.version = Some("2021.0.0".into())),
+            ),
+            (
+                "macos block off macos",
+                Box::new(|c| {
+                    c.macos = Some(ResolvedOpenUsdMacos {
+                        sdk: ResolvedOpenUsdProvider {
+                            family: "macos-sdk".into(),
+                            provider: "apple".into(),
+                            version: Some("15.5".into()),
+                            version_constraint: ">=15".into(),
+                        },
+                        deployment_target: "13.0".into(),
+                    })
+                }),
+            ),
+            ("macos block missing", Box::new(|c| c.os = Os::Macos)),
+        ];
+
+        for (label, mutate) in mutations {
+            let mut broken = verified_compatibility();
+            mutate(&mut broken);
+            assert!(!broken.is_verified(), "{label} should not verify");
+            let failure = broken
+                .verification_failure()
+                .unwrap_or_else(|| panic!("{label} refuses without saying why"));
+            // Which of the two conditions held is the whole point: one points at
+            // this consumer, the other at the bytes (report 36 §7.1).
+            assert!(
+                failure.ends_with("(unverified)") || failure.ends_with("(contradictory)"),
+                "{label}: {failure}"
+            );
+        }
+    }
+
+    /// A wildcard floor constraint is satisfiable. `>=17.x` was not, and every
+    /// macOS leaf carrying one failed its own cell inside `ost` 0.22.3 — read
+    /// downstream as a bad artifact (report 36 §7.1, §8).
+    #[test]
+    fn a_wildcard_floor_constraint_is_satisfied_by_its_own_floor() {
+        assert!(version_satisfies_constraint("17.0.0", ">=17.x"));
+        assert!(!version_satisfies_constraint("16.0.0", ">=17.x"));
     }
 
     #[test]

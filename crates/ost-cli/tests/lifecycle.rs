@@ -2841,6 +2841,86 @@ fn workspace_graph_uses_explicit_nested_member_globs() {
     assert_eq!(value["data"]["graph"]["nodes"].as_array().unwrap().len(), 2);
 }
 
+/// A wildcard member pattern is a filter over whatever the tree holds, not an
+/// assertion that every directory it sweeps up is a member. A `__pycache__` a
+/// test run wrote, or any other residue, used to refuse the whole graph —
+/// including for commands that would never have touched it — which is what
+/// pushed projects into naming every member by hand (report 36 §5.1).
+#[test]
+fn workspace_graph_ignores_residue_a_member_glob_sweeps_up() {
+    let sb = Sandbox::new("ws-glob-residue");
+    init_and_pull(&sb);
+
+    let out = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-schema",
+        "alpha",
+        "--dir",
+        "plugins/alpha",
+    ]);
+    assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+
+    // Two shapes of residue: a Python cache, and a bare scratch directory that
+    // no skip list could be expected to know the name of.
+    for residue in ["plugins/__pycache__", "plugins/scratch"] {
+        let directory = sb.work_file(residue);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("leftover.txt"), "residue\n").unwrap();
+    }
+
+    let manifest = sb.work_file("openstrata.toml");
+    let source = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        manifest,
+        format!("{source}\n[workspace]\nmembers = [\".\", \"plugins/*\"]\n"),
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--graph-only"]);
+    assert!(out.status.success(), "{}", out_text(&out));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["data"]["total"], 1);
+}
+
+/// The fail-closed half stands: a pattern that reaches only residue selects no
+/// member, and saying which directories it did reach is what makes it fixable.
+#[test]
+fn a_member_glob_that_reaches_only_residue_is_still_an_error() {
+    let sb = Sandbox::new("ws-glob-all-residue");
+    init_and_pull(&sb);
+
+    let out = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-schema",
+        "alpha",
+        "--dir",
+        "plugins/alpha",
+    ]);
+    assert!(out.status.success(), "scaffold failed:\n{}", out_text(&out));
+    std::fs::create_dir_all(sb.work_file("tools/scratch")).unwrap();
+
+    let manifest = sb.work_file("openstrata.toml");
+    let source = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        manifest,
+        format!("{source}\n[workspace]\nmembers = [\".\", \"plugins/*\", \"tools/*\"]\n"),
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--graph-only"]);
+    assert_eq!(out.status.code(), Some(5), "{}", out_text(&out));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "WORKSPACE_MEMBER_PATTERN_EMPTY");
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("tools/*") && message.contains("tools/scratch"),
+        "the error names the pattern and what it reached: {message}"
+    );
+}
+
 #[test]
 fn workspace_graph_fails_when_a_descriptor_is_not_declared() {
     let sb = Sandbox::new("ws-omitted-member");

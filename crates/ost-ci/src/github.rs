@@ -580,16 +580,24 @@ fn source_check_steps(checks: &[SourceCheck]) -> String {
 /// for anything the build depends on (v0.12.0 macOS dogfood). Two prerequisites
 /// are modeled today:
 ///
-/// - **Runnable-runtime validation** (always): `ost runtime validate` re-checks
-///   the freshly materialized tree, including the Unix `bin-tools-executable`
-///   invariant, so a runtime whose tools lost their execute bits fails *here*
-///   with visible evidence instead of deep inside `usdGenSchema`.
 /// - **Host Python for schema tooling** (when a source cell declares
 ///   `host_python`): a pinned `setup-python` installs exactly the declared
 ///   CPython ABI on a hosted runner before the build, so schema-generate never
 ///   relies on an accidental host interpreter. The step is per-cell gated on
 ///   `matrix.hosted && matrix.host_python`, and every cell records the resolved
 ///   Python source as CI evidence.
+/// - **Runnable-runtime validation** (always): `ost runtime validate` re-checks
+///   the freshly materialized tree, including the Unix `bin-tools-executable`
+///   invariant, so a runtime whose tools lost their execute bits fails *here*
+///   with visible evidence instead of deep inside `usdGenSchema`.
+///
+/// Validation runs *after* the declared host Python is installed, not before:
+/// a cell that declares `host_python` has said which interpreter the lane is
+/// supposed to use, and running the runtime's own checks against whatever the
+/// runner happened to ship first contradicts the declaration (report 36 §9).
+/// This is a consistency fix, not the fix for that finding — `ost runtime
+/// validate` pins the interpreter it probes with itself, so a cell that
+/// declares nothing is equally correct.
 /// - **Host packages for consuming the runtime** (when a source cell declares
 ///   `host_packages`): the runner's native installer provisions what the pinned
 ///   runtime needs to be *consumed*, which is not always what it needs to run.
@@ -610,16 +618,6 @@ fn prebuild_steps(matrix: &SupportMatrix) -> String {
         // configure step the same unexplained failure this modeled away.
         out.push_str(HOST_PACKAGES_STEP);
     }
-    out.push_str(
-        "\
-\x20     - name: Validate the materialized runtime (runnable tools)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .ost-ci
-          ost runtime validate ${{ matrix.platform }} --profile ${{ matrix.profile }} --json | tee .ost-ci/runtime-validate.json
-",
-    );
     if matrix.needs_host_python() {
         out.push_str(&format!(
             "\
@@ -644,6 +642,16 @@ fn prebuild_steps(matrix: &SupportMatrix) -> String {
 ",
         ));
     }
+    out.push_str(
+        "\
+\x20     - name: Validate the materialized runtime (runnable tools)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          ost runtime validate ${{ matrix.platform }} --profile ${{ matrix.profile }} --json | tee .ost-ci/runtime-validate.json
+",
+    );
     out
 }
 
@@ -2037,6 +2045,19 @@ mod tests {
             .position(|n| n.contains("Build the plugin"))
             .unwrap();
         assert!(setup < build, "python setup precedes the build: {names:?}");
+
+        // And precedes runtime validation, whose graphics probes run OpenUSD's
+        // own Python tools: a cell that declares an ABI must not have the
+        // runtime checked against the runner's accidental default (report 36
+        // §9).
+        let validate = names
+            .iter()
+            .position(|n| n.contains("Validate the materialized runtime"))
+            .unwrap();
+        assert!(
+            setup < validate,
+            "python setup precedes runtime validation: {names:?}"
+        );
 
         // Pinned action (SEC-004), gated on hosted + a declared ABI, exact ABI.
         let step = &steps[setup];

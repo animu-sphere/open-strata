@@ -146,6 +146,15 @@ producer's digest-bound fields. Missing display or `usdrecord` prerequisites
 remain `not-run`, so a non-GPU build host does not manufacture either success or
 failure evidence.
 
+`usdrecord` runs under the interpreter the runtime itself declares, resolved the
+way `ost plugin run` resolves one — the bundled interpreter first, else a host
+CPython matching the runtime's Python ABI — never through the installed
+launchers, whose `python` comes from the host `PATH`. A host offering no
+satisfying interpreter reports the check **skipped**: a probe that could not run
+has observed nothing about the runtime. The passing and failing details both
+name the interpreter used, so an environment failure is not read as a runtime
+one.
+
 A consumer can require an approved compatibility cell during the same pull:
 
 ```bash
