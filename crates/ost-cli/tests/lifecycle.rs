@@ -3282,7 +3282,16 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     // The schema contract is what a dependent actually binds to.
     assert_eq!(bundles[0]["contract"], 1);
     assert_eq!(bundles[0]["provenance"], "source-workspace");
-
+    let component_environment = value["component"]["environment"].as_array().unwrap();
+    assert!(component_environment.iter().any(|contribution| {
+        contribution["variable"] == "PXR_PLUGINPATH_NAME"
+            && contribution["values"]
+                == serde_json::json!(["runtime/bundles/schema/plugin/resources/schema"])
+    }));
+    assert!(component_environment.iter().any(|contribution| {
+        contribution["variable"] == "PYTHONPATH"
+            && contribution["values"] == serde_json::json!(["python"])
+    }));
     // …and it carries the provider's USD *registration* half, not just the
     // record and the link half. v0.18.0 shipped `libSchemaLib` plus a resolved
     // `bundles` entry while leaving `plugInfo.json` out, so the package asserted

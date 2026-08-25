@@ -248,8 +248,11 @@ fn capability(field: &str, value: &str) -> Result<()> {
 
 fn safe_relative(field: &str, value: &str, allow_dot: bool) -> Result<()> {
     let drive = value.as_bytes().get(1) == Some(&b':');
+    let only_current_directory = value
+        .split(['/', '\\'])
+        .all(|part| part.is_empty() || part == ".");
     let invalid = value.is_empty()
-        || (!allow_dot && value == ".")
+        || (!allow_dot && only_current_directory)
         || value.starts_with(['/', '\\'])
         || drive
         || value.split(['/', '\\']).any(|part| part == "..");
@@ -323,5 +326,7 @@ mod tests {
         assert!(contract.validate().is_err());
         contract.install[0].destination = "share/data".into();
         contract.validate().unwrap();
+        contract.install[0].destination = "./".into();
+        assert!(contract.validate().is_err());
     }
 }

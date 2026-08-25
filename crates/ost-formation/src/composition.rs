@@ -548,19 +548,18 @@ fn rendered_constraint(requirement: &CapabilityRequirement) -> String {
 }
 
 fn check_singletons(selected: &BTreeMap<String, &Candidate<'_>>) -> Result<()> {
-    let mut providers = BTreeMap::<&str, Vec<&str>>::new();
+    let mut providers = BTreeMap::<&str, (bool, Vec<&str>)>::new();
     for candidate in selected.values() {
         for provision in &candidate.contract.provides {
-            if provision.singleton {
-                providers
-                    .entry(&provision.capability)
-                    .or_default()
-                    .push(&candidate.contract.id);
-            }
+            let (has_singleton, sources) = providers
+                .entry(&provision.capability)
+                .or_insert_with(|| (false, Vec::new()));
+            *has_singleton |= provision.singleton;
+            sources.push(&candidate.contract.id);
         }
     }
-    for (capability, sources) in providers {
-        if sources.len() > 1 {
+    for (capability, (has_singleton, sources)) in providers {
+        if has_singleton && sources.len() > 1 {
             return Err(Error::coded(
                 "COMPOSITION_SINGLETON_COLLISION",
                 Category::Validation,
@@ -690,7 +689,7 @@ fn resolve_install(
     let mut resolved = Vec::new();
     for candidate in selected.values() {
         for mapping in &candidate.contract.install {
-            let normalized = mapping.destination.replace('\\', "/");
+            let normalized = normalize_relative_path(&mapping.destination);
             let key = normalized.to_ascii_lowercase();
             if let Some((owner, destination)) =
                 owners.insert(key, (&candidate.contract.id, mapping.destination.as_str()))
@@ -708,7 +707,7 @@ fn resolve_install(
                 destination: normalized,
                 component: candidate.contract.id.clone(),
                 artifact: candidate.record.digest.clone(),
-                source: mapping.source.replace('\\', "/"),
+                source: normalize_relative_path(&mapping.source),
             });
         }
     }
@@ -720,6 +719,13 @@ fn resolve_install(
         ))
     });
     Ok(resolved)
+}
+
+fn normalize_relative_path(path: &str) -> String {
+    path.split(['/', '\\'])
+        .filter(|component| !component.is_empty() && *component != ".")
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn topological_order(
@@ -775,6 +781,16 @@ fn validate_requirement(requirement: &CapabilityRequirement) -> Result<()> {
         portable_id("requirement provider", provider)?;
     }
     if let Some(range) = &requirement.version {
+        if range.trim().is_empty() {
+            return Err(Error::coded(
+                "COMPOSITION_INVALID_VERSION_CONSTRAINT",
+                Category::Configuration,
+                format!(
+                    "requirement '{}' has an empty version constraint",
+                    requirement.capability
+                ),
+            ));
+        }
         // Validate the range independently from any candidate version.
         ost_plugin::satisfies("0", range).map_err(|error| {
             Error::coded(
@@ -1112,6 +1128,73 @@ mod tests {
     }
 
     #[test]
+    fn singleton_conflicts_include_non_singleton_co_providers() {
+        let target = "linux-x86_64-glibc228-py313";
+        let records = vec![
+            record("openusd", "26.08", target, "a", &[("usd", true)], &[]),
+            record(
+                "feature-a",
+                "1.0",
+                target,
+                "b",
+                &[("feature.a", true), ("shared.provider", true)],
+                &[],
+            ),
+            record(
+                "feature-b",
+                "1.0",
+                target,
+                "c",
+                &[("feature.b", true), ("shared.provider", false)],
+                &[],
+            ),
+        ];
+        let mut declared = manifest(target, &records);
+        declared.requirements = vec![
+            CapabilityRequirement {
+                capability: "usd".into(),
+                version: None,
+                provider: None,
+            },
+            CapabilityRequirement {
+                capability: "feature.a".into(),
+                version: None,
+                provider: None,
+            },
+            CapabilityRequirement {
+                capability: "feature.b".into(),
+                version: None,
+                provider: None,
+            },
+        ];
+        let error =
+            resolve_runtime_composition(&declared, CompositionInput { records }).unwrap_err();
+        assert_eq!(error.code(), "COMPOSITION_SINGLETON_COLLISION");
+    }
+
+    #[test]
+    fn empty_requirement_versions_are_rejected() {
+        let source = format!(
+            r#"schema = "{COMPOSITION_SCHEMA}"
+
+[composition]
+name = "invalid-version"
+target = "linux-x86_64-glibc228-py313"
+
+[[requirements]]
+capability = "usd"
+version = ""
+
+[[artifacts]]
+artifact = "{}"
+"#,
+            digest("a")
+        );
+        let error = RuntimeCompositionManifest::parse(&source).unwrap_err();
+        assert_eq!(error.code(), "COMPOSITION_INVALID_VERSION_CONSTRAINT");
+    }
+
+    #[test]
     fn install_collisions_fail_before_materialization() {
         let target = "linux-x86_64-glibc228-py313";
         let mut runtime = record("openusd", "26.08", target, "a", &[("usd", true)], &[]);
@@ -1125,6 +1208,27 @@ mod tests {
         );
         runtime.component.as_mut().unwrap().install[0].destination = "lib/shared.so".into();
         plugin.component.as_mut().unwrap().install[0].destination = "LIB/shared.so".into();
+        let records = vec![runtime, plugin];
+        let error =
+            resolve_runtime_composition(&manifest(target, &records), CompositionInput { records })
+                .unwrap_err();
+        assert_eq!(error.code(), "COMPOSITION_INSTALL_PATH_COLLISION");
+    }
+
+    #[test]
+    fn lexical_install_aliases_collide_before_materialization() {
+        let target = "linux-x86_64-glibc228-py313";
+        let mut runtime = record("openusd", "26.08", target, "a", &[("usd", true)], &[]);
+        let mut plugin = record(
+            "pointcloud",
+            "1.0",
+            target,
+            "b",
+            &[("usd.fileformat.copc", true)],
+            &[("usd", Some("26.08"))],
+        );
+        runtime.component.as_mut().unwrap().install[0].destination = "lib/shared.so".into();
+        plugin.component.as_mut().unwrap().install[0].destination = "lib/./shared.so".into();
         let records = vec![runtime, plugin];
         let error =
             resolve_runtime_composition(&manifest(target, &records), CompositionInput { records })

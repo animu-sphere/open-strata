@@ -2085,6 +2085,45 @@ fn package(
     Ok(())
 }
 
+fn component_requirements(manifest: &ost_plugin::PluginManifest) -> Vec<serde_json::Value> {
+    let mut requirements = vec![serde_json::json!({
+        "capability": "usd",
+        "version": manifest.runtime.openusd,
+    })];
+    requirements.extend(
+        manifest
+            .requires
+            .capabilities
+            .iter()
+            .map(|capability| serde_json::json!({"capability": capability})),
+    );
+    requirements.extend(
+        manifest
+            .requires
+            .components
+            .iter()
+            .map(|(component, version)| {
+                serde_json::json!({
+                    "capability": format!("component:{component}"),
+                    "version": version,
+                })
+            }),
+    );
+    requirements.extend(manifest.requires.bundles.iter().map(|dependency| {
+        serde_json::json!({
+            "capability": format!("component:{}", dependency.id),
+            "version": dependency.version,
+        })
+    }));
+    requirements.extend(manifest.requires.libraries.iter().map(|dependency| {
+        serde_json::json!({
+            "capability": format!("library:{}", dependency.id),
+            "version": dependency.version,
+        })
+    }));
+    requirements
+}
+
 fn package_bundle(
     bundle: &Bundle,
     target: Option<String>,
@@ -2353,35 +2392,7 @@ fn package_bundle(
                 })
             }),
     );
-    let mut component_requires = vec![serde_json::json!({
-        "capability": "usd",
-        "version": packaged_manifest.runtime.openusd,
-    })];
-    component_requires.extend(
-        packaged_manifest
-            .requires
-            .capabilities
-            .iter()
-            .map(|capability| serde_json::json!({"capability": capability})),
-    );
-    component_requires.extend(packaged_manifest.requires.bundles.iter().map(|dependency| {
-        serde_json::json!({
-            "capability": format!("component:{}", dependency.id),
-            "version": dependency.version,
-        })
-    }));
-    component_requires.extend(
-        packaged_manifest
-            .requires
-            .libraries
-            .iter()
-            .map(|dependency| {
-                serde_json::json!({
-                    "capability": format!("library:{}", dependency.id),
-                    "version": dependency.version,
-                })
-            }),
-    );
+    let component_requires = component_requirements(&packaged_manifest);
     let plugin_root = Utf8Path::new(&packaged_manifest.usd.plug_info)
         .parent()
         .map(Utf8Path::as_str)
@@ -2392,17 +2403,39 @@ fn package_bundle(
         Os::Macos => "DYLD_LIBRARY_PATH",
         Os::Windows => "PATH",
     };
-    let mut component_environment = vec![serde_json::json!({
+    let mut component_environment = packaged_manifest
+        .requires
+        .runtime_plugin_paths
+        .iter()
+        .map(|path| {
+            serde_json::json!({
+                "variable": "PXR_PLUGINPATH_NAME",
+                "operation": "prepend",
+                "values": [path],
+            })
+        })
+        .collect::<Vec<_>>();
+    component_environment.push(serde_json::json!({
         "variable": "PXR_PLUGINPATH_NAME",
         "operation": "prepend",
         "values": [plugin_root],
-    })];
-    let mut library_paths = vec!["lib".to_string()];
-    library_paths.extend(packaged_manifest.requires.runtime_libs.iter().cloned());
+    }));
+    component_environment.extend(packaged_manifest.requires.runtime_libs.iter().map(|path| {
+        serde_json::json!({
+            "variable": loader_variable,
+            "operation": "prepend",
+            "values": [path],
+        })
+    }));
     component_environment.push(serde_json::json!({
         "variable": loader_variable,
         "operation": "prepend",
-        "values": library_paths,
+        "values": ["lib"],
+    }));
+    component_environment.push(serde_json::json!({
+        "variable": "PYTHONPATH",
+        "operation": "prepend",
+        "values": ["python"],
     }));
     let component_install = files_json
         .iter()
@@ -10369,5 +10402,23 @@ schema: { codeless: true, contract: 1 }
         assert!(!file.as_std_path().exists(), "old contents were removed");
 
         std::fs::remove_dir_all(stage.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn component_requirements_preserve_authored_component_ranges() {
+        let manifest = ost_plugin::PluginManifest::parse(
+            r#"plugin: { name: demo, version: 1.0.0, kind: usd-fileformat }
+runtime: { openusd: '>=26.05,<27.0' }
+requires:
+  components: { materialx: '>=1.39,<1.40' }
+usd: { plug_info: plugin/resources/demo/plugInfo.json }
+"#,
+        )
+        .unwrap();
+        let requirements = component_requirements(&manifest);
+        assert!(requirements.iter().any(|requirement| {
+            requirement["capability"] == "component:materialx"
+                && requirement["version"] == ">=1.39,<1.40"
+        }));
     }
 }

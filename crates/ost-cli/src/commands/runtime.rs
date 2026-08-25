@@ -3201,6 +3201,16 @@ fn runtime_artifact_manifest(
                 })
             }),
     );
+    provisions.extend(manifest.extensions.iter().filter_map(|extension| {
+        let capability = format!("component:{}", extension.id);
+        provided_capabilities.insert(capability.clone()).then(|| {
+            serde_json::json!({
+                "capability": capability,
+                "version": extension.version,
+                "singleton": true,
+            })
+        })
+    }));
     let install = files
         .iter()
         .filter_map(|file| file.get("path").and_then(|path| path.as_str()))
@@ -5809,6 +5819,13 @@ mod tests {
         assert_eq!(producer["name"], m.id);
         // Version prefers the openusd extension's real version.
         assert_eq!(producer["version"], "26.08");
+        assert!(producer["component"]["provides"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|provision| {
+                provision["capability"] == "component:openusd" && provision["version"] == "26.08"
+            }));
         assert_eq!(producer["provenance"]["runtime"]["digest"], m.digest);
         assert_eq!(producer["provenance"]["runtime"]["validation"], "passed");
         // The embedded manifest restores byte-equal on fetch.
