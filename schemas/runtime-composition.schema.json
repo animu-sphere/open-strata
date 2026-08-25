@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openstrata.dev/schemas/runtime-composition.schema.json",
+  "title": "OpenStrata Runtime Composition Manifest",
+  "description": "A target, capability requirements, immutable artifact candidates, and explicit provider policy resolved before materialization.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "composition", "requirements", "artifacts"],
+  "properties": {
+    "schema": { "const": "openstrata.runtime-composition/v1alpha1" },
+    "composition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "target"],
+      "properties": {
+        "name": { "$ref": "#/$defs/id" },
+        "target": { "type": "string", "minLength": 1 }
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/requirement" }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifact"],
+        "properties": { "artifact": { "$ref": "#/$defs/digest" } }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/capability" },
+      "additionalProperties": { "$ref": "#/$defs/id" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$" },
+    "capability": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability"],
+      "properties": {
+        "capability": { "$ref": "#/$defs/capability" },
+        "version": { "type": "string", "minLength": 1 },
+        "provider": { "$ref": "#/$defs/id" }
+      }
+    }
+  }
+}

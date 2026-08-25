@@ -3282,7 +3282,16 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     // The schema contract is what a dependent actually binds to.
     assert_eq!(bundles[0]["contract"], 1);
     assert_eq!(bundles[0]["provenance"], "source-workspace");
-
+    let component_environment = value["component"]["environment"].as_array().unwrap();
+    assert!(component_environment.iter().any(|contribution| {
+        contribution["variable"] == "PXR_PLUGINPATH_NAME"
+            && contribution["values"]
+                == serde_json::json!(["runtime/bundles/schema/plugin/resources/schema"])
+    }));
+    assert!(component_environment.iter().any(|contribution| {
+        contribution["variable"] == "PYTHONPATH"
+            && contribution["values"] == serde_json::json!(["python"])
+    }));
     // …and it carries the provider's USD *registration* half, not just the
     // record and the link half. v0.18.0 shipped `libSchemaLib` plus a resolved
     // `bundles` entry while leaving `plugInfo.json` out, so the package asserted
@@ -3568,11 +3577,27 @@ fn a_workspace_tool_ships_as_a_product_member() {
     assert_eq!(manifest["kind"], "openstrata.tool");
     assert_eq!(manifest["tool"]["id"], "motion_retarget");
     assert_eq!(
+        manifest["component"]["schema"],
+        "openstrata.component/v1alpha1"
+    );
+    assert_eq!(manifest["component"]["kind"], "tool");
+    assert_eq!(
         manifest["tool"]["executables"],
         serde_json::json!([format!("bin/{exe}")])
     );
 
     let product_dist = find_first(&sb.work_file("dist/products"), "manifest.json").unwrap();
+    let product_manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&product_dist).unwrap()).unwrap();
+    assert_eq!(
+        product_manifest["component"]["schema"],
+        "openstrata.component/v1alpha1"
+    );
+    assert!(product_manifest["component"]["provides"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|provision| provision["capability"] == "tool:motion_retarget"));
     let product_dist = product_dist.parent().unwrap().to_str().unwrap();
     let verified = sb.ost(&["--json", "plugin", "product", "verify", product_dist]);
     assert!(

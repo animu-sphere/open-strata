@@ -13,6 +13,7 @@
 //! move bytes; identity (digests, manifest schema, verification policy) never
 //! leaves this crate's core.
 
+pub mod component;
 pub mod evidence;
 pub mod policy;
 pub mod record;
@@ -20,6 +21,10 @@ pub mod reference;
 pub mod store;
 pub mod transport;
 
+pub use component::{
+    CapabilityProvision, CapabilityRequirement, ComponentCompatibility, ComponentContract,
+    ComponentKind, EnvironmentContribution, EnvironmentOperation, InstallMapping, COMPONENT_SCHEMA,
+};
 pub use evidence::{
     generate_evidence, github_build_metadata, parse_build_metadata, verify_evidence_digest,
     verify_provenance, verify_sbom, EvidenceDigest, PROVENANCE_FILE, SBOM_FILE,

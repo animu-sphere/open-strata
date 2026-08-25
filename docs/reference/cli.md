@@ -38,7 +38,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost plugin`](#ost-plugin) — Scaffold, inspect, build, and diagnose OpenUSD plugin bundles
 - [`ost presets`](#ost-presets) — Manage OpenStrata's CMake preset includes in CMakePresets.json
 - [`ost renderer`](#ost-renderer) — Inspect renderer projects in host applications
-- [`ost runtime`](#ost-runtime) — Pull, list, and inspect runtimes in the local store
+- [`ost runtime`](#ost-runtime) — Resolve component models and manage runtimes in the local store
 - [`ost test`](#ost-test) — Run a built target's tests under the runtime that built it
 - [`ost uv`](#ost-uv) — Run `uv` pinned to the project's runtime Python
 - [`ost validate`](#ost-validate) — Validate a built/packaged target
@@ -1337,12 +1337,13 @@ Build and launch the standalone native viewport adapter
 
 ### `ost runtime`
 
-Pull, list, and inspect runtimes in the local store
+Resolve component models and manage runtimes in the local store
 
 **Usage:** `ost runtime <COMMAND>`
 
 **Subcommands:**
 
+- [`ost runtime compose`](#ost-runtime-compose) — Resolve a component manifest without materializing any files
 - [`ost runtime explain`](#ost-runtime-explain) — Explain how a profile resolves to capabilities and extensions
 - [`ost runtime export`](#ost-runtime-export) — Export a pulled real runtime into the local artifact registry
 - [`ost runtime list`](#ost-runtime-list) — List runtimes present in the local store
@@ -1350,6 +1351,18 @@ Pull, list, and inspect runtimes in the local store
 - [`ost runtime repair`](#ost-runtime-repair) — Re-adopt a `local` runtime from its recorded USD root, refreshing the manifest (real OpenUSD version, layout, digest) after install drift
 - [`ost runtime show`](#ost-runtime-show) — Show the manifest of a pulled runtime
 - [`ost runtime validate`](#ost-runtime-validate) — Validate a pulled runtime and record the outcome in its manifest
+
+#### `ost runtime compose`
+
+Resolve a component manifest without materializing any files
+
+**Usage:** `ost runtime compose <MANIFEST>`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<MANIFEST>` | yes | Versioned runtime composition TOML manifest |
 
 #### `ost runtime explain`
 

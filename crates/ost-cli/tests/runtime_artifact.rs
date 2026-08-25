@@ -426,6 +426,10 @@ fn export_relabels_target_with_measured_glibc_floor() {
         v["data"]["artifact"]["target"],
         "linux-x86_64-glibc243-py313"
     );
+    assert_eq!(
+        v["data"]["artifact"]["component"]["compatibility"]["targets"],
+        serde_json::json!(["linux-x86_64-glibc243-py313"])
+    );
 }
 
 #[test]

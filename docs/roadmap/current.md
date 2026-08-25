@@ -5,8 +5,9 @@ The next milestone and active carry-over work. Shipped detail is in
 
 ## v0.22.4 - runtime component model
 
-**Status:** 🚧 next milestone · **Depends on:** the v0.22.3 canonical OpenUSD
-runtime matrix and component-artifact contracts.
+**Status:** 🚧 implementation landed; cross-repository acceptance pending ·
+**Depends on:** the v0.22.3 canonical OpenUSD runtime matrix and
+component-artifact contracts.
 
 This is the first composition slice built on the canonical runtime foundation.
 It resolves an OpenUSD base plus independently published plugin, library, tool,
@@ -32,6 +33,22 @@ A synthetic multi-artifact graph and the initial geospatial manifest resolve to
 the same ordered model on Windows, Linux, and macOS; conflicts fail before files
 are written. Full v0.22.4-v0.22.9 acceptance is in the
 [runtime-composition plan](runtime-composition.md).
+
+### Implemented
+
+- `openstrata.component/v1alpha1` normalizes runtime, plugin, library, tool,
+  renderer, and data requirements/provisions, compatibility, activation, and
+  install ownership into artifact records.
+- `ost runtime compose <manifest>` verifies digest-pinned candidates and emits
+  a canonical `openstrata.runtime-composition-resolved/v1alpha1` JSON model.
+- Provider pins and coded missing/version/ABI/OpenUSD/singleton/install/environment
+  diagnostics run before archive extraction or materialization.
+- Synthetic Windows, Linux, and macOS graphs preserve one topological component
+  order; the checked-in geospatial fixture resolves OpenUSD, HTTP, COPC, and
+  GeoTIFF providers in the same model.
+
+Remaining release acceptance is the real published-artifact pass in
+`usd-geospatial-runtime` plus the Linux/Windows v0.22.3 carry-over validation.
 
 ## Active carry-over
 

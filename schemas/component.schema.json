@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openstrata.dev/schemas/component.schema.json",
+  "title": "OpenStrata Component Contract",
+  "description": "Versioned capability, compatibility, environment, and install metadata embedded in an artifact producer manifest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "kind", "version"],
+  "properties": {
+    "schema": { "const": "openstrata.component/v1alpha1" },
+    "id": { "$ref": "#/$defs/id" },
+    "kind": { "enum": ["runtime", "plugin", "library", "tool", "renderer", "data"] },
+    "version": { "type": "string", "minLength": 1 },
+    "provides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capability", "version"],
+        "properties": {
+          "capability": { "$ref": "#/$defs/capability" },
+          "version": { "type": "string", "minLength": 1 },
+          "singleton": { "type": "boolean", "default": true }
+        }
+      }
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capability"],
+        "properties": {
+          "capability": { "$ref": "#/$defs/capability" },
+          "version": { "type": "string", "minLength": 1 },
+          "provider": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "environment": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["variable", "operation", "values"],
+        "properties": {
+          "variable": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+          "operation": { "enum": ["prepend", "append", "set"] },
+          "values": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/path" }
+          }
+        }
+      }
+    },
+    "install": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "destination"],
+        "properties": {
+          "source": { "$ref": "#/$defs/path" },
+          "destination": { "$ref": "#/$defs/path" }
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "targets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "abi": { "type": "string", "minLength": 1 },
+        "openusd": { "type": "string", "minLength": 1 }
+      }
+    },
+    "descriptor": { "type": "string", "minLength": 1 },
+    "descriptor_sha256": { "type": "string", "minLength": 1 },
+    "cmake": { "type": "object" },
+    "dependencies": { "type": "object" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$" },
+    "capability": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+$" },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "not": { "pattern": "(^[\\\\/]|^[A-Za-z]:|(^|[\\\\/])\\.\\.([\\\\/]|$))" }
+    }
+  }
+}

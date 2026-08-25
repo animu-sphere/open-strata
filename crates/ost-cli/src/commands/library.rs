@@ -465,6 +465,14 @@ fn package(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
+    let component_abi = match target.variant.os {
+        ost_core::host::Os::Linux => "libstdcxx".to_string(),
+        ost_core::host::Os::Macos => "libcxx".to_string(),
+        ost_core::host::Os::Windows => match &target.variant.abi {
+            ost_core::variant::Abi::Msvc { toolset } => format!("msvc{toolset}"),
+            other => other.describe(),
+        },
+    };
     let mut manifest = serde_json::json!({
         "schema": 1,
         "name": library.id(),
@@ -477,7 +485,30 @@ fn package(
         "created_unix": created_unix,
         "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
         "component": {
+            "schema": ost_artifact::COMPONENT_SCHEMA,
+            "id": library.id(),
             "kind": "library",
+            "version": library.version(),
+            "provides": [
+                {"capability": format!("library:{}", library.id()), "version": library.version(), "singleton": true},
+                {"capability": format!("cmake:{}", library.manifest.cmake.package), "version": library.version(), "singleton": true}
+            ],
+            "requires": record.dependencies.iter().map(|dependency| serde_json::json!({
+                "capability": format!("library:{}", dependency.id),
+                "version": dependency.version,
+            })).collect::<Vec<_>>(),
+            "environment": [
+                {"variable": if target.variant.os == ost_core::host::Os::Windows { "PATH" } else if target.variant.os == ost_core::host::Os::Macos { "DYLD_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" }, "operation": "prepend", "values": ["lib"]},
+                {"variable": "CMAKE_PREFIX_PATH", "operation": "prepend", "values": ["."]}
+            ],
+            "install": packed.files.iter().map(|file| serde_json::json!({
+                "source": file.path,
+                "destination": file.path,
+            })).collect::<Vec<_>>(),
+            "compatibility": {
+                "targets": [target.variant.slug()],
+                "abi": component_abi,
+            },
             "descriptor": LIBRARY_MANIFEST,
             "descriptor_sha256": record.descriptor_sha256,
             "cmake": {
@@ -491,7 +522,7 @@ fn package(
                     "descriptor_sha256": dependency.descriptor_sha256,
                     "build_record_sha256": dependency.build_record_sha256,
                 })).collect::<Vec<_>>(),
-            },
+            }
         },
         "provenance": {
             "runtime": record.runtime,
