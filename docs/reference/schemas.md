@@ -4,6 +4,28 @@
 
 The JSON Schemas that `ost` validates its documents against. Sourced from [`schemas/`](../../schemas/).
 
+## `component.schema.json`
+
+OpenStrata Component Contract
+
+Versioned capability, compatibility, environment, and install metadata embedded in an artifact producer manifest.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cmake` | object | no |  |
+| `compatibility` | object | no |  |
+| `dependencies` | object | no |  |
+| `descriptor` | string | no |  |
+| `descriptor_sha256` | string | no |  |
+| `environment` | array | no |  |
+| `id` | — | yes |  |
+| `install` | array | no |  |
+| `kind` | — | yes |  |
+| `provides` | array | no |  |
+| `requires` | array | no |  |
+| `schema` | — | yes |  |
+| `version` | string | yes |  |
+
 ## `formation-lock.schema.json`
 
 OpenStrata Formation Lock
@@ -208,6 +230,20 @@ Logical renderer source composition and validation intent. Units are project-own
 | `renderer` | object | yes |  |
 | `schema` | string | yes |  |
 | `validation` | object | yes |  |
+
+## `runtime-composition.schema.json`
+
+OpenStrata Runtime Composition Manifest
+
+A target, capability requirements, immutable artifact candidates, and explicit provider policy resolved before materialization.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `artifacts` | array | yes |  |
+| `composition` | object | yes |  |
+| `providers` | object | no |  |
+| `requirements` | array | yes |  |
+| `schema` | — | yes |  |
 
 ## `tool.schema.json`
 

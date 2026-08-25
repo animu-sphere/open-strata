@@ -14,6 +14,15 @@ use ost_plugin::{diagnose, Bundle, RuntimeContext, Status};
 use ost_runtime::{EnvOp, EnvSet, EnvVar, RuntimeManifest};
 use serde::{Deserialize, Serialize};
 
+mod composition;
+
+pub use composition::{
+    resolve_runtime_composition, CompositionArtifactRef, CompositionConflict, CompositionHeader,
+    CompositionInput, ResolvedEnvironmentContribution, ResolvedInstallMapping, ResolvedProvider,
+    ResolvedRuntimeComponent, ResolvedRuntimeComposition, RuntimeCompositionManifest,
+    COMPOSITION_SCHEMA, RESOLVED_COMPOSITION_SCHEMA,
+};
+
 pub const FORMATION_SCHEMA: &str = "openstrata.formation/v1alpha1";
 pub const RESOLVED_SCHEMA: &str = "openstrata.formation-resolved/v1alpha1";
 pub const LOCK_SCHEMA: &str = "openstrata.formation-lock/v1alpha1";
@@ -862,6 +871,7 @@ args = ["avatar.vrm"]
             openusd_verification: None,
             source_identity: None,
             dependency_identities: Vec::new(),
+            component: None,
         };
         let resolved = resolve(
             &declared,

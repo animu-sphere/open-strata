@@ -42,7 +42,7 @@ enum Command {
     #[command(subcommand)]
     Platform(platform::PlatformCmd),
 
-    /// Pull, list, and inspect runtimes in the local store.
+    /// Resolve component models and manage runtimes in the local store.
     #[command(subcommand)]
     Runtime(runtime::RuntimeCmd),
 

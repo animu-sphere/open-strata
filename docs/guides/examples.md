@@ -199,6 +199,10 @@ ost runtime pull cy2026 --profile usd --force  # re-pull / rebuild
 # When an adopted install moved underneath its manifest (`show`/`validate`
 # report openusd-version-drift), one step re-adopts from the recorded USD root:
 ost runtime repair cy2026 --profile usd
+
+# Resolve immutable component artifacts without writing their payloads:
+ost runtime compose runtime-composition.toml
+ost --json runtime compose runtime-composition.toml
 ```
 
 Source selection also reads env fallbacks: `OST_USD_ROOT` (adopt), `OST_USD_SRC`

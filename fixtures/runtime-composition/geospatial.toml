@@ -1,0 +1,38 @@
+schema = "openstrata.runtime-composition/v1alpha1"
+
+[composition]
+name = "usd-geospatial-runtime"
+target = "linux-x86_64-glibc228-py313"
+
+[[requirements]]
+capability = "usd"
+version = "26.08"
+
+[[requirements]]
+capability = "usd.resolve.http"
+version = ">=0.4,<0.5"
+
+[[requirements]]
+capability = "usd.fileformat.copc"
+
+[[requirements]]
+capability = "usd.fileformat.geotiff"
+
+# Release manifests replace these fixture identities with published digests.
+[[artifacts]]
+artifact = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+[[artifacts]]
+artifact = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
+[[artifacts]]
+artifact = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+
+[[artifacts]]
+artifact = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+
+[providers]
+usd = "openusd"
+"usd.resolve.http" = "usd-http-resolver"
+"usd.fileformat.copc" = "usd-pointcloud-plugins"
+"usd.fileformat.geotiff" = "usd-raster-plugins"

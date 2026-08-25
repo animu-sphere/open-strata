@@ -14,3 +14,4 @@ are procedures; the factual contracts they reference live in
 | [adopt-a-plugin-workspace.md](adopt-a-plugin-workspace.md) | Discover, validate, test, and package a multi-bundle OpenUSD plugin workspace. |
 | [adopt-a-renderer-project.md](adopt-a-renderer-project.md) | Drive a renderer's own CMake targets, adopt a runtime, and record evidence — without a bundle graph. |
 | [compose-a-formation.md](compose-a-formation.md) | Compose independently released components into one reproducible run, including environment export and diagnostics. |
+| [compose-a-runtime.md](compose-a-runtime.md) | Resolve a capability-driven runtime component model and diagnose conflicts before materialization. |

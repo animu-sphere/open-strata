@@ -21,6 +21,7 @@ use ost_platform::{
 };
 
 use crate::policy::TrustLevel;
+use crate::ComponentContract;
 
 /// Filename of the registry record within an artifact's object directory.
 pub const RECORD_FILE: &str = "record.json";
@@ -209,6 +210,11 @@ pub struct ArtifactRecord {
     /// producer, sorted by name for deterministic records and selectors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependency_identities: Vec<ResolvedDependencyIdentity>,
+    /// Versioned requirements, provisions, activation, and install ownership
+    /// used by runtime composition. Older artifacts omit this field and remain
+    /// valid registry entries, but cannot participate in a composed runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<ComponentContract>,
 }
 
 impl ArtifactRecord {
@@ -284,6 +290,7 @@ impl ArtifactRecord {
         let kind = detect_kind(manifest)?;
         validate_openusd_selector_schema(manifest, kind)?;
 
+        let manifest_tag = manifest.get("kind").and_then(|value| value.as_str());
         let (name, version, licenses) = match kind {
             ArtifactKind::Plugin => {
                 let plugin = require_object(manifest, "plugin")?;
@@ -295,6 +302,19 @@ impl ArtifactRecord {
                 (
                     require_str(plugin, "name")?,
                     require_str(plugin, "version")?,
+                    licenses,
+                )
+            }
+            ArtifactKind::Package if manifest_tag == Some(TOOL_KIND) => {
+                let tool = require_object(manifest, "tool")?;
+                let licenses = tool
+                    .get("license")
+                    .and_then(|value| value.as_str())
+                    .map(|value| vec![value.to_string()])
+                    .unwrap_or_default();
+                (
+                    require_str(tool, "id")?,
+                    require_str(tool, "version")?,
                     licenses,
                 )
             }
@@ -347,6 +367,7 @@ impl ArtifactRecord {
         let openusd_verification = normalize_openusd_verification(manifest, kind)?;
         let source_identity = normalize_source_identity(manifest)?;
         let dependency_identities = normalize_dependency_identities(manifest)?;
+        let component = normalize_component(manifest, &name, &version)?;
 
         // The two producers record validation differently: the plugin manifest
         // nests `{passed: bool}`, the package manifest carries the runtime's
@@ -405,8 +426,38 @@ impl ArtifactRecord {
             openusd_verification,
             source_identity,
             dependency_identities,
+            component,
         })
     }
+}
+
+fn normalize_component(
+    manifest: &serde_json::Value,
+    artifact_name: &str,
+    artifact_version: &str,
+) -> Result<Option<ComponentContract>> {
+    let Some(value) = manifest.get("component") else {
+        return Ok(None);
+    };
+    let contract: ComponentContract = serde_json::from_value(value.clone()).map_err(|error| {
+        Error::InvalidManifest(format!(
+            "producer manifest 'component' contract is invalid: {error}"
+        ))
+    })?;
+    contract.validate()?;
+    if contract.id != artifact_name {
+        return Err(Error::InvalidManifest(format!(
+            "component id '{}' does not match artifact name '{artifact_name}'",
+            contract.id
+        )));
+    }
+    if contract.version != artifact_version {
+        return Err(Error::InvalidManifest(format!(
+            "component version '{}' does not match artifact version '{artifact_version}'",
+            contract.version
+        )));
+    }
+    Ok(Some(contract))
 }
 
 /// Parse the versioned, split OpenUSD verification state and require the
@@ -795,9 +846,10 @@ fn detect_kind(manifest: &serde_json::Value) -> Result<ArtifactKind> {
         Some(PLUGIN_BUNDLE_KIND) => Ok(ArtifactKind::Plugin),
         Some(PLUGIN_PRODUCT_KIND) => Ok(ArtifactKind::Product),
         Some(RUNTIME_KIND) => Ok(ArtifactKind::Runtime),
+        Some(TOOL_KIND) => Ok(ArtifactKind::Package),
         Some(other) => Err(Error::InvalidManifest(format!(
             "unrecognized producer manifest kind '{other}' \
-             (expected {PLUGIN_BUNDLE_KIND}, {PLUGIN_PRODUCT_KIND}, {RUNTIME_KIND}, or a project package manifest)"
+             (expected {PLUGIN_BUNDLE_KIND}, {PLUGIN_PRODUCT_KIND}, {TOOL_KIND}, {RUNTIME_KIND}, or a project package manifest)"
         ))),
         None => Ok(ArtifactKind::Package),
     }
@@ -1009,6 +1061,69 @@ mod tests {
         assert_eq!(r.name, "demo");
         assert_eq!(r.validation, "pending");
         assert!(r.licenses.is_empty());
+    }
+
+    #[test]
+    fn versioned_component_contract_is_normalized_into_the_record() {
+        let mut manifest = package_manifest();
+        manifest["component"] = serde_json::json!({
+            "schema": crate::COMPONENT_SCHEMA,
+            "id": "demo",
+            "kind": "library",
+            "version": "1.2.3",
+            "provides": [
+                {"capability": "library:demo", "version": "1.2.3", "singleton": true}
+            ],
+            "environment": [
+                {"variable": "CMAKE_PREFIX_PATH", "operation": "prepend", "values": ["."]}
+            ],
+            "install": [
+                {"source": "lib/demo.lib", "destination": "lib/demo.lib"}
+            ]
+        });
+        let record = ArtifactRecord::from_producer_manifest(
+            &manifest,
+            ArtifactSource::Imported,
+            1_760_000_000,
+            "ost test",
+        )
+        .unwrap();
+        let component = record.component.unwrap();
+        assert_eq!(component.id, "demo");
+        assert_eq!(component.kind, crate::ComponentKind::Library);
+        assert_eq!(component.provides[0].capability, "library:demo");
+    }
+
+    #[test]
+    fn tool_manifest_uses_its_nested_identity() {
+        let mut manifest = package_manifest();
+        manifest["kind"] = serde_json::json!(TOOL_KIND);
+        manifest.as_object_mut().unwrap().remove("name");
+        manifest.as_object_mut().unwrap().remove("version");
+        manifest["tool"] = serde_json::json!({
+            "id": "copc-info",
+            "version": "0.4.0",
+            "license": "Apache-2.0"
+        });
+        manifest["component"] = serde_json::json!({
+            "schema": crate::COMPONENT_SCHEMA,
+            "id": "copc-info",
+            "kind": "tool",
+            "version": "0.4.0",
+            "provides": [
+                {"capability": "tool:copc-info", "version": "0.4.0", "singleton": true}
+            ]
+        });
+        let record = ArtifactRecord::from_producer_manifest(
+            &manifest,
+            ArtifactSource::Imported,
+            1_760_000_000,
+            "ost test",
+        )
+        .unwrap();
+        assert_eq!(record.kind, ArtifactKind::Package);
+        assert_eq!(record.name, "copc-info");
+        assert_eq!(record.component.unwrap().kind, crate::ComponentKind::Tool);
     }
 
     #[test]

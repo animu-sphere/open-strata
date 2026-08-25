@@ -3568,11 +3568,27 @@ fn a_workspace_tool_ships_as_a_product_member() {
     assert_eq!(manifest["kind"], "openstrata.tool");
     assert_eq!(manifest["tool"]["id"], "motion_retarget");
     assert_eq!(
+        manifest["component"]["schema"],
+        "openstrata.component/v1alpha1"
+    );
+    assert_eq!(manifest["component"]["kind"], "tool");
+    assert_eq!(
         manifest["tool"]["executables"],
         serde_json::json!([format!("bin/{exe}")])
     );
 
     let product_dist = find_first(&sb.work_file("dist/products"), "manifest.json").unwrap();
+    let product_manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&product_dist).unwrap()).unwrap();
+    assert_eq!(
+        product_manifest["component"]["schema"],
+        "openstrata.component/v1alpha1"
+    );
+    assert!(product_manifest["component"]["provides"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|provision| provision["capability"] == "tool:motion_retarget"));
     let product_dist = product_dist.parent().unwrap().to_str().unwrap();
     let verified = sb.ost(&["--json", "plugin", "product", "verify", product_dist]);
     assert!(

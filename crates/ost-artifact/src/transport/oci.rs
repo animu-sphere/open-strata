@@ -2740,6 +2740,7 @@ mod tests {
             openusd_verification: None,
             source_identity: None,
             dependency_identities: Vec::new(),
+            component: None,
         };
         (archive, manifest, record)
     }

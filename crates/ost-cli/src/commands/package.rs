@@ -18,6 +18,7 @@ use ost_build::{
 };
 use ost_core::paths::STATE_DIR;
 use ost_core::{tools, Error, Result};
+use ost_manifest::{RendererManifest, RENDERER_MANIFEST};
 use ost_runtime::{RuntimeManifest, MANIFEST_FILE};
 
 use crate::commands::configure::{build_target, load_project, resolve_selection};
@@ -167,6 +168,70 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
 
     // manifest.json
     let files_json: Vec<_> = packed.files.iter().map(|f| f.manifest_json()).collect();
+    let renderer_component = if root.join(RENDERER_MANIFEST).as_std_path().is_file() {
+        let renderer = RendererManifest::load(&root)?;
+        if renderer.renderer.name.as_str() != name.as_str() {
+            return Err(Error::validation(format!(
+                "renderer name '{}' does not match package name '{name}'",
+                renderer.renderer.name
+            )));
+        }
+        let mut requirements = project
+            .requires
+            .capabilities
+            .iter()
+            .map(|capability| serde_json::json!({"capability": capability}))
+            .collect::<Vec<_>>();
+        if renderer.composition.adapters.contains_key("hydra2")
+            && !project
+                .requires
+                .capabilities
+                .iter()
+                .any(|capability| capability == "usd")
+        {
+            requirements.push(serde_json::json!({"capability": "usd"}));
+        }
+        let loader_variable = match lock.variant.os {
+            ost_core::host::Os::Linux => "LD_LIBRARY_PATH",
+            ost_core::host::Os::Macos => "DYLD_LIBRARY_PATH",
+            ost_core::host::Os::Windows => "PATH",
+        };
+        let component_abi = match lock.variant.os {
+            ost_core::host::Os::Linux => "libstdcxx".to_string(),
+            ost_core::host::Os::Macos => "libcxx".to_string(),
+            ost_core::host::Os::Windows => match &lock.variant.abi {
+                ost_core::variant::Abi::Msvc { toolset } => format!("msvc{toolset}"),
+                other => other.describe(),
+            },
+        };
+        Some(serde_json::json!({
+            "schema": ost_artifact::COMPONENT_SCHEMA,
+            "id": name,
+            "kind": "renderer",
+            "version": version,
+            "provides": [
+                {"capability": format!("renderer:{name}"), "version": version, "singleton": true},
+                {"capability": format!("renderer.backend:{}", renderer.composition.backend), "version": version, "singleton": true}
+            ],
+            "requires": requirements,
+            "environment": [
+                {"variable": "PATH", "operation": "prepend", "values": ["bin"]},
+                {"variable": loader_variable, "operation": "prepend", "values": ["lib"]},
+                {"variable": "PXR_PLUGINPATH_NAME", "operation": "prepend", "values": ["plugin/usd"]},
+                {"variable": "CMAKE_PREFIX_PATH", "operation": "prepend", "values": ["."]}
+            ],
+            "install": files_json.iter().filter_map(|file| file.get("path").and_then(|path| path.as_str())).map(|path| serde_json::json!({
+                "source": path,
+                "destination": path,
+            })).collect::<Vec<_>>(),
+            "compatibility": {
+                "targets": [lock.variant.slug()],
+                "abi": component_abi,
+            }
+        }))
+    } else {
+        None
+    };
     let mut manifest = serde_json::json!({
         "schema": 1,
         "name": name,
@@ -191,6 +256,9 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         },
         "files": files_json,
     });
+    if let Some(component) = renderer_component {
+        manifest["component"] = component;
+    }
     let evidence = ost_artifact::generate_evidence(&dist_dir, &mut manifest)?;
     let manifest_path = dist_dir.join("manifest.json");
     write(&manifest_path, &pretty(&manifest)?)?;

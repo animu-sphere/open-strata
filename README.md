@@ -149,7 +149,7 @@ cargo test -p ost-cli --test lifecycle --locked -- --nocapture
 ```text
 ost platform   list | show <cy> | diff <a> <b>     inspect VFX platform years
 ost init [--template cpp-library|renderer|usd-plugin|usd-plugin-workspace|--bare]  scaffold a buildable project
-ost runtime    pull | list | show | validate | repair | explain | export   manage runtimes in the store
+ost runtime    compose | pull | list | show | validate | repair | explain | export   resolve and manage runtimes
 ost env <cy> --profile <p> [--shell bash|pwsh]      print the activating environment
 ost devshell <cy> --profile <p>                     enter an interactive runtime shell
 ost doctor [<cy> --profile <p>]                     host + tools + runtime diagnostics

@@ -24,6 +24,7 @@ use ost_core::host::Os;
 use ost_core::paths::Store;
 use ost_core::variant::Abi;
 use ost_core::{tools, Error, Host, Result, Variant};
+use ost_formation::{resolve_runtime_composition, CompositionInput, RuntimeCompositionManifest};
 use ost_platform::version_satisfies_constraint;
 use ost_runtime::{
     graphics_device_status, graphics_loader_probes_supported, graphics_loader_status, python_minor,
@@ -46,6 +47,11 @@ fn env_nonempty(key: &str) -> Option<String> {
 
 #[derive(Debug, Subcommand)]
 pub enum RuntimeCmd {
+    /// Resolve a component manifest without materializing any files.
+    Compose {
+        /// Versioned runtime composition TOML manifest.
+        manifest: Utf8PathBuf,
+    },
     /// Materialize a runtime into the local store.
     Pull {
         /// Platform calendar-year id, e.g. `cy2026`.
@@ -187,6 +193,7 @@ pub enum RuntimeCmd {
 
 pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
     match cmd {
+        RuntimeCmd::Compose { manifest } => compose(&manifest, fmt),
         RuntimeCmd::Pull {
             platform,
             profile,
@@ -242,6 +249,66 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
         RuntimeCmd::Repair { platform, profile } => repair(&platform, &profile, fmt),
         RuntimeCmd::Explain { platform, profile } => explain(&platform, &profile, fmt),
     }
+}
+
+fn compose(path: &Utf8Path, fmt: Format) -> Result<()> {
+    let source = std::fs::read_to_string(path.as_std_path())
+        .map_err(|error| Error::io(path.to_string(), error))?;
+    let declared = RuntimeCompositionManifest::parse(&source)?;
+    let store = ArtifactStore::discover();
+    let mut records = Vec::with_capacity(declared.artifacts.len());
+    for artifact in &declared.artifacts {
+        let record = store.resolve(&artifact.artifact)?;
+        if record.digest != artifact.artifact {
+            return Err(Error::coded(
+                "COMPOSITION_ARTIFACT_SET_MISMATCH",
+                ost_core::Category::Validation,
+                format!(
+                    "artifact resolver returned {}, but composition pins {}",
+                    record.digest, artifact.artifact
+                ),
+            ));
+        }
+        let verification = store.verify(&artifact.artifact)?;
+        if !verification.passed() {
+            return Err(Error::coded(
+                "COMPOSITION_ARTIFACT_VERIFICATION_FAILED",
+                ost_core::Category::Validation,
+                format!(
+                    "artifact {} failed local integrity verification",
+                    record.short_digest()
+                ),
+            ));
+        }
+        records.push(record);
+    }
+    let resolved = resolve_runtime_composition(&declared, CompositionInput { records })?;
+    if fmt.is_json() {
+        let value = serde_json::to_value(&resolved).map_err(|error| {
+            Error::Operation(format!("cannot serialize runtime composition: {error}"))
+        })?;
+        output::success(&value);
+    } else {
+        println!("Runtime composition {}", resolved.name);
+        println!("  target: {}", resolved.target);
+        println!("  digest: {}", resolved.composition_digest);
+        println!("  components:");
+        for component in &resolved.components {
+            println!(
+                "    {} {} {} ({})",
+                component.kind, component.id, component.version, component.digest
+            );
+        }
+        println!("  providers:");
+        for provider in &resolved.providers {
+            println!(
+                "    {} -> {} {}",
+                provider.capability, provider.component, provider.version
+            );
+        }
+        println!("  conflicts: none");
+    }
+    Ok(())
 }
 
 /// Subdirectories the local backend creates inside a runtime prefix.
@@ -3110,6 +3177,48 @@ fn runtime_artifact_manifest(
     // A symlink records its in-tree target so a verifier can distinguish it from a
     // regular file whose bytes happen to equal that target.
     let files: Vec<_> = packed.files.iter().map(|f| f.manifest_json()).collect();
+    let mut provided_capabilities = BTreeSet::from(["runtime".to_string(), "usd".to_string()]);
+    let mut provisions = vec![serde_json::json!({
+        "capability": "runtime",
+        "version": version,
+        "singleton": true,
+    })];
+    provisions.push(serde_json::json!({
+        "capability": "usd",
+        "version": version,
+        "singleton": true,
+    }));
+    provisions.extend(
+        manifest
+            .capabilities
+            .iter()
+            .filter(|capability| provided_capabilities.insert((*capability).clone()))
+            .map(|capability| {
+                serde_json::json!({
+                    "capability": capability,
+                    "version": version,
+                    "singleton": true,
+                })
+            }),
+    );
+    let install = files
+        .iter()
+        .filter_map(|file| file.get("path").and_then(|path| path.as_str()))
+        .map(|path| serde_json::json!({"source": path, "destination": path}))
+        .collect::<Vec<_>>();
+    let loader_variable = match manifest.variant.os {
+        ost_core::host::Os::Linux => "LD_LIBRARY_PATH",
+        ost_core::host::Os::Macos => "DYLD_LIBRARY_PATH",
+        ost_core::host::Os::Windows => "PATH",
+    };
+    let component_abi = match manifest.variant.os {
+        ost_core::host::Os::Linux => "libstdcxx".to_string(),
+        ost_core::host::Os::Macos => "libcxx".to_string(),
+        ost_core::host::Os::Windows => match &manifest.variant.abi {
+            Abi::Msvc { toolset } => format!("msvc{toolset}"),
+            other => other.describe(),
+        },
+    };
     serde_json::json!({
         "schema": 1,
         "kind": ost_artifact::RUNTIME_KIND,
@@ -3125,6 +3234,26 @@ fn runtime_artifact_manifest(
         // The producing tool names itself here so the registry can
         // record the artifact's origin instead of whoever imported it.
         "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
+        "component": {
+            "schema": ost_artifact::COMPONENT_SCHEMA,
+            "id": manifest.id,
+            "kind": "runtime",
+            "version": version,
+            "provides": provisions,
+            "requires": [],
+            "environment": [
+                {"variable": "PATH", "operation": "prepend", "values": ["bin"]},
+                {"variable": loader_variable, "operation": "prepend", "values": ["lib"]},
+                {"variable": "PXR_PLUGINPATH_NAME", "operation": "prepend", "values": ["plugin/usd"]},
+                {"variable": "CMAKE_PREFIX_PATH", "operation": "prepend", "values": ["."]}
+            ],
+            "install": install,
+            "compatibility": {
+                "targets": [manifest.variant.slug()],
+                "abi": component_abi,
+                "openusd": version,
+            }
+        },
         "host_requirements": manifest.host_requirements,
         "openusd_compatibility": manifest.openusd_compatibility,
         "openusd_verification": manifest.openusd_verification,
@@ -3535,6 +3664,17 @@ fn export(
                 ),
             }
         }
+    }
+
+    // Floor measurement may relabel the artifact after the component contract
+    // was built. Keep selection metadata bound to the exact target consumers
+    // see in the registry record.
+    if let Some(target) = producer
+        .get("target")
+        .and_then(|target| target.as_str())
+        .map(str::to_string)
+    {
+        producer["component"]["compatibility"]["targets"] = serde_json::json!([target]);
     }
 
     // Record which layout was shipped so a fetch/inspection can tell a slim SDK

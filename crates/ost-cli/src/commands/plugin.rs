@@ -2333,6 +2333,82 @@ fn package_bundle(
     // SOURCE_DATE_EPOCH, otherwise epoch 0.
     let created = ost_build::source_date_epoch();
     let files_json: Vec<_> = packed.files.iter().map(|f| f.manifest_json()).collect();
+    let component_identity_capability = format!("component:{name}");
+    let mut provided_capabilities = BTreeSet::from([component_identity_capability.clone()]);
+    let mut component_provides = vec![serde_json::json!({
+        "capability": component_identity_capability,
+        "version": version,
+        "singleton": true,
+    })];
+    component_provides.extend(
+        packaged_manifest
+            .provides
+            .iter()
+            .filter(|capability| provided_capabilities.insert((*capability).clone()))
+            .map(|capability| {
+                serde_json::json!({
+                    "capability": capability,
+                    "version": version,
+                    "singleton": true,
+                })
+            }),
+    );
+    let mut component_requires = vec![serde_json::json!({
+        "capability": "usd",
+        "version": packaged_manifest.runtime.openusd,
+    })];
+    component_requires.extend(
+        packaged_manifest
+            .requires
+            .capabilities
+            .iter()
+            .map(|capability| serde_json::json!({"capability": capability})),
+    );
+    component_requires.extend(packaged_manifest.requires.bundles.iter().map(|dependency| {
+        serde_json::json!({
+            "capability": format!("component:{}", dependency.id),
+            "version": dependency.version,
+        })
+    }));
+    component_requires.extend(
+        packaged_manifest
+            .requires
+            .libraries
+            .iter()
+            .map(|dependency| {
+                serde_json::json!({
+                    "capability": format!("library:{}", dependency.id),
+                    "version": dependency.version,
+                })
+            }),
+    );
+    let plugin_root = Utf8Path::new(&packaged_manifest.usd.plug_info)
+        .parent()
+        .map(Utf8Path::as_str)
+        .filter(|path| !path.is_empty())
+        .unwrap_or(".");
+    let loader_variable = match tgt.variant.os {
+        Os::Linux => "LD_LIBRARY_PATH",
+        Os::Macos => "DYLD_LIBRARY_PATH",
+        Os::Windows => "PATH",
+    };
+    let mut component_environment = vec![serde_json::json!({
+        "variable": "PXR_PLUGINPATH_NAME",
+        "operation": "prepend",
+        "values": [plugin_root],
+    })];
+    let mut library_paths = vec!["lib".to_string()];
+    library_paths.extend(packaged_manifest.requires.runtime_libs.iter().cloned());
+    component_environment.push(serde_json::json!({
+        "variable": loader_variable,
+        "operation": "prepend",
+        "values": library_paths,
+    }));
+    let component_install = files_json
+        .iter()
+        .filter_map(|file| file.get("path").and_then(|path| path.as_str()))
+        .map(|path| serde_json::json!({"source": path, "destination": path}))
+        .collect::<Vec<_>>();
     // A sibling `*-debug` package, when symbols were split out: its own archive
     // digest/size and file list, so a consumer can pull and overlay it to restore
     // symbols in place.
@@ -2363,6 +2439,21 @@ fn package_bundle(
         // The producing tool names itself here so the registry can
         // record the artifact's origin instead of whoever imported it.
         "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
+        "component": {
+            "schema": ost_artifact::COMPONENT_SCHEMA,
+            "id": name,
+            "kind": "plugin",
+            "version": version,
+            "provides": component_provides,
+            "requires": component_requires,
+            "environment": component_environment,
+            "install": component_install,
+            "compatibility": {
+                "targets": [tgt.variant.slug()],
+                "abi": packaged_manifest.runtime.cxx_abi.as_ref().and_then(|abi| abi.tag_for(Some(tgt.variant.os))),
+                "openusd": packaged_manifest.runtime.openusd,
+            }
+        },
         "provenance": {
             "platform": tgt.platform,
             "profile": tgt.profile,
@@ -2584,6 +2675,14 @@ fn package_tool(
         DebugPackageStatus::NotProduced
     };
 
+    let component_abi = match tgt.variant.os {
+        Os::Linux => "libstdcxx".to_string(),
+        Os::Macos => "libcxx".to_string(),
+        Os::Windows => match &tgt.variant.abi {
+            ost_core::variant::Abi::Msvc { toolset } => format!("msvc{toolset}"),
+            other => other.describe(),
+        },
+    };
     let mut manifest = serde_json::json!({
         "schema": 1,
         "kind": ost_artifact::TOOL_KIND,
@@ -2602,6 +2701,30 @@ fn package_tool(
         "total_size": packed.total_size,
         "created_unix": ost_build::source_date_epoch(),
         "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
+        "component": {
+            "schema": ost_artifact::COMPONENT_SCHEMA,
+            "id": name,
+            "kind": "tool",
+            "version": version,
+            "provides": [
+                {"capability": format!("tool:{name}"), "version": version, "singleton": true}
+            ],
+            "requires": tool.manifest.requires.libraries.iter().map(|dependency| serde_json::json!({
+                "capability": format!("library:{}", dependency.id),
+                "version": dependency.version,
+            })).collect::<Vec<_>>(),
+            "environment": [
+                {"variable": "PATH", "operation": "prepend", "values": ["bin"]}
+            ],
+            "install": packed.files.iter().map(|file| serde_json::json!({
+                "source": file.path,
+                "destination": file.path,
+            })).collect::<Vec<_>>(),
+            "compatibility": {
+                "targets": [tgt.variant.slug()],
+                "abi": component_abi,
+            }
+        },
         "provenance": {
             "platform": tgt.platform,
             "profile": tgt.profile,
@@ -3449,6 +3572,109 @@ fn package_workspace_product(
     )?;
     let data_file_count = data_files.len();
 
+    // Aggregate the independently packaged member contracts without flattening
+    // their artifact identity. Requirements satisfied by another member become
+    // internal edges; external capabilities remain requirements of the product.
+    let mut aggregate_provides = BTreeMap::<String, serde_json::Value>::new();
+    let mut aggregate_requires = BTreeMap::<(String, String, String), serde_json::Value>::new();
+    let mut aggregate_environment = Vec::new();
+    let mut aggregate_install = Vec::new();
+    let mut aggregate_compatibility = None;
+    for member in members_in {
+        let value = member.outcome.manifest.get("component").ok_or_else(|| {
+            Error::InvalidManifest(format!(
+                "product member '{}' has no versioned component contract",
+                member.id
+            ))
+        })?;
+        let component: ost_artifact::ComponentContract = serde_json::from_value(value.clone())
+            .map_err(|error| {
+                Error::InvalidManifest(format!(
+                    "product member '{}' component contract is invalid: {error}",
+                    member.id
+                ))
+            })?;
+        component.validate()?;
+        if aggregate_compatibility.is_none() {
+            aggregate_compatibility = Some(component.compatibility.clone());
+        }
+        for provision in component.provides {
+            let capability = provision.capability.clone();
+            let value = serde_json::to_value(provision).map_err(|error| {
+                Error::Operation(format!("cannot serialize product provision: {error}"))
+            })?;
+            if aggregate_provides
+                .insert(capability.clone(), value)
+                .is_some()
+            {
+                return Err(Error::coded(
+                    "PRODUCT_CAPABILITY_COLLISION",
+                    Category::Validation,
+                    format!(
+                        "more than one product member provides singleton capability '{capability}'"
+                    ),
+                ));
+            }
+        }
+        for requirement in component.requires {
+            let key = (
+                requirement.capability.clone(),
+                requirement.version.clone().unwrap_or_default(),
+                requirement.provider.clone().unwrap_or_default(),
+            );
+            aggregate_requires
+                .entry(key)
+                .or_insert(serde_json::to_value(requirement).map_err(|error| {
+                    Error::Operation(format!("cannot serialize product requirement: {error}"))
+                })?);
+        }
+        let destination = member.destination();
+        for contribution in component.environment {
+            let values = contribution
+                .values
+                .iter()
+                .map(|value| {
+                    if value == "." {
+                        destination.clone()
+                    } else {
+                        format!("{destination}/{value}")
+                    }
+                })
+                .collect::<Vec<_>>();
+            aggregate_environment.push(serde_json::json!({
+                "variable": contribution.variable,
+                "operation": contribution.operation,
+                "values": values,
+            }));
+        }
+        for mapping in component.install {
+            aggregate_install.push(serde_json::json!({
+                "source": format!("{destination}/{}", mapping.source),
+                "destination": format!("{destination}/{}", mapping.destination),
+            }));
+        }
+    }
+    let internally_provided = aggregate_provides.keys().cloned().collect::<BTreeSet<_>>();
+    let aggregate_requires = aggregate_requires
+        .into_iter()
+        .filter(|((capability, _, _), _)| !internally_provided.contains(capability))
+        .map(|(_, requirement)| requirement)
+        .collect::<Vec<_>>();
+    aggregate_provides.insert(
+        format!("component:{name}"),
+        serde_json::json!({
+            "capability": format!("component:{name}"),
+            "version": version,
+            "singleton": true,
+        }),
+    );
+    aggregate_install.extend(data_files.iter().map(|file| {
+        serde_json::json!({
+            "source": file["source"],
+            "destination": file["destination"],
+        })
+    }));
+
     let contract = serde_json::json!({
         "schema": "openstrata.plugin-product/v1alpha1",
         "name": name,
@@ -3518,6 +3744,17 @@ fn package_workspace_product(
         "total_size": packed.total_size,
         "created_unix": created,
         "producer": format!("ost {}", env!("CARGO_PKG_VERSION")),
+        "component": {
+            "schema": ost_artifact::COMPONENT_SCHEMA,
+            "id": name,
+            "kind": "plugin",
+            "version": version,
+            "provides": aggregate_provides.into_values().collect::<Vec<_>>(),
+            "requires": aggregate_requires,
+            "environment": aggregate_environment,
+            "install": aggregate_install,
+            "compatibility": aggregate_compatibility,
+        },
         "provenance": provenance,
         "product": "openstrata.product.json",
         "install_order": order,
