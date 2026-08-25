@@ -9,7 +9,7 @@ are procedures; the factual contracts they reference live in
 | [examples.md](examples.md) | A copy-pasteable tour of every `ost` command. |
 | [co-located-schema-migration.md](co-located-schema-migration.md) | Migrate an existing plugin bundle to a co-located USD schema. |
 | [portable-linux-runtime.md](portable-linux-runtime.md) | Build and validate a portable Linux OpenUSD runtime at an explicit glibc floor. |
-| [publishing-canonical-openusd-runtimes.md](publishing-canonical-openusd-runtimes.md) | Plan, build, validate, export, publish, and digest-verify the canonical 18-leaf OpenUSD CY2026 matrix. |
+| [publishing-canonical-openusd-runtimes.md](publishing-canonical-openusd-runtimes.md) | Plan, build, validate, export, publish, and digest-verify the canonical 16-leaf OpenUSD CY2026 matrix. |
 | [publishing-openusd-vulkan-runtimes.md](publishing-openusd-vulkan-runtimes.md) | Maintain the legacy v0.22.0-v0.22.2 Vulkan-only runtime leaves. |
 | [adopt-a-plugin-workspace.md](adopt-a-plugin-workspace.md) | Discover, validate, test, and package a multi-bundle OpenUSD plugin workspace. |
 | [adopt-a-renderer-project.md](adopt-a-renderer-project.md) | Drive a renderer's own CMake targets, adopt a runtime, and record evidence — without a bundle graph. |

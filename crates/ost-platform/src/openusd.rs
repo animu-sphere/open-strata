@@ -138,7 +138,11 @@ impl OpenUsdBuildPlan {
 fn validate_variant_platform(variant: OpenUsdVariantId, os: Os) -> Result<(), OpenUsdPlanError> {
     let supported = match os {
         Os::Linux | Os::Windows => variant != OpenUsdVariantId::Metal,
-        Os::Macos => variant != OpenUsdVariantId::Vulkan,
+        // macOS publishes `core` and `metal` only. Vulkan would mean shipping a
+        // translation layer, and OpenStrata observes no physical OpenGL device on
+        // macOS, so a `gl` leaf could never carry the device and render evidence
+        // `check_exportable` requires of an imaging cell.
+        Os::Macos => !matches!(variant, OpenUsdVariantId::Vulkan | OpenUsdVariantId::Gl),
     };
     if supported {
         Ok(())
@@ -253,5 +257,21 @@ mod tests {
             Arch::Arm64
         )
         .is_err());
+    }
+
+    /// macOS publishes `core` and `metal`. `gl` is refused at plan time for the
+    /// same reason `vulkan` is: the platform cannot produce the evidence an
+    /// imaging leaf has to carry, so the failure belongs before the build.
+    #[test]
+    fn macos_refuses_both_non_canonical_graphics_variants() {
+        for variant in [OpenUsdVariantId::Vulkan, OpenUsdVariantId::Gl] {
+            assert!(matches!(
+                validate_variant_platform(variant, Os::Macos),
+                Err(OpenUsdPlanError::UnsupportedPlatform { .. })
+            ));
+            assert!(validate_variant_platform(variant, Os::Linux).is_ok());
+        }
+        assert!(validate_variant_platform(OpenUsdVariantId::Metal, Os::Macos).is_ok());
+        assert!(validate_variant_platform(OpenUsdVariantId::Core, Os::Macos).is_ok());
     }
 }

@@ -33,11 +33,16 @@ CANONICAL = {
         "arch": "arm64",
         "runner": "macos-15",
         "adapter": "build/openusd-macos.sh",
-        "variants": ["core", "gl", "metal"],
+        "variants": ["core", "metal"],
         "sdk": "15.5",
         "deployment_target": "13.0",
     },
 }
+
+
+# Every declared variant of every canonical version, across the primary cells:
+# Linux and Windows publish core/gl/vulkan, macOS publishes core/metal.
+CANONICAL_LEAF_COUNT = len(VERSIONS) * sum(len(cell["variants"]) for cell in CANONICAL.values())
 
 
 def expand(document: dict[str, object]) -> list[dict[str, object]]:
@@ -89,8 +94,10 @@ def expand(document: dict[str, object]) -> list[dict[str, object]]:
                         "deployment_target": expected.get("deployment_target"),
                     }
                 )
-    if len(jobs) != 18:
-        raise ValueError(f"primary matrix must expand to 18 leaves, got {len(jobs)}")
+    if len(jobs) != CANONICAL_LEAF_COUNT:
+        raise ValueError(
+            f"primary matrix must expand to {CANONICAL_LEAF_COUNT} leaves, got {len(jobs)}"
+        )
     if len({job["tag"] for job in jobs}) != len(jobs):
         raise ValueError("canonical leaf tags are not unique")
     return jobs
@@ -114,7 +121,22 @@ def select_jobs(
         and (variants is None or job["variant"] in variants)
     ]
     if not selected:
-        raise ValueError("the requested filters select no canonical runtime leaves")
+        # Name what the host actually declares. Asking for a variant a platform
+        # does not publish -- `gl` on macOS, `metal` on Linux -- is the common
+        # way to land here, and "no leaves" alone does not say which it was.
+        on_host = [
+            job
+            for job in jobs
+            if host is None or (job["os"] == host and job["arch"] == arch)
+        ]
+        where = f"{host}-{arch}" if host else "the canonical matrix"
+        if not on_host:
+            raise ValueError(f"{where} declares no canonical runtime leaves")
+        raise ValueError(
+            f"the requested filters select no canonical runtime leaves; {where} "
+            f"declares versions {sorted({job['openusd'] for job in on_host})} "
+            f"and variants {sorted({job['variant'] for job in on_host})}"
+        )
     return selected
 
 

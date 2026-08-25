@@ -19,14 +19,21 @@ def declaration():
 
 
 class CanonicalRuntimePlannerTests(unittest.TestCase):
-    def test_primary_matrix_expands_to_18_unique_ordered_leaves(self):
+    def test_primary_matrix_expands_to_16_unique_ordered_leaves(self):
         jobs = PLANNER.expand(declaration())
 
-        self.assertEqual(len(jobs), 18)
-        self.assertEqual(len({job["tag"] for job in jobs}), 18)
+        self.assertEqual(len(jobs), 16)
+        self.assertEqual(len({job["tag"] for job in jobs}), 16)
         self.assertEqual(jobs[0]["tag"], "26.05-core-linux-x86_64")
         self.assertEqual(jobs[-1]["tag"], "26.08-metal-macos-arm64")
         self.assertTrue(all(job["examples_required"] == (job["variant"] != "core") for job in jobs))
+
+    def test_macos_declares_no_gl_lane(self):
+        jobs = PLANNER.expand(declaration())
+        macos = {job["variant"] for job in jobs if job["os"] == "macos"}
+
+        self.assertEqual(macos, {"core", "metal"})
+        self.assertEqual([job for job in jobs if job["tag"].endswith("gl-macos-arm64")], [])
 
     def test_host_and_leaf_filters_preserve_declared_jobs(self):
         jobs = PLANNER.select_jobs(
