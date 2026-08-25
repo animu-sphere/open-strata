@@ -399,7 +399,7 @@ pub fn version_satisfies_constraint(observed: &str, constraint: &str) -> bool {
         let Some(required) = constraint.strip_prefix(operator) else {
             continue;
         };
-        let Some(required) = numeric_version(required) else {
+        let Some(required) = comparison_floor_version(required) else {
             return false;
         };
         let ordering = compare_numeric_versions(&observed, &required);
@@ -454,6 +454,21 @@ fn numeric_version(value: &str) -> Option<Vec<u64>> {
             }
         })
         .collect()
+}
+
+/// The numeric version a comparison constraint is measured against, with any
+/// trailing wildcard dropped: `>=17.x` compares against `17`, so every 17
+/// release satisfies it while 16.5 still does not. Without this, a constraint
+/// that combines an operator with a wildcard could never be satisfied, because
+/// `numeric_version` rejects the non-numeric component outright.
+fn comparison_floor_version(value: &str) -> Option<Vec<u64>> {
+    let base = value
+        .trim()
+        .split('.')
+        .take_while(|part| !matches!(*part, "x" | "X" | "*"))
+        .collect::<Vec<_>>()
+        .join(".");
+    numeric_version(&base)
 }
 
 fn compare_numeric_versions(left: &[u64], right: &[u64]) -> std::cmp::Ordering {
@@ -985,6 +1000,12 @@ mod tests {
             ("2.39", ">=2.28"),
             ("2.28.0", "=2.28"),
             ("2.27", "<2.28"),
+            // A floor built from a wildcard cell, e.g. CY2026's `libcxx: 17.x`
+            // normalized to `>=17.x` by `runtime_floor_constraint`.
+            ("17.0.0", ">=17.x"),
+            ("18.1", ">=17.x"),
+            ("17.0.0", "=17.x"),
+            ("16.5", "<17.x"),
         ] {
             assert!(version_satisfies_constraint(observed, constraint));
         }
@@ -994,6 +1015,9 @@ mod tests {
             (" ", "3.13.x"),
             ("3.13.7", " "),
             ("3.13rc1", "3.13.x"),
+            ("16.5", ">=17.x"),
+            ("17.0.0", "<17.x"),
+            ("17.0.0", ">=x"),
         ] {
             assert!(!version_satisfies_constraint(observed, constraint));
         }

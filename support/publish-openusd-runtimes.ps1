@@ -63,6 +63,11 @@ $results = foreach ($job in $plannedLeaves) {
         Invoke-Checked $git @('-C', $source, 'fetch', '--depth', '1', 'origin', "refs/tags/v$($job.openusd):refs/tags/v$($job.openusd)")
         Invoke-Checked $git @('-C', $source, 'checkout', '--detach', "v$($job.openusd)")
     }
+    # build_usd.py imports from build_scripts/, so running one leaf leaves a
+    # __pycache__ behind and the next leaf of the same OpenUSD version would fail
+    # the check below. Clearing untracked residue first keeps the check meaning
+    # "the tracked tree is exactly the tag" instead of weakening it.
+    Invoke-Checked $git @('-C', $source, 'clean', '-xfdq')
     if ((& $git -C $source status --porcelain)) { throw "OpenUSD source checkout is dirty: $source" }
     $env:OST_HOME = $ostHome
     $pull = @('runtime', 'pull', 'cy2026', '--profile', 'usd', '--build', $source, '--openusd-variant', $job.variant, '--jobs', "$Jobs", '--force')
@@ -82,6 +87,10 @@ $results = foreach ($job in $plannedLeaves) {
             identity = [ordered]@{ matrix = 'support/openusd-runtime-matrix.json'; leaf = $slug; host = "$hostOs-$hostArch" }
         }
     }
+    # `runtime pull --force` above rebuilds this leaf unconditionally, so the
+    # export has to be repeatable too; `runtime export` refuses a non-empty
+    # --dist, which made every re-run fail on the first already-exported leaf.
+    if (Test-Path -LiteralPath $dist) { Remove-Item -LiteralPath $dist -Recurse -Force }
     $metadataPath = Join-Path $runRoot 'build-metadata.json'
     [IO.File]::WriteAllText($metadataPath, (($metadata | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
     $exportText = (& $ost runtime export cy2026 --profile usd --dist $dist --build-metadata $metadataPath --slim --jobs $Jobs --json) -join [Environment]::NewLine

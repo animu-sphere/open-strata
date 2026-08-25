@@ -80,13 +80,18 @@ where
 /// shared library is never held whole in memory. Returns `None` for a non-ELF
 /// file (checked by magic) or one with no glibc version reference.
 fn scan_file(path: &Utf8Path) -> io::Result<Option<GlibcVersion>> {
-    let mut file = match std::fs::File::open(path.as_std_path()) {
-        Ok(f) => f,
-        // A dangling symlink or a file that vanished between staging and scan is
-        // not a glibc reference; do not fail the whole measurement over it.
+    // A staged tree can carry an in-tree symlink to a directory, which opens
+    // fine on Unix and only fails at the first read with EISDIR. Resolve the
+    // type up front. A dangling symlink or a file that vanished between staging
+    // and scan is likewise not a glibc reference; neither should fail the whole
+    // measurement.
+    match std::fs::metadata(path.as_std_path()) {
+        Ok(metadata) if !metadata.is_file() => return Ok(None),
+        Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
-    };
+    }
+    let mut file = std::fs::File::open(path.as_std_path())?;
 
     let mut magic = [0u8; 4];
     match read_full(&mut file, &mut magic)? {

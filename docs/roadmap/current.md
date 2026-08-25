@@ -35,10 +35,11 @@ are written. Full v0.22.4-v0.22.9 acceptance is in the
 
 ## Active carry-over
 
-- **v0.22.3 post-release validation.** Run the host-specific 18-leaf OpenUSD
+- **v0.22.3 post-release validation.** Run the host-specific 16-leaf OpenUSD
   builds, protected GHCR publication, clean digest pulls, and the USD VRM
   release-lane dogfood with the released binary. Corrections found by this pass
-  belong to v0.22.4.
+  belong to v0.22.4. The four macOS leaves are published; Linux and Windows
+  remain.
 - **SEC-002 — symlink escape inside a bundle.** Reject a real in-bundle symlink
   whose canonical target escapes the bundle root.
 - **Packaging diagnostic.** Optionally warn when a same-basename PDB is older

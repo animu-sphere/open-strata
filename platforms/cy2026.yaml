@@ -82,7 +82,6 @@ openusd:
         deployment_target_from: macos_deployment_target
       variants:
         - { id: core, builders: [build-usd, cmake], capabilities: [usd-core] }
-        - { id: gl, builders: [build-usd, cmake], capabilities: [usd-core, imaging, opengl] }
         - { id: metal, builders: [build-usd, cmake], capabilities: [usd-core, imaging, metal] }
 
 notes: >

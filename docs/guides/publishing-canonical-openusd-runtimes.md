@@ -2,8 +2,13 @@
 
 The canonical producer expands
 [`support/openusd-runtime-matrix.json`](../../support/openusd-runtime-matrix.json)
-into 18 immutable leaves: OpenUSD 26.05 and 26.08; Linux x86_64 and Windows
-x86_64 `core`/`gl`/`vulkan`; and macOS arm64 `core`/`gl`/`metal`.
+into 16 immutable leaves: OpenUSD 26.05 and 26.08; Linux x86_64 and Windows
+x86_64 `core`/`gl`/`vulkan`; and macOS arm64 `core`/`metal`.
+
+macOS declares no `gl` lane. OpenStrata observes no physical OpenGL device on
+macOS, so such a leaf could never carry the device and render evidence that
+`check_exportable` requires of an imaging cell: it would build and validate,
+then be refused at export. The matrix rejects it at plan time instead.
 
 Inspect the full cross-platform plan without building:
 
@@ -31,7 +36,8 @@ pwsh ./support/publish-openusd-runtimes.ps1 -Jobs 16
 ```
 
 Use `-Version 26.08` or `-Variant metal` for local iteration. The matrix
-rejects Metal outside macOS and Vulkan on macOS. Imaging variants always build
+rejects Metal outside macOS, and both Vulkan and OpenGL on macOS. Imaging
+variants always build
 the upstream examples through `OpenUsdBuildPlan`; `core` explicitly disables
 them. The producer validates the runtime contract and the selected backend,
 exports SBOM/provenance, and names each leaf with

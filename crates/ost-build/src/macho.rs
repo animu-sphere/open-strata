@@ -128,13 +128,20 @@ where
 }
 
 fn scan_file(path: &Utf8Path) -> io::Result<MacosFloor> {
-    let mut file = match std::fs::File::open(path.as_std_path()) {
-        Ok(file) => file,
-        // A dangling symlink or a file that vanished between staging and scan is
-        // not a Mach-O binary; do not fail the whole measurement over it.
+    // `stage_files` deliberately keeps in-tree symlinks, and a macOS framework
+    // bundle links whole directories (`Versions/Current -> A`, `Headers ->
+    // Versions/Current/Headers`). Opening a directory succeeds on Unix and only
+    // fails at the first read, with EISDIR, so resolve the type up front rather
+    // than letting an OpenSubdiv.framework abort the whole measurement. A
+    // dangling symlink or a file that vanished between staging and scan is
+    // likewise not a Mach-O binary.
+    match std::fs::metadata(path.as_std_path()) {
+        Ok(metadata) if !metadata.is_file() => return Ok(MacosFloor::default()),
+        Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(MacosFloor::default()),
         Err(error) => return Err(error),
-    };
+    }
+    let mut file = std::fs::File::open(path.as_std_path())?;
     // The header plus its load commands is all we need, and it is at the front
     // of the file — a multi-hundred-megabyte library is never read whole.
     let mut head = Vec::new();
@@ -430,6 +437,31 @@ mod tests {
         let floor = scan_image(&fat);
         assert_eq!(floor.deployment_target.unwrap().to_string(), "15.0");
         assert_eq!(floor.sdk.unwrap().to_string(), "15.4");
+    }
+
+    /// A macOS framework bundle links whole directories
+    /// (`Versions/Current -> A`), and `stage_files` keeps those in-tree links.
+    /// Opening one succeeds on Unix and fails only at the first read, with
+    /// EISDIR, which used to abort the measurement for every imaging leaf.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_a_directory_contributes_nothing() {
+        let root = Utf8PathBuf::from_path_buf(std::env::temp_dir())
+            .unwrap()
+            .join(format!("ost-macho-framework-{}", std::process::id()));
+        let versions = root.join("Versions");
+        let real = versions.join("A");
+        std::fs::create_dir_all(real.as_std_path()).unwrap();
+        let link = versions.join("Current");
+        let _ = std::fs::remove_file(link.as_std_path());
+
+        std::os::unix::fs::symlink("A", link.as_std_path()).unwrap();
+
+        let floor = max_macos_floor([link.as_path(), real.as_path()]);
+        let _ = std::fs::remove_dir_all(root.as_std_path());
+
+        let floor = floor.expect("a linked directory is skipped, not an error");
+        assert!(floor.is_empty());
     }
 
     #[test]
