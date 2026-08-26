@@ -21,6 +21,7 @@ pub mod plugin;
 pub mod presets;
 pub mod renderer;
 pub mod runtime;
+mod runtime_composition;
 pub mod test;
 pub mod uv;
 pub mod validate;

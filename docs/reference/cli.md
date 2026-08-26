@@ -116,7 +116,7 @@ List artifacts in the local registry
 
 | Option | Description |
 | --- | --- |
-| `--kind <KIND>` | Only show artifacts of this kind: runtime \| plugin \| product \| package |
+| `--kind <KIND>` | Only show artifacts of this kind: runtime \| composed-runtime \| plugin \| product \| package |
 
 #### `ost artifact pull`
 
@@ -142,7 +142,7 @@ Pull a digest-pinned artifact from a remote source, verify it, and import it int
 | `--overall-timeout <SECONDS>` | End-to-end timeout for each HTTP exchange; 0 disables it |
 | `--plain-http` | Use plain http:// instead of https:// (fixture registries and air-gapped mirrors only) |
 | `--policy <FILE>` | Enforce minimum trust and allowed provenance publishers from an artifact policy TOML file before local import |
-| `--require-kind <KIND>` | Require the artifact kind: runtime \| plugin \| product \| package |
+| `--require-kind <KIND>` | Require the artifact kind: runtime \| composed-runtime \| plugin \| product \| package |
 | `--require-openusd <PLATFORM/OS/ARCH/VARIANT>` | Require an approved normalized OpenUSD consumer cell. The value is PLATFORM/OS/ARCH/VARIANT, for example cy2026/linux/x86_64/vulkan |
 | `--require-openusd-version <VERSION>` | Require an exact upstream OpenUSD release in addition to the consumer cell, for example 26.05 |
 | `--require-provenance` | Fail unless valid SLSA/in-toto provenance accompanies the fetched artifact |
@@ -1348,6 +1348,7 @@ Resolve component models and manage runtimes in the local store
 - [`ost runtime export`](#ost-runtime-export) — Export a pulled real runtime into the local artifact registry
 - [`ost runtime list`](#ost-runtime-list) — List runtimes present in the local store
 - [`ost runtime pull`](#ost-runtime-pull) — Materialize a runtime into the local store
+- [`ost runtime reconstruct`](#ost-runtime-reconstruct) — Reconstruct a locked composition or an exported composed artifact
 - [`ost runtime repair`](#ost-runtime-repair) — Re-adopt a `local` runtime from its recorded USD root, refreshing the manifest (real OpenUSD version, layout, digest) after install drift
 - [`ost runtime show`](#ost-runtime-show) — Show the manifest of a pulled runtime
 - [`ost runtime validate`](#ost-runtime-validate) — Validate a pulled runtime and record the outcome in its manifest
@@ -1356,13 +1357,21 @@ Resolve component models and manage runtimes in the local store
 
 Resolve a component manifest without materializing any files
 
-**Usage:** `ost runtime compose <MANIFEST>`
+**Usage:** `ost runtime compose [OPTIONS] <MANIFEST>`
 
 **Arguments:**
 
 | Argument | Required | Description |
 | --- | --- | --- |
 | `<MANIFEST>` | yes | Versioned runtime composition TOML manifest |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--lock <LOCK>` | Write a portable JSON lock after verifying all inputs |
+| `--locked` | Require the existing --lock to match; never rewrite it |
+| `--output <OUTPUT>` | Materialize component prefixes into a new directory |
 
 #### `ost runtime explain`
 
@@ -1386,19 +1395,20 @@ Explain how a profile resolves to capabilities and extensions
 
 Export a pulled real runtime into the local artifact registry
 
-**Usage:** `ost runtime export [OPTIONS] <PLATFORM>`
+**Usage:** `ost runtime export [OPTIONS] [<PLATFORM>]`
 
 **Arguments:**
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `<PLATFORM>` | yes | Platform calendar-year id, e.g. `cy2026`, or a full runtime id |
+| `<PLATFORM>` | no | Platform calendar-year id, e.g. `cy2026`, or a full runtime id |
 
 **Options:**
 
 | Option | Description |
 | --- | --- |
 | `--build-metadata <BUILD_METADATA>` | JSON file describing what produced this artifact, so a producer that is not GitHub Actions can still emit provenance. Requires a non-empty `source.repository`, `source.revision`, `builder.id`, and a populated `builder.identity` object. Optional `dependencies` entries require an exact name, version, and source repository/revision. A managed `build_usd.py` runtime inserts its automatically captured closure when omitted and rejects conflicting source/dependency claims. A managed build from a non-Git source requires this file to identify its source. Captured entries also carry a canonical `archive_digest` |
+| `--composition <COMPOSITION>` | Export a verified materialized composition instead of a CY runtime |
 | `--dist <DIST>` | Also keep the producer output (archive + manifest.json + SHA256SUMS) in this directory instead of a temporary staging dir |
 | `--jobs <JOBS>` | zstd worker threads for compression. Defaults to the host's available parallelism, or the byte-stable single-threaded encoder when SOURCE_DATE_EPOCH is set; `--jobs 0` also forces it explicitly |
 | `--level <LEVEL>` | zstd compression level (1–22). Lower is faster; the default (19) favors a small artifact, packed once and pulled many times |
@@ -1440,6 +1450,25 @@ Materialize a runtime into the local store
 | `--profile <PROFILE>` | Profile to pull, e.g. `usd` or `lookdev` |
 | `--sdk <SDK>` | macOS SDK to build `--build` against: a full path, or a version like `15.2` resolved with `xcrun --sdk macosx<version> --show-sdk-path`. Sets `CMAKE_OSX_SYSROOT` for the whole build |
 
+#### `ost runtime reconstruct`
+
+Reconstruct a locked composition or an exported composed artifact
+
+**Usage:** `ost runtime reconstruct [OPTIONS] [<LOCK>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<LOCK>` | no | Portable composition lock; no original manifest is needed |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--from-artifact <FROM_ARTIFACT>` | Full digest of a composed artifact in the local artifact store |
+| `--output <OUTPUT>` | New destination directory (existing paths are never overwritten) |
+
 #### `ost runtime repair`
 
 Re-adopt a `local` runtime from its recorded USD root, refreshing the manifest (real OpenUSD version, layout, digest) after install drift
@@ -1480,18 +1509,19 @@ Show the manifest of a pulled runtime
 
 Validate a pulled runtime and record the outcome in its manifest
 
-**Usage:** `ost runtime validate [OPTIONS] <PLATFORM>`
+**Usage:** `ost runtime validate [OPTIONS] [<PLATFORM>]`
 
 **Arguments:**
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `<PLATFORM>` | yes | Platform calendar-year id, e.g. `cy2026` |
+| `<PLATFORM>` | no | Platform calendar-year id, e.g. `cy2026` |
 
 **Options:**
 
 | Option | Description |
 | --- | --- |
+| `--composition <COMPOSITION>` | Verify a materialized composition's lock, files and retained evidence |
 | `--profile <PROFILE>` | Profile, e.g. `usd` |
 
 ### `ost test`

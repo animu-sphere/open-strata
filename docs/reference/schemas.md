@@ -231,6 +231,22 @@ Logical renderer source composition and validation intent. Units are project-own
 | `schema` | string | yes |  |
 | `validation` | object | yes |  |
 
+## `runtime-composition-lock.schema.json`
+
+OpenStrata Runtime Composition Lock
+
+Portable provider, source, compatibility, dependency and materialized-inventory lock. Semantic validation re-resolves the locked contracts and recomputes runtime identity.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `artifacts` | array | yes |  |
+| `dependencies` | array | yes |  |
+| `inventory` | array | yes |  |
+| `manifest` | — | yes |  |
+| `resolved` | object | yes |  |
+| `runtime_digest` | — | yes |  |
+| `schema` | — | yes |  |
+
 ## `runtime-composition.schema.json`
 
 OpenStrata Runtime Composition Manifest

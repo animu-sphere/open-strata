@@ -24,7 +24,7 @@ use ost_core::host::Os;
 use ost_core::paths::Store;
 use ost_core::variant::Abi;
 use ost_core::{tools, Error, Host, Result, Variant};
-use ost_formation::{resolve_runtime_composition, CompositionInput, RuntimeCompositionManifest};
+use ost_formation::RuntimeCompositionManifest;
 use ost_platform::version_satisfies_constraint;
 use ost_runtime::{
     graphics_device_status, graphics_loader_probes_supported, graphics_loader_status, python_minor,
@@ -51,6 +51,30 @@ pub enum RuntimeCmd {
     Compose {
         /// Versioned runtime composition TOML manifest.
         manifest: Utf8PathBuf,
+        /// Write a portable JSON lock after verifying all inputs.
+        #[arg(long)]
+        lock: Option<Utf8PathBuf>,
+        /// Require the existing --lock to match; never rewrite it.
+        #[arg(long, requires = "lock")]
+        locked: bool,
+        /// Materialize component prefixes into a new directory.
+        #[arg(long)]
+        output: Option<Utf8PathBuf>,
+    },
+    /// Reconstruct a locked composition or an exported composed artifact.
+    Reconstruct {
+        /// Portable composition lock; no original manifest is needed.
+        #[arg(
+            required_unless_present = "from_artifact",
+            conflicts_with = "from_artifact"
+        )]
+        lock: Option<Utf8PathBuf>,
+        /// Full digest of a composed artifact in the local artifact store.
+        #[arg(long)]
+        from_artifact: Option<String>,
+        /// New destination directory (existing paths are never overwritten).
+        #[arg(long)]
+        output: Utf8PathBuf,
     },
     /// Materialize a runtime into the local store.
     Pull {
@@ -119,7 +143,14 @@ pub enum RuntimeCmd {
     /// Export a pulled real runtime into the local artifact registry.
     Export {
         /// Platform calendar-year id, e.g. `cy2026`, or a full runtime id.
-        platform: String,
+        #[arg(
+            required_unless_present = "composition",
+            conflicts_with = "composition"
+        )]
+        platform: Option<String>,
+        /// Export a verified materialized composition instead of a CY runtime.
+        #[arg(long, conflicts_with_all = ["profile", "slim", "build_metadata", "jobs"])]
+        composition: Option<Utf8PathBuf>,
         /// Profile, e.g. `usd`.
         #[arg(long, default_value = "core")]
         profile: String,
@@ -167,7 +198,14 @@ pub enum RuntimeCmd {
     /// Validate a pulled runtime and record the outcome in its manifest.
     Validate {
         /// Platform calendar-year id, e.g. `cy2026`.
-        platform: String,
+        #[arg(
+            required_unless_present = "composition",
+            conflicts_with = "composition"
+        )]
+        platform: Option<String>,
+        /// Verify a materialized composition's lock, files and retained evidence.
+        #[arg(long, conflicts_with = "profile")]
+        composition: Option<Utf8PathBuf>,
         /// Profile, e.g. `usd`.
         #[arg(long, default_value = "core")]
         profile: String,
@@ -193,7 +231,34 @@ pub enum RuntimeCmd {
 
 pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
     match cmd {
-        RuntimeCmd::Compose { manifest } => compose(&manifest, fmt),
+        RuntimeCmd::Compose {
+            manifest,
+            lock,
+            locked,
+            output,
+        } => {
+            if lock.is_some() || output.is_some() {
+                super::runtime_composition::compose(
+                    &manifest,
+                    lock.as_deref(),
+                    locked,
+                    output.as_deref(),
+                    fmt,
+                )
+            } else {
+                compose(&manifest, fmt)
+            }
+        }
+        RuntimeCmd::Reconstruct {
+            lock,
+            from_artifact,
+            output,
+        } => super::runtime_composition::reconstruct(
+            lock.as_deref(),
+            from_artifact.as_deref(),
+            &output,
+            fmt,
+        ),
         RuntimeCmd::Pull {
             platform,
             profile,
@@ -228,24 +293,49 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
         ),
         RuntimeCmd::Export {
             platform,
+            composition,
             profile,
             dist,
             slim,
             level,
             jobs,
             build_metadata,
-        } => export(
-            &platform,
-            &profile,
-            dist.as_deref(),
-            slim,
-            ExportPack { level, jobs },
-            build_metadata.as_deref(),
-            fmt,
-        ),
+        } => {
+            if let Some(prefix) = composition {
+                super::runtime_composition::export(&prefix, dist.as_deref(), level, fmt)
+            } else {
+                export(
+                    platform.as_deref().ok_or_else(|| {
+                        Error::usage("runtime export requires a platform or --composition")
+                    })?,
+                    &profile,
+                    dist.as_deref(),
+                    slim,
+                    ExportPack { level, jobs },
+                    build_metadata.as_deref(),
+                    fmt,
+                )
+            }
+        }
         RuntimeCmd::List => list(fmt),
         RuntimeCmd::Show { platform, profile } => show(&platform, &profile, fmt),
-        RuntimeCmd::Validate { platform, profile } => validate(&platform, &profile, fmt),
+        RuntimeCmd::Validate {
+            platform,
+            profile,
+            composition,
+        } => {
+            if let Some(prefix) = composition {
+                super::runtime_composition::validate(&prefix, fmt)
+            } else {
+                validate(
+                    platform.as_deref().ok_or_else(|| {
+                        Error::usage("runtime validate requires a platform or --composition")
+                    })?,
+                    &profile,
+                    fmt,
+                )
+            }
+        }
         RuntimeCmd::Repair { platform, profile } => repair(&platform, &profile, fmt),
         RuntimeCmd::Explain { platform, profile } => explain(&platform, &profile, fmt),
     }
@@ -255,34 +345,7 @@ fn compose(path: &Utf8Path, fmt: Format) -> Result<()> {
     let source = std::fs::read_to_string(path.as_std_path())
         .map_err(|error| Error::io(path.to_string(), error))?;
     let declared = RuntimeCompositionManifest::parse(&source)?;
-    let store = ArtifactStore::discover();
-    let mut records = Vec::with_capacity(declared.artifacts.len());
-    for artifact in &declared.artifacts {
-        let record = store.resolve(&artifact.artifact)?;
-        if record.digest != artifact.artifact {
-            return Err(Error::coded(
-                "COMPOSITION_ARTIFACT_SET_MISMATCH",
-                ost_core::Category::Validation,
-                format!(
-                    "artifact resolver returned {}, but composition pins {}",
-                    record.digest, artifact.artifact
-                ),
-            ));
-        }
-        let verification = store.verify(&artifact.artifact)?;
-        if !verification.passed() {
-            return Err(Error::coded(
-                "COMPOSITION_ARTIFACT_VERIFICATION_FAILED",
-                ost_core::Category::Validation,
-                format!(
-                    "artifact {} failed local integrity verification",
-                    record.short_digest()
-                ),
-            ));
-        }
-        records.push(record);
-    }
-    let resolved = resolve_runtime_composition(&declared, CompositionInput { records })?;
+    let resolved = super::runtime_composition::resolve_manifest(declared)?;
     if fmt.is_json() {
         let value = serde_json::to_value(&resolved).map_err(|error| {
             Error::Operation(format!("cannot serialize runtime composition: {error}"))
@@ -3732,6 +3795,7 @@ fn export(
         // identity. Salt the tar stream with the canonical runtime digest so a
         // metadata-only contract change receives a new immutable artifact pin.
         identity_digest: Some(manifest.digest.clone()),
+        executable_paths: BTreeSet::new(),
     };
     // Progress to stderr (throttled, in-place) so a long single- or
     // multi-threaded pack shows liveness; suppressed in JSON mode so the only

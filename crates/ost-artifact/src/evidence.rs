@@ -371,7 +371,7 @@ fn provenance_statement(manifest: &serde_json::Value) -> Result<serde_json::Valu
         .get("build")
         .cloned()
         .ok_or_else(|| Error::validation("cannot generate provenance without build metadata"))?;
-    Ok(serde_json::json!({
+    let mut statement = serde_json::json!({
         "_type": "https://in-toto.io/Statement/v1",
         "subject": [{
             "name": archive,
@@ -389,7 +389,25 @@ fn provenance_statement(manifest: &serde_json::Value) -> Result<serde_json::Valu
                 "builder": build["builder"],
             },
         },
-    }))
+    });
+    if manifest.get("kind").and_then(|v| v.as_str()) == Some(crate::COMPOSED_RUNTIME_KIND) {
+        statement["predicate"]["buildDefinition"]["buildType"] =
+            "https://openstrata.dev/runtime/compose/v1".into();
+        statement["predicate"]["buildDefinition"]["externalParameters"]["runtime_digest"] =
+            manifest["composition"]["runtime_digest"].clone();
+        statement["predicate"]["buildDefinition"]["resolvedDependencies"] =
+            composition_materials(manifest);
+    }
+    Ok(statement)
+}
+
+fn composition_materials(manifest: &serde_json::Value) -> serde_json::Value {
+    serde_json::Value::Array(manifest.pointer("/build/dependencies").and_then(|v| v.as_array())
+        .into_iter().flatten().map(|dependency| serde_json::json!({
+            "name": dependency["name"],
+            "uri": format!("urn:openstrata:artifact:{}", dependency["archive_digest"].as_str().unwrap_or_default()),
+            "digest": {"sha256": dependency["archive_digest"].as_str().unwrap_or_default().strip_prefix("sha256:").unwrap_or_default()},
+        })).collect())
 }
 
 fn manifest_str(manifest: &serde_json::Value, field: &str) -> Result<String> {
@@ -633,6 +651,18 @@ pub fn verify_provenance(
                     )
                 })
         };
+    if manifest.get("kind").and_then(|v| v.as_str()) == Some(crate::COMPOSED_RUNTIME_KIND)
+        && (statement.pointer("/predicate/buildDefinition/resolvedDependencies")
+            != Some(&composition_materials(manifest))
+            || statement.pointer("/predicate/buildDefinition/externalParameters/runtime_digest")
+                != manifest.pointer("/composition/runtime_digest"))
+    {
+        return Err(Error::coded(
+            "ARTIFACT_PROVENANCE_SOURCE_MISMATCH",
+            Category::Validation,
+            "composition provenance does not bind the runtime identity and exact input artifacts",
+        ));
+    }
     let build_repository = required_source(
         manifest,
         "/build/source/repository",

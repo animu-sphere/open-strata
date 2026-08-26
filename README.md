@@ -54,6 +54,13 @@ identity on a clean machine. Headless DCC host adapters remain deferred to
 v0.23.0. See the [current roadmap](docs/roadmap/current.md) and the
 [runtime-composition plan](docs/roadmap/runtime-composition.md).
 
+The working implementation adds `runtime compose --lock/--locked/--output`,
+`runtime reconstruct`, and `runtime export/validate --composition`. See the
+[composition guide](docs/guides/compose-a-runtime.md) and
+[draft v0.22.7 record](docs/releases/v0.22.7.md). It preserves component prefixes
+and verifies graph/inventory identity; SDK activation and execution probes remain
+subsequent slices. v0.22.7 is not yet published.
+
 ## Reference projects
 
 OpenStrata is developed against real OpenUSD projects rather than isolated
