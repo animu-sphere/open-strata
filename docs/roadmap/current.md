@@ -3,7 +3,7 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## v0.22.6 - locked composed runtime
+## v0.22.7 - locked composed runtime
 
 **Status:** ⬜ not started · **Depends on:** the v0.22.4 runtime component model.
 
@@ -24,14 +24,19 @@ transportable runtime artifact.
 ### Exit criteria
 
 A composed runtime locked on one machine reconstructs to the same identity on a
-clean machine from the lock and immutable artifacts alone. Full v0.22.6-v0.22.10
+clean machine from the lock and immutable artifacts alone. Full v0.22.7-v0.22.11
 acceptance is in the [runtime-composition plan](runtime-composition.md).
 
 ## Active carry-over
 
+- **v0.22.6 downstream CI acceptance.** Update USD VRM PR #140's OST bootstrap
+  and hand-authored release pins, regenerate its workflows, and rerun the source
+  cells with the released fix. Verify explained Qt/device skips on hosted
+  Windows/macOS and investigate any later build/test failures. Evidence:
+  [render-prerequisite report](../reports/2026-08-26-usd-vrm-ci-render-prerequisites.md).
 - **v0.22.4 cross-repository acceptance.** Run the real published-artifact
   composition pass in `usd-geospatial-runtime` against independently published
-  artifacts rather than the checked-in fixture. Corrections belong to v0.22.6.
+  artifacts rather than the checked-in fixture. Corrections belong to v0.22.7.
 - **v0.22.3 post-release validation.** Run the host-specific canonical 16-leaf
   OpenUSD builds, protected GHCR publication, clean digest pulls, and the USD
   VRM release-lane dogfood with the released binary. The four macOS leaves are

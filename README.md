@@ -31,14 +31,14 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.22.5** — the consumer-lane corrections found by
-running the v0.22.3/v0.22.4 lanes against the canonical CY2026 runtimes on real
-hosts. `ost runtime validate` now renders its proof frame under the interpreter
-the runtime itself declares (and skips, rather than fails, where no such
-interpreter exists), a workspace member wildcard no longer refuses a graph over
-build residue, a per-member build tree that outlived its compiler is
-reconfigured, and a compatibility-identity refusal names the provider and which
-condition held. It builds on v0.22.4, the runtime component model: independently
+The current release is **v0.22.6** — render-probe prerequisite and device-evidence
+corrections from downstream CI. `ost runtime validate` checks Qt OpenGL imports
+under the runtime's resolved Python before invoking `usdrecord`; missing Qt is
+an explained skip, while actual tool, pxr, and Hydra failures remain failures.
+GDI Generic, llvmpipe, and softpipe are reported as software renderers and cannot
+stand in for physical-device evidence or enable the render probe. Producer
+evidence and export gates are unchanged. It builds on v0.22.5's consumer-lane
+fixes and v0.22.4's runtime component model: independently
 published runtime, plugin, library, tool, renderer, and data artifacts resolve
 into one deterministic component model via `ost runtime compose`, with explicit
 provider selection and coded conflict diagnostics before any file is
@@ -47,7 +47,7 @@ Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.22.6** milestone locks a resolved composition: provider identity,
+The active **v0.22.7** milestone locks a resolved composition: provider identity,
 digests, immutable sources, and compatibility decisions become a lock, and the
 composed runtime exports as an OST artifact that reconstructs to the same
 identity on a clean machine. Headless DCC host adapters remain deferred to
