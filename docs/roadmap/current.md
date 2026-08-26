@@ -3,57 +3,32 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## v0.22.7 - locked composed runtime
+## v0.22.8 - geospatial runtime dogfood
 
-**Status:** implementation and Windows local gates complete; release CI and
-publication pending. **Depends on:** the v0.22.4 runtime component model.
+**Status:** pending real published-component acceptance. **Depends on:** the
+[v0.22.7 locked runtime and SDK](../releases/v0.22.7.md).
 
-A resolved composition is only useful if it can be reproduced. This slice turns
-the v0.22.4 resolved model into a lock plus an exportable, independently
-transportable runtime artifact.
-
-The working implementation provides `compose --lock/--locked/--output`,
-`reconstruct`, and `export/validate --composition`. See the
-[draft release record](../releases/v0.22.7.md) and
-[consumer guide](../guides/compose-a-runtime.md). Unix-specific symlink/mode tests
-are included but still need a Linux Rust test runner; the available WSL has no
-Rust installation. The current published version remains v0.22.6.
+Compose the first real geospatial runtime in
+[`usd-geospatial-runtime`](../projects/usd-geospatial-runtime.md), keeping the
+repository declarative and component publication independently owned.
 
 ### Acceptance
 
-- Lock provider identity, version, digest, immutable source, dependency graph,
-  target/variant, and compatibility decisions.
-- Derive runtime identity from canonical inputs and materialized inventory.
-- Export the composed runtime as an OST artifact with provenance, attribution,
-  SBOM, and composition-level validation evidence.
-- Reconstruct the same identity on a clean machine from the lock and immutable
-  artifacts; caches remain optional.
+- Compose a digest-pinned canonical OpenUSD 26.08 cell, HTTP resolver,
+  point-cloud plugins and raster plugins from published artifacts.
+- Run component-owned OpenUSD loader/plugin/resolver/schema probes from the
+  composed prefix. Structural plugInfo/schema checks do not prove registration.
+- Exercise local file formats, HTTP/COPC Tier 2 and GeoTIFF through packaged
+  components, retaining execution and range-read evidence.
+- Publish the composed artifact and reconstruct the same locked identity on a
+  clean consumer without producer build trees or caches.
 
 ### Exit criteria
 
-A composed runtime locked on one machine reconstructs to the same identity on a
-clean machine from the lock and immutable artifacts alone. Full v0.22.7-v0.22.11
-acceptance is in the [runtime-composition plan](runtime-composition.md).
-
-## v0.22.8 - runtime SDK layout
-
-**Status:** implementation and Windows local SDK consumer gates complete;
-cross-platform and real OpenUSD acceptance remain. Release preparation is
-separate, and v0.22.7 publication above is still pending.
-
-New locks materialize SDK roots and ownership, generate Formation activation,
-and support `runtime env`, `runtime exec` and explicit CMake package validation.
-The Windows native test exports, reconstructs, relocates and consumes a real
-C++ shared-library SDK after removing the producer build/install trees. Details:
-[draft release record](../releases/v0.22.8.md) and
-[consumer guide](../guides/compose-a-runtime.md).
-
-Remaining acceptance:
-
-- Run the native SDK consumer and filesystem symlink/mode gates on Linux/macOS.
-- Run component-owned OpenUSD loader/plugin/resolver/schema probes from the
-  composed prefix; structural plugInfo/schema checks do not prove registration.
-- Complete release CI and the version/attribution/publication process.
+A clean consumer reconstructs the published composition and demonstrates the
+declared OpenUSD/geospatial behavior using packaged components alone. SDK
+fixture success is not this acceptance. Remaining v0.22.8-v0.22.10 work is in
+the [runtime-composition plan](runtime-composition.md).
 
 ## Active carry-over
 
@@ -65,7 +40,8 @@ Remaining acceptance:
   [render-prerequisite report](../reports/2026-08-26-usd-vrm-ci-render-prerequisites.md).
 - **v0.22.4 cross-repository acceptance.** Run the real published-artifact
   composition pass in `usd-geospatial-runtime` against independently published
-  artifacts rather than the checked-in fixture. Corrections belong to v0.22.7.
+  artifacts rather than the checked-in fixture. This is part of the v0.22.8
+  dogfood above; any corrections follow the published v0.22.7 baseline.
 - **v0.22.3 post-release validation.** Run the host-specific canonical 16-leaf
   OpenUSD builds, protected GHCR publication, clean digest pulls, and the USD
   VRM release-lane dogfood with the released binary. The four macOS leaves are

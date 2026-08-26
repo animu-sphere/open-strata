@@ -52,7 +52,7 @@ The repository can start before `ost runtime compose` is complete:
 3. Adopt the v0.22.3 component artifacts and explicit product/data membership.
 4. Check in the composition manifest and lock as v0.22.4/v0.22.7 land.
 5. Replace any temporary orchestration with the shipped OST lifecycle.
-6. Publish clean-consumer evidence for the v0.22.9 dogfood.
+6. Publish clean-consumer evidence for the v0.22.8 dogfood.
 
 This sequence lets both repositories expose missing primitives early without
 turning temporary source-tree composition into a public contract.

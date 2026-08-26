@@ -5,7 +5,7 @@ owners:
   - openstrata-maintainers
 created: 2026-08-24
 updated: 2026-08-26
-applies_to: v0.22.7-v0.22.11
+applies_to: v0.22.8-v0.22.10
 ---
 
 # v0.22.x runtime composition
@@ -14,46 +14,16 @@ This is the execution plan for the proposed
 [runtime-composition contract](../design/proposed/runtime-composition.md). It
 contains only incomplete work. The v0.22.3 canonical runtime and artifact
 foundation and the v0.22.4 component model are recorded in their release records
-([v0.22.3](../releases/v0.22.3.md), [v0.22.4](../releases/v0.22.4.md)). The next
+([v0.22.3](../releases/v0.22.3.md), [v0.22.4](../releases/v0.22.4.md)). Locked
+composition and the native SDK shipped together in [v0.22.7](../releases/v0.22.7.md),
+bringing the remaining slices forward one slot. The next
 release is summarized in [current.md](current.md); later slices are ordered in
 [backlog.md](backlog.md).
 
 The series advances one contract at a time. DCC host adapters remain v0.23.0
 work after this foundation has been dogfooded.
 
-## v0.22.7 - locked composed runtime
-
-**Objective:** a resolved runtime is reproducible and independently
-transportable.
-
-- Lock provider identity, version, digest, immutable source, dependency graph,
-  target/variant and compatibility decisions.
-- Derive runtime identity from canonical inputs and materialized inventory.
-- Export the composed runtime as an OST artifact with provenance, attribution,
-  SBOM and composition-level validation evidence.
-- Reconstruct the same identity on a clean machine from the lock and immutable
-  artifacts; caches remain optional.
-
-## v0.22.8 - runtime SDK layout
-
-**Objective:** applications consume a runtime through predictable native
-conventions.
-
-The SDK layout, ownership/activation contract, environment/exec commands and
-explicit CMake probe are implemented. Windows native shared-library SDK
-consumption passes after export, clean reconstruction and prefix relocation.
-See the [draft release record](../releases/v0.22.8.md).
-
-Remaining gates:
-
-- Run native CMake consumption and filesystem symlink/mode checks on Linux/macOS.
-- Validate real OpenUSD loader, plugin, resolver and schema execution with
-  component-owned probes from the composed prefix. Structural path checks and
-  the native Tiny SDK fixture do not establish these observations.
-- Complete release CI and publication; implementation does not advance the
-  workspace version or publish a release.
-
-## v0.22.9 - geospatial runtime dogfood
+## v0.22.8 - geospatial runtime dogfood
 
 **Objective:** build the first real composed runtime in parallel with
 [`animu-sphere/usd-geospatial-runtime`](https://github.com/animu-sphere/usd-geospatial-runtime).
@@ -63,6 +33,9 @@ Remaining gates:
   `usd-raster-plugins` from independently published artifacts.
 - Keep the composition repository declarative: it owns capability selection,
   locks, fixtures and acceptance evidence, not a replacement build/solver.
+- Validate real OpenUSD loader, plugin, resolver and schema execution with
+  component-owned probes from the composed prefix. Structural path checks and
+  the native Tiny SDK fixture do not establish these observations.
 - Exercise local file formats first, then prove HTTP/COPC Tier 2 through the
   packaged resolver and point-cloud artifacts.
 - Publish the runtime artifact and reconstruct it on a clean consumer with the
@@ -80,7 +53,7 @@ and a bytes-fetched baseline. `usd-raster-plugins` is pre-release; its component
 artifact and selected GeoTIFF read/authoring contract must ship before the
 geospatial runtime claims raster support.
 
-## v0.22.10 - consumer packaging foundation
+## v0.22.9 - consumer packaging foundation
 
 **Objective:** one canonical runtime can serve ecosystem-native entry points.
 
@@ -91,7 +64,7 @@ geospatial runtime claims raster support.
 - Prove one native SDK consumer and specify the binder/loader contract for
   Python and JavaScript without leaking OST internals into their public API.
 
-## v0.22.11 - runtime UX and diagnostics
+## v0.22.10 - runtime UX and diagnostics
 
 **Objective:** using a composed runtime is ordinary for humans, CI and agents.
 

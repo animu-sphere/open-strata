@@ -90,11 +90,11 @@ not contribute to `runtime_digest`. Compatibility decisions and inventory do.
 
 Every layout preserves each artifact under `components/<component-id>/`.
 `metadata/` holds the lock, original producer manifests, available component
-SBOM/provenance, attribution and composition validation. New v0.22.8 locks also
-materialize the SDK described below. Existing v0.22.7 locks reconstruct with
-their original component-only layout and identity; `--locked` never migrates them.
+SBOM/provenance, attribution and composition validation. New v0.22.7 locks also
+materialize the SDK described below. Component-only locks from unreleased drafts
+reconstruct with their original layout and identity; `--locked` never migrates them.
 
-## SDK layout and activation (v0.22.8 implementation)
+## SDK layout and activation (v0.22.7)
 
 New locks include an additive `sdk` object. `metadata/sdk.json` records the same
 `openstrata.runtime-sdk/v1alpha1` layout: each projected file's component owner,
@@ -231,4 +231,4 @@ SDK structure, an explicit CMake probe, and a command run are distinct scopes;
 neither is silently promoted to successful OpenUSD discovery, a GPU observation
 or a rendered frame. Exported aggregate runtime validation remains `pending`.
 Probe output belongs to the caller's CI/evidence capture and does not rewrite
-the locked prefix. Real geospatial OpenUSD execution remains the v0.22.9 dogfood.
+the locked prefix. Real geospatial OpenUSD execution remains the v0.22.8 dogfood.

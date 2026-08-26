@@ -31,35 +31,27 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.22.6** — render-probe prerequisite and device-evidence
-corrections from downstream CI. `ost runtime validate` checks Qt OpenGL imports
-under the runtime's resolved Python before invoking `usdrecord`; missing Qt is
-an explained skip, while actual tool, pxr, and Hydra failures remain failures.
-GDI Generic, llvmpipe, and softpipe are reported as software renderers and cannot
-stand in for physical-device evidence or enable the render probe. Producer
-evidence and export gates are unchanged. It builds on v0.22.5's consumer-lane
-fixes and v0.22.4's runtime component model: independently
-published runtime, plugin, library, tool, renderer, and data artifacts resolve
-into one deterministic component model via `ost runtime compose`, with explicit
-provider selection and coded conflict diagnostics before any file is
-materialized.
+The current release is **v0.22.7** — locked composed runtimes and a relocatable
+native SDK. `runtime compose --lock/--locked/--output` pins provider identity,
+immutable sources, dependency evidence and complete payload inventory.
+`runtime reconstruct` restores the same identity from a lock or a self-contained
+exported artifact. SDK ownership, verified `runtime env`/`runtime exec`, and
+explicit CMake package checks let native consumers use the reconstructed prefix.
+It includes the SDK slice originally planned for v0.22.8; legacy OpenUSD runtime
+commands and the render-probe corrections from v0.22.6 keep their contracts.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.22.7** milestone locks a resolved composition: provider identity,
-digests, immutable sources, and compatibility decisions become a lock, and the
-composed runtime exports as an OST artifact that reconstructs to the same
-identity on a clean machine. Headless DCC host adapters remain deferred to
-v0.23.0. See the [current roadmap](docs/roadmap/current.md) and the
+The active **v0.22.8** milestone is geospatial runtime dogfooding with independently
+published OpenUSD, resolver, point-cloud and raster components. Real OpenUSD
+plugin/resolver/schema execution remains an acceptance gate; SDK structure and
+the native test fixture do not prove it. Consumer packaging follows in v0.22.9,
+runtime UX/diagnostics in v0.22.10, and DCC host adapters remain v0.23.0.
+See the [composition guide](docs/guides/compose-a-runtime.md),
+[v0.22.7 record](docs/releases/v0.22.7.md),
+[current roadmap](docs/roadmap/current.md) and
 [runtime-composition plan](docs/roadmap/runtime-composition.md).
-
-The working implementation adds `runtime compose --lock/--locked/--output`,
-`runtime reconstruct`, and `runtime export/validate --composition`. See the
-[composition guide](docs/guides/compose-a-runtime.md) and
-[draft v0.22.7 record](docs/releases/v0.22.7.md). It preserves component prefixes
-and verifies graph/inventory identity; SDK activation and execution probes remain
-subsequent slices. v0.22.7 is not yet published.
 
 ## Reference projects
 
