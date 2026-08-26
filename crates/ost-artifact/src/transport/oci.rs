@@ -1087,27 +1087,13 @@ impl OciTransport {
     }
 }
 
-impl ArtifactTransport for OciTransport {
-    fn resolve(&self, reference: &RemoteReference) -> Result<ResolvedRemote> {
-        let r = self.oci(reference)?;
-        let (manifest_bytes, resolved_digest) = self.fetch_manifest(r)?;
-        let locator = format!("oci://{}/{}@{resolved_digest}", r.registry, r.repository);
-        let manifest = parse_oci_manifest(&manifest_bytes, &locator)?;
-        Ok(ResolvedRemote {
-            locator,
-            registry: r.registry.clone(),
-            repository: r.repository.clone(),
-            oci_digest: Some(resolved_digest),
-            openusd_selector: manifest.openusd_selector,
-            auth_mode: self.auth_mode.borrow().to_string(),
-        })
-    }
-
-    fn fetch(
+impl OciTransport {
+    fn fetch_files(
         &self,
         reference: &RemoteReference,
         resolved: &ResolvedRemote,
         scratch: &Utf8Path,
+        payloads: bool,
     ) -> Result<FetchOutcome> {
         let r = self.oci(reference)?;
         let oci_digest = resolved.oci_digest.as_deref().ok_or_else(|| {
@@ -1200,9 +1186,22 @@ impl ArtifactTransport for OciTransport {
                     ),
                 )
             })?;
-        transfer
-            .layers
-            .push(self.fetch_blob_to(r, archive_layer, &scratch.join(&archive_name))?);
+        if !payloads
+            && (producer["archive_digest"].as_str() != Some(archive_layer.digest.as_str())
+                || producer["archive_size"].as_u64() != Some(archive_layer.size))
+        {
+            return Err(oci_manifest_invalid(
+                &resolved.locator,
+                "archive layer does not match the producer manifest digest/size",
+            ));
+        }
+        if payloads {
+            transfer.layers.push(self.fetch_blob_to(
+                r,
+                archive_layer,
+                &scratch.join(&archive_name),
+            )?);
+        }
 
         if let Some(debug) = manifest_debug_archive(&producer).map_err(|e| {
             Error::coded(
@@ -1235,11 +1234,13 @@ impl ArtifactTransport for OciTransport {
                     ),
                 ));
             }
-            transfer.layers.push(self.fetch_blob_to(
-                r,
-                debug_layer,
-                &scratch.join(&debug.archive),
-            )?);
+            if payloads {
+                transfer.layers.push(self.fetch_blob_to(
+                    r,
+                    debug_layer,
+                    &scratch.join(&debug.archive),
+                )?);
+            }
         }
 
         for (media_type, title) in [
@@ -1257,6 +1258,41 @@ impl ArtifactTransport for OciTransport {
             dist: scratch.to_owned(),
             transfer,
         })
+    }
+}
+
+impl ArtifactTransport for OciTransport {
+    fn resolve(&self, reference: &RemoteReference) -> Result<ResolvedRemote> {
+        let r = self.oci(reference)?;
+        let (manifest_bytes, resolved_digest) = self.fetch_manifest(r)?;
+        let locator = format!("oci://{}/{}@{resolved_digest}", r.registry, r.repository);
+        let manifest = parse_oci_manifest(&manifest_bytes, &locator)?;
+        Ok(ResolvedRemote {
+            locator,
+            registry: r.registry.clone(),
+            repository: r.repository.clone(),
+            oci_digest: Some(resolved_digest),
+            openusd_selector: manifest.openusd_selector,
+            auth_mode: self.auth_mode.borrow().to_string(),
+        })
+    }
+
+    fn fetch(
+        &self,
+        reference: &RemoteReference,
+        resolved: &ResolvedRemote,
+        scratch: &Utf8Path,
+    ) -> Result<FetchOutcome> {
+        self.fetch_files(reference, resolved, scratch, true)
+    }
+
+    fn fetch_metadata(
+        &self,
+        reference: &RemoteReference,
+        resolved: &ResolvedRemote,
+        scratch: &Utf8Path,
+    ) -> Result<FetchOutcome> {
+        self.fetch_files(reference, resolved, scratch, false)
     }
 
     fn push(

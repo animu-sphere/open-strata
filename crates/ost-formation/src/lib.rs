@@ -15,6 +15,12 @@ use ost_runtime::{EnvOp, EnvSet, EnvVar, RuntimeManifest};
 use serde::{Deserialize, Serialize};
 
 mod composition;
+mod composition_lock;
+
+pub use composition_lock::{
+    canonical_json_digest, composition_error, CompositionDependency, CompositionInventoryEntry,
+    LockedCompositionArtifact, RuntimeCompositionLock, COMPOSITION_LOCK_SCHEMA,
+};
 
 pub use composition::{
     resolve_runtime_composition, CompositionArtifactRef, CompositionConflict, CompositionHeader,

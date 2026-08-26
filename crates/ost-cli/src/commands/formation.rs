@@ -604,7 +604,7 @@ fn component_payload(
         }
         ArtifactKind::Product => product_payload(root),
         ArtifactKind::Package => Ok((Vec::new(), activation_for_root(root)?)),
-        ArtifactKind::Runtime => Err(Error::validation(
+        ArtifactKind::Runtime | ArtifactKind::ComposedRuntime => Err(Error::validation(
             "runtime artifact cannot be a Formation component",
         )),
     }

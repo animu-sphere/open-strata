@@ -107,6 +107,19 @@ pub trait ArtifactTransport {
         scratch: &Utf8Path,
     ) -> Result<FetchOutcome>;
 
+    /// Snapshot the producer manifest and optional evidence without downloading
+    /// payload archives. The caller must validate these metadata against an
+    /// independently verified archive; this is not a substitute for `pull`.
+    /// Backends without a metadata-only path may fetch the complete distribution.
+    fn fetch_metadata(
+        &self,
+        reference: &RemoteReference,
+        resolved: &ResolvedRemote,
+        scratch: &Utf8Path,
+    ) -> Result<FetchOutcome> {
+        self.fetch(reference, resolved, scratch)
+    }
+
     /// Publish a store-resolved artifact to `destination`, emitting the exact
     /// OCI layout / media types [`crate::transport::oci::OciTransport::fetch`]
     /// consumes. Content-addressed and idempotent: pushing bytes already at the

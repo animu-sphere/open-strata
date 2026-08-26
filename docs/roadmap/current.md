@@ -5,11 +5,19 @@ The next milestone and active carry-over work. Shipped detail is in
 
 ## v0.22.7 - locked composed runtime
 
-**Status:** ⬜ not started · **Depends on:** the v0.22.4 runtime component model.
+**Status:** implementation and Windows local gates complete; release CI and
+publication pending. **Depends on:** the v0.22.4 runtime component model.
 
 A resolved composition is only useful if it can be reproduced. This slice turns
 the v0.22.4 resolved model into a lock plus an exportable, independently
 transportable runtime artifact.
+
+The working implementation provides `compose --lock/--locked/--output`,
+`reconstruct`, and `export/validate --composition`. See the
+[draft release record](../releases/v0.22.7.md) and
+[consumer guide](../guides/compose-a-runtime.md). Unix-specific symlink/mode tests
+are included but still need a Linux Rust test runner; the available WSL has no
+Rust installation. The current published version remains v0.22.6.
 
 ### Acceptance
 
@@ -29,10 +37,11 @@ acceptance is in the [runtime-composition plan](runtime-composition.md).
 
 ## Active carry-over
 
-- **v0.22.6 downstream CI acceptance.** Update USD VRM PR #140's OST bootstrap
-  and hand-authored release pins, regenerate its workflows, and rerun the source
-  cells with the released fix. Verify explained Qt/device skips on hosted
-  Windows/macOS and investigate any later build/test failures. Evidence:
+- **v0.22.6 remaining host-probe evidence.** The maintainer confirmed successful
+  USD VRM real-artifact consumption with v0.22.6 on 2026-08-26. That consumer
+  blocker is closed; it does not independently establish Qt/device/render
+  observations on every hosted Windows/macOS cell. Keep those observations
+  separate from artifact consumption. Historical investigation:
   [render-prerequisite report](../reports/2026-08-26-usd-vrm-ci-render-prerequisites.md).
 - **v0.22.4 cross-repository acceptance.** Run the real published-artifact
   composition pass in `usd-geospatial-runtime` against independently published

@@ -43,7 +43,7 @@ pub enum ArtifactCmd {
     },
     /// List artifacts in the local registry.
     List {
-        /// Only show artifacts of this kind: runtime | plugin | product | package.
+        /// Only show artifacts of this kind: runtime | composed-runtime | plugin | product | package.
         #[arg(long)]
         kind: Option<String>,
     },
@@ -138,7 +138,7 @@ pub enum ArtifactCmd {
         /// (the support line / lockfile contract).
         #[arg(long, value_name = "sha256:<hex>")]
         expect_artifact: Option<String>,
-        /// Require the artifact kind: runtime | plugin | product | package.
+        /// Require the artifact kind: runtime | composed-runtime | plugin | product | package.
         #[arg(long, value_name = "KIND")]
         require_kind: Option<String>,
         /// Require the artifact's target id to match exactly.
@@ -277,7 +277,7 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
                     .map(|k| {
                         ArtifactKind::from_tag(k).ok_or_else(|| {
                             Error::usage(format!(
-                                "unknown artifact kind '{k}' (expected runtime, plugin, product, or package)"
+                                "unknown artifact kind '{k}' (expected runtime, composed-runtime, plugin, product, or package)"
                             ))
                         })
                     })
@@ -832,7 +832,7 @@ fn list(store: &ArtifactStore, kind: Option<&str>, fmt: Format) -> Result<()> {
         .map(|k| {
             ArtifactKind::from_tag(k).ok_or_else(|| {
                 Error::usage(format!(
-                    "unknown artifact kind '{k}' (expected runtime, plugin, product, or package)"
+                    "unknown artifact kind '{k}' (expected runtime, composed-runtime, plugin, product, or package)"
                 ))
             })
         })

@@ -45,6 +45,8 @@ pub const TOOL_KIND: &str = "openstrata.tool";
 
 /// Producer-manifest `kind` tag for runtime artifacts (future `runtime export`).
 pub const RUNTIME_KIND: &str = "openstrata.runtime";
+/// A locked multi-artifact composition, not a legacy OpenUSD runtime manifest.
+pub const COMPOSED_RUNTIME_KIND: &str = "openstrata.composed-runtime";
 
 /// Producer-manifest field selecting the source/dependency-aware OpenUSD
 /// selector algorithm. Manifests without this field predate that algorithm and
@@ -62,6 +64,8 @@ pub const OPENUSD_SELECTOR_SCHEMA: u32 = 3;
 pub enum ArtifactKind {
     /// A prebuilt OpenUSD runtime (consumable via `RuntimeSource::Artifact`).
     Runtime,
+    #[serde(rename = "composed-runtime")]
+    ComposedRuntime,
     /// A packaged plugin bundle (`ost plugin package` output).
     Plugin,
     /// An aggregate of exact packaged plugin members.
@@ -74,6 +78,7 @@ impl ArtifactKind {
     pub fn as_str(self) -> &'static str {
         match self {
             ArtifactKind::Runtime => "runtime",
+            ArtifactKind::ComposedRuntime => "composed-runtime",
             ArtifactKind::Plugin => "plugin",
             ArtifactKind::Product => "product",
             ArtifactKind::Package => "package",
@@ -83,6 +88,7 @@ impl ArtifactKind {
     pub fn from_tag(tag: &str) -> Option<ArtifactKind> {
         match tag {
             "runtime" => Some(ArtifactKind::Runtime),
+            "composed-runtime" => Some(ArtifactKind::ComposedRuntime),
             "plugin" => Some(ArtifactKind::Plugin),
             "product" => Some(ArtifactKind::Product),
             "package" => Some(ArtifactKind::Package),
@@ -288,6 +294,24 @@ impl ArtifactRecord {
         imported_by: &str,
     ) -> Result<ArtifactRecord> {
         let kind = detect_kind(manifest)?;
+        if kind == ArtifactKind::ComposedRuntime {
+            let composition = manifest.get("composition").ok_or_else(|| {
+                Error::InvalidManifest("composed runtime requires composition metadata".into())
+            })?;
+            if composition.get("schema").and_then(|v| v.as_str())
+                != Some("openstrata.composed-runtime/v1alpha1")
+                || composition.get("lock").and_then(|v| v.as_str())
+                    != Some("metadata/composition.lock.json")
+                || !composition
+                    .get("runtime_digest")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(is_sha256_ref)
+            {
+                return Err(Error::InvalidManifest(
+                    "composed runtime has an invalid schema, identity or lock path".into(),
+                ));
+            }
+        }
         validate_openusd_selector_schema(manifest, kind)?;
 
         let manifest_tag = manifest.get("kind").and_then(|value| value.as_str());
@@ -318,7 +342,10 @@ impl ArtifactRecord {
                     licenses,
                 )
             }
-            ArtifactKind::Runtime | ArtifactKind::Product | ArtifactKind::Package => {
+            ArtifactKind::Runtime
+            | ArtifactKind::ComposedRuntime
+            | ArtifactKind::Product
+            | ArtifactKind::Package => {
                 let licenses = manifest
                     .get("licenses")
                     .and_then(|v| v.as_array())
@@ -845,6 +872,7 @@ fn detect_kind(manifest: &serde_json::Value) -> Result<ArtifactKind> {
         Some(PLUGIN_BUNDLE_KIND) => Ok(ArtifactKind::Plugin),
         Some(PLUGIN_PRODUCT_KIND) => Ok(ArtifactKind::Product),
         Some(RUNTIME_KIND) => Ok(ArtifactKind::Runtime),
+        Some(COMPOSED_RUNTIME_KIND) => Ok(ArtifactKind::ComposedRuntime),
         Some(TOOL_KIND) => Ok(ArtifactKind::Package),
         Some(other) => Err(Error::InvalidManifest(format!(
             "unrecognized producer manifest kind '{other}' \

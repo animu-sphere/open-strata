@@ -106,6 +106,9 @@ pub struct PackOptions {
     /// digest without materializing a metadata file in the extracted tree.
     /// Values must use the canonical `sha256:<64 lowercase hex>` form.
     pub identity_digest: Option<String>,
+    /// Verified archive-relative executable paths to preserve when repacking
+    /// on a host whose filesystem does not retain Unix executable modes.
+    pub executable_paths: BTreeSet<String>,
 }
 
 impl Default for PackOptions {
@@ -118,6 +121,7 @@ impl Default for PackOptions {
             workers: 0,
             mtime: 0,
             identity_digest: None,
+            executable_paths: BTreeSet::new(),
         }
     }
 }
@@ -255,7 +259,7 @@ pub fn pack_dir_with(
             // archive must be deterministic (identical input → identical bytes),
             // and consumers only need "is this a tool" (0o755) vs "is this data"
             // (0o644), not the producer's exact umask.
-            let executable = is_executable(&meta);
+            let executable = is_executable(&meta) || opts.executable_paths.contains(&rel);
             let mode = if executable { 0o755 } else { 0o644 };
             let mut header = tar::Header::new_gnu();
             header.set_size(data.len() as u64);

@@ -39,6 +39,9 @@ pub struct CompositionHeader {
 #[serde(deny_unknown_fields)]
 pub struct CompositionArtifactRef {
     pub artifact: String,
+    /// Optional digest-pinned transport locator; never part of runtime identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl RuntimeCompositionManifest {
@@ -74,6 +77,16 @@ impl RuntimeCompositionManifest {
         let mut digests = BTreeSet::new();
         for artifact in &self.artifacts {
             validate_full_digest("composition artifact", &artifact.artifact)?;
+            if let Some(source) = &artifact.source {
+                let reference = ost_artifact::RemoteReference::parse(source)?;
+                if !reference.is_pinned() {
+                    return Err(Error::coded(
+                        "COMPOSITION_SOURCE_MUTABLE",
+                        Category::Configuration,
+                        "composition sources must be digest-pinned",
+                    ));
+                }
+            }
             if !digests.insert(&artifact.artifact) {
                 return Err(Error::coded(
                     "COMPOSITION_DUPLICATE_ARTIFACT",
@@ -93,12 +106,28 @@ impl RuntimeCompositionManifest {
     }
 
     pub fn digest(&self) -> Result<String> {
-        let bytes = serde_json::to_vec(self).map_err(|error| {
+        let bytes = serde_json::to_vec(&self.canonical()).map_err(|error| {
             Error::Operation(format!(
                 "cannot serialize runtime composition manifest: {error}"
             ))
         })?;
         Ok(digest::sha256_hex(&bytes))
+    }
+
+    /// Set-like inputs have one ordering; transport locations are not identity.
+    pub fn canonical(&self) -> Self {
+        let mut manifest = self.clone();
+        for artifact in &mut manifest.artifacts {
+            artifact.source = None;
+        }
+        manifest
+            .artifacts
+            .sort_by(|a, b| a.artifact.cmp(&b.artifact));
+        manifest
+            .requirements
+            .sort_by(|a, b| requirement_key(a).cmp(&requirement_key(b)));
+        manifest.requirements.dedup();
+        manifest
     }
 }
 
@@ -969,6 +998,7 @@ mod tests {
                 .iter()
                 .map(|record| CompositionArtifactRef {
                     artifact: record.digest.clone(),
+                    source: None,
                 })
                 .collect(),
             providers: BTreeMap::new(),
