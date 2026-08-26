@@ -66,6 +66,9 @@ impl Sandbox {
         for (relative, content) in [
             ("plugin/usd/plugInfo.json", "{}"),
             (format!("{python_dir}/pxr/__init__.py").as_str(), ""),
+            // Keep the declared loader directory in the archive even when
+            // Python lives under Lib/ on a case-sensitive filesystem.
+            ("lib/runtime-fixture.txt", "mock runtime loader directory\n"),
             ("bin/usdcat", "#!/bin/sh\n"),
             (
                 "include/pxr/pxr.h",

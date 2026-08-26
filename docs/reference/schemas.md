@@ -274,6 +274,7 @@ Deterministic file ownership and portable Formation activation contributions, em
 | `files` | array | yes |  |
 | `roots` | — | yes |  |
 | `schema` | — | yes |  |
+| `settings` | — | yes |  |
 
 ## `tool.schema.json`
 
