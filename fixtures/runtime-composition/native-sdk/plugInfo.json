@@ -1,0 +1,9 @@
+{
+  "Plugins": [{
+    "Name": "TinyResourceFixture",
+    "Type": "resource",
+    "Root": ".",
+    "ResourcePath": ".",
+    "Info": {"Types": {"TinyFixture": {"schemaKind": "singleApplyAPI"}}}
+  }]
+}

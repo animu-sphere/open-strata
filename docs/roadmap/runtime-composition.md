@@ -39,14 +39,19 @@ transportable.
 **Objective:** applications consume a runtime through predictable native
 conventions.
 
-- Materialize the owner-recorded `bin`, `lib`, `include`, `share`, `plugins`,
-  `python`, `node` and `metadata` roots.
-- Generate deterministic activation/environment data using the existing
-  Formation environment contract.
-- Expose installed CMake config packages to a clean C++ consumer through normal
-  `find_package(... CONFIG)` resolution.
-- Validate loader, executable, plugin, resolver, schema and CMake-package
-  reachability from an isolated prefix.
+The SDK layout, ownership/activation contract, environment/exec commands and
+explicit CMake probe are implemented. Windows native shared-library SDK
+consumption passes after export, clean reconstruction and prefix relocation.
+See the [draft release record](../releases/v0.22.8.md).
+
+Remaining gates:
+
+- Run native CMake consumption and filesystem symlink/mode checks on Linux/macOS.
+- Validate real OpenUSD loader, plugin, resolver and schema execution with
+  component-owned probes from the composed prefix. Structural path checks and
+  the native Tiny SDK fixture do not establish these observations.
+- Complete release CI and publication; implementation does not advance the
+  workspace version or publish a release.
 
 ## v0.22.9 - geospatial runtime dogfood
 

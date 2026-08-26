@@ -35,6 +35,26 @@ A composed runtime locked on one machine reconstructs to the same identity on a
 clean machine from the lock and immutable artifacts alone. Full v0.22.7-v0.22.11
 acceptance is in the [runtime-composition plan](runtime-composition.md).
 
+## v0.22.8 - runtime SDK layout
+
+**Status:** implementation and Windows local SDK consumer gates complete;
+cross-platform and real OpenUSD acceptance remain. Release preparation is
+separate, and v0.22.7 publication above is still pending.
+
+New locks materialize SDK roots and ownership, generate Formation activation,
+and support `runtime env`, `runtime exec` and explicit CMake package validation.
+The Windows native test exports, reconstructs, relocates and consumes a real
+C++ shared-library SDK after removing the producer build/install trees. Details:
+[draft release record](../releases/v0.22.8.md) and
+[consumer guide](../guides/compose-a-runtime.md).
+
+Remaining acceptance:
+
+- Run the native SDK consumer and filesystem symlink/mode gates on Linux/macOS.
+- Run component-owned OpenUSD loader/plugin/resolver/schema probes from the
+  composed prefix; structural plugInfo/schema checks do not prove registration.
+- Complete release CI and the version/attribution/publication process.
+
 ## Active carry-over
 
 - **v0.22.6 remaining host-probe evidence.** The maintainer confirmed successful

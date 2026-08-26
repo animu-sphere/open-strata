@@ -44,7 +44,7 @@ pub use model::{
 };
 pub use plug_info::{
     contains_template_token, library_plugin_names, library_plugin_paths, merge_schema_types,
-    shared_library_suffix, MergeError,
+    parse_plug_info, shared_library_suffix, MergeError,
 };
 pub use report::{
     ci_evidence_from_env, environment_json, report_json, summary_text, write_report, REPORT_SCHEMA,

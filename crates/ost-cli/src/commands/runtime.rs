@@ -57,7 +57,7 @@ pub enum RuntimeCmd {
         /// Require the existing --lock to match; never rewrite it.
         #[arg(long, requires = "lock")]
         locked: bool,
-        /// Materialize component prefixes into a new directory.
+        /// Materialize an owner-recorded SDK and retained component prefixes.
         #[arg(long)]
         output: Option<Utf8PathBuf>,
     },
@@ -75,6 +75,20 @@ pub enum RuntimeCmd {
         /// New destination directory (existing paths are never overwritten).
         #[arg(long)]
         output: Utf8PathBuf,
+    },
+    /// Print a verified composed SDK's isolated environment.
+    Env {
+        #[arg(long)]
+        composition: Utf8PathBuf,
+        #[arg(long)]
+        shell: Option<String>,
+    },
+    /// Run a command with a verified composed SDK's isolated search paths.
+    Exec {
+        #[arg(long)]
+        composition: Utf8PathBuf,
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
     },
     /// Materialize a runtime into the local store.
     Pull {
@@ -206,6 +220,12 @@ pub enum RuntimeCmd {
         /// Verify a materialized composition's lock, files and retained evidence.
         #[arg(long, conflicts_with = "profile")]
         composition: Option<Utf8PathBuf>,
+        /// Inspect SDK search paths and plugin/schema/resource reachability.
+        #[arg(long, requires = "composition")]
+        sdk: bool,
+        /// Opt in to executing an installed CMake config package in isolation.
+        #[arg(long, requires = "sdk")]
+        cmake_package: Vec<String>,
         /// Profile, e.g. `usd`.
         #[arg(long, default_value = "core")]
         profile: String,
@@ -231,6 +251,13 @@ pub enum RuntimeCmd {
 
 pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
     match cmd {
+        RuntimeCmd::Env { composition, shell } => {
+            super::runtime_composition::environment(&composition, shell.as_deref(), fmt)
+        }
+        RuntimeCmd::Exec {
+            composition,
+            command,
+        } => super::runtime_composition::execute(&composition, &command, fmt),
         RuntimeCmd::Compose {
             manifest,
             lock,
@@ -323,9 +350,11 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             platform,
             profile,
             composition,
+            sdk,
+            cmake_package,
         } => {
             if let Some(prefix) = composition {
-                super::runtime_composition::validate(&prefix, fmt)
+                super::runtime_composition::validate(&prefix, sdk, &cmake_package, fmt)
             } else {
                 validate(
                     platform.as_deref().ok_or_else(|| {

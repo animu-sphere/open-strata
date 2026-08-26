@@ -9,13 +9,10 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-v0.22.7 is active. Detailed acceptance for the remaining v0.22.x runtime
+v0.22.7 publication and v0.22.8 acceptance are active in [current.md](current.md).
+Detailed acceptance for the remaining v0.22.x runtime
 composition slices is in [runtime-composition.md](runtime-composition.md).
 
-- ⬜ **v0.22.8 - runtime SDK layout.** Materialize predictable `bin`, `lib`,
-  `include`, `share`, `plugins`, `python`, `node` and `metadata` roots with
-  owner-recorded activation. Prove normal CMake SDK consumption from an isolated
-  prefix.
 - ⬜ **v0.22.9 - geospatial runtime dogfood.** Compose a digest-pinned canonical
   OpenUSD 26.08 cell, HTTP resolver, point-cloud plugins and raster plugins from
   published artifacts in

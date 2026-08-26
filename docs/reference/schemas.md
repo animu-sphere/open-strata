@@ -246,6 +246,7 @@ Portable provider, source, compatibility, dependency and materialized-inventory 
 | `resolved` | object | yes |  |
 | `runtime_digest` | — | yes |  |
 | `schema` | — | yes |  |
+| `sdk` | — | no |  |
 
 ## `runtime-composition.schema.json`
 
@@ -260,6 +261,20 @@ A target, capability requirements, immutable artifact candidates, and explicit p
 | `providers` | object | no |  |
 | `requirements` | array | yes |  |
 | `schema` | — | yes |  |
+
+## `runtime-sdk.schema.json`
+
+OpenStrata Runtime SDK Layout
+
+Deterministic file ownership and portable Formation activation contributions, embedded in SDK composition locks and metadata/sdk.json. Semantic validation derives the entire layout again from the component contracts and inventory.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `environment` | object | yes |  |
+| `files` | array | yes |  |
+| `roots` | — | yes |  |
+| `schema` | — | yes |  |
+| `settings` | — | yes |  |
 
 ## `tool.schema.json`
 

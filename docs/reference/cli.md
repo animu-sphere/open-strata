@@ -1344,6 +1344,8 @@ Resolve component models and manage runtimes in the local store
 **Subcommands:**
 
 - [`ost runtime compose`](#ost-runtime-compose) — Resolve a component manifest without materializing any files
+- [`ost runtime env`](#ost-runtime-env) — Print a verified composed SDK's isolated environment
+- [`ost runtime exec`](#ost-runtime-exec) — Run a command with a verified composed SDK's isolated search paths
 - [`ost runtime explain`](#ost-runtime-explain) — Explain how a profile resolves to capabilities and extensions
 - [`ost runtime export`](#ost-runtime-export) — Export a pulled real runtime into the local artifact registry
 - [`ost runtime list`](#ost-runtime-list) — List runtimes present in the local store
@@ -1371,7 +1373,38 @@ Resolve a component manifest without materializing any files
 | --- | --- |
 | `--lock <LOCK>` | Write a portable JSON lock after verifying all inputs |
 | `--locked` | Require the existing --lock to match; never rewrite it |
-| `--output <OUTPUT>` | Materialize component prefixes into a new directory |
+| `--output <OUTPUT>` | Materialize an owner-recorded SDK and retained component prefixes |
+
+#### `ost runtime env`
+
+Print a verified composed SDK's isolated environment
+
+**Usage:** `ost runtime env [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--composition <COMPOSITION>` |  |
+| `--shell <SHELL>` |  |
+
+#### `ost runtime exec`
+
+Run a command with a verified composed SDK's isolated search paths
+
+**Usage:** `ost runtime exec [OPTIONS] <COMMAND>`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<COMMAND>` | yes |  |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--composition <COMPOSITION>` |  |
 
 #### `ost runtime explain`
 
@@ -1521,8 +1554,10 @@ Validate a pulled runtime and record the outcome in its manifest
 
 | Option | Description |
 | --- | --- |
+| `--cmake-package <CMAKE_PACKAGE>` | Opt in to executing an installed CMake config package in isolation |
 | `--composition <COMPOSITION>` | Verify a materialized composition's lock, files and retained evidence |
 | `--profile <PROFILE>` | Profile, e.g. `usd` |
+| `--sdk` | Inspect SDK search paths and plugin/schema/resource reachability |
 
 ### `ost test`
 
