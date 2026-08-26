@@ -9,8 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
-| v0.22.8 (draft) | [v0.22.8.md](v0.22.8.md) | Runtime SDK layout; not yet released |
-| v0.22.7 (draft) | [v0.22.7.md](v0.22.7.md) | Locked composed runtime; not yet released |
+| v0.22.7 | [v0.22.7.md](v0.22.7.md) | Locked composed runtime and native SDK |
 | v0.22.6 | [v0.22.6.md](v0.22.6.md) | Render-probe prerequisites and physical-device evidence |
 | v0.22.5 | [v0.22.5.md](v0.22.5.md) | Consumer-lane corrections from downstream dogfooding |
 | v0.22.4 | [v0.22.4.md](v0.22.4.md) | Runtime component model + canonical matrix corrections |

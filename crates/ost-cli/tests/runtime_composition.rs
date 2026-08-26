@@ -163,6 +163,10 @@ fn exported_runtime_resolves_through_the_component_contract() {
 fn exported_runtime_python_layouts_support_repeated_sdk_execution() {
     let python = ost_core::tools::which("python").or_else(|| ost_core::tools::which("python3"));
     let shell = ost_core::tools::which(if cfg!(windows) { "pwsh" } else { "bash" });
+    if std::env::var_os("OST_TEST_REQUIRE_SDK_TOOLS").is_some() {
+        assert!(python.is_some(), "SDK CI requires a Python interpreter");
+        assert!(shell.is_some(), "SDK CI requires PowerShell/Bash");
+    }
     for python_dir in [
         "lib/python",
         "lib/site-packages",
@@ -1575,17 +1579,21 @@ fn checked(command: &mut Command) {
 
 #[test]
 fn relocated_sdk_builds_and_runs_a_clean_native_cmake_consumer() {
+    let require_tools = std::env::var_os("OST_TEST_REQUIRE_SDK_TOOLS").is_some();
     let Some(cmake) = ost_core::tools::which("cmake") else {
+        assert!(!require_tools, "SDK CI requires CMake");
         eprintln!("SKIP native SDK: CMake unavailable");
         return;
     };
     let Some(ninja) = ost_core::tools::which("ninja") else {
+        assert!(!require_tools, "SDK CI requires Ninja");
         eprintln!("SKIP native SDK: Ninja unavailable");
         return;
     };
     let mut build_env = std::collections::BTreeMap::new();
     if cfg!(windows) {
         let Some(msvc) = ost_build::msvc::bootstrap().expect("MSVC bootstrap") else {
+            assert!(!require_tools, "SDK CI requires MSVC");
             eprintln!("SKIP native SDK: MSVC unavailable");
             return;
         };
@@ -1594,6 +1602,7 @@ fn relocated_sdk_builds_and_runs_a_clean_native_cmake_consumer() {
         .iter()
         .any(|p| ost_core::tools::which(p).is_some())
     {
+        assert!(!require_tools, "SDK CI requires a C++ compiler");
         eprintln!("SKIP native SDK: C++ compiler unavailable");
         return;
     }
