@@ -34,6 +34,8 @@ pub struct RuntimeSdkLayout {
     pub files: Vec<SdkFile>,
     /// Formation's portable environment contract, separately for each OS.
     pub environment: BTreeMap<String, Vec<EnvironmentContribution>>,
+    /// Literal activation settings, separate from prefix-relative search paths.
+    pub settings: BTreeMap<String, String>,
 }
 
 fn portable(path: &str) -> Result<String> {
@@ -130,6 +132,45 @@ fn relative_link(path: &str, target: &str) -> String {
     } else {
         parts.join("/")
     }
+}
+
+fn runtime_python_path(
+    lock: &RuntimeCompositionLock,
+    component: &str,
+    target: &str,
+) -> Option<String> {
+    // Older runtime exporters did not declare PYTHONPATH. Discover the same
+    // OpenUSD layouts as ost-runtime, using only locked inventory (not the host).
+    let prefix = format!("components/{component}/");
+    let roots = lock
+        .inventory
+        .iter()
+        .filter_map(|entry| {
+            let path = entry.file.path.strip_prefix(&prefix)?;
+            path.split_once("/pxr/")
+                .map(|(root, _)| root)
+                .or_else(|| path.strip_suffix("/pxr"))
+        })
+        .collect::<BTreeSet<_>>();
+    let unversioned = ["lib/python", "lib/site-packages", "Lib/site-packages"];
+    let abi = target.split('-').find_map(|part| part.strip_prefix("py"));
+    let selected = unversioned
+        .into_iter()
+        .find(|root| roots.contains(root))
+        .or_else(|| {
+            roots.iter().copied().find(|root| {
+                let Some(version) = root
+                    .strip_prefix("lib/python")
+                    .and_then(|s| s.strip_suffix("/site-packages"))
+                else {
+                    return false;
+                };
+                !version.is_empty()
+                    && version.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+                    && abi.is_none_or(|abi| version.replace('.', "") == abi)
+            })
+        })?;
+    Some(format!("{prefix}{selected}"))
 }
 
 impl RuntimeSdkLayout {
@@ -298,6 +339,10 @@ impl RuntimeSdkLayout {
             roots: SDK_ROOTS.iter().map(|r| r.to_string()).collect(),
             files,
             environment: BTreeMap::new(),
+            settings: BTreeMap::from([
+                ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
+                ("PYTHONNOUSERSITE".into(), "1".into()),
+            ]),
         };
         for os in [Os::Linux, Os::Macos, Os::Windows] {
             let contribution =
@@ -310,6 +355,15 @@ impl RuntimeSdkLayout {
             let mut env = Vec::new();
             let mut set_paths = BTreeMap::<&str, Vec<String>>::new();
             for c in &lock.resolved.environment {
+                if layout.settings.contains_key(&c.variable) {
+                    return Err(composition_error(
+                        "COMPOSITION_ENVIRONMENT_CONFLICT",
+                        format!(
+                            "'{}' is an SDK activation setting, not a path variable",
+                            c.variable
+                        ),
+                    ));
+                }
                 if !c
                     .variable
                     .bytes()
@@ -324,14 +378,38 @@ impl RuntimeSdkLayout {
                 let mut paths = Vec::new();
                 for value in &c.values {
                     let value = portable(value)?;
+                    let path = format!("components/{}/{}", c.source, value)
+                        .trim_end_matches('/')
+                        .to_string();
+                    // Plugin packages historically advertised these optional
+                    // directories even when codeless archives contained neither.
+                    // Do not relax arbitrary paths or explicit plugin resources.
+                    let optional = c.operation != "set"
+                        && lock.resolved.components.iter().any(|component| {
+                            component.id == c.source && component.kind == "plugin"
+                        })
+                        && ((c.variable == "PYTHONPATH" && value == "python")
+                            || (matches!(
+                                c.variable.as_str(),
+                                "PATH" | "LD_LIBRARY_PATH" | "DYLD_LIBRARY_PATH"
+                            ) && value == "lib"));
+                    let descendants = format!("{path}/");
+                    if optional
+                        && !inventory.contains_key(path.as_str())
+                        && !inventory
+                            .range(descendants.as_str()..)
+                            .next()
+                            .is_some_and(|(p, _)| p.starts_with(&descendants))
+                    {
+                        continue;
+                    }
                     // Keep the producer's relative layout for plugin resource
                     // references and RPATH. The public SDK prefix is added last
                     // (highest prepend priority) below.
-                    paths.push(
-                        format!("components/{}/{}", c.source, value)
-                            .trim_end_matches('/')
-                            .into(),
-                    );
+                    paths.push(path);
+                }
+                if paths.is_empty() {
+                    continue;
                 }
                 if c.operation == "set" {
                     if let Some(previous) = set_paths.insert(&c.variable, paths.clone()) {
@@ -346,6 +424,21 @@ impl RuntimeSdkLayout {
                     source: c.source.clone(),
                     paths,
                 });
+            }
+            for component in lock.resolved.components.iter().filter(|component| {
+                component.kind == "runtime"
+                    && lock.resolved.providers.iter().any(|provider| {
+                        provider.component == component.id && provider.capability == "usd"
+                    })
+                    && !lock
+                        .resolved
+                        .environment
+                        .iter()
+                        .any(|c| c.source == component.id && c.variable == "PYTHONPATH")
+            }) {
+                if let Some(path) = runtime_python_path(lock, &component.id, &component.target) {
+                    env.push(contribution("PYTHONPATH", &component.id, vec![path]));
+                }
             }
             let loader = crate::loader_key(os);
             for (key, path) in [
@@ -411,6 +504,9 @@ impl RuntimeSdkLayout {
             };
             values.insert(c.key.clone(), value);
         }
+        // Python imports must not add __pycache__ files to the verified SDK.
+        // Apply this policy to shell activation and runtime exec alike.
+        values.extend(self.settings.clone());
         Ok(EnvSet {
             sep: separator,
             vars: values

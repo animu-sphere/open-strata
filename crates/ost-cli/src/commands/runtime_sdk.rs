@@ -73,7 +73,6 @@ fn isolated(command: &mut Command, env: &EnvSet) {
         command.env_remove(key);
     }
     command.envs(env.pairs());
-    command.env("PYTHONNOUSERSITE", "1");
 }
 
 fn program_path(program: &str, env: &EnvSet) -> Result<Utf8PathBuf> {
@@ -154,8 +153,12 @@ pub(super) fn validate(
 ) -> Result<()> {
     let root = absolute(root)?;
     let env = activation(&root, lock)?;
+    let sdk = lock.sdk.as_ref().expect("activation checked SDK");
     let mut checks = Vec::new();
     for (key, value) in env.pairs() {
+        if sdk.settings.contains_key(&key) {
+            continue;
+        }
         for path in value.split(env.sep) {
             let passed = reachable(&root, Utf8Path::new(path));
             checks.push(json!({"name": "activation-path", "variable": key, "path": path, "status": if passed { "passed" } else { "failed" }}));
@@ -163,7 +166,6 @@ pub(super) fn validate(
     }
     // Inspect both preserved and projected plugInfo documents; projection can
     // break a relative LibraryPath even when the original remains valid.
-    let sdk = lock.sdk.as_ref().expect("activation checked SDK");
     let files = lock
         .inventory
         .iter()

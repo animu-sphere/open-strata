@@ -5,10 +5,13 @@
   "description": "Deterministic file ownership and portable Formation activation contributions, embedded in SDK composition locks and metadata/sdk.json. Semantic validation derives the entire layout again from the component contracts and inventory.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "roots", "files", "environment"],
+  "required": ["schema", "roots", "files", "environment", "settings"],
   "properties": {
     "schema": { "const": "openstrata.runtime-sdk/v1alpha1" },
     "roots": { "const": ["bin", "lib", "include", "share", "plugins", "python", "node", "metadata"] },
+    "settings": {
+      "const": { "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1" }
+    },
     "files": {
       "type": "array",
       "items": {

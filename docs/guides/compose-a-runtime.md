@@ -100,6 +100,7 @@ New locks include an additive `sdk` object. `metadata/sdk.json` records the same
 `openstrata.runtime-sdk/v1alpha1` layout: each projected file's component owner,
 artifact digest, original source path, content/mode/link identity, and portable
 Formation environment contributions. All of it contributes to `runtime_digest`.
+Literal activation settings are recorded separately in `sdk.settings`.
 
 The public prefix always has `bin`, `lib`, `include`, `share`, `plugins`,
 `python`, `node` and `metadata` directories, including empty roots after export
@@ -131,6 +132,14 @@ replaces the affected shell search variables; use a disposable shell if you need
 to keep your development PATH. Neither compose nor env changes the parent shell.
 Prefix paths containing path-list separators are rejected.
 
+For existing OpenUSD runtime artifacts without a `PYTHONPATH` declaration, the
+composer discovers `lib/python`, `lib/site-packages`, `Lib/site-packages`, or a
+target-ABI-matching `lib/pythonX.Y/site-packages` in the locked inventory.
+Explicit producer declarations take precedence. Both shell activation and
+`runtime exec` set `PYTHONDONTWRITEBYTECODE=1` and `PYTHONNOUSERSITE=1`, so normal
+Python imports do not add `__pycache__` files to the immutable prefix or use
+user-site packages. These settings are reserved and cannot be path contributions.
+
 `runtime exec` verifies the prefix and host OS/architecture before launching.
 Bare commands resolve only on SDK PATH; pass an absolute executable path for an
 external tool such as CMake, a compiler, or a separately built consumer. Runtime
@@ -160,6 +169,11 @@ as failures. It does not emulate USD's `Includes` expansion or prove type/resolv
 registration. Components must declare their plugin discovery paths. Run a
 component-owned OpenUSD probe through `runtime exec` for native discovery and
 resolver behavior.
+
+Older plugin packages advertise conventional `lib` and `python` search paths
+even for codeless schemas. If their locked inventory contains neither directory,
+those optional search entries are omitted. Other declared paths, plugin library
+references and schema resources remain required.
 
 `--cmake-package` is repeatable and opts in to executing package code. Use trusted
 components. It calls `find_package(... CONFIG REQUIRED)` in a fresh project,

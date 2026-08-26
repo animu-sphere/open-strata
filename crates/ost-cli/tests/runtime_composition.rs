@@ -36,6 +36,8 @@ impl Sandbox {
             .env_remove("OST_USD_ROOT")
             .env_remove("OST_USD_SRC")
             .env_remove("OST_USD_DEPS")
+            .env_remove("PYTHONDONTWRITEBYTECODE")
+            .env_remove("PYTHONPYCACHEPREFIX")
             .output()
             .expect("spawn ost")
     }
@@ -49,7 +51,7 @@ impl Sandbox {
             .path()
     }
 
-    fn promote_runtime(&self) {
+    fn promote_runtime_with_python_dir(&self, python_dir: &str) {
         let prefix = self.runtime_prefix();
         let manifest_path = prefix.join("runtime.json");
         let mut manifest: serde_json::Value =
@@ -63,7 +65,7 @@ impl Sandbox {
         .unwrap();
         for (relative, content) in [
             ("plugin/usd/plugInfo.json", "{}"),
-            ("lib/python/pxr/__init__.py", ""),
+            (format!("{python_dir}/pxr/__init__.py").as_str(), ""),
             ("bin/usdcat", "#!/bin/sh\n"),
             (
                 "include/pxr/pxr.h",
@@ -108,11 +110,9 @@ fn path(path: &Path) -> &str {
     path.to_str().unwrap()
 }
 
-#[test]
-fn exported_runtime_resolves_through_the_component_contract() {
-    let sandbox = Sandbox::new();
+fn exported_runtime_composition(sandbox: &Sandbox, python_dir: &str) -> (PathBuf, String) {
     json(sandbox.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
-    sandbox.promote_runtime();
+    sandbox.promote_runtime_with_python_dir(python_dir);
     let exported =
         json(sandbox.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
     let digest = exported["data"]["digest"].as_str().unwrap();
@@ -133,6 +133,13 @@ artifact = "{digest}"
     );
     let pathbuf = sandbox.base.join("runtime-composition.toml");
     std::fs::write(&pathbuf, manifest).unwrap();
+    (pathbuf, digest.to_string())
+}
+
+#[test]
+fn exported_runtime_resolves_through_the_component_contract() {
+    let sandbox = Sandbox::new();
+    let (pathbuf, digest) = exported_runtime_composition(&sandbox, "lib/python");
 
     let resolved = json(sandbox.ost(&["--json", "runtime", "compose", path(&pathbuf)]));
     assert_eq!(
@@ -147,6 +154,247 @@ artifact = "{digest}"
         .unwrap()
         .starts_with("sha256:"));
     assert_eq!(resolved["data"]["conflicts"], serde_json::json!([]));
+}
+
+#[test]
+fn exported_runtime_python_layouts_support_repeated_sdk_execution() {
+    let python = ost_core::tools::which("python").or_else(|| ost_core::tools::which("python3"));
+    let shell = ost_core::tools::which(if cfg!(windows) { "pwsh" } else { "bash" });
+    for python_dir in [
+        "lib/python",
+        "lib/site-packages",
+        "Lib/site-packages",
+        "lib/python3.13/site-packages",
+    ] {
+        let sandbox = Sandbox::new();
+        let (manifest, _) = exported_runtime_composition(&sandbox, python_dir);
+        let prefix = sandbox.base.join("sdk");
+        json(sandbox.ost(&[
+            "--json",
+            "runtime",
+            "compose",
+            path(&manifest),
+            "--output",
+            path(&prefix),
+        ]));
+        let environment =
+            json(sandbox.ost(&["--json", "runtime", "env", "--composition", path(&prefix)]));
+        let pairs: Vec<(String, String)> =
+            serde_json::from_value(environment["data"]["env"].clone()).unwrap();
+        let vars = pairs
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(vars["PYTHONDONTWRITEBYTECODE"], "1");
+        assert_eq!(vars["PYTHONNOUSERSITE"], "1");
+        assert!(
+            vars["PYTHONPATH"]
+                .to_ascii_lowercase()
+                .contains(&python_dir.to_ascii_lowercase()),
+            "{vars:?}"
+        );
+
+        if let Some(python) = &python {
+            for _ in 0..2 {
+                let executed = json(sandbox.ost(&[
+                    "--json",
+                    "runtime",
+                    "exec",
+                    "--composition",
+                    path(&prefix),
+                    "--",
+                    path(python),
+                    "-c",
+                    "import pxr; print(pxr.__file__)",
+                ]));
+                let loaded = executed["data"]["stdout"].as_str().unwrap().trim();
+                assert!(Path::new(loaded).starts_with(&prefix), "{loaded}");
+            }
+            if let Some(shell) = &shell {
+                let rendered = sandbox.ost(&[
+                    "runtime",
+                    "env",
+                    "--composition",
+                    path(&prefix),
+                    "--shell",
+                    if cfg!(windows) { "pwsh" } else { "bash" },
+                ]);
+                assert!(rendered.status.success());
+                let mut script = String::from_utf8(rendered.stdout).unwrap();
+                script.push_str(if cfg!(windows) {
+                    "& $env:SDK_TEST_PYTHON -c 'import pxr; print(pxr.__file__)'\nexit $LASTEXITCODE\n"
+                } else {
+                    "\"$SDK_TEST_PYTHON\" -c 'import pxr; print(pxr.__file__)'\n"
+                });
+                let script_path = sandbox.base.join(if cfg!(windows) {
+                    "activate.ps1"
+                } else {
+                    "activate.sh"
+                });
+                std::fs::write(&script_path, script).unwrap();
+                let mut command = Command::new(shell);
+                if cfg!(windows) {
+                    command.args(["-NoProfile", "-File"]);
+                }
+                let output = command
+                    .arg(script_path)
+                    .env("SDK_TEST_PYTHON", python)
+                    .env_remove("PYTHONHOME")
+                    .env_remove("PYTHONPYCACHEPREFIX")
+                    .env_remove("PYTHONDONTWRITEBYTECODE")
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{output:?}");
+                let stdout = String::from_utf8(output.stdout).unwrap();
+                assert!(Path::new(stdout.trim()).starts_with(&prefix), "{stdout}");
+            } else {
+                eprintln!("SKIP: shell execution requires PowerShell/Bash");
+            }
+        } else {
+            eprintln!("SKIP: Python execution requires a host interpreter");
+        }
+        // Both execution modes must leave the full inventory immutable.
+        json(sandbox.ost(&[
+            "--json",
+            "runtime",
+            "validate",
+            "--composition",
+            path(&prefix),
+            "--sdk",
+        ]));
+        json(sandbox.ost(&[
+            "--json",
+            "runtime",
+            "export",
+            "--composition",
+            path(&prefix),
+        ]));
+        if python_dir == "lib/python3.13/site-packages" {
+            let mut lock: ost_formation::RuntimeCompositionLock = serde_json::from_slice(
+                &std::fs::read(prefix.join("metadata/composition.lock.json")).unwrap(),
+            )
+            .unwrap();
+            let mut other_abi = lock
+                .inventory
+                .iter()
+                .find(|entry| entry.file.path.ends_with("pxr/__init__.py"))
+                .unwrap()
+                .clone();
+            other_abi.file.path = other_abi.file.path.replace("python3.13", "python3.12");
+            lock.inventory.push(other_abi);
+            let sdk = ost_formation::RuntimeSdkLayout::derive(&lock).unwrap();
+            assert!(sdk.environment.values().all(|env| env
+                .iter()
+                .filter(|c| c.key == "PYTHONPATH")
+                .flat_map(|c| &c.paths)
+                .all(|p| !p.contains("python3.12"))));
+
+            // An explicit declaration wins even if a conventional layout exists.
+            lock.resolved
+                .environment
+                .push(ost_formation::ResolvedEnvironmentContribution {
+                    variable: "PYTHONPATH".into(),
+                    operation: "prepend".into(),
+                    source: lock.resolved.components[0].id.clone(),
+                    values: vec!["custom-python".into()],
+                });
+            let sdk = ost_formation::RuntimeSdkLayout::derive(&lock).unwrap();
+            assert!(sdk.environment.values().all(|env| {
+                let paths = env
+                    .iter()
+                    .filter(|c| c.key == "PYTHONPATH")
+                    .flat_map(|c| &c.paths)
+                    .collect::<Vec<_>>();
+                paths.iter().any(|p| p.ends_with("custom-python"))
+                    && !paths.iter().any(|p| p.contains("site-packages"))
+            }));
+        }
+    }
+}
+
+#[test]
+fn codeless_schema_sdk_omits_empty_optional_search_paths() {
+    let sandbox = Sandbox::new();
+    let (manifest, _) = exported_runtime_composition(&sandbox, "lib/python");
+    let plugin = sandbox.base.join("codeless");
+    json(sandbox.ost(&[
+        "--json",
+        "plugin",
+        "new",
+        "usd-schema",
+        "codeless",
+        "--dir",
+        path(&plugin),
+    ]));
+    let packaged = json(sandbox.ost(&[
+        "--json",
+        "plugin",
+        "package",
+        path(&plugin),
+        "--target",
+        "cy2026",
+        "--profile",
+        "usd",
+    ]));
+    let archive = Path::new(packaged["data"]["archive"].as_str().unwrap());
+    let dist = archive.parent().unwrap();
+    json(sandbox.ost(&["--json", "artifact", "import", path(dist)]));
+    let mut source = std::fs::read_to_string(&manifest).unwrap();
+    source.push_str(&format!(
+        "\n[[requirements]]\ncapability = 'component:codeless'\n[[artifacts]]\nartifact = '{}'\n",
+        packaged["data"]["archive_digest"].as_str().unwrap(),
+    ));
+    std::fs::write(&manifest, source).unwrap();
+    let prefix = sandbox.base.join("sdk");
+    json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "compose",
+        path(&manifest),
+        "--output",
+        path(&prefix),
+    ]));
+    assert!(!prefix.join("components/codeless/lib").exists());
+    assert!(!prefix.join("components/codeless/python").exists());
+    let report = json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "validate",
+        "--composition",
+        path(&prefix),
+        "--sdk",
+    ]));
+    assert!(report["data"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| { check["name"] == "schema-resource" && check["status"] == "passed" }));
+
+    let lock: ost_formation::RuntimeCompositionLock = serde_json::from_slice(
+        &std::fs::read(prefix.join("metadata/composition.lock.json")).unwrap(),
+    )
+    .unwrap();
+    // Conventional defaults alone are optional: missing declared plugin roots,
+    // nonstandard library paths, and set operations remain validation candidates.
+    for (key, operation, value) in [
+        ("PXR_PLUGINPATH_NAME", "prepend", "missing-resources"),
+        ("LD_LIBRARY_PATH", "prepend", "missing-libraries"),
+        ("CUSTOM_PATH", "set", "python"),
+    ] {
+        let mut declared = lock.clone();
+        declared
+            .resolved
+            .environment
+            .push(ost_formation::ResolvedEnvironmentContribution {
+                variable: key.into(),
+                operation: operation.into(),
+                source: "codeless".into(),
+                values: vec![value.into()],
+            });
+        let sdk = ost_formation::RuntimeSdkLayout::derive(&declared).unwrap();
+        assert!(sdk.environment.values().all(|env| env
+            .iter()
+            .any(|c| { c.key == key && c.paths == [format!("components/codeless/{value}")] })));
+    }
 }
 
 /// Real archive/transport operations with deliberately tiny, non-OpenUSD test
@@ -1161,6 +1409,21 @@ fn sdk_rejects_expanded_collisions_reserved_roots_and_missing_sources() {
     assert!(format!(
         "{:?}",
         ost_formation::RuntimeSdkLayout::derive(&conflicting).unwrap_err()
+    )
+    .contains("COMPOSITION_ENVIRONMENT_CONFLICT"));
+    let mut reserved = tampered.clone();
+    reserved
+        .resolved
+        .environment
+        .push(ost_formation::ResolvedEnvironmentContribution {
+            variable: "PYTHONDONTWRITEBYTECODE".into(),
+            operation: "set".into(),
+            source: "app".into(),
+            values: vec!["share".into()],
+        });
+    assert!(format!(
+        "{:?}",
+        ost_formation::RuntimeSdkLayout::derive(&reserved).unwrap_err()
     )
     .contains("COMPOSITION_ENVIRONMENT_CONFLICT"));
     tampered.sdk.as_mut().unwrap().files[0].component = "forged-owner".into();
