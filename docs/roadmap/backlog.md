@@ -9,23 +9,23 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-v0.22.6 is active. Detailed acceptance for the remaining v0.22.x runtime
+v0.22.7 is active. Detailed acceptance for the remaining v0.22.x runtime
 composition slices is in [runtime-composition.md](runtime-composition.md).
 
-- ⬜ **v0.22.7 - runtime SDK layout.** Materialize predictable `bin`, `lib`,
+- ⬜ **v0.22.8 - runtime SDK layout.** Materialize predictable `bin`, `lib`,
   `include`, `share`, `plugins`, `python`, `node` and `metadata` roots with
   owner-recorded activation. Prove normal CMake SDK consumption from an isolated
   prefix.
-- ⬜ **v0.22.8 - geospatial runtime dogfood.** Compose a digest-pinned canonical
+- ⬜ **v0.22.9 - geospatial runtime dogfood.** Compose a digest-pinned canonical
   OpenUSD 26.08 cell, HTTP resolver, point-cloud plugins and raster plugins from
   published artifacts in
   [`usd-geospatial-runtime`](https://github.com/animu-sphere/usd-geospatial-runtime).
   Keep that repository declarative and prove HTTP/COPC plus GeoTIFF through
   packaged components on a clean consumer.
-- ⬜ **v0.22.9 - consumer packaging foundation.** Derive Python, npm/Wasm and
+- ⬜ **v0.22.10 - consumer packaging foundation.** Derive Python, npm/Wasm and
   native SDK entry points from canonical OST/OCI artifacts while preserving one
   runtime identity and provenance graph.
-- ⬜ **v0.22.10 - runtime UX and diagnostics.** Stabilize runtime
+- ⬜ **v0.22.11 - runtime UX and diagnostics.** Stabilize runtime
   compose/explain/doctor/exec and machine-readable diagnostics, complete the
   geospatial clean-consumer pass and decide whether to accept the runtime
   composition design.

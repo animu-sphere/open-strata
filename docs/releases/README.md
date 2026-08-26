@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.22.6 | [v0.22.6.md](v0.22.6.md) | Render-probe prerequisites and physical-device evidence |
 | v0.22.5 | [v0.22.5.md](v0.22.5.md) | Consumer-lane corrections from downstream dogfooding |
 | v0.22.4 | [v0.22.4.md](v0.22.4.md) | Runtime component model + canonical matrix corrections |
 | v0.22.3 | [v0.22.3.md](v0.22.3.md) | Canonical OpenUSD runtimes + component artifact contracts |
