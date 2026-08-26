@@ -2640,6 +2640,61 @@ fn append_graphics_device_checks(
 
 const OPENUSD_RENDER_TIMEOUT: Duration = Duration::from_secs(120);
 
+// usdrecord creates a Qt OpenGL context even for Metal/Vulkan. These are
+// host-side probe prerequisites, not part of the runtime SDK. Run the preflight
+// and the actual tool in one process so both use the pinned interpreter/env and
+// share the render timeout. Only this explicit preflight marker can mean skip;
+// a traceback from pxr, Hydra, or the tool itself remains a render failure.
+const OPENUSD_RENDER_PREREQUISITE_EXIT: i32 = 78;
+const OPENUSD_RENDER_PREREQUISITE_MARKER: &str = "OST_RENDER_PREREQUISITE_MISSING: ";
+const OPENUSD_RENDER_SCRIPT: &str = r#"
+import runpy
+import sys
+
+try:
+    from PySide6.QtOpenGLWidgets import QOpenGLWidget
+    from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QOffscreenSurface, QOpenGLContext, QSurfaceFormat
+    from PySide6.QtWidgets import QApplication
+except ImportError as pyside6_error:
+    try:
+        from PySide2 import QtOpenGL
+        from PySide2.QtWidgets import QApplication
+    except ImportError as pyside2_error:
+        print("OST_RENDER_PREREQUISITE_MISSING: usdrecord needs Qt OpenGL bindings; "
+              + "PySide6: " + str(pyside6_error) + "; PySide2: " + str(pyside2_error)
+              + "; install PySide6 for " + sys.executable, flush=True)
+        sys.exit(78)
+
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"#;
+
+fn openusd_render_command(launch: &OpenUsdToolLaunch) -> Command {
+    let Some(argv) = &launch.interpreter else {
+        // Native tools and opaque shims have no inspectable Python script.
+        return launch.command();
+    };
+    let (head, rest) = argv
+        .split_first()
+        .expect("resolved interpreter is nonempty");
+    let mut command = Command::new(head);
+    command
+        .args(rest)
+        .args(["-c", OPENUSD_RENDER_SCRIPT])
+        .arg(launch.tool.as_std_path());
+    command
+}
+
+fn openusd_render_prerequisite_skip(code: Option<i32>, log: &str) -> Option<&str> {
+    if code != Some(OPENUSD_RENDER_PREREQUISITE_EXIT) {
+        return None;
+    }
+    log.lines()
+        .find_map(|line| line.strip_prefix(OPENUSD_RENDER_PREREQUISITE_MARKER))
+}
+
 /// Render a real frame with OpenUSD's own Hydra utility.
 ///
 /// `usdrecord` is the proof rather than a native API shortcut: a successful
@@ -2704,7 +2759,7 @@ fn append_graphics_render_check(
         ));
         return None;
     }
-    let mut command = launch.command();
+    let mut command = openusd_render_command(&launch);
     command
         .arg(stage.as_std_path())
         .arg(image.as_std_path())
@@ -2771,7 +2826,8 @@ fn append_graphics_render_check(
             }
         }
     };
-    let tail = configure_failure_tail(&read_lossy(&log_path));
+    let log = read_lossy(&log_path);
+    let tail = configure_failure_tail(&log);
     let Some(status) = status else {
         report.checks.push(ost_runtime::Check {
             name: NAME,
@@ -2784,6 +2840,13 @@ fn append_graphics_render_check(
         });
         return Some(OpenUsdVerificationStatus::Failed);
     };
+    if let Some(reason) = openusd_render_prerequisite_skip(status.code(), &log) {
+        report.checks.push(ost_runtime::Check::skip(
+            NAME,
+            format!("{reason}; no render was attempted"),
+        ));
+        return None;
+    }
     let image_bytes = std::fs::metadata(image.as_std_path())
         .map(|metadata| metadata.len())
         .unwrap_or(0);
@@ -6843,6 +6906,125 @@ set(X \"${ROOT}/buildinfo/x\")
             reason.contains("3.99") && reason.contains("searched:"),
             "the skip must name the declared Python and the interpreters tried: {reason}"
         );
+        std::fs::remove_dir_all(prefix.as_std_path()).ok();
+    }
+
+    #[test]
+    fn render_skip_requires_the_prerequisite_exit_and_marker() {
+        let marker = format!("{OPENUSD_RENDER_PREREQUISITE_MARKER}Qt unavailable\n");
+        assert_eq!(
+            openusd_render_prerequisite_skip(Some(78), &marker),
+            Some("Qt unavailable")
+        );
+        assert_eq!(openusd_render_prerequisite_skip(Some(1), &marker), None);
+        assert_eq!(openusd_render_prerequisite_skip(None, &marker), None);
+        assert_eq!(
+            openusd_render_prerequisite_skip(Some(78), "Hydra failed"),
+            None
+        );
+        assert_eq!(
+            openusd_render_prerequisite_skip(Some(1), "ModuleNotFoundError: No module named 'pxr'"),
+            None
+        );
+    }
+
+    /// Exercise the real wrapper with isolated fake Qt modules. This neither
+    /// needs a GPU nor inherits an installed PySide from the developer host.
+    #[test]
+    fn render_preflight_distinguishes_missing_qt_from_tool_failures() {
+        let prefix = temp_dir("render-qt");
+        let Some(mut interpreter) = ost_build::resolve_run_python(&prefix, "") else {
+            eprintln!("skipping render wrapper subprocess test: no host Python");
+            std::fs::remove_dir_all(prefix.as_std_path()).ok();
+            return;
+        };
+        interpreter.extend(["-S".into(), "-B".into()]);
+        let qt6 = prefix.join("PySide6");
+        let qt2 = prefix.join("PySide2");
+        std::fs::create_dir_all(qt6.as_std_path()).unwrap();
+        std::fs::create_dir_all(qt2.as_std_path()).unwrap();
+        for (module, body) in [
+            ("QtOpenGLWidgets", "QOpenGLWidget = None\n"),
+            (
+                "QtOpenGL",
+                "QOpenGLFramebufferObject = QOpenGLFramebufferObjectFormat = None\n",
+            ),
+            ("QtCore", "QSize = None\n"),
+            (
+                "QtGui",
+                "QOffscreenSurface = QOpenGLContext = QSurfaceFormat = None\n",
+            ),
+            ("QtWidgets", "QApplication = None\n"),
+        ] {
+            std::fs::write(qt6.join(format!("{module}.py")).as_std_path(), body).unwrap();
+        }
+        std::fs::write(qt2.join("QtOpenGL.py").as_std_path(), "# fixture\n").unwrap();
+        std::fs::write(
+            qt2.join("QtWidgets.py").as_std_path(),
+            "QApplication = None\n",
+        )
+        .unwrap();
+        let launch = OpenUsdToolLaunch {
+            tool: prefix.join("usdrecord"),
+            interpreter: Some(interpreter),
+            shim_path_prefix: None,
+        };
+        let ran = prefix.join("tool-ran.txt");
+        for (available6, available2, tool_fails) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, false, true),
+        ] {
+            for (package, available) in [(&qt6, available6), (&qt2, available2)] {
+                std::fs::write(
+                    package.join("__init__.py").as_std_path(),
+                    if available {
+                        "# available\n"
+                    } else {
+                        "raise ImportError('fixture Qt unavailable')\n"
+                    },
+                )
+                .unwrap();
+            }
+            let body = if tool_fails {
+                "import sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text('ran')\nraise RuntimeError('Hydra fixture failed')\n"
+            } else {
+                "import sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text('ran')\n"
+            };
+            std::fs::write(launch.tool.as_std_path(), body).unwrap();
+            let mut command = openusd_render_command(&launch);
+            EnvSet {
+                sep: if cfg!(windows) { ';' } else { ':' },
+                vars: vec![ost_runtime::EnvVar {
+                    key: "PYTHONPATH".into(),
+                    op: ost_runtime::EnvOp::Set(prefix.to_string()),
+                }],
+            }
+            .apply(&mut command);
+            let output = command.arg(ran.as_std_path()).output().unwrap();
+            let log = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let reason = openusd_render_prerequisite_skip(output.status.code(), &log);
+            if !available6 && !available2 {
+                assert!(reason.unwrap().contains("install PySide6"), "{log}");
+                assert!(
+                    !ran.exists(),
+                    "a missing prerequisite must not execute usdrecord"
+                );
+            } else {
+                assert!(
+                    reason.is_none(),
+                    "an actual tool failure must not become a skip: {log}"
+                );
+                assert!(ran.exists(), "{log}");
+                assert_eq!(output.status.success(), !tool_fails, "{log}");
+                std::fs::remove_file(ran.as_std_path()).unwrap();
+            }
+        }
         std::fs::remove_dir_all(prefix.as_std_path()).ok();
     }
 

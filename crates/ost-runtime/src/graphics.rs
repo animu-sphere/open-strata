@@ -223,7 +223,14 @@ fn probe_graphics_device(api: GraphicsApi) -> GraphicsDeviceProbe {
         };
     }
     let result = match api {
-        GraphicsApi::OpenGl => probe_opengl_device(),
+        GraphicsApi::OpenGl => {
+            return probe_opengl_device().unwrap_or_else(|detail| GraphicsDeviceProbe {
+                api,
+                passed: false,
+                skipped: false,
+                detail,
+            });
+        }
         GraphicsApi::Vulkan => probe_vulkan_device(),
         GraphicsApi::Metal => probe_metal_device(),
     };
@@ -244,7 +251,7 @@ fn probe_graphics_device(api: GraphicsApi) -> GraphicsDeviceProbe {
 }
 
 #[cfg(target_os = "linux")]
-fn probe_opengl_device() -> Result<String, String> {
+fn probe_opengl_device() -> Result<GraphicsDeviceProbe, String> {
     use std::ffi::CStr;
 
     type Display = c_void;
@@ -360,13 +367,13 @@ fn probe_opengl_device() -> Result<String, String> {
         x_close_display(display);
     }
     match renderer {
-        Some(renderer) => Ok(format!("created an OpenGL context on '{renderer}'")),
+        Some(renderer) => Ok(opengl_device_observation("GLX", &renderer)),
         None => Err("GLX created a context but no physical OpenGL renderer was observable".into()),
     }
 }
 
 #[cfg(target_os = "windows")]
-fn probe_opengl_device() -> Result<String, String> {
+fn probe_opengl_device() -> Result<GraphicsDeviceProbe, String> {
     use std::ffi::CStr;
 
     type Hwnd = *mut c_void;
@@ -546,7 +553,7 @@ fn probe_opengl_device() -> Result<String, String> {
         ReleaseDC(window, dc);
         DestroyWindow(window);
         renderer
-            .map(|renderer| format!("created a WGL context on '{renderer}'"))
+            .map(|renderer| opengl_device_observation("WGL", &renderer))
             .ok_or_else(|| {
                 "WGL created a context but no physical OpenGL renderer was observable".into()
             })
@@ -554,8 +561,33 @@ fn probe_opengl_device() -> Result<String, String> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-fn probe_opengl_device() -> Result<String, String> {
+fn probe_opengl_device() -> Result<GraphicsDeviceProbe, String> {
     Err("physical OpenGL device probing is currently supported for approved Linux cells".into())
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+fn opengl_device_observation(context: &str, renderer: &str) -> GraphicsDeviceProbe {
+    // A current context is not necessarily a physical-device observation.
+    // GDI Generic cannot run Storm; Mesa software renderers can support modern
+    // OpenGL but still do not prove the physical-device field we are measuring.
+    let name = renderer.to_ascii_lowercase();
+    let skipped = name == "gdi generic"
+        || ["llvmpipe", "softpipe"]
+            .iter()
+            .any(|software| name == *software || name.starts_with(&format!("{software} ")));
+    GraphicsDeviceProbe {
+        api: GraphicsApi::OpenGl,
+        passed: !skipped,
+        skipped,
+        detail: if skipped {
+            format!(
+                "{context} exposes software renderer '{renderer}'; \
+                 no physical OpenGL device was observed on this host"
+            )
+        } else {
+            format!("created a {context} context on '{renderer}'")
+        },
+    }
 }
 
 fn probe_vulkan_device() -> Result<String, String> {
@@ -1111,6 +1143,34 @@ mod tests {
             }]),
             None
         );
+    }
+
+    #[test]
+    fn software_renderers_are_not_physical_device_observations() {
+        for (context, renderer) in [
+            ("WGL", "GDI Generic"),
+            ("GLX", "llvmpipe (LLVM 20.1.0, 256 bits)"),
+            ("GLX", "softpipe"),
+        ] {
+            let probe = opengl_device_observation(context, renderer);
+            assert!(probe.skipped);
+            assert!(!probe.passed);
+            assert!(probe.detail.contains(renderer));
+            assert_eq!(graphics_device_status(&[probe]), None);
+        }
+
+        for renderer in [
+            "NVIDIA RTX A5000/PCIe/SSE2",
+            "AMD Radeon RX 7900 XTX (radeonsi, navi31, LLVM 20.1.0)",
+        ] {
+            let probe = opengl_device_observation("WGL", renderer);
+            assert!(!probe.skipped);
+            assert!(probe.passed);
+            assert_eq!(
+                graphics_device_status(&[probe]),
+                Some(OpenUsdVerificationStatus::Passed)
+            );
+        }
     }
 
     #[test]
