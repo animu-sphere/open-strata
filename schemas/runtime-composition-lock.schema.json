@@ -76,6 +76,7 @@
         }
       }
     },
+    "sdk": { "$ref": "runtime-sdk.schema.json" },
     "runtime_digest": { "$ref": "#/$defs/digest" }
   },
   "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }

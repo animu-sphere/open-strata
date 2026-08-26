@@ -273,6 +273,14 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
     assert_eq!(lock["dependencies"][0]["consumer"], "app");
     assert_eq!(lock["dependencies"][0]["provider"], "base");
     assert_eq!(lock["resolved"]["components"][0]["id"], "base");
+    assert_eq!(lock["sdk"]["schema"], "openstrata.runtime-sdk/v1alpha1");
+    for root in ost_formation::SDK_ROOTS {
+        assert!(prefix.join(root).is_dir(), "missing SDK root {root}");
+    }
+    assert_eq!(
+        std::fs::read(prefix.join("share/app/payload.txt")).unwrap(),
+        b"immutable payload of app\n"
+    );
     assert_eq!(
         lock["inventory"].as_array().unwrap().len(),
         if cfg!(unix) { 3 } else { 2 }
@@ -384,6 +392,16 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
         path(&consumed),
     ]));
     assert_eq!(pulled["data"]["runtime_digest"], identity);
+    for root in ost_formation::SDK_ROOTS {
+        assert!(
+            consumed.join(root).is_dir(),
+            "empty root must survive export: {root}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(consumed.join("metadata/sdk.json")).unwrap(),
+        std::fs::read(prefix.join("metadata/sdk.json")).unwrap()
+    );
     json(consumer.ost(&[
         "--json",
         "runtime",
@@ -989,4 +1007,520 @@ fn metadata_symlinks_and_execute_bit_drift_are_rejected() {
         ]),
         "COMPOSITION_INVENTORY_INVALID",
     );
+}
+
+fn sdk_fixture(sandbox: &Sandbox) -> (PathBuf, ost_formation::RuntimeCompositionLock) {
+    let manifest = composition_fixture(sandbox);
+    let prefix = sandbox.base.join("sdk $literal ' prefix");
+    json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "compose",
+        path(&manifest),
+        "--output",
+        path(&prefix),
+    ]));
+    let lock = serde_json::from_slice(
+        &std::fs::read(prefix.join("metadata/composition.lock.json")).unwrap(),
+    )
+    .unwrap();
+    (prefix, lock)
+}
+
+#[test]
+fn sdk_environment_ownership_and_projection_are_verified() {
+    let sandbox = Sandbox::new();
+    let (prefix, lock) = sdk_fixture(&sandbox);
+    let environment =
+        json(sandbox.ost(&["--json", "runtime", "env", "--composition", path(&prefix)]));
+    assert_eq!(environment["data"]["runtime_digest"], lock.runtime_digest);
+    let vars: Vec<(String, String)> =
+        serde_json::from_value(environment["data"]["env"].clone()).unwrap();
+    let cmake = vars
+        .iter()
+        .find(|(key, _)| key == "CMAKE_PREFIX_PATH")
+        .unwrap();
+    assert_eq!(cmake.1, path(&prefix).replace('\\', "/"));
+    assert!(!vars
+        .iter()
+        .any(|(_, value)| value.contains(".ost-composition-")));
+    let shell = sandbox.ost(&[
+        "runtime",
+        "env",
+        "--composition",
+        path(&prefix),
+        "--shell",
+        "pwsh",
+    ]);
+    assert!(shell.status.success());
+    assert!(String::from_utf8_lossy(&shell.stdout).contains("`$literal"));
+    let report = json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "validate",
+        "--composition",
+        path(&prefix),
+        "--sdk",
+    ]));
+    assert!(report["data"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|check| check["status"] != "failed"));
+
+    error(
+        sandbox.ost(&[
+            "--json",
+            "runtime",
+            "exec",
+            "--composition",
+            path(&prefix),
+            "--",
+            "unknown",
+        ]),
+        "COMPOSITION_HOST_MISMATCH",
+    );
+    let sdk_path = prefix.join("metadata/sdk.json");
+    let original = std::fs::read(&sdk_path).unwrap();
+    std::fs::write(&sdk_path, "{}").unwrap();
+    error(
+        sandbox.ost(&["--json", "runtime", "env", "--composition", path(&prefix)]),
+        "COMPOSITION_EVIDENCE_MISMATCH",
+    );
+    std::fs::write(sdk_path, original).unwrap();
+    std::fs::write(prefix.join("share/app/payload.txt"), "changed").unwrap();
+    error(
+        sandbox.ost(&["--json", "runtime", "env", "--composition", path(&prefix)]),
+        "COMPOSITION_INVENTORY_MISMATCH",
+    );
+    assert_eq!(
+        std::fs::read(prefix.join("components/app/share/payload.txt")).unwrap(),
+        b"immutable payload of app\n",
+        "SDK copies must not alias component bytes"
+    );
+}
+
+#[test]
+fn sdk_rejects_expanded_collisions_reserved_roots_and_missing_sources() {
+    let sandbox = Sandbox::new();
+    let (_, lock) = sdk_fixture(&sandbox);
+    let mut case_alias = lock.clone();
+    case_alias
+        .resolved
+        .install
+        .iter_mut()
+        .find(|m| m.component == "base")
+        .unwrap()
+        .destination = "SHARE/base".into();
+    let sdk = ost_formation::RuntimeSdkLayout::derive(&case_alias).unwrap();
+    assert!(sdk
+        .files
+        .iter()
+        .any(|e| e.file.path == "share/base/payload.txt"));
+    for (source, destination, expected) in [
+        ("share", "share/app", "COMPOSITION_INSTALL_PATH_COLLISION"),
+        (
+            "share",
+            "share/app/payload.txt/child",
+            "COMPOSITION_INSTALL_PATH_COLLISION",
+        ),
+        ("share", "metadata/owned", "COMPOSITION_SDK_PATH_INVALID"),
+        ("share", "components/owned", "COMPOSITION_SDK_PATH_INVALID"),
+        (
+            "share",
+            "share/unsafe:stream",
+            "COMPOSITION_SDK_PATH_INVALID",
+        ),
+        ("absent", "share/new", "COMPOSITION_INSTALL_SOURCE_MISSING"),
+    ] {
+        let mut invalid = lock.clone();
+        let mapping = invalid
+            .resolved
+            .install
+            .iter_mut()
+            .find(|m| m.component == "base")
+            .unwrap();
+        mapping.source = source.into();
+        mapping.destination = destination.into();
+        let error = ost_formation::RuntimeSdkLayout::derive(&invalid).unwrap_err();
+        assert!(format!("{error:?}").contains(expected), "{error:?}");
+    }
+    let mut tampered = lock;
+    let mut conflicting = tampered.clone();
+    for source in ["app", "base"] {
+        conflicting
+            .resolved
+            .environment
+            .push(ost_formation::ResolvedEnvironmentContribution {
+                variable: "SET_PATH".into(),
+                operation: "set".into(),
+                source: source.into(),
+                values: vec!["share".into()],
+            });
+    }
+    assert!(format!(
+        "{:?}",
+        ost_formation::RuntimeSdkLayout::derive(&conflicting).unwrap_err()
+    )
+    .contains("COMPOSITION_ENVIRONMENT_CONFLICT"));
+    tampered.sdk.as_mut().unwrap().files[0].component = "forged-owner".into();
+    assert!(tampered.validate().is_err());
+}
+
+#[test]
+fn legacy_component_only_locks_reconstruct_without_identity_migration() {
+    let sandbox = Sandbox::new();
+    let (_, sdk_lock) = sdk_fixture(&sandbox);
+    let legacy = ost_formation::RuntimeCompositionLock::new(
+        sdk_lock.manifest,
+        sdk_lock.artifacts,
+        sdk_lock.inventory,
+    )
+    .unwrap();
+    let value = serde_json::to_value(&legacy).unwrap();
+    assert!(value.get("sdk").is_none());
+    let lock_path = sandbox.base.join("legacy.json");
+    std::fs::write(&lock_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let clean = Sandbox::new();
+    let prefix = clean.base.join("legacy");
+    let result = json(clean.ost(&[
+        "--json",
+        "runtime",
+        "reconstruct",
+        path(&lock_path),
+        "--output",
+        path(&prefix),
+    ]));
+    assert_eq!(result["data"]["runtime_digest"], legacy.runtime_digest);
+    assert!(!prefix.join("metadata/sdk.json").exists());
+    json(clean.ost(&[
+        "--json",
+        "runtime",
+        "validate",
+        "--composition",
+        path(&prefix),
+    ]));
+    error(
+        clean.ost(&["--json", "runtime", "env", "--composition", path(&prefix)]),
+        "COMPOSITION_SDK_REQUIRED",
+    );
+}
+
+#[test]
+fn sdk_activation_preserves_ordered_prepend_append_and_set_operations() {
+    let sandbox = Sandbox::new();
+    let (_, mut lock) = sdk_fixture(&sandbox);
+    for (operation, value) in [
+        ("set", "share/base"),
+        ("append", "share/app"),
+        ("prepend", "share/first"),
+    ] {
+        lock.resolved
+            .environment
+            .push(ost_formation::ResolvedEnvironmentContribution {
+                variable: "SDK_TEST".into(),
+                operation: operation.into(),
+                source: "app".into(),
+                values: vec![value.into()],
+            });
+    }
+    let sdk = ost_formation::RuntimeSdkLayout::derive(&lock).unwrap();
+    for os in [
+        ost_core::host::Os::Linux,
+        ost_core::host::Os::Windows,
+        ost_core::host::Os::Macos,
+    ] {
+        let env = sdk.activate(camino::Utf8Path::new("/sdk"), os).unwrap();
+        let pairs = env.pairs();
+        let (_, value) = pairs.iter().find(|(key, _)| key == "SDK_TEST").unwrap();
+        assert_eq!(
+            value.split(env.sep).collect::<Vec<_>>(),
+            vec![
+                "/sdk/components/app/share/first",
+                "/sdk/components/app/share/base",
+                "/sdk/components/app/share/app"
+            ]
+        );
+    }
+}
+
+#[test]
+fn sdk_rewrites_relative_symlinks_and_refuses_uninstalled_targets() {
+    let sandbox = Sandbox::new();
+    let (_, mut lock) = sdk_fixture(&sandbox);
+    lock.inventory
+        .retain(|e| e.file.path != "components/app/share/alias.txt");
+    let mut entry = lock
+        .inventory
+        .iter()
+        .find(|e| e.component == "app")
+        .unwrap()
+        .clone();
+    entry.file.path = "components/app/share/alias.txt".into();
+    entry.file.link_target = Some("payload.txt".into());
+    entry.file.sha256 = ost_core::digest::sha256_hex(b"payload.txt");
+    entry.file.size = 11;
+    entry.file.executable = false;
+    lock.inventory.push(entry);
+    let mut mapping = lock
+        .resolved
+        .install
+        .iter()
+        .find(|m| m.component == "app")
+        .unwrap()
+        .clone();
+    lock.resolved.install.retain(|m| m.component != "app");
+    mapping.source = "share/payload.txt".into();
+    mapping.destination = "lib/app.txt".into();
+    lock.resolved.install.push(mapping.clone());
+    mapping.source = "share/alias.txt".into();
+    mapping.destination = "share/app/alias.txt".into();
+    lock.resolved.install.push(mapping);
+    let sdk = ost_formation::RuntimeSdkLayout::derive(&lock).unwrap();
+    let link = sdk
+        .files
+        .iter()
+        .find(|f| f.file.link_target.is_some())
+        .unwrap();
+    assert_eq!(link.file.link_target.as_deref(), Some("../../lib/app.txt"));
+    assert_eq!(
+        link.file.sha256,
+        ost_core::digest::sha256_hex(b"../../lib/app.txt")
+    );
+    lock.resolved
+        .install
+        .retain(|m| m.destination != "lib/app.txt");
+    assert!(format!(
+        "{:?}",
+        ost_formation::RuntimeSdkLayout::derive(&lock).unwrap_err()
+    )
+    .contains("COMPOSITION_SDK_LINK_INVALID"));
+}
+
+fn checked(command: &mut Command) {
+    let output = command.output().expect("spawn native SDK tool");
+    assert!(
+        output.status.success(),
+        "{command:?}\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn relocated_sdk_builds_and_runs_a_clean_native_cmake_consumer() {
+    let Some(cmake) = ost_core::tools::which("cmake") else {
+        eprintln!("SKIP native SDK: CMake unavailable");
+        return;
+    };
+    let Some(ninja) = ost_core::tools::which("ninja") else {
+        eprintln!("SKIP native SDK: Ninja unavailable");
+        return;
+    };
+    let mut build_env = std::collections::BTreeMap::new();
+    if cfg!(windows) {
+        let Some(msvc) = ost_build::msvc::bootstrap().expect("MSVC bootstrap") else {
+            eprintln!("SKIP native SDK: MSVC unavailable");
+            return;
+        };
+        build_env.extend(msvc.vars);
+    } else if !["c++", "clang++", "g++"]
+        .iter()
+        .any(|p| ost_core::tools::which(p).is_some())
+    {
+        eprintln!("SKIP native SDK: C++ compiler unavailable");
+        return;
+    }
+    let sandbox = Sandbox::new();
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/runtime-composition/native-sdk");
+    let build = sandbox.base.join("producer-build");
+    let stage = sandbox.base.join("producer-install");
+    let configure = |src: &Path, build: &Path| {
+        let mut command = Command::new(&cmake);
+        command
+            .args([
+                "-S",
+                path(src),
+                "-B",
+                path(build),
+                "-G",
+                "Ninja",
+                "-DCMAKE_BUILD_TYPE=Release",
+            ])
+            .arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja.display()))
+            .envs(&build_env);
+        command
+    };
+    checked(configure(&source, &build).arg(format!("-DCMAKE_INSTALL_PREFIX={}", stage.display())));
+    checked(
+        Command::new(&cmake)
+            .args(["--build", path(&build), "--target", "install"])
+            .envs(&build_env),
+    );
+    let dist = sandbox.base.join("native-dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    let stage_utf8 = camino::Utf8Path::from_path(&stage).unwrap();
+    let dist_utf8 = camino::Utf8Path::from_path(&dist).unwrap();
+    let packed = ost_build::pack_dir_with(
+        stage_utf8,
+        &dist_utf8.join("native.tar.zst"),
+        &ost_build::stage_files(stage_utf8).unwrap(),
+        ost_build::PackOptions {
+            level: 1,
+            ..Default::default()
+        },
+        &mut |_| {},
+    )
+    .unwrap();
+    let target = ost_core::Host::detect().slug();
+    let mut producer = serde_json::json!({
+        "schema": 1, "name": "tiny", "version": "1.0.0", "target": target,
+        "archive": "native.tar.zst", "archive_digest": packed.archive_digest, "archive_size": packed.archive_size, "total_size": packed.total_size,
+        "files": packed.files.iter().map(|f| f.manifest_json()).collect::<Vec<_>>(), "licenses": ["Apache-2.0"],
+        "component": {"schema": "openstrata.component/v1alpha1", "id": "tiny", "kind": "library", "version": "1.0.0",
+            "provides": [{"capability": "tiny", "version": "1.0.0"}],
+            "install": packed.files.iter().map(|f| serde_json::json!({"source": f.path, "destination": f.path})).collect::<Vec<_>>(),
+            "environment": [{"variable": "PXR_PLUGINPATH_NAME", "operation": "prepend", "values": ["plugins/Tiny"]}]
+        }
+    });
+    ost_artifact::generate_evidence(dist_utf8, &mut producer).unwrap();
+    std::fs::write(
+        dist.join("manifest.json"),
+        serde_json::to_vec(&producer).unwrap(),
+    )
+    .unwrap();
+    let manifest = sandbox.base.join("native.toml");
+    std::fs::write(&manifest, format!("schema = 'openstrata.runtime-composition/v1alpha1'\n[composition]\nname = 'native-sdk'\ntarget = '{target}'\n[[requirements]]\ncapability = 'tiny'\n[[artifacts]]\nartifact = '{}'\nsource = 'file://{}'\n", packed.archive_digest, dist.display())).unwrap();
+    let prefix = sandbox.base.join("sdk-original");
+    json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "compose",
+        path(&manifest),
+        "--output",
+        path(&prefix),
+    ]));
+    let export = sandbox.base.join("sdk-dist");
+    let exported = json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "export",
+        "--composition",
+        path(&prefix),
+        "--dist",
+        path(&export),
+        "--level",
+        "1",
+    ]));
+    // Delete only this test's own producer output; no source/build prefix is
+    // available to hide a non-relocatable package or missing dependency.
+    std::fs::remove_dir_all(&stage).unwrap();
+    std::fs::remove_dir_all(&build).unwrap();
+    std::fs::remove_dir_all(&prefix).unwrap();
+    let consumer = Sandbox::new();
+    json(consumer.ost(&[
+        "--json",
+        "artifact",
+        "pull",
+        &format!("file://{}", export.display()),
+    ]));
+    let installed = consumer.base.join("installed");
+    json(consumer.ost(&[
+        "--json",
+        "runtime",
+        "reconstruct",
+        "--from-artifact",
+        exported["data"]["digest"].as_str().unwrap(),
+        "--output",
+        path(&installed),
+    ]));
+    let relocated = consumer.base.join("relocated SDK ' prefix");
+    std::fs::rename(installed, &relocated).unwrap();
+    let report = json(consumer.ost(&[
+        "--json",
+        "runtime",
+        "validate",
+        "--composition",
+        path(&relocated),
+        "--sdk",
+        "--cmake-package",
+        "Tiny",
+    ]));
+    assert!(report["data"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["name"] == "cmake-package" && c["status"] == "passed"));
+    let run = json(consumer.ost(&[
+        "--json",
+        "runtime",
+        "exec",
+        "--composition",
+        path(&relocated),
+        "--",
+        "sdk-inspect",
+    ]));
+    assert_eq!(run["data"]["stdout"].as_str().unwrap().trim(), "tiny=42");
+    let build = consumer.base.join("consumer-build");
+    let mut command = configure(&source.join("consumer"), &build);
+    for key in [
+        "CMAKE_PREFIX_PATH",
+        "CMAKE_MODULE_PATH",
+        "Tiny_DIR",
+        "Tiny_ROOT",
+    ] {
+        command.env_remove(key);
+    }
+    command
+        .arg(format!("-DCMAKE_PREFIX_PATH={}", relocated.display()))
+        .args([
+            "-DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE",
+            "-DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE",
+        ]);
+    checked(&mut command);
+    checked(
+        Command::new(&cmake)
+            .args(["--build", path(&build)])
+            .envs(&build_env),
+    );
+    let executable = build.join(if cfg!(windows) {
+        "consumer.exe"
+    } else {
+        "consumer"
+    });
+    let run = json(consumer.ost(&[
+        "--json",
+        "runtime",
+        "exec",
+        "--composition",
+        path(&relocated),
+        "--",
+        path(&executable),
+    ]));
+    assert_eq!(run["data"]["stdout"].as_str().unwrap().trim(), "tiny=42");
+    let missing = consumer.ost(&[
+        "--json",
+        "runtime",
+        "validate",
+        "--composition",
+        path(&relocated),
+        "--sdk",
+        "--cmake-package",
+        "MissingTiny",
+    ]);
+    assert!(!missing.status.success());
+    error(
+        consumer.ost(&[
+            "--json",
+            "runtime",
+            "exec",
+            "--composition",
+            path(&relocated),
+            "--",
+            "cmake",
+        ]),
+        "COMPOSITION_EXECUTABLE_UNREACHABLE",
+    );
+    eprintln!("Native SDK: shared library, relocated export, find_package, consumer build and loader execution passed");
 }

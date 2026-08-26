@@ -88,11 +88,87 @@ and sidecar pins must still match. Set-like manifest inputs are sorted; local
 paths, registry locations, import timestamps and ambient host observations do
 not contribute to `runtime_digest`. Compatibility decisions and inventory do.
 
-The initial layout preserves each artifact under `components/<component-id>/`.
+Every layout preserves each artifact under `components/<component-id>/`.
 `metadata/` holds the lock, original producer manifests, available component
-SBOM/provenance, attribution and composition validation. This is not yet the
-flattened SDK/activation layout planned for v0.22.8. Install and environment
-contributions are locked decisions, not active environment modifications.
+SBOM/provenance, attribution and composition validation. New v0.22.8 locks also
+materialize the SDK described below. Existing v0.22.7 locks reconstruct with
+their original component-only layout and identity; `--locked` never migrates them.
+
+## SDK layout and activation (v0.22.8 implementation)
+
+New locks include an additive `sdk` object. `metadata/sdk.json` records the same
+`openstrata.runtime-sdk/v1alpha1` layout: each projected file's component owner,
+artifact digest, original source path, content/mode/link identity, and portable
+Formation environment contributions. All of it contributes to `runtime_digest`.
+
+The public prefix always has `bin`, `lib`, `include`, `share`, `plugins`,
+`python`, `node` and `metadata` directories, including empty roots after export
+and reconstruction. Component `install` mappings copy files or directory trees
+into that prefix. The original component prefixes remain available for relative
+loader paths and producer evidence. Copies are independent, not hardlinks.
+Other producer-native destinations, such as OpenUSD's `plugin/usd`, retain their
+declared names. `metadata` and `components` are reserved for the composer.
+
+Missing install sources, expanded file collisions (including a file used as a
+parent), unsafe destinations, and symlinks with uninstalled or ambiguous targets
+fail before output publication. Installed relative symlink targets are remapped
+and recorded. Components must ship relocatable CMake configs and plugin resource
+references; composition does not rewrite CMake code, plugInfo, RPATH or DLLs.
+
+```bash
+ost --json runtime env --composition composed
+ost runtime env --composition composed --shell bash
+ost runtime env --composition composed --shell pwsh
+ost runtime exec --composition composed -- my-installed-tool --help
+```
+
+`runtime env` verifies the prefix before printing shell statements or JSON. It
+resolves ordered `prepend`, `append` and `set` contributions against an empty
+base; no inherited search paths enter the result. The common SDK directories
+precede component paths. Component declarations remain relative to their retained
+prefixes, so their plugin and loader relationships remain intact. Evaluation
+replaces the affected shell search variables; use a disposable shell if you need
+to keep your development PATH. Neither compose nor env changes the parent shell.
+Prefix paths containing path-list separators are rejected.
+
+`runtime exec` verifies the prefix and host OS/architecture before launching.
+Bare commands resolve only on SDK PATH; pass an absolute executable path for an
+external tool such as CMake, a compiler, or a separately built consumer. Runtime
+search variables are reset, but this is not an OS sandbox: ordinary process
+variables, system libraries and filesystem access remain available. Child exit
+codes are propagated. JSON output records runtime identity, command, exit code,
+stdout and stderr without modifying the immutable prefix.
+
+## CMake and reachability checks
+
+```bash
+# Structural paths only; no component code is executed.
+ost runtime validate --composition composed --sdk
+
+# Explicitly execute an installed package's CMake config in a fresh build tree.
+ost runtime validate --composition composed --sdk --cmake-package MyPackage
+
+# A normal native consumer; use your host compiler/toolchain environment.
+cmake -S consumer -B consumer-build -DCMAKE_PREFIX_PATH=/absolute/path/to/composed
+cmake --build consumer-build
+ost runtime exec --composition composed -- /absolute/path/to/consumer-build/my-app
+```
+
+The SDK check inspects activation paths, JSONC `plugInfo.json` library/resource
+references, and declared schema resources. It reports missing or escaping paths
+as failures. It does not emulate USD's `Includes` expansion or prove type/resolver
+registration. Components must declare their plugin discovery paths. Run a
+component-owned OpenUSD probe through `runtime exec` for native discovery and
+resolver behavior.
+
+`--cmake-package` is repeatable and opts in to executing package code. Use trusted
+components. It calls `find_package(... CONFIG REQUIRED)` in a fresh project,
+restricts search to the SDK prefix, disables ambient package registries/search
+paths, and preserves configure output. Missing CMake is an actionable error; an
+unresolved package fails the check. This probe configures a language-free project;
+packages requiring an enabled C/C++ compiler should also be tested with a real
+consumer. The integration suite builds a shared library, exports/reconstructs
+and relocates its SDK, then compiles and runs a separate C++ consumer.
 
 ## Export and transport
 
@@ -136,7 +212,9 @@ forged reports and metadata symlinks fail. Output appears only after successful
 verification; existing prefixes are never overwritten.
 
 The report separates component producer observations from composition checks.
-`runtime-execution` is explicitly `not-run`: this release does not claim loader,
-plugin/resolver/schema discovery, CMake consumption, a GPU observation or a
-rendered frame. The artifact's aggregate runtime validation remains `pending`.
-Those execution/SDK checks belong to the subsequent composition slices.
+`runtime-execution` remains explicitly `not-run` in retained composition evidence.
+SDK structure, an explicit CMake probe, and a command run are distinct scopes;
+neither is silently promoted to successful OpenUSD discovery, a GPU observation
+or a rendered frame. Exported aggregate runtime validation remains `pending`.
+Probe output belongs to the caller's CI/evidence capture and does not rewrite
+the locked prefix. Real geospatial OpenUSD execution remains the v0.22.9 dogfood.

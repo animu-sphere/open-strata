@@ -73,6 +73,8 @@ pub struct RuntimeCompositionLock {
     pub artifacts: Vec<LockedCompositionArtifact>,
     pub dependencies: Vec<CompositionDependency>,
     pub inventory: Vec<CompositionInventoryEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdk: Option<crate::RuntimeSdkLayout>,
     pub runtime_digest: String,
 }
 
@@ -143,11 +145,19 @@ impl RuntimeCompositionLock {
             artifacts,
             dependencies,
             inventory,
+            sdk: None,
             runtime_digest: String::new(),
         };
         lock.validate_inventory()?;
         lock.runtime_digest = lock.identity()?;
         Ok(lock)
+    }
+
+    /// Add the SDK projection without changing legacy component-only locks.
+    pub fn with_sdk(mut self) -> Result<Self> {
+        self.sdk = Some(crate::RuntimeSdkLayout::derive(&self)?);
+        self.runtime_digest = self.identity()?;
+        Ok(self)
     }
 
     /// Acquisition URLs, registry records, producer timestamps and evidence
@@ -168,12 +178,18 @@ impl RuntimeCompositionLock {
                 })
             })
             .collect::<Vec<_>>();
-        canonical_json_digest(&serde_json::json!({
+        let mut identity = serde_json::json!({
             "schema": self.schema, "manifest": self.manifest.canonical(),
             "resolved": self.resolved, "artifacts": identities,
             "dependencies": self.dependencies, "inventory": self.inventory,
             "layout": "component-prefixes/v1",
-        }))
+        });
+        if let Some(sdk) = &self.sdk {
+            identity["layout"] = "runtime-sdk/v1".into();
+            identity["sdk"] =
+                serde_json::to_value(sdk).map_err(|e| Error::Operation(e.to_string()))?;
+        }
+        canonical_json_digest(&identity)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -187,11 +203,14 @@ impl RuntimeCompositionLock {
         for artifact in &self.artifacts {
             validate_full_digest("producer manifest identity", &artifact.manifest_digest)?;
         }
-        let rebuilt = Self::new(
+        let mut rebuilt = Self::new(
             self.manifest.clone(),
             self.artifacts.clone(),
             self.inventory.clone(),
         )?;
+        if self.sdk.is_some() {
+            rebuilt = rebuilt.with_sdk()?;
+        }
         if rebuilt != *self {
             return Err(composition_error("COMPOSITION_LOCK_MISMATCH",
                 "lock does not match its canonical provider, compatibility, dependency or inventory decisions"));

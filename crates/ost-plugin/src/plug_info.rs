@@ -12,7 +12,7 @@
 use ost_core::host::Os;
 
 /// Parse a USD `plugInfo.json` (JSON-with-comments) into a JSON value.
-pub(crate) fn parse_plug_info(src: &str) -> serde_json::Result<serde_json::Value> {
+pub fn parse_plug_info(src: &str) -> serde_json::Result<serde_json::Value> {
     serde_json::from_str(&strip_jsonc(src))
 }
 

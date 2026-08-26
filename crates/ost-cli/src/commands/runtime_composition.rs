@@ -20,6 +20,10 @@ use std::fs;
 
 const LOCK_PATH: &str = "metadata/composition.lock.json";
 
+#[path = "runtime_sdk.rs"]
+mod sdk;
+pub use sdk::{environment, execute};
+
 fn read_json(path: &Utf8Path) -> Result<Value> {
     serde_json::from_slice(&fs::read(path).map_err(|e| Error::io(path.to_string(), e))?)
         .map_err(|e| Error::parse(path.to_string(), anyhow::Error::new(e)))
@@ -172,6 +176,7 @@ fn build_lock(
     manifest: RuntimeCompositionManifest,
     store: &ArtifactStore,
     verify_sources: bool,
+    sdk: bool,
 ) -> Result<RuntimeCompositionLock> {
     fetch_inputs(&manifest, store, verify_sources)?;
     let inputs = manifest
@@ -202,17 +207,22 @@ fn build_lock(
             });
         }
     }
-    RuntimeCompositionLock::new(
+    let lock = RuntimeCompositionLock::new(
         manifest,
         inputs.into_iter().map(|(a, _)| a).collect(),
         inventory,
-    )
+    )?;
+    if sdk {
+        lock.with_sdk()
+    } else {
+        Ok(lock)
+    }
 }
 
 pub fn resolve_manifest(
     manifest: RuntimeCompositionManifest,
 ) -> Result<ost_formation::ResolvedRuntimeComposition> {
-    Ok(build_lock(manifest, &ArtifactStore::discover(), true)?.resolved)
+    Ok(build_lock(manifest, &ArtifactStore::discover(), true, true)?.resolved)
 }
 
 pub fn compose(
@@ -253,7 +263,12 @@ pub fn compose(
         }
     }
     let store = ArtifactStore::discover();
-    let lock = build_lock(manifest, &store, !locked)?;
+    let lock = build_lock(
+        manifest,
+        &store,
+        !locked,
+        previous.as_ref().is_none_or(|l| l.sdk.is_some()),
+    )?;
     if let Some(previous) = &previous {
         require_same_lock(previous, &lock)?;
     }
@@ -407,6 +422,7 @@ fn materialize(
                 .map_err(|e| Error::io(metadata.to_string(), e))?;
         }
     }
+    materialize_sdk(&staging.0, lock)?;
     write_json(&staging.0.join(LOCK_PATH), lock)?;
     write_json(
         &staging.0.join("metadata/attribution.json"),
@@ -418,6 +434,64 @@ fn materialize(
     )?;
     verify_prefix(&staging.0)?;
     staging.publish(dest)
+}
+
+fn sdk_roots(root: &Utf8Path, lock: &RuntimeCompositionLock) -> Result<()> {
+    if let Some(sdk) = &lock.sdk {
+        for directory in &sdk.roots {
+            let path = root.join(directory);
+            if let Ok(metadata) = fs::symlink_metadata(&path) {
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(composition_error(
+                        "COMPOSITION_SDK_INVALID",
+                        "SDK roots must be regular directories",
+                    ));
+                }
+            }
+            fs::create_dir_all(&path).map_err(|e| Error::io(path.to_string(), e))?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_sdk_roots(root: &Utf8Path) -> Result<()> {
+    // Archives store files, not empty directories. Check paths before restoring
+    // only the fixed, lock-validated roots; never repair payload or metadata.
+    ost_build::stage_files(root).map_err(|e| Error::io(root.to_string(), e))?;
+    regular_metadata(root, &root.join(LOCK_PATH))?;
+    sdk_roots(root, &read_lock(&root.join(LOCK_PATH))?)
+}
+
+fn materialize_sdk(root: &Utf8Path, lock: &RuntimeCompositionLock) -> Result<()> {
+    let Some(sdk) = &lock.sdk else { return Ok(()) };
+    sdk_roots(root, lock)?;
+    // Copy regular files first so Windows symlink kind can be determined from
+    // the verified original. Never hardlink mutable views of the same bytes.
+    for entry in sdk.files.iter().filter(|e| e.file.link_target.is_none()) {
+        let dest = root.join(&entry.file.path);
+        fs::create_dir_all(dest.parent().expect("SDK parent"))
+            .map_err(|e| Error::io(dest.to_string(), e))?;
+        fs::copy(root.join(&entry.source), &dest).map_err(|e| Error::io(dest.to_string(), e))?;
+    }
+    for entry in sdk.files.iter().filter(|e| e.file.link_target.is_some()) {
+        let dest = root.join(&entry.file.path);
+        fs::create_dir_all(dest.parent().expect("SDK parent"))
+            .map_err(|e| Error::io(dest.to_string(), e))?;
+        let target = entry.file.link_target.as_ref().expect("symlink");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, &dest).map_err(|e| Error::io(dest.to_string(), e))?;
+        #[cfg(windows)]
+        {
+            let original = root.join(&entry.source);
+            let result = if original.is_dir() {
+                std::os::windows::fs::symlink_dir(target, &dest)
+            } else {
+                std::os::windows::fs::symlink_file(target, &dest)
+            };
+            result.map_err(|e| Error::io(dest.to_string(), e))?;
+        }
+    }
+    write_json(&root.join("metadata/sdk.json"), sdk)
 }
 
 fn attribution(lock: &RuntimeCompositionLock) -> Value {
@@ -456,7 +530,7 @@ fn composition_dependencies(lock: &RuntimeCompositionLock) -> Vec<ResolvedDepend
 }
 
 fn validation_report(lock: &RuntimeCompositionLock) -> Value {
-    json!({"schema": "openstrata.composition-validation/v1alpha1",
+    let mut report = json!({"schema": "openstrata.composition-validation/v1alpha1",
     "runtime_digest": lock.runtime_digest,
     "scope": "locked-graph-and-materialized-inventory",
     "components": lock.resolved.components.iter().map(|c| {
@@ -469,7 +543,17 @@ fn validation_report(lock: &RuntimeCompositionLock) -> Value {
         {"name": "materialized-inventory", "status": "passed"},
         {"name": "component-evidence", "status": "passed"},
         {"name": "runtime-execution", "status": "not-run", "detail": "SDK activation and loader/plugin/render probes are not part of this validation scope"}
-    ]})
+    ]});
+    if lock.sdk.is_some() {
+        report["checks"][3]["detail"] =
+            "Native loader/plugin/resolver/render execution is not part of structural validation"
+                .into();
+        report["checks"]
+            .as_array_mut()
+            .expect("checks array")
+            .push(json!({"name": "sdk-layout-and-activation", "status": "passed"}));
+    }
+    report
 }
 
 fn observed_file(
@@ -529,6 +613,32 @@ fn verify_prefix(root: &Utf8Path) -> Result<RuntimeCompositionLock> {
         "metadata/attribution.json".into(),
         "metadata/validation.json".into(),
     ]);
+    if let Some(sdk) = &lock.sdk {
+        for directory in &sdk.roots {
+            let path = root.join(directory);
+            let metadata =
+                fs::symlink_metadata(&path).map_err(|e| Error::io(path.to_string(), e))?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(composition_error(
+                    "COMPOSITION_SDK_INVALID",
+                    "SDK roots must be regular directories",
+                ));
+            }
+        }
+        regular_metadata(root, &root.join("metadata/sdk.json"))?;
+        if read_json(&root.join("metadata/sdk.json"))? != json!(sdk) {
+            return Err(composition_error(
+                "COMPOSITION_EVIDENCE_MISMATCH",
+                "SDK ownership or activation differs from lock",
+            ));
+        }
+        metadata_paths.insert("metadata/sdk.json".into());
+        expected.extend(
+            sdk.files
+                .iter()
+                .map(|e| (e.file.path.clone(), e.file.clone())),
+        );
+    }
     for component in &lock.resolved.components {
         let artifact = lock
             .artifacts
@@ -707,6 +817,7 @@ pub fn reconstruct(
             })?;
         let staging = Staging::for_destination(dest)?;
         store.extract(digest, &staging.0)?;
+        restore_sdk_roots(&staging.0)?;
         let lock = verify_prefix(&staging.0)?;
         if lock.runtime_digest != expected
             || artifact.record.name != lock.resolved.name
@@ -727,7 +838,7 @@ pub fn reconstruct(
             lock_path
                 .ok_or_else(|| Error::usage("reconstruct requires a lock or --from-artifact"))?,
         )?;
-        let actual = build_lock(lock.manifest.clone(), &store, false)?;
+        let actual = build_lock(lock.manifest.clone(), &store, false, lock.sdk.is_some())?;
         require_same_lock(&lock, &actual)?;
         materialize(&lock, &store, dest)?;
         lock
@@ -735,8 +846,11 @@ pub fn reconstruct(
     result(&lock, Some(dest), fmt)
 }
 
-pub fn validate(root: &Utf8Path, fmt: Format) -> Result<()> {
+pub fn validate(root: &Utf8Path, sdk: bool, packages: &[String], fmt: Format) -> Result<()> {
     let lock = verify_prefix(root)?;
+    if sdk {
+        return self::sdk::validate(root, &lock, packages, fmt);
+    }
     if fmt.is_json() {
         output::success(&validation_report(&lock));
     } else {
@@ -804,6 +918,13 @@ pub fn export(root: &Utf8Path, dist: Option<&str>, level: i32, fmt: Format) -> R
                 .iter()
                 .filter(|e| e.file.executable)
                 .map(|e| e.file.path.clone())
+                .chain(
+                    lock.sdk
+                        .iter()
+                        .flat_map(|sdk| sdk.files.iter())
+                        .filter(|e| e.file.executable)
+                        .map(|e| e.file.path.clone()),
+                )
                 .collect(),
             ..Default::default()
         },
@@ -813,6 +934,7 @@ pub fn export(root: &Utf8Path, dist: Option<&str>, level: i32, fmt: Format) -> R
     // Recheck before publishing in case the source tree changed during packing.
     let check = staging.0.join("check");
     ost_artifact::extract_archive(&staging.0.join(&name), &packed.archive_digest, &check)?;
+    restore_sdk_roots(&check)?;
     require_same_lock(&lock, &verify_prefix(&check)?)?;
     fs::remove_dir_all(&check).map_err(|e| Error::io(check.to_string(), e))?;
     let selected = lock

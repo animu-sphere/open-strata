@@ -259,17 +259,38 @@ impl EnvSet {
 
     /// Render the set as evaluable shell statements (no trailing prose).
     pub fn render(&self, shell: Shell) -> String {
+        let escape = |value: &str| match shell {
+            Shell::Bash => value
+                .replace('\\', "\\\\")
+                .replace('`', "\\`")
+                .replace('$', "\\$")
+                .replace('"', "\\\""),
+            Shell::Pwsh => value
+                .replace('`', "``")
+                .replace('$', "`$")
+                .replace('"', "`\""),
+        };
         let mut out = String::new();
         for v in &self.vars {
             let line = match (shell, &v.op) {
-                (Shell::Bash, EnvOp::Set(val)) => format!("export {}=\"{}\"", v.key, val),
+                (Shell::Bash, EnvOp::Set(val)) => format!("export {}=\"{}\"", v.key, escape(val)),
                 // `${KEY:+sep$KEY}` keeps the result clean when KEY is unset.
                 (Shell::Bash, EnvOp::Prepend(val)) => {
-                    format!("export {0}=\"{1}${{{0}:+{2}${0}}}\"", v.key, val, self.sep)
+                    format!(
+                        "export {0}=\"{1}${{{0}:+{2}${0}}}\"",
+                        v.key,
+                        escape(val),
+                        self.sep
+                    )
                 }
-                (Shell::Pwsh, EnvOp::Set(val)) => format!("$env:{} = \"{}\"", v.key, val),
+                (Shell::Pwsh, EnvOp::Set(val)) => format!("$env:{} = \"{}\"", v.key, escape(val)),
                 (Shell::Pwsh, EnvOp::Prepend(val)) => {
-                    format!("$env:{0} = \"{1}{2}$env:{0}\"", v.key, val, self.sep)
+                    format!(
+                        "$env:{0} = \"{1}{2}$env:{0}\"",
+                        v.key,
+                        escape(val),
+                        self.sep
+                    )
                 }
             };
             out.push_str(&line);
@@ -481,6 +502,25 @@ mod tests {
         // No dedicated lib var on Windows; both bin and lib land on PATH.
         let path_entries = set.vars.iter().filter(|v| v.key == "PATH").count();
         assert_eq!(path_entries, 2);
+    }
+
+    #[test]
+    fn shell_rendering_keeps_paths_literal() {
+        let env = EnvSet {
+            sep: ':',
+            vars: vec![EnvVar {
+                key: "SDK_PATH".into(),
+                op: EnvOp::Set("/sdk/$name/`command`/\"quoted\"/back\\slash".into()),
+            }],
+        };
+        assert_eq!(
+            env.render(Shell::Bash),
+            "export SDK_PATH=\"/sdk/\\$name/\\`command\\`/\\\"quoted\\\"/back\\\\slash\"\n"
+        );
+        assert_eq!(
+            env.render(Shell::Pwsh),
+            "$env:SDK_PATH = \"/sdk/`$name/``command``/`\"quoted`\"/back\\slash\"\n"
+        );
     }
 
     /// The four `pxr` layouts a publisher can produce, and which one wins.

@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize};
 
 mod composition;
 mod composition_lock;
+mod composition_sdk;
+
+pub use composition_sdk::{RuntimeSdkLayout, SdkFile, SDK_ROOTS};
 
 pub use composition_lock::{
     canonical_json_digest, composition_error, CompositionDependency, CompositionInventoryEntry,
