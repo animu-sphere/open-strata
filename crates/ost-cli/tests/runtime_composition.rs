@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `runtime compose` resolves immutable artifacts without materializing them.
+//! Locked composition, materialization and artifact distribution lifecycle.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -635,6 +635,260 @@ fn acquisition_relocation_and_candidate_order_do_not_change_runtime_identity() {
         path(&first),
         "--locked",
     ]));
+}
+
+#[test]
+fn new_locks_check_source_metadata_even_when_the_archive_is_cached() {
+    let sandbox = Sandbox::new();
+    let manifest = composition_fixture(&sandbox);
+    let original = std::fs::read_to_string(&manifest).unwrap();
+    let lock = sandbox.base.join("original.lock.json");
+    json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "compose",
+        path(&manifest),
+        "--lock",
+        path(&lock),
+    ]));
+    let original_lock = std::fs::read(&lock).unwrap();
+    let dist = sandbox.base.join("dist-app");
+
+    for change in [
+        "producer",
+        "sbom",
+        "provenance",
+        "missing-sbom",
+        "missing-provenance",
+    ] {
+        let mirror = sandbox.base.join(format!("mirror-{change}"));
+        std::fs::create_dir(&mirror).unwrap();
+        for entry in std::fs::read_dir(&dist).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), mirror.join(entry.file_name())).unwrap();
+        }
+        match change {
+            "producer" => {
+                let file = mirror.join("manifest.json");
+                let mut value: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+                value["created_unix"] = 123.into();
+                std::fs::write(file, serde_json::to_vec(&value).unwrap()).unwrap();
+            }
+            "sbom" | "provenance" => {
+                let name = if change == "sbom" {
+                    ost_artifact::SBOM_FILE
+                } else {
+                    ost_artifact::PROVENANCE_FILE
+                };
+                let file = mirror.join(name);
+                let mut bytes = std::fs::read(&file).unwrap();
+                bytes.push(b'\n'); // Same claims, different evidence digest.
+                std::fs::write(file, bytes).unwrap();
+            }
+            _ => {
+                let name = if change == "missing-sbom" {
+                    ost_artifact::SBOM_FILE
+                } else {
+                    ost_artifact::PROVENANCE_FILE
+                };
+                std::fs::remove_file(mirror.join(name)).unwrap();
+            }
+        }
+        // The source is already different when the new manifest is declared;
+        // it does not change during or after lock generation.
+        std::fs::write(
+            &manifest,
+            original.replace("dist-app", &format!("mirror-{change}")),
+        )
+        .unwrap();
+        let output = sandbox.base.join("must-not-exist");
+        error(
+            sandbox.ost(&[
+                "--json",
+                "runtime",
+                "compose",
+                path(&manifest),
+                "--lock",
+                path(&lock),
+                "--output",
+                path(&output),
+            ]),
+            "COMPOSITION_SOURCE_MISMATCH",
+        );
+        assert!(!output.exists());
+        assert_eq!(std::fs::read(&lock).unwrap(), original_lock);
+    }
+
+    // Matching source metadata still permits a new lock with a warm cache.
+    std::fs::write(&manifest, &original).unwrap();
+    json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "compose",
+        path(&manifest),
+        "--lock",
+        path(&lock),
+    ]));
+    assert_eq!(std::fs::read(&lock).unwrap(), original_lock);
+    // Locked operations must not require source access or replace cached pins.
+    std::fs::rename(&dist, sandbox.base.join("offline-app")).unwrap();
+    std::fs::rename(
+        sandbox.base.join("dist-base"),
+        sandbox.base.join("offline-base"),
+    )
+    .unwrap();
+    json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "compose",
+        path(&manifest),
+        "--lock",
+        path(&lock),
+        "--locked",
+    ]));
+    json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "reconstruct",
+        path(&lock),
+        "--output",
+        path(&sandbox.base.join("offline-prefix")),
+    ]));
+}
+
+#[test]
+fn overlapping_lock_and_output_paths_fail_before_any_output_is_created() {
+    let sandbox = Sandbox::new();
+    let manifest = composition_fixture(&sandbox);
+    let mut cases = vec![
+        ("prefix/runtime.lock.json", "prefix"),
+        ("prefix/components/app/share/payload.txt", "prefix"),
+        ("prefix", "prefix"),
+        ("prefix", "prefix/nested"),
+        ("other/../prefix/runtime.lock.json", "prefix"),
+        ("prefix/runtime.lock.json", "other/../prefix"),
+    ];
+    #[cfg(windows)]
+    cases.extend([
+        ("PREFIX/runtime.lock.json", "prefix"),
+        ("prefix./runtime.lock.json", "prefix"),
+        ("prefix /runtime.lock.json", "prefix"),
+    ]);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&sandbox.base, sandbox.base.join("alias")).unwrap();
+        cases.push(("alias/prefix/runtime.lock.json", "prefix"));
+    }
+    for (lock, output) in cases {
+        error(
+            sandbox.ost(&[
+                "--json",
+                "runtime",
+                "compose",
+                path(&manifest),
+                "--lock",
+                lock,
+                "--output",
+                output,
+            ]),
+            "COMPOSITION_OUTPUT_OVERLAP",
+        );
+        assert!(!sandbox.base.join("prefix").exists());
+        assert!(!sandbox.base.join("other").exists());
+        assert!(!sandbox.home.join("artifacts").exists());
+    }
+}
+
+#[test]
+fn exported_dependency_evidence_must_match_the_embedded_lock() {
+    let sandbox = Sandbox::new();
+    let manifest = composition_fixture(&sandbox);
+    let prefix = sandbox.base.join("prefix");
+    json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "compose",
+        path(&manifest),
+        "--output",
+        path(&prefix),
+    ]));
+    let dist = sandbox.base.join("export");
+    let exported = json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "export",
+        "--composition",
+        path(&prefix),
+        "--dist",
+        path(&dist),
+    ]));
+    let digest = exported["data"]["digest"].as_str().unwrap();
+    let producer_path = dist.join("manifest.json");
+    let original: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&producer_path).unwrap()).unwrap();
+    for change in [
+        "empty",
+        "missing",
+        "extra",
+        "digest",
+        "version",
+        "source",
+        "reordered",
+    ] {
+        let mut producer = original.clone();
+        let dependencies = producer["build"]["dependencies"].as_array_mut().unwrap();
+        match change {
+            "empty" => dependencies.clear(),
+            "missing" => {
+                dependencies.pop();
+            }
+            "extra" => {
+                let mut extra = dependencies[0].clone();
+                extra["name"] = "unselected-component".into();
+                dependencies.push(extra);
+            }
+            "digest" => {
+                dependencies[0]["archive_digest"] = format!("sha256:{}", "ab".repeat(32)).into()
+            }
+            "version" => dependencies[0]["version"] = "9.9.9".into(),
+            "source" => dependencies[0]["source"]["revision"] = "wrong-revision".into(),
+            "reordered" => dependencies.reverse(),
+            _ => unreachable!(),
+        }
+        // Keep outer manifest, SBOM and provenance internally consistent while
+        // leaving the archive (and its embedded component lock) untouched.
+        ost_artifact::generate_evidence(camino::Utf8Path::from_path(&dist).unwrap(), &mut producer)
+            .unwrap();
+        std::fs::write(&producer_path, serde_json::to_vec(&producer).unwrap()).unwrap();
+        let clean = Sandbox::new();
+        json(clean.ost(&[
+            "--json",
+            "artifact",
+            "pull",
+            &format!("file://{}", path(&dist).replace('\\', "/")),
+            "--expect-artifact",
+            digest,
+            "--require-sbom",
+            "--require-provenance",
+        ]));
+        let output = clean.base.join("consumer");
+        let reconstructed = clean.ost(&[
+            "--json",
+            "runtime",
+            "reconstruct",
+            "--from-artifact",
+            digest,
+            "--output",
+            path(&output),
+        ]);
+        if change == "reordered" {
+            json(reconstructed);
+        } else {
+            error(reconstructed, "COMPOSITION_LOCK_MISMATCH");
+            assert!(!output.exists());
+        }
+    }
 }
 
 #[test]

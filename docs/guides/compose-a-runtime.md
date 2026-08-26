@@ -43,6 +43,8 @@ requires an existing matching lock and never rewrites it. `--output` is optional
 without it, inventory is derived from the verified archive entries. When present,
 files are extracted into a fresh staging directory and checked against that
 inventory before the directory is published. Existing output paths are refused.
+Keep the external lock file outside the output prefix; overlapping paths are
+rejected before fetching inputs or creating output.
 
 The lock retains every candidate's exact archive digest, canonical producer
 manifest digest, provider id/version, immutable upstream source and dependency
@@ -65,6 +67,12 @@ rejected. The archive digest is verified independently from the OCI manifest pin
 Missing inputs are fetched through the existing artifact transport; a corrupted
 cached artifact fails verification instead of silently falling back. Without a
 source, import/pull the exact component before composing or reconstructing.
+For a new composition, a declared source's producer manifest and evidence must
+also match any cached copy. Only metadata is fetched for this check, not the
+cached archives. A mismatch reports `COMPOSITION_SOURCE_MISMATCH` without
+replacing the cache; choose a matching source or use a separate `OST_HOME`.
+`--locked` and reconstruction can reuse verified, lock-matching cached inputs
+without contacting their sources.
 
 ## Reconstruct on a clean consumer
 
@@ -108,6 +116,9 @@ provenance binding the artifact, runtime identity and component archive digests.
 This is local, unsigned composition provenance, not a trusted CI attestation.
 Per-component attribution preserves the producer's declared licenses and source
 metadata. Missing license declarations are not silently filled in.
+Artifact reconstruction checks the outer dependency identities against the
+embedded lock, rejecting missing, additional or altered component dependencies
+even when the outer SBOM and provenance agree with each other.
 
 The compressed archive has its own digest, separate from `runtime_digest`.
 Compression settings or transport metadata can change the archive digest without

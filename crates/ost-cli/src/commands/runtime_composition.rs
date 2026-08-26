@@ -13,6 +13,7 @@ use ost_formation::{
     CompositionInventoryEntry, LockedCompositionArtifact, RuntimeCompositionLock,
     RuntimeCompositionManifest,
 };
+use ost_platform::{ResolvedDependencyIdentity, ResolvedSourceIdentity};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -97,7 +98,11 @@ fn verify_evidence(root: &Utf8Path, record: &ArtifactRecord, manifest: &Value) -
     Ok(())
 }
 
-fn fetch_inputs(manifest: &RuntimeCompositionManifest, store: &ArtifactStore) -> Result<()> {
+fn fetch_inputs(
+    manifest: &RuntimeCompositionManifest,
+    store: &ArtifactStore,
+    verify_sources: bool,
+) -> Result<()> {
     manifest.validate()?;
     let cached = store
         .list()?
@@ -105,7 +110,10 @@ fn fetch_inputs(manifest: &RuntimeCompositionManifest, store: &ArtifactStore) ->
         .map(|r| r.digest)
         .collect::<BTreeSet<_>>();
     for artifact in &manifest.artifacts {
-        if cached.contains(&artifact.artifact) {
+        let is_cached = cached.contains(&artifact.artifact);
+        // Existing locks pin the cached metadata independently of acquisition
+        // locations, so locked operations remain usable offline.
+        if is_cached && (!verify_sources || artifact.source.is_none()) {
             continue;
         }
         let Some(source) = &artifact.source else {
@@ -117,6 +125,36 @@ fn fetch_inputs(manifest: &RuntimeCompositionManifest, store: &ArtifactStore) ->
             RemoteReference::File(_) => Box::new(ost_artifact::FileTransport::new()),
             RemoteReference::Oci(_) => Box::new(ost_artifact::OciTransport::new(false)),
         };
+        if is_cached {
+            let (cached, _) = verified_artifact(store, &artifact.artifact)?;
+            let staging = Staging::for_destination(&store.root().join("composition-source-check"))?;
+            let resolved = transport.resolve(&reference)?;
+            let snapshot = transport.fetch_metadata(&reference, &resolved, &staging.0)?;
+            let producer = read_json(&snapshot.dist.join("manifest.json"))?;
+            let evidence = |name: &str| -> Result<Option<ost_artifact::EvidenceDigest>> {
+                let path = snapshot.dist.join(name);
+                if path
+                    .try_exists()
+                    .map_err(|e| Error::io(path.to_string(), e))?
+                {
+                    Ok(Some(ost_artifact::EvidenceDigest::from_file(&path, name)?))
+                } else {
+                    Ok(None)
+                }
+            };
+            if canonical_json_digest(&producer)? != cached.manifest_digest
+                || (
+                    evidence(ost_artifact::SBOM_FILE)?,
+                    evidence(ost_artifact::PROVENANCE_FILE)?,
+                ) != store.evidence(&cached.record)?
+            {
+                return Err(composition_error(
+                    "COMPOSITION_SOURCE_MISMATCH",
+                    format!("source metadata for {} differs from the verified cache; use a source matching the cached metadata or a separate OST_HOME", artifact.artifact),
+                ));
+            }
+            continue;
+        }
         ost_artifact::pull(
             transport.as_ref(),
             &reference,
@@ -133,8 +171,9 @@ fn fetch_inputs(manifest: &RuntimeCompositionManifest, store: &ArtifactStore) ->
 fn build_lock(
     manifest: RuntimeCompositionManifest,
     store: &ArtifactStore,
+    verify_sources: bool,
 ) -> Result<RuntimeCompositionLock> {
-    fetch_inputs(&manifest, store)?;
+    fetch_inputs(&manifest, store, verify_sources)?;
     let inputs = manifest
         .artifacts
         .iter()
@@ -173,7 +212,7 @@ fn build_lock(
 pub fn resolve_manifest(
     manifest: RuntimeCompositionManifest,
 ) -> Result<ost_formation::ResolvedRuntimeComposition> {
-    Ok(build_lock(manifest, &ArtifactStore::discover())?.resolved)
+    Ok(build_lock(manifest, &ArtifactStore::discover(), true)?.resolved)
 }
 
 pub fn compose(
@@ -183,6 +222,18 @@ pub fn compose(
     output_path: Option<&Utf8Path>,
     fmt: Format,
 ) -> Result<()> {
+    if !locked {
+        if let (Some(lock), Some(dest)) = (lock_path, output_path) {
+            let lock = prospective_path(lock)?;
+            let dest = prospective_path(dest)?;
+            if lock.starts_with(&dest) || dest.starts_with(&lock) {
+                return Err(composition_error(
+                    "COMPOSITION_OUTPUT_OVERLAP",
+                    "lock file and composed output must use separate paths",
+                ));
+            }
+        }
+    }
     let source = fs::read_to_string(path).map_err(|e| Error::io(path.to_string(), e))?;
     let manifest = RuntimeCompositionManifest::parse(&source)?;
     // Parse the existing lock before fetching or creating any output.
@@ -202,7 +253,7 @@ pub fn compose(
         }
     }
     let store = ArtifactStore::discover();
-    let lock = build_lock(manifest, &store)?;
+    let lock = build_lock(manifest, &store, !locked)?;
     if let Some(previous) = &previous {
         require_same_lock(previous, &lock)?;
     }
@@ -232,6 +283,57 @@ fn require_same_lock(
         ));
     }
     Ok(())
+}
+
+/// Resolve existing path components (including directory symlinks) without
+/// creating the missing tail. Process `..` after symlinks, as the filesystem does.
+fn prospective_path(path: &Utf8Path) -> Result<std::path::PathBuf> {
+    use std::path::Component;
+    let absolute = std::path::absolute(path).map_err(|e| Error::io(path.to_string(), e))?;
+    #[cfg(windows)]
+    let win32_path = !matches!(absolute.components().next(), Some(Component::Prefix(p)) if p.kind().is_verbatim());
+    let mut resolved = std::path::PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            _ => {
+                // Canonical ancestors use verbatim Windows paths, but missing
+                // suffixes must retain the original caller's Win32 semantics.
+                #[cfg(windows)]
+                if win32_path && matches!(component, Component::Normal(_)) {
+                    let name = component
+                        .as_os_str()
+                        .to_str()
+                        .ok_or_else(|| Error::usage("non-UTF8 output path"))?;
+                    resolved.push(name.trim_end_matches([' ', '.']));
+                } else {
+                    resolved.push(component);
+                }
+                #[cfg(not(windows))]
+                resolved.push(component);
+                match fs::symlink_metadata(&resolved) {
+                    Ok(_) => {
+                        resolved = fs::canonicalize(&resolved)
+                            .map_err(|e| Error::io(path.to_string(), e))?;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(Error::io(path.to_string(), e)),
+                }
+            }
+        }
+    }
+    // Nonexistent suffixes cannot be canonicalized to their on-disk spelling.
+    #[cfg(windows)]
+    let resolved = std::path::PathBuf::from(
+        resolved
+            .to_str()
+            .ok_or_else(|| Error::usage("non-UTF8 output path"))?
+            .to_lowercase(),
+    );
+    Ok(resolved)
 }
 
 /// Own only a freshly created sibling directory, and publish by rename after
@@ -327,6 +429,30 @@ fn attribution(lock: &RuntimeCompositionLock) -> Value {
                 "licenses": a.record.licenses, "source": a.record.source_identity,
                 "sbom_digest": a.record.sbom_digest, "provenance_digest": a.record.provenance_digest})
         }).collect::<Vec<_>>()})
+}
+
+fn composition_dependencies(lock: &RuntimeCompositionLock) -> Vec<ResolvedDependencyIdentity> {
+    let mut dependencies = lock
+        .artifacts
+        .iter()
+        .filter(|a| {
+            lock.resolved
+                .components
+                .iter()
+                .any(|c| c.digest == a.record.digest)
+        })
+        .map(|a| ResolvedDependencyIdentity {
+            name: a.record.name.clone(),
+            version: a.record.version.clone(),
+            archive_digest: Some(a.record.digest.clone()),
+            source: ResolvedSourceIdentity {
+                repository: "urn:openstrata:artifact".into(),
+                revision: a.record.digest.clone(),
+            },
+        })
+        .collect::<Vec<_>>();
+    dependencies.sort_unstable();
+    dependencies
 }
 
 fn validation_report(lock: &RuntimeCompositionLock) -> Value {
@@ -585,6 +711,7 @@ pub fn reconstruct(
         if lock.runtime_digest != expected
             || artifact.record.name != lock.resolved.name
             || artifact.record.target != lock.resolved.target
+            || artifact.record.dependency_identities != composition_dependencies(&lock)
             || producer["composition"]["validation"] != validation_report(&lock)
             || producer["composition"]["attribution"] != attribution(&lock)
         {
@@ -600,7 +727,7 @@ pub fn reconstruct(
             lock_path
                 .ok_or_else(|| Error::usage("reconstruct requires a lock or --from-artifact"))?,
         )?;
-        let actual = build_lock(lock.manifest.clone(), &store)?;
+        let actual = build_lock(lock.manifest.clone(), &store, false)?;
         require_same_lock(&lock, &actual)?;
         materialize(&lock, &store, dest)?;
         lock
@@ -656,18 +783,7 @@ pub fn export(root: &Utf8Path, dist: Option<&str>, level: i32, fmt: Format) -> R
             .root()
             .join(format!("composition-export-{}", &lock.runtime_digest[7..]))
     });
-    let root_absolute = fs::canonicalize(root).map_err(|e| Error::io(root.to_string(), e))?;
-    let dest_absolute = std::path::absolute(&dest).map_err(|e| Error::io(dest.to_string(), e))?;
-    // Resolve the nearest existing ancestor so a symlinked destination parent
-    // cannot put temporary export files inside the input prefix either.
-    let mut ancestor = dest_absolute.as_path();
-    while !ancestor.exists() {
-        ancestor = ancestor
-            .parent()
-            .ok_or_else(|| Error::usage("export destination has no existing ancestor"))?;
-    }
-    let ancestor = fs::canonicalize(ancestor).map_err(|e| Error::io(dest.to_string(), e))?;
-    if ancestor.starts_with(&root_absolute) {
+    if prospective_path(&dest)?.starts_with(prospective_path(root)?) {
         return Err(composition_error(
             "COMPOSITION_OUTPUT_OVERLAP",
             "export destination must be outside the composed prefix",
@@ -727,10 +843,7 @@ pub fn export(root: &Utf8Path, dist: Option<&str>, level: i32, fmt: Format) -> R
         "build": {
             "source": {"repository": "urn:openstrata:runtime-composition", "revision": lock.resolved.manifest_digest},
             "builder": {"id": "https://openstrata.dev/runtime/compose/v1", "identity": {"kind": "local-composition"}},
-            "dependencies": selected.iter().map(|a| json!({"name": a.record.name, "version": a.record.version,
-                "archive_digest": a.record.digest,
-                "source": {"repository": "urn:openstrata:artifact", "revision": a.record.digest}
-            })).collect::<Vec<_>>()
+            "dependencies": composition_dependencies(&lock)
         }
     });
     let evidence = ost_artifact::generate_evidence(&staging.0, &mut producer)?;

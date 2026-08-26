@@ -1890,6 +1890,87 @@ fn bearer_token_exchange_authenticates_the_pull() {
 }
 
 #[test]
+fn metadata_snapshots_preserve_evidence_without_transferring_archives() {
+    use ost_artifact::transport::oci::{MEDIA_TYPE_PROVENANCE, MEDIA_TYPE_SBOM};
+    let root = tmp_root("metadata-snapshot");
+    let mut bundle = make_bundle_with_debug("toy", b"plugin bytes", b"symbols");
+    let dist = write_dist(&root, &bundle, true);
+    std::fs::write(
+        dist.join(bundle.debug_name.as_ref().unwrap()),
+        bundle.debug_archive.as_ref().unwrap(),
+    )
+    .unwrap();
+    bundle = finish_bundle_with_debug(
+        bundle.archive,
+        bundle.archive_name,
+        std::fs::read(dist.join("manifest.json")).unwrap(),
+        Some((bundle.debug_name.unwrap(), bundle.debug_archive.unwrap())),
+    );
+    let registry = MockRegistry::start();
+    let mut oci: serde_json::Value = serde_json::from_slice(&bundle.oci_manifest).unwrap();
+    for (name, media) in [
+        (ost_artifact::SBOM_FILE, MEDIA_TYPE_SBOM),
+        (ost_artifact::PROVENANCE_FILE, MEDIA_TYPE_PROVENANCE),
+    ] {
+        let bytes = std::fs::read(dist.join(name)).unwrap();
+        let digest = digest::sha256_hex(&bytes);
+        oci["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "mediaType": media, "digest": digest, "size": bytes.len(),
+                "annotations": {"org.opencontainers.image.title": name}
+            }));
+        registry.put(
+            &format!("/v2/fixtures/rt/blobs/{digest}"),
+            "application/json",
+            bytes,
+        );
+    }
+    bundle.oci_manifest = serde_json::to_vec(&oci).unwrap();
+    bundle.oci_digest = digest::sha256_hex(&bundle.oci_manifest);
+    registry.register("fixtures/rt", "v1", &bundle);
+    let oci_reference = oci_ref(&registry, "fixtures/rt", &format!("@{}", bundle.oci_digest));
+    let file_reference = RemoteReference::parse(&format!("file://{dist}")).unwrap();
+    let backends: [(Box<dyn ArtifactTransport>, RemoteReference); 2] = [
+        (Box::new(FileTransport::new()), file_reference),
+        (Box::new(OciTransport::new(true)), oci_reference),
+    ];
+    for (index, (transport, reference)) in backends.into_iter().enumerate() {
+        let scratch = root.join(format!("snapshot-{index}"));
+        std::fs::create_dir(&scratch).unwrap();
+        let resolved = transport.resolve(&reference).unwrap();
+        let fetched = transport
+            .fetch_metadata(&reference, &resolved, &scratch)
+            .unwrap();
+        for name in [
+            "manifest.json",
+            ost_artifact::SBOM_FILE,
+            ost_artifact::PROVENANCE_FILE,
+        ] {
+            assert_eq!(
+                std::fs::read(fetched.dist.join(name)).unwrap(),
+                std::fs::read(dist.join(name)).unwrap()
+            );
+        }
+        assert!(!fetched.dist.join(&bundle.archive_name).exists());
+        assert!(!fetched
+            .dist
+            .join(bundle.debug_name.as_ref().unwrap())
+            .exists());
+    }
+    for bytes in [&bundle.archive, bundle.debug_archive.as_ref().unwrap()] {
+        assert!(registry
+            .ranges_for(&format!(
+                "/v2/fixtures/rt/blobs/{}",
+                digest::sha256_hex(bytes)
+            ))
+            .is_empty());
+    }
+    std::fs::remove_dir_all(root.as_std_path()).ok();
+}
+
+#[test]
 fn file_transport_pulls_a_dist_dir_with_the_same_chain() {
     let root = tmp_root("file-pull");
     // Lay out a producer dist dir: archive + manifest.json.
