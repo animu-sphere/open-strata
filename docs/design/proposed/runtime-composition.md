@@ -4,7 +4,7 @@ status: proposed
 owners:
   - openstrata-maintainers
 created: 2026-08-24
-updated: 2026-08-24
+updated: 2026-08-27
 applies_to: v0.22.3+
 ---
 
@@ -204,16 +204,13 @@ canonical OpenUSD 26.08 cell
   -> usd-geospatial-runtime
 ```
 
-The repository is currently empty. Its first useful commit should pin scope,
-capabilities and acceptance fixtures, then consume each OST slice as it becomes
-available. The 2026-08-16
-[pre-implementation report](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/04-2026-08-16-usd-http-resolver-preimplementation.md)
-is now historical: `usd-http-resolver` v0.4.0 has a resolver bundle, HTTP
-backend, registered test/CI suites, stable identity/validation tokens and a
-persistent cache. Tier 2 geospatial acceptance now gates on immutable component
-publication and clean-consumer composition with the point-cloud and raster
-artifacts. `usd-raster-plugins` remains pre-release; its selected GeoTIFF
-read/authoring contract must ship before the first runtime support claim.
+The v0.22.8 Windows dogfood bootstrapped the repository with its manifest,
+fixture and acceptance entry point. It composed OpenUSD 26.08, the HTTP resolver,
+point-cloud plugins and raster plugins; component-owned probes exercised local
+formats, measured HTTP cache behavior, COPC Tier 2 and GeoTIFF. A self-contained
+export reconstructed the exact locked identity in an empty OST home. The
+repository remains responsible for public pins, retained evidence and expansion
+to other supported cells.
 
 ## Non-goals for v0.22.x
 

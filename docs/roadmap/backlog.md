@@ -9,13 +9,10 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-v0.22.8 geospatial acceptance is active in [current.md](current.md).
+v0.22.9 consumer packaging is active in [current.md](current.md).
 Detailed acceptance for the remaining v0.22.x runtime
 composition slices is in [runtime-composition.md](runtime-composition.md).
 
-- ⬜ **v0.22.9 - consumer packaging foundation.** Derive Python, npm/Wasm and
-  native SDK entry points from canonical OST/OCI artifacts while preserving one
-  runtime identity and provenance graph.
 - ⬜ **v0.22.10 - runtime UX and diagnostics.** Stabilize runtime
   compose/explain/doctor/exec and machine-readable diagnostics, complete the
   geospatial clean-consumer pass and decide whether to accept the runtime

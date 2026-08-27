@@ -3263,6 +3263,12 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
         std::fs::write(lib, b"test library marker").unwrap();
     }
+    std::fs::create_dir_all(sb.work_file("consumer/python")).unwrap();
+    std::fs::write(
+        sb.work_file("consumer/python/probe.py"),
+        b"# packaged probe\n",
+    )
+    .unwrap();
 
     let path = sb.work_file("consumer/openstrata.plugin.yaml");
     let source = std::fs::read_to_string(&path).unwrap();
@@ -3678,6 +3684,26 @@ fn a_workspace_tool_ships_as_a_product_member() {
         .unwrap()
         .iter()
         .any(|provision| provision["capability"] == "tool:motion_retarget"));
+    // Runtime composition consumes the outer archive inventory, not the
+    // product install command. Every advertised source must therefore exist
+    // there as well as inside the retained, independently verifiable archives.
+    let inventory = product_manifest["files"].as_array().unwrap();
+    for mapping in product_manifest["component"]["install"].as_array().unwrap() {
+        assert!(
+            inventory
+                .iter()
+                .any(|file| file["path"] == mapping["source"]),
+            "component install source absent from product inventory: {mapping}"
+        );
+    }
+    assert!(
+        !product_manifest["component"]["environment"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["variable"] == "PYTHONPATH"),
+        "members without Python payload must not advertise empty search paths"
+    );
     let product_dist = product_dist.parent().unwrap().to_str().unwrap();
     let verified = sb.ost(&["--json", "plugin", "product", "verify", product_dist]);
     assert!(

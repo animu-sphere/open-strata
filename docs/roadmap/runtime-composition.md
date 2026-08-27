@@ -4,8 +4,8 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-08-24
-updated: 2026-08-26
-applies_to: v0.22.8-v0.22.10
+updated: 2026-08-27
+applies_to: v0.22.9-v0.22.10
 ---
 
 # v0.22.x runtime composition
@@ -15,43 +15,13 @@ This is the execution plan for the proposed
 contains only incomplete work. The v0.22.3 canonical runtime and artifact
 foundation and the v0.22.4 component model are recorded in their release records
 ([v0.22.3](../releases/v0.22.3.md), [v0.22.4](../releases/v0.22.4.md)). Locked
-composition and the native SDK shipped together in [v0.22.7](../releases/v0.22.7.md),
-bringing the remaining slices forward one slot. The next
+composition and the native SDK shipped together in [v0.22.7](../releases/v0.22.7.md).
+The real geospatial dogfood shipped in [v0.22.8](../releases/v0.22.8.md). The next
 release is summarized in [current.md](current.md); later slices are ordered in
 [backlog.md](backlog.md).
 
 The series advances one contract at a time. DCC host adapters remain v0.23.0
 work after this foundation has been dogfooded.
-
-## v0.22.8 - geospatial runtime dogfood
-
-**Objective:** build the first real composed runtime in parallel with
-[`animu-sphere/usd-geospatial-runtime`](https://github.com/animu-sphere/usd-geospatial-runtime).
-
-- Compose a digest-pinned canonical OpenUSD 26.08 cell, `usd-http-resolver`,
-  `usd-pointcloud-plugins` and
-  `usd-raster-plugins` from independently published artifacts.
-- Keep the composition repository declarative: it owns capability selection,
-  locks, fixtures and acceptance evidence, not a replacement build/solver.
-- Validate real OpenUSD loader, plugin, resolver and schema execution with
-  component-owned probes from the composed prefix. Structural path checks and
-  the native Tiny SDK fixture do not establish these observations.
-- Exercise local file formats first, then prove HTTP/COPC Tier 2 through the
-  packaged resolver and point-cloud artifacts.
-- Publish the runtime artifact and reconstruct it on a clean consumer with the
-  exact locked identity.
-
-### Geospatial component readiness
-
-The 2026-08-16
-[pre-implementation report](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/04-2026-08-16-usd-http-resolver-preimplementation.md)
-is historical and requested no OpenStrata fix. `usd-http-resolver` v0.4.0 now
-ships the previously missing resolver/backend/test substrate. Remaining
-acceptance is an immutable resolver artifact composed on a clean consumer with
-COPC metadata/range reads, cache miss-to-hit reuse, validation-token invalidation
-and a bytes-fetched baseline. `usd-raster-plugins` is pre-release; its component
-artifact and selected GeoTIFF read/authoring contract must ship before the
-geospatial runtime claims raster support.
 
 ## v0.22.9 - consumer packaging foundation
 

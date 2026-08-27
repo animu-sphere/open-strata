@@ -80,6 +80,10 @@ impl Sandbox {
             // Keep the declared loader directory in the archive even when
             // Python lives under Lib/ on a case-sensitive filesystem.
             ("lib/runtime-fixture.txt", "mock runtime loader directory\n"),
+            (
+                "lib/usd/usd/resources/codegenTemplates/plugInfo.json",
+                r#"{"Plugins":[{"Name":"{{ libraryName }}","Root":"@PLUG_INFO_ROOT@","LibraryPath":"@PLUG_INFO_LIBRARY_PATH@"}]}"#,
+            ),
             ("bin/usdcat", "#!/bin/sh\n"),
             (
                 "include/pxr/pxr.h",

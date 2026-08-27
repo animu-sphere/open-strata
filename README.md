@@ -31,25 +31,23 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.22.7** — locked composed runtimes and a relocatable
-native SDK. `runtime compose --lock/--locked/--output` pins provider identity,
-immutable sources, dependency evidence and complete payload inventory.
-`runtime reconstruct` restores the same identity from a lock or a self-contained
-exported artifact. SDK ownership, verified `runtime env`/`runtime exec`, and
-explicit CMake package checks let native consumers use the reconstructed prefix.
-It includes the SDK slice originally planned for v0.22.8; legacy OpenUSD runtime
-commands and the render-probe corrections from v0.22.6 keep their contracts.
+The current release is **v0.22.8** — geospatial runtime dogfooding and directly
+composable aggregate products. Workspace products retain exact member archives
+and install their verified payloads into the advertised aggregate layout. A
+canonical OpenUSD 26.08 runtime, HTTP resolver, point-cloud formats and GeoTIFF
+support were composed, probed, exported and reconstructed with the same locked
+identity on a clean Windows consumer. v0.22.7 locks, SDKs and leaf artifacts keep
+their contracts.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.22.8** milestone is geospatial runtime dogfooding with independently
-published OpenUSD, resolver, point-cloud and raster components. Real OpenUSD
-plugin/resolver/schema execution remains an acceptance gate; SDK structure and
-the native test fixture do not prove it. Consumer packaging follows in v0.22.9,
-runtime UX/diagnostics in v0.22.10, and DCC host adapters remain v0.23.0.
+The active **v0.22.9** milestone derives ecosystem-native consumer packages from
+canonical OST/OCI artifacts while preserving one runtime identity and provenance
+graph. Runtime UX/diagnostics follows in v0.22.10, and DCC host adapters remain
+v0.23.0.
 See the [composition guide](docs/guides/compose-a-runtime.md),
-[v0.22.7 record](docs/releases/v0.22.7.md),
+[v0.22.8 record](docs/releases/v0.22.8.md),
 [current roadmap](docs/roadmap/current.md) and
 [runtime-composition plan](docs/roadmap/runtime-composition.md).
 

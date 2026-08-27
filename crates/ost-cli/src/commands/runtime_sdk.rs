@@ -169,9 +169,28 @@ pub(super) fn validate(
     let files = lock
         .inventory
         .iter()
-        .map(|e| &e.file)
-        .chain(sdk.files.iter().map(|e| &e.file));
-    for file in files.filter(|f| Utf8Path::new(&f.path).file_name() == Some("plugInfo.json")) {
+        .map(|e| (&e.file, &e.component, &e.file.path))
+        .chain(sdk.files.iter().map(|e| (&e.file, &e.component, &e.source)));
+    for (file, owner, source_path) in
+        files.filter(|(f, _, _)| Utf8Path::new(&f.path).file_name() == Some("plugInfo.json"))
+    {
+        // OpenUSD ships usdGenSchema's input under this exact resource path.
+        // Its placeholders are not loadable plugin metadata. Keep the template
+        // in the SDK and its integrity inventory, but do not resolve its paths.
+        // Do not exempt similarly named files from arbitrary plugin components.
+        let source_prefix = format!("components/{owner}/");
+        if source_path.strip_prefix(&source_prefix)
+            == Some("lib/usd/usd/resources/codegenTemplates/plugInfo.json")
+            && lock
+                .resolved
+                .components
+                .iter()
+                .any(|component| component.id == *owner && component.kind == "runtime")
+        {
+            checks.push(json!({"name": "plugin-template", "metadata": file.path,
+                "status": "skipped", "detail": "usdGenSchema input template, not plugin registration metadata"}));
+            continue;
+        }
         let path = root.join(&file.path);
         let source = fs::read_to_string(&path).map_err(|e| Error::io(path.to_string(), e))?;
         let info = ost_plugin::parse_plug_info(&source).map_err(|e| {
