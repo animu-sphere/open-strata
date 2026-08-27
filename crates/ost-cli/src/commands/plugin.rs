@@ -2427,16 +2427,23 @@ fn package_bundle(
             "values": [path],
         })
     }));
-    component_environment.push(serde_json::json!({
-        "variable": loader_variable,
-        "operation": "prepend",
-        "values": ["lib"],
-    }));
-    component_environment.push(serde_json::json!({
-        "variable": "PYTHONPATH",
-        "operation": "prepend",
-        "values": ["python"],
-    }));
+    // Advertise conventional paths only when this archive actually owns files
+    // below them. Aggregate products prefix these paths with bundles/<id>/;
+    // a consumer must not have to guess which missing paths were defaults.
+    for (variable, directory) in [(loader_variable, "lib"), ("PYTHONPATH", "python")] {
+        let prefix = format!("{directory}/");
+        if files_json.iter().any(|file| {
+            file["path"]
+                .as_str()
+                .is_some_and(|path| path.starts_with(&prefix))
+        }) {
+            component_environment.push(serde_json::json!({
+                "variable": variable,
+                "operation": "prepend",
+                "values": [directory],
+            }));
+        }
+    }
     let component_install = files_json
         .iter()
         .filter_map(|file| file.get("path").and_then(|path| path.as_str()))
@@ -3442,10 +3449,11 @@ fn stage_workspace_data(
 
 /// Build one aggregate artifact from the exact per-bundle package outputs.
 ///
-/// The product deliberately contains member archives rather than recreating
-/// bundle trees from the source workspace. A member's digest, producer manifest,
-/// checksums, SBOM and optional provenance therefore remain independently
-/// verifiable after the one product download is extracted.
+/// The product retains exact member archives and projects their verified payloads
+/// into the destinations advertised by its component contract. Composition reads
+/// ordinary archive inventory; it does not run the plugin product installer.
+/// Never recreate these payloads from the source workspace: member identities
+/// and the projected bytes must describe the same package output.
 fn package_workspace_product(
     members_in: &[ProductMember<'_>],
     clean_stage: bool,
@@ -3506,6 +3514,15 @@ fn package_workspace_product(
             &member_root.join(archive_name),
             &stage,
         )?;
+
+        let destination = member.destination();
+        let expanded = safe_product_join(&stage, &destination, "product member destination")?;
+        ost_artifact::extract_archive(
+            &outcome.archive_path,
+            &outcome.packed.archive_digest,
+            &expanded,
+        )?;
+        verify_member_manifest_files(&expanded, &outcome.manifest)?;
 
         let dist_dir = outcome.archive_path.parent().ok_or_else(|| {
             Error::config(format!(
