@@ -659,6 +659,37 @@ fn resolve_passes_with_registry_artifacts_and_extract_unpacks_the_plugin() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["data"]["unresolved"].as_array().unwrap().len(), 0);
 
+    // The same digest is not enough when a cell declares which normalized
+    // OpenUSD runtime it needs. This fixture predates that identity, so both
+    // the local artifact gate and matrix resolution fail before configure.
+    let out = sb.ost(&[
+        "--json",
+        "artifact",
+        "verify",
+        &runtime_digest,
+        "--require-openusd",
+        "cy2026/linux/x86_64/gl",
+        "--require-openusd-version",
+        "26.08",
+    ]);
+    assert_eq!(out.status.code(), Some(5));
+    let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(error["error"]["code"], "ARTIFACT_OPENUSD_IDENTITY_MISSING");
+    std::fs::write(
+        sb.base.join("openstrata.ci.yaml"),
+        format!(
+            "schema: 1\nrequire_evidence: none\ncells:\n  - name: linux-usd-toy\n    runtime_artifact: {runtime_digest}\n    require_openusd: cy2026/linux/x86_64/gl\n    require_openusd_version: \"26.08\"\n    plugin_artifact: {plugin_digest}\n    platform: cy2026\n    profile: usd\n    host:\n      os: linux\n      labels: [self-hosted, linux]\n"
+        ),
+    )
+    .unwrap();
+    let out = sb.ost(&["--json", "ci", "validate", "--resolve"]);
+    assert_eq!(out.status.code(), Some(5));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(report["data"]["unresolved"][0]
+        .as_str()
+        .unwrap()
+        .contains("does not satisfy require_openusd"));
+
     // The resolver also enforces the typed fields, not just digest existence.
     std::fs::write(
         sb.base.join("openstrata.ci.yaml"),
@@ -946,7 +977,7 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
     // installer).
     let matrix = linux_pr_lanes_yaml().replace(
         "    up_to: 4\n",
-        "    up_to: 4\n    host_python: \"3.13\"\n    host_packages:\n      apt: [libx11-dev, libxt-dev]\n",
+        "    up_to: 4\n    require_openusd: cy2026/linux/x86_64/gl\n    require_openusd_version: \"26.08\"\n    host_python: \"3.13\"\n    host_packages:\n      apt: [libx11-dev, libxt-dev]\n",
     );
     std::fs::write(sb.base.join("openstrata.ci.yaml"), matrix).unwrap();
 
@@ -985,6 +1016,8 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
             "plugin_artifact",
             "profile",
             "require_evidence",
+            "require_openusd",
+            "require_openusd_version",
             "runner",
             "runs_on",
             "runtime_artifact",
@@ -1008,6 +1041,8 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
     assert_eq!(pr["verify"], serde_json::Value::Null);
     assert_eq!(pr["host_python"], "3.13");
     assert_eq!(pr["host_packages"]["apt"][0], "libx11-dev");
+    assert_eq!(pr["require_openusd"], "cy2026/linux/x86_64/gl");
+    assert_eq!(pr["require_openusd_version"], "26.08");
     // The digest a hand-written lane would otherwise keep a second copy of.
     assert_eq!(
         pr["expected_oci_digest"],

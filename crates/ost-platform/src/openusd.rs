@@ -1,12 +1,72 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Canonical OpenUSD build and publication policy.
 
-use ost_core::host::{Arch, Os};
+use ost_core::{
+    host::{Arch, Os},
+    Error,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{OpenUsdBuilder, OpenUsdVariantId, ResolvedOpenUsdCompatibility};
 
 pub const CANONICAL_OPENUSD_VERSIONS: &[&str] = &["26.05", "26.08"];
+
+/// Resolve the consumer-facing `PLATFORM/OS/ARCH/VARIANT` selector used by
+/// artifact pulls and CI support cells. Keeping this parser beside the
+/// canonical platform matrix prevents each caller from accepting a different
+/// spelling or approving a cell that the platform does not declare.
+pub fn resolve_openusd_requirement(value: &str) -> ost_core::Result<ResolvedOpenUsdCompatibility> {
+    let parts = value.split('/').collect::<Vec<_>>();
+    if parts.len() != 4 || parts.iter().any(|part| part.is_empty()) {
+        return Err(Error::usage(format!(
+            "invalid OpenUSD requirement '{value}' (expected PLATFORM/OS/ARCH/VARIANT, for example cy2026/linux/x86_64/vulkan)"
+        )));
+    }
+    let os = match parts[1] {
+        "linux" => Os::Linux,
+        "macos" => Os::Macos,
+        "windows" => Os::Windows,
+        other => {
+            return Err(Error::usage(format!(
+                "unknown OpenUSD requirement OS '{other}' (expected linux, macos, or windows)"
+            )))
+        }
+    };
+    let arch = match parts[2] {
+        "x86_64" => Arch::X86_64,
+        "arm64" => Arch::Arm64,
+        other => {
+            return Err(Error::usage(format!(
+                "unknown OpenUSD requirement architecture '{other}' (expected x86_64 or arm64)"
+            )))
+        }
+    };
+    let variant = match parts[3] {
+        "core" | "headless" => OpenUsdVariantId::Core,
+        "gl" | "standard" => OpenUsdVariantId::Gl,
+        "vulkan" => OpenUsdVariantId::Vulkan,
+        "metal" => OpenUsdVariantId::Metal,
+        other => {
+            return Err(Error::usage(format!(
+            "unknown OpenUSD requirement variant '{other}' (expected core, gl, vulkan, or metal)"
+        )))
+        }
+    };
+    let platform = crate::load_one(parts[0])?;
+    platform
+        .resolve_openusd(os, arch, variant)
+        .map(|(compatibility, _)| compatibility)
+        .ok_or_else(|| {
+            Error::usage(format!(
+                "platform '{}' declares no approved OpenUSD {}/{} '{}' cell",
+                platform.id,
+                os.as_str(),
+                arch.as_str(),
+                variant.as_str(),
+            ))
+            .with_hint("choose a cell declared in the platform manifest's openusd matrix")
+        })
+}
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OpenUsdPlanError {

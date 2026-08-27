@@ -143,6 +143,30 @@ Pinning a `runtime_artifact` by digest keeps every cell reproducible. If a cell
 pins a runtime that lacks the evidence a generated gate demands, `ost ci
 generate` warns and `ost ci validate` fails fast (v0.18.0).
 
+A digest pins the runtime bytes, but it does not state which OpenUSD variant
+those bytes must provide. OpenUSD-consuming cells should also declare the
+normalized consumer cell and, when the project supports one exact upstream
+release, its version:
+
+```yaml
+cells:
+  - name: plugin-pr-linux-vulkan
+    lane: pull_request
+    runtime_artifact: sha256:<runtime SDK digest>
+    require_openusd: cy2026/linux/x86_64/vulkan
+    require_openusd_version: "26.08"
+    platform: cy2026
+    profile: usd
+    # runner/runtime_remote/bundle omitted here
+```
+
+`ost ci validate` checks that the selector is an approved platform cell and
+agrees with the cell's platform and runner OS. `ost ci validate --resolve`
+also checks the pinned local artifact's compiler/runtime, Python, TBB, graphics,
+ABI, provider and version identity. Generated source, support and release jobs
+pass the same requirements to both remote pull and local artifact verification,
+so a wrong re-pin fails before runtime materialization or CMake configure.
+
 Not every workspace member is a bundle. A plain library that no bundle requires,
 and a CLI executable built from the workspace, are invisible to a cell that names
 a `bundle:` — so declare `kind: workspace` for a cell that builds the workspace
@@ -154,6 +178,8 @@ cells:
     kind: workspace
     lane: pull_request
     runtime_artifact: sha256:<runtime SDK digest>
+    require_openusd: cy2026/linux/x86_64/gl
+    require_openusd_version: "26.08"
     platform: cy2026
     profile: usd
     verify: test          # graph | build | test (default test)

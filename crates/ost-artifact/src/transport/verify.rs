@@ -442,7 +442,7 @@ fn evidence_in_dist(dist: &Utf8Path, name: &str) -> Result<Option<EvidenceDigest
     EvidenceDigest::from_file(&path, name).map(Some)
 }
 
-fn verify_openusd_requirement(
+pub fn verify_openusd_requirement(
     record: &ArtifactRecord,
     required: &ResolvedOpenUsdCompatibility,
     required_version: Option<&str>,

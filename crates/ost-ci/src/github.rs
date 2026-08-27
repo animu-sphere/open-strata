@@ -163,6 +163,8 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
         "          - name: {name}\n\
          \x20           lane: {lane}\n\
          \x20           runtime_artifact: {runtime}\n\
+         \x20           require_openusd: \"{require_openusd}\"\n\
+         \x20           require_openusd_version: \"{require_openusd_version}\"\n\
          \x20           target_trust: {target_trust}\n\
          \x20           minimum_trust: {minimum_trust}\n\
          \x20           require_evidence: {require_evidence}\n\
@@ -177,6 +179,8 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
         name = cell.name,
         lane = cell.lane.as_str(),
         runtime = cell.runtime_artifact,
+        require_openusd = cell.require_openusd.as_deref().unwrap_or(""),
+        require_openusd_version = cell.require_openusd_version.as_deref().unwrap_or(""),
         target_trust = cell.trust,
         minimum_trust = matrix.minimum_trust(cell),
         require_evidence = matrix.require_evidence(cell).as_str(),
@@ -334,8 +338,16 @@ fn support_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportC
           ost artifact show ${{{{ matrix.runtime_artifact }}}}
           ost artifact show ${{{{ matrix.plugin_artifact }}}}
       - name: Verify artifact integrity
+        shell: bash
         run: |
-          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}}{policy}
+          openusd_args=()
+          if [ -n \"${{{{ matrix.require_openusd }}}}\" ]; then
+            openusd_args+=(--require-openusd \"${{{{ matrix.require_openusd }}}}\")
+          fi
+          if [ -n \"${{{{ matrix.require_openusd_version }}}}\" ]; then
+            openusd_args+=(--require-openusd-version \"${{{{ matrix.require_openusd_version }}}}\")
+          fi
+          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}} \"${{openusd_args[@]}}\"{policy}
           ost artifact verify ${{{{ matrix.plugin_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}}{policy}
       - name: Materialize the runtime from the registry
         run: ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
@@ -518,7 +530,14 @@ fn runtime_fetch_steps(bootstrap: Option<&Bootstrap>) -> String {
             if [ \"${{ matrix.hosted }}\" = \"true\" ] && [ -n \"${OST_HOME:-}\" ]; then
               rm -rf \"${OST_HOME}/artifacts\"
             fi
-            ost artifact pull \"${{ matrix.runtime_remote }}\" --expect-artifact \"${{ matrix.runtime_artifact }}\" --require-kind runtime --json | tee .ost-ci/runtime-pull.json
+            openusd_args=()
+            if [ -n \"${{ matrix.require_openusd }}\" ]; then
+              openusd_args+=(--require-openusd \"${{ matrix.require_openusd }}\")
+            fi
+            if [ -n \"${{ matrix.require_openusd_version }}\" ]; then
+              openusd_args+=(--require-openusd-version \"${{ matrix.require_openusd_version }}\")
+            fi
+            ost artifact pull \"${{ matrix.runtime_remote }}\" --expect-artifact \"${{ matrix.runtime_artifact }}\" --require-kind runtime \"${openusd_args[@]}\" --json | tee .ost-ci/runtime-pull.json
           fi
 ",
     );
@@ -704,8 +723,15 @@ fn source_preamble(matrix: &SupportMatrix) -> String {
         run: |
           set -euo pipefail
           mkdir -p .ost-ci
-          printf '{{\"schema\":1,\"runtime_artifact\":\"%s\",\"source\":\"%s\"}}\\n' \"${{{{ matrix.runtime_artifact }}}}\" \"${{{{ matrix.runtime_remote != '' && 'remote-pull' || 'local-registry' }}}}\" > .ost-ci/runtime-source.json
-          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}}{policy}
+          printf '{{\"schema\":1,\"runtime_artifact\":\"%s\",\"require_openusd\":\"%s\",\"require_openusd_version\":\"%s\",\"source\":\"%s\"}}\\n' \"${{{{ matrix.runtime_artifact }}}}\" \"${{{{ matrix.require_openusd }}}}\" \"${{{{ matrix.require_openusd_version }}}}\" \"${{{{ matrix.runtime_remote != '' && 'remote-pull' || 'local-registry' }}}}\" > .ost-ci/runtime-source.json
+          openusd_args=()
+          if [ -n \"${{{{ matrix.require_openusd }}}}\" ]; then
+            openusd_args+=(--require-openusd \"${{{{ matrix.require_openusd }}}}\")
+          fi
+          if [ -n \"${{{{ matrix.require_openusd_version }}}}\" ]; then
+            openusd_args+=(--require-openusd-version \"${{{{ matrix.require_openusd_version }}}}\")
+          fi
+          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}} \"${{openusd_args[@]}}\"{policy}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
 {cache_save}\
 {prebuild}",
@@ -1073,7 +1099,14 @@ fn release_candidate_steps(matrix: &SupportMatrix) -> String {
         run: |
           set -euo pipefail
           mkdir -p .ost-ci
-          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}} --policy {policy}
+          openusd_args=()
+          if [ -n \"${{{{ matrix.require_openusd }}}}\" ]; then
+            openusd_args+=(--require-openusd \"${{{{ matrix.require_openusd }}}}\")
+          fi
+          if [ -n \"${{{{ matrix.require_openusd_version }}}}\" ]; then
+            openusd_args+=(--require-openusd-version \"${{{{ matrix.require_openusd_version }}}}\")
+          fi
+          ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}} \"${{openusd_args[@]}}\" --policy {policy}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
 {prebuild}\
 \x20     - name: Build the release candidate from source
@@ -1330,6 +1363,8 @@ mod tests {
             support: None,
             require_evidence: None,
             runtime_artifact: format!("sha256:{}", "ab".repeat(32)),
+            require_openusd: None,
+            require_openusd_version: None,
             runtime_remote: None,
             plugin_artifact: Some(format!("sha256:{}", "cd".repeat(32))),
             kind: CellKind::default(),
@@ -1748,9 +1783,14 @@ mod tests {
 
     #[test]
     fn hosted_bootstrap_cache_and_remote_pull_render_into_source_ci() {
-        let m = lanes_matrix();
+        let mut m = lanes_matrix();
+        m.cells[0].require_openusd = Some("cy2026/windows/x86_64/gl".into());
+        m.cells[0].require_openusd_version = Some("26.08".into());
         let a = generate_source(&m).unwrap();
         let doc: serde_yaml::Value = serde_yaml::from_str(&a).unwrap();
+        let include = &doc["jobs"]["pr"]["strategy"]["matrix"]["include"][0];
+        assert_eq!(include["require_openusd"], "cy2026/windows/x86_64/gl");
+        assert_eq!(include["require_openusd_version"], "26.08");
         let steps = doc["jobs"]["pr"]["steps"].as_sequence().unwrap();
         let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
 
@@ -1823,6 +1863,8 @@ mod tests {
         let run = pull["run"].as_str().unwrap();
         assert!(run.contains("--expect-artifact"));
         assert!(run.contains("--require-kind runtime"));
+        assert!(run.contains("--require-openusd"));
+        assert!(run.contains("--require-openusd-version"));
         assert!(run.contains(".ost-ci/runtime-pull.json"));
 
         // The cache-hit short-circuit must ask exactly what the gate asks. A
@@ -1845,6 +1887,8 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(gate.contains("${{ matrix.evidence_flags }}"));
+        assert!(gate.contains("--require-openusd"));
+        assert!(gate.contains("--require-openusd-version"));
 
         // Save is a separate post-gate action: no failed or partial pull can
         // populate the digest key. Recovery-only partial blobs are removed

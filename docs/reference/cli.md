@@ -232,6 +232,8 @@ Verify a stored artifact's integrity (archive digest + per-file hashes)
 | --- | --- |
 | `--minimum-trust <LEVEL>` | Enforce an explicit trust floor. When --policy is also present, the stricter of this value and the policy's minimum is used |
 | `--policy <FILE>` | Enforce minimum trust from an artifact policy TOML file |
+| `--require-openusd <PLATFORM/OS/ARCH/VARIANT>` | Require the stored runtime to satisfy an approved normalized OpenUSD consumer cell |
+| `--require-openusd-version <VERSION>` | Require an exact upstream OpenUSD release in addition to the consumer cell |
 | `--require-provenance` | Fail unless valid SLSA/in-toto provenance is attached |
 | `--require-sbom` | Fail unless a valid SPDX SBOM is attached to the artifact |
 

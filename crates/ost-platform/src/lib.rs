@@ -21,5 +21,6 @@ pub use model::{
     ResolvedSourceIdentity, Source, SourceKind, Status,
 };
 pub use openusd::{
-    canonical_openusd_leaf_tag, OpenUsdBuildPlan, OpenUsdPlanError, CANONICAL_OPENUSD_VERSIONS,
+    canonical_openusd_leaf_tag, resolve_openusd_requirement, OpenUsdBuildPlan, OpenUsdPlanError,
+    CANONICAL_OPENUSD_VERSIONS,
 };
