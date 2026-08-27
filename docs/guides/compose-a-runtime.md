@@ -231,4 +231,5 @@ SDK structure, an explicit CMake probe, and a command run are distinct scopes;
 neither is silently promoted to successful OpenUSD discovery, a GPU observation
 or a rendered frame. Exported aggregate runtime validation remains `pending`.
 Probe output belongs to the caller's CI/evidence capture and does not rewrite
-the locked prefix. Real geospatial OpenUSD execution remains the v0.22.8 dogfood.
+the locked prefix. The v0.22.8 geospatial dogfood demonstrates this separation
+with component-owned packaged probes and clean reconstruction.

@@ -7,10 +7,9 @@ artifact, resolution, lock, materialization and validation primitives; the
 runtime repository supplies a real geospatial capability set, pins, fixtures and
 clean-consumer evidence.
 
-> The repository is currently empty. This page records its intended OpenStrata
-> role and bootstrap boundary, not an implemented runtime or published support
-> claim. The repository becomes authoritative for its concrete components,
-> versions, support matrix and release records once those files exist.
+> The repository was bootstrapped for the v0.22.8 Windows acceptance. It becomes
+> authoritative for public component pins, support matrices and release evidence
+> when its first tagged composition is published.
 
 ## Intended composition
 
@@ -43,9 +42,9 @@ format or monolithic source build. A project-specific script may orchestrate
 acceptance commands, but it must not become the only definition of runtime
 membership or environment layout.
 
-## Parallel bootstrap
+## Bootstrap history
 
-The repository can start before `ost runtime compose` is complete:
+The repository started before `ost runtime compose` was complete:
 
 1. Declare the target capabilities, initial providers and non-goals.
 2. Add acceptance fixtures and expected probes without claiming they pass.
@@ -54,25 +53,24 @@ The repository can start before `ost runtime compose` is complete:
 5. Replace any temporary orchestration with the shipped OST lifecycle.
 6. Publish clean-consumer evidence for the v0.22.8 dogfood.
 
-This sequence lets both repositories expose missing primitives early without
-turning temporary source-tree composition into a public contract.
+This sequence let both repositories expose missing primitives early without
+turning temporary source-tree composition into a public contract. v0.22.8
+completed the local Windows clean-consumer pass; the composition repository owns
+the resulting public pins and cross-platform expansion.
 
 ## Current readiness gates
 
-- **Runtime repository:** empty as of 2026-08-24; no implementation or release
-  claim exists yet.
-- **HTTP resolver:** v0.4.0 now includes the HTTP backend, `ArResolver` bundle,
-  CI/test suites, block cache, stable identity/validation tokens and persistent
-  cache. The 2026-08-16
-  [pre-implementation report](https://github.com/animu-sphere/usd-pointcloud-plugins/blob/main/docs/reports/ost/04-2026-08-16-usd-http-resolver-preimplementation.md)
-  is retained as historical evidence, not current readiness. Immutable component
-  publication, digest pinning and clean-consumer COPC integration remain gates.
+- **Runtime repository:** the v0.22.8 bootstrap provides the declarative
+  composition, fixture and acceptance entry point. Its first tagged release and
+  non-Windows cells remain repository-owned work.
+- **HTTP resolver:** v0.5.0 packages the resolver product and a measured
+  cold/warm persistent-cache probe. The 2026-08-16 pre-implementation report is
+  historical evidence rather than current readiness.
 - **Point-cloud plugins:** local LAS/LAZ/COPC/PLY behavior remains owned and
   documented by `usd-pointcloud-plugins`; the composed runtime verifies reach
   and interoperability, not the formats' internal capability matrix.
-- **Raster plugins:** the core model, GeoTIFF metadata and initial uncompressed
-  window reads exist, but no release is tagged. Component publication and the
-  raster read/authoring acceptance selected by the runtime remain gates.
+- **Raster plugins:** v0.1.0 packages the initial GeoTIFF metadata and
+  uncompressed read path with a component-owned probe.
 
 ## Acceptance evidence
 

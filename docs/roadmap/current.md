@@ -3,32 +3,28 @@
 The next milestone and active carry-over work. Shipped detail is in
 [releases/](../releases/) and the [delivery history](../reports/delivery-history.md).
 
-## v0.22.8 - geospatial runtime dogfood
+## v0.22.9 - consumer packaging foundation
 
-**Status:** pending real published-component acceptance. **Depends on:** the
-[v0.22.7 locked runtime and SDK](../releases/v0.22.7.md).
+**Status:** planned. **Depends on:** the
+[v0.22.8 geospatial runtime dogfood](../releases/v0.22.8.md).
 
-Compose the first real geospatial runtime in
-[`usd-geospatial-runtime`](../projects/usd-geospatial-runtime.md), keeping the
-repository declarative and component publication independently owned.
+Derive ecosystem-native consumer entry points from canonical OST/OCI artifacts
+without creating a second source of runtime identity or dependency truth.
 
 ### Acceptance
 
-- Compose a digest-pinned canonical OpenUSD 26.08 cell, HTTP resolver,
-  point-cloud plugins and raster plugins from published artifacts.
-- Run component-owned OpenUSD loader/plugin/resolver/schema probes from the
-  composed prefix. Structural plugInfo/schema checks do not prove registration.
-- Exercise local file formats, HTTP/COPC Tier 2 and GeoTIFF through packaged
-  components, retaining execution and range-read evidence.
-- Publish the composed artifact and reconstruct the same locked identity on a
-  clean consumer without producer build trees or caches.
+- Define Python wheel, npm/JavaScript/Wasm and native SDK packages as derived
+  distributions of digest-pinned runtime artifacts.
+- Preserve OST component/runtime identity, provenance and dependency truth when
+  publishing through ecosystem registries.
+- Prove one native SDK consumer and specify the binder/loader boundary for Python
+  and JavaScript without exposing OST internals as public APIs.
 
 ### Exit criteria
 
-A clean consumer reconstructs the published composition and demonstrates the
-declared OpenUSD/geospatial behavior using packaged components alone. SDK
-fixture success is not this acceptance. Remaining v0.22.8-v0.22.10 work is in
-the [runtime-composition plan](runtime-composition.md).
+One canonical runtime can serve the selected ecosystem entry points, and each
+derived package resolves back to its exact OST artifact identity. Remaining
+v0.22.9-v0.22.10 work is in the [runtime-composition plan](runtime-composition.md).
 
 ## Active carry-over
 
@@ -38,10 +34,6 @@ the [runtime-composition plan](runtime-composition.md).
   observations on every hosted Windows/macOS cell. Keep those observations
   separate from artifact consumption. Historical investigation:
   [render-prerequisite report](../reports/2026-08-26-usd-vrm-ci-render-prerequisites.md).
-- **v0.22.4 cross-repository acceptance.** Run the real published-artifact
-  composition pass in `usd-geospatial-runtime` against independently published
-  artifacts rather than the checked-in fixture. This is part of the v0.22.8
-  dogfood above; any corrections follow the published v0.22.7 baseline.
 - **v0.22.3 post-release validation.** Run the host-specific canonical 16-leaf
   OpenUSD builds, protected GHCR publication, clean digest pulls, and the USD
   VRM release-lane dogfood with the released binary. The four macOS leaves are

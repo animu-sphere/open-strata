@@ -51,7 +51,7 @@ every build unit into an artificial package abstraction.
 | Project | Category | What it proves | Main OpenStrata workflows |
 | --- | --- | --- | --- |
 | [OpenStrata](../concepts/overview.md) | Toolchain | Runtime, artifact, CI, validation, and Formation | `runtime`, `build`, `artifact`, `formation`, `ci` |
-| [USD Geospatial Runtime](usd-geospatial-runtime.md) | Runtime composition | Locked multi-repository runtime, SDK layout, clean-consumer reconstruction (bootstrap; repository currently empty) | planned `runtime compose` / `validate` / `export` / `pull` / `exec` |
+| [USD Geospatial Runtime](usd-geospatial-runtime.md) | Runtime composition | Locked multi-repository runtime, packaged geospatial probes, self-contained clean-consumer reconstruction | `runtime compose` / `validate` / `export` / `reconstruct` / `exec` |
 | [USD 3DGS Plugins](usd-3dgs-plugins.md) | Plugin workspace | Fresh scaffold, bundle-to-library edge, Gaussian PLY import | `plugin build` / `test` / `run` / `view` / `package` |
 | [USD Point Cloud Plugins](usd-pointcloud-plugins.md) | Plugin workspace | Four geospatial file formats, shared authoring/tiling stack, format arguments | `configure` / `build` / `test`, `plugin build` / `test` / `view` |
 | [USD HTTP Resolver](usd-http-resolver.md) | Resolver workspace | Random-access HTTP transport, cache identity, resolver/file-format separation | `runtime pull`, `build`, `test` |
@@ -61,9 +61,9 @@ every build unit into an artificial package abstraction.
 
 - **[USD Geospatial Runtime](usd-geospatial-runtime.md)** —
   [`animu-sphere/usd-geospatial-runtime`](https://github.com/animu-sphere/usd-geospatial-runtime):
-  the first runtime-composition acceptance repository, currently empty. It will
-  own a declarative geospatial capability set, component pins, locks, fixtures
-  and clean-consumer evidence while OpenStrata owns the generic resolution,
+  the first runtime-composition acceptance repository. It owns a declarative
+  geospatial capability set, component pins, locks, fixtures and clean-consumer
+  evidence while OpenStrata owns the generic resolution,
   materialization and verification machinery.
 - **[USD 3DGS Plugins](usd-3dgs-plugins.md)** —
   [`animu-sphere/usd-3dgs-plugins`](https://github.com/animu-sphere/usd-3dgs-plugins):
