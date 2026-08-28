@@ -1346,6 +1346,7 @@ Resolve component models and manage runtimes in the local store
 **Subcommands:**
 
 - [`ost runtime compose`](#ost-runtime-compose) — Resolve a component manifest without materializing any files
+- [`ost runtime consumer-manifest`](#ost-runtime-consumer-manifest) — Derive a registry-neutral consumer package manifest from an exported composition
 - [`ost runtime env`](#ost-runtime-env) — Print a verified composed SDK's isolated environment
 - [`ost runtime exec`](#ost-runtime-exec) — Run a command with a verified composed SDK's isolated search paths
 - [`ost runtime explain`](#ost-runtime-explain) — Explain how a profile resolves to capabilities and extensions
@@ -1376,6 +1377,23 @@ Resolve a component manifest without materializing any files
 | `--lock <LOCK>` | Write a portable JSON lock after verifying all inputs |
 | `--locked` | Require the existing --lock to match; never rewrite it |
 | `--output <OUTPUT>` | Materialize an owner-recorded SDK and retained component prefixes |
+
+#### `ost runtime consumer-manifest`
+
+Derive a registry-neutral consumer package manifest from an exported composition
+
+**Usage:** `ost runtime consumer-manifest [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--entrypoint <ENTRYPOINT>` | Public CMake package, Python import module, or JavaScript export key |
+| `--from-artifact <FROM_ARTIFACT>` | Full digest of an exported composed-runtime artifact in the local store |
+| `--kind <KIND>` | Consumer distribution shape |
+| `--name <NAME>` | Ecosystem package name (distribution, npm, or native SDK package name) |
+| `--output <OUTPUT>` | Destination JSON manifest. Written atomically |
+| `--version <VERSION>` | Ecosystem package version. Runtime identity remains independently pinned |
 
 #### `ost runtime env`
 

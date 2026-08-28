@@ -15,3 +15,4 @@ are procedures; the factual contracts they reference live in
 | [adopt-a-renderer-project.md](adopt-a-renderer-project.md) | Drive a renderer's own CMake targets, adopt a runtime, and record evidence — without a bundle graph. |
 | [compose-a-formation.md](compose-a-formation.md) | Compose independently released components into one reproducible run, including environment export and diagnostics. |
 | [compose-a-runtime.md](compose-a-runtime.md) | Resolve a capability-driven runtime component model and diagnose conflicts before materialization. |
+| [derive-a-consumer-package.md](derive-a-consumer-package.md) | Bind native SDK, Python wheel, and npm entrypoints to one exact exported composed runtime without creating a second dependency graph. |

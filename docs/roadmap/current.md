@@ -5,7 +5,7 @@ The next milestone. Shipped detail is in
 
 ## v0.22.9 - consumer packaging foundation
 
-**Status:** planned. **Depends on:** the
+**Status:** in progress. **Depends on:** the
 [v0.22.8 geospatial runtime dogfood](../releases/v0.22.8.md).
 
 Derive ecosystem-native consumer entry points from canonical OST/OCI artifacts

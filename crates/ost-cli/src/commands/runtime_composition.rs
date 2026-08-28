@@ -10,8 +10,9 @@ use ost_artifact::{
 use ost_core::{digest, Error, Result};
 use ost_formation::{
     canonical_json_digest, composition_error, resolve_runtime_composition, CompositionInput,
-    CompositionInventoryEntry, LockedCompositionArtifact, RuntimeCompositionLock,
-    RuntimeCompositionManifest,
+    CompositionInventoryEntry, ConsumerComponentIdentity, ConsumerPackageKind,
+    ConsumerPackageManifest, ConsumerRuntimeIdentity, LockedCompositionArtifact,
+    RuntimeCompositionLock, RuntimeCompositionManifest,
 };
 use ost_platform::{ResolvedDependencyIdentity, ResolvedSourceIdentity};
 use serde_json::{json, Value};
@@ -23,6 +24,106 @@ const LOCK_PATH: &str = "metadata/composition.lock.json";
 #[path = "runtime_sdk.rs"]
 mod sdk;
 pub use sdk::{environment, execute};
+
+pub fn consumer_manifest(
+    digest: &str,
+    kind: ConsumerPackageKind,
+    name: String,
+    version: String,
+    entrypoints: Vec<String>,
+    output_path: &Utf8Path,
+    fmt: Format,
+) -> Result<()> {
+    let store = ArtifactStore::discover();
+    let verified =
+        verified_composed_artifact(&store, digest, Staging::temporary_in(store.root())?)?;
+    let lock = &verified.lock;
+    if lock.sdk.is_none() {
+        return Err(composition_error(
+            "COMPOSITION_SDK_REQUIRED",
+            "consumer packages require a composed runtime with an SDK; compose and export it again",
+        ));
+    }
+    let components = lock
+        .resolved
+        .components
+        .iter()
+        .map(|component| {
+            let source = lock
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.record.digest == component.digest)
+                .ok_or_else(|| {
+                    composition_error(
+                        "COMPOSITION_LOCK_INVALID",
+                        format!("component '{}' has no locked artifact", component.id),
+                    )
+                })?;
+            Ok(ConsumerComponentIdentity {
+                id: component.id.clone(),
+                version: component.version.clone(),
+                digest: component.digest.clone(),
+                sbom_digest: source.record.sbom_digest.clone(),
+                provenance_digest: source.record.provenance_digest.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let sbom_digest = verified
+        .artifact
+        .record
+        .sbom_digest
+        .clone()
+        .ok_or_else(|| {
+            composition_error(
+                "CONSUMER_PACKAGE_EVIDENCE_REQUIRED",
+                "composed runtime has no verified SBOM evidence",
+            )
+        })?;
+    let provenance_digest = verified
+        .artifact
+        .record
+        .provenance_digest
+        .clone()
+        .ok_or_else(|| {
+            composition_error(
+                "CONSUMER_PACKAGE_EVIDENCE_REQUIRED",
+                "composed runtime has no verified provenance evidence",
+            )
+        })?;
+    let manifest = ConsumerPackageManifest::new(
+        kind,
+        name,
+        version,
+        ConsumerRuntimeIdentity {
+            artifact_digest: verified.artifact.record.digest.clone(),
+            runtime_digest: lock.runtime_digest.clone(),
+            sbom_digest,
+            provenance_digest,
+            target: lock.resolved.target.clone(),
+            components,
+        },
+        entrypoints,
+    )?;
+    let bytes = serde_json::to_string_pretty(&manifest).map_err(|error| {
+        Error::Operation(format!("cannot serialize consumer manifest: {error}"))
+    })?;
+    if let Some(parent) = output_path
+        .parent()
+        .filter(|path| !path.as_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| Error::io(parent.to_string(), error))?;
+    }
+    ost_core::fs::write_atomic(output_path.as_std_path(), format!("{bytes}\n").as_bytes())?;
+    if fmt.is_json() {
+        output::success(&json!({"manifest": manifest, "output": output_path}));
+    } else {
+        println!(
+            "Derived {} consumer manifest for {} at {}",
+            manifest.package.kind, manifest.runtime.artifact_digest, output_path
+        );
+    }
+    Ok(())
+}
 
 fn read_json(path: &Utf8Path) -> Result<Value> {
     serde_json::from_slice(&fs::read(path).map_err(|e| Error::io(path.to_string(), e))?)
@@ -355,6 +456,17 @@ fn prospective_path(path: &Utf8Path) -> Result<std::path::PathBuf> {
 /// validation. No force mode and no deletion of an existing user destination.
 struct Staging(Utf8PathBuf);
 impl Staging {
+    fn temporary_in(parent: &Utf8Path) -> Result<Self> {
+        fs::create_dir_all(parent).map_err(|e| Error::io(parent.to_string(), e))?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let scratch = parent.join(format!(".ost-composition-{}-{nanos}", std::process::id()));
+        fs::create_dir(&scratch).map_err(|e| Error::io(scratch.to_string(), e))?;
+        Ok(Self(scratch))
+    }
+
     fn for_destination(dest: &Utf8Path) -> Result<Self> {
         if fs::symlink_metadata(dest).is_ok() {
             return Err(composition_error(
@@ -366,14 +478,7 @@ impl Staging {
             .parent()
             .filter(|p| !p.as_str().is_empty())
             .unwrap_or(Utf8Path::new("."));
-        fs::create_dir_all(parent).map_err(|e| Error::io(parent.to_string(), e))?;
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let scratch = parent.join(format!(".ost-composition-{}-{nanos}", std::process::id()));
-        fs::create_dir(&scratch).map_err(|e| Error::io(scratch.to_string(), e))?;
-        Ok(Self(scratch))
+        Self::temporary_in(parent)
     }
     fn publish(self, dest: &Utf8Path) -> Result<()> {
         if fs::symlink_metadata(dest).is_ok() {
@@ -389,6 +494,56 @@ impl Drop for Staging {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+struct VerifiedComposedArtifact {
+    artifact: LockedCompositionArtifact,
+    lock: RuntimeCompositionLock,
+    staging: Staging,
+}
+
+fn verified_composed_artifact(
+    store: &ArtifactStore,
+    digest: &str,
+    staging: Staging,
+) -> Result<VerifiedComposedArtifact> {
+    ost_formation::validate_full_digest("composed artifact", digest)?;
+    let (artifact, producer) = verified_artifact(store, digest)?;
+    if artifact.record.kind != ost_artifact::ArtifactKind::ComposedRuntime {
+        return Err(composition_error(
+            "COMPOSITION_ARTIFACT_REQUIRED",
+            "artifact is not a composed runtime",
+        ));
+    }
+    let expected = producer
+        .pointer("/composition/runtime_digest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            composition_error(
+                "COMPOSITION_ARTIFACT_REQUIRED",
+                "artifact is not an exported composition",
+            )
+        })?;
+    store.extract(digest, &staging.0)?;
+    restore_sdk_roots(&staging.0)?;
+    let lock = verify_prefix(&staging.0)?;
+    if lock.runtime_digest != expected
+        || artifact.record.name != lock.resolved.name
+        || artifact.record.target != lock.resolved.target
+        || artifact.record.dependency_identities != composition_dependencies(&lock)
+        || producer["composition"]["validation"] != validation_report(&lock)
+        || producer["composition"]["attribution"] != attribution(&lock)
+    {
+        return Err(composition_error(
+            "COMPOSITION_LOCK_MISMATCH",
+            "artifact and embedded runtime identities differ",
+        ));
+    }
+    Ok(VerifiedComposedArtifact {
+        artifact,
+        lock,
+        staging,
+    })
 }
 
 fn component_metadata(root: &Utf8Path, id: &str) -> Utf8PathBuf {
@@ -798,39 +953,10 @@ pub fn reconstruct(
 ) -> Result<()> {
     let store = ArtifactStore::discover();
     let lock = if let Some(digest) = artifact {
-        ost_formation::validate_full_digest("composed artifact", digest)?;
-        let (artifact, producer) = verified_artifact(&store, digest)?;
-        if artifact.record.kind != ost_artifact::ArtifactKind::ComposedRuntime {
-            return Err(composition_error(
-                "COMPOSITION_ARTIFACT_REQUIRED",
-                "artifact is not a composed runtime",
-            ));
-        }
-        let expected = producer
-            .pointer("/composition/runtime_digest")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                composition_error(
-                    "COMPOSITION_ARTIFACT_REQUIRED",
-                    "artifact is not an exported composition",
-                )
-            })?;
         let staging = Staging::for_destination(dest)?;
-        store.extract(digest, &staging.0)?;
-        restore_sdk_roots(&staging.0)?;
-        let lock = verify_prefix(&staging.0)?;
-        if lock.runtime_digest != expected
-            || artifact.record.name != lock.resolved.name
-            || artifact.record.target != lock.resolved.target
-            || artifact.record.dependency_identities != composition_dependencies(&lock)
-            || producer["composition"]["validation"] != validation_report(&lock)
-            || producer["composition"]["attribution"] != attribution(&lock)
-        {
-            return Err(composition_error(
-                "COMPOSITION_LOCK_MISMATCH",
-                "artifact and embedded runtime identities differ",
-            ));
-        }
+        let verified = verified_composed_artifact(&store, digest, staging)?;
+        let lock = verified.lock;
+        let staging = verified.staging;
         staging.publish(dest)?;
         lock
     } else {

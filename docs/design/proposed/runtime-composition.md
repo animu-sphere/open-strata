@@ -154,6 +154,25 @@ C++ consumers must be able to reach exported CMake packages through normal
 packages consume the same canonical component artifacts; they do not redefine
 the runtime graph.
 
+### Ecosystem consumer package boundary
+
+A derived consumer package carries a registry-neutral
+`openstrata.consumer-package/v1alpha1` manifest. The manifest pins the exact
+exported `openstrata.composed-runtime` artifact digest, its embedded runtime
+identity, target, and every selected component version and digest. Ecosystem
+package names and versions are routing metadata and do not replace any of those
+identities. The manifest also pins the composed artifact's SBOM and provenance
+sidecars and retains component evidence digests when the producers supplied
+them.
+
+The public API is kind-specific and contains only native CMake package names,
+Python import modules, or JavaScript package export keys. A package-private
+loader verifies and materializes the pinned artifact and applies its SDK
+activation contract before native loading. Python and JavaScript callers do not
+parse OST locks, component contracts, or activation metadata. This boundary
+allows wheel and npm adapters to present ordinary ecosystem APIs without
+creating a second resolver or exposing OST internals.
+
 ## Lock and reconstruction
 
 Composition is not complete until it is reproducible. The lock records at least:
