@@ -779,6 +779,28 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
     std::fs::write(&producer_manifest, serde_json::to_vec(&changed).unwrap()).unwrap();
     let mislabeled = Sandbox::new();
     json(mislabeled.ost(&["--json", "artifact", "import", path(&dist)]));
+    let consumer_output = mislabeled.base.join("consumer-must-not-exist.json");
+    error(
+        mislabeled.ost(&[
+            "--json",
+            "runtime",
+            "consumer-manifest",
+            "--from-artifact",
+            artifact_digest,
+            "--kind",
+            "native-sdk",
+            "--name",
+            "tiny-sdk",
+            "--version",
+            "1.0.0",
+            "--entrypoint",
+            "Tiny",
+            "--output",
+            path(&consumer_output),
+        ]),
+        "COMPOSITION_LOCK_MISMATCH",
+    );
+    assert!(!consumer_output.exists());
     let output = mislabeled.base.join("must-not-exist");
     error(
         mislabeled.ost(&[
@@ -1572,6 +1594,40 @@ fn legacy_component_only_locks_reconstruct_without_identity_migration() {
         clean.ost(&["--json", "runtime", "env", "--composition", path(&prefix)]),
         "COMPOSITION_SDK_REQUIRED",
     );
+    let dist = clean.base.join("legacy-dist");
+    let exported = json(clean.ost(&[
+        "--json",
+        "runtime",
+        "export",
+        "--composition",
+        path(&prefix),
+        "--dist",
+        path(&dist),
+        "--level",
+        "1",
+    ]));
+    let consumer_output = clean.base.join("legacy-consumer-must-not-exist.json");
+    error(
+        clean.ost(&[
+            "--json",
+            "runtime",
+            "consumer-manifest",
+            "--from-artifact",
+            exported["data"]["digest"].as_str().unwrap(),
+            "--kind",
+            "native-sdk",
+            "--name",
+            "legacy-sdk",
+            "--version",
+            "1.0.0",
+            "--entrypoint",
+            "Tiny",
+            "--output",
+            path(&consumer_output),
+        ]),
+        "COMPOSITION_SDK_REQUIRED",
+    );
+    assert!(!consumer_output.exists());
 }
 
 #[test]

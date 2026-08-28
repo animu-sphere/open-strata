@@ -42,11 +42,12 @@ The supported package kinds and entrypoint meanings are:
 | `npm-javascript` | `package.json` export key, such as `.` or `./resolver`. |
 | `npm-wasm` | `package.json` export key for the Wasm-facing adapter, such as `./wasm`. |
 
-The command verifies the locally stored artifact, requires its verified SPDX
-SBOM and provenance sidecars, checks that its composition identity, component
-attribution, and exact dependency digests agree, then writes the manifest
-atomically. The composed-runtime SBOM and provenance
-digests, plus any component evidence digests, remain pinned in the result.
+The command verifies the locally stored artifact, extracts it to a temporary
+prefix, and verifies its embedded lock, inventory, SDK, attribution, target, and
+exact dependencies. It also requires verified SPDX SBOM and provenance
+sidecars, then writes the manifest atomically. The composed-runtime SBOM and
+provenance digests, plus any component evidence digests, remain pinned in the
+result. A legacy composition without an SDK cannot become a consumer package.
 
 ## Binder and loader boundary
 
