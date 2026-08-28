@@ -203,6 +203,10 @@ pub struct WorkspaceConfig {
 pub struct WorkspaceInstallData {
     pub source: String,
     pub destination: String,
+    /// Optional basename globs applied recursively to files below `source`.
+    /// Empty means every file, preserving the original mapping behavior.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
 }
 
 /// Maximum member nesting accepted by explicit and fallback workspace discovery.
@@ -489,6 +493,19 @@ impl Project {
                     mapping.destination
                 )));
             }
+            let mut include_seen = std::collections::BTreeSet::new();
+            for pattern in &mapping.include {
+                if let Some(reason) = workspace_data_include_problem(pattern) {
+                    return Err(Error::InvalidManifest(format!(
+                        "workspace.install_data include pattern '{pattern}' {reason}"
+                    )));
+                }
+                if !include_seen.insert(pattern) {
+                    return Err(Error::InvalidManifest(format!(
+                        "workspace.install_data include pattern '{pattern}' is duplicated"
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -512,6 +529,25 @@ fn workspace_data_path_problem(value: &str) -> Option<&'static str> {
         .any(|component| component.is_empty() || matches!(component, "." | ".."))
     {
         return Some("must not contain empty, '.' or '..' components");
+    }
+    None
+}
+
+fn workspace_data_include_problem(value: &str) -> Option<&'static str> {
+    if value.is_empty() {
+        return Some("must not be empty");
+    }
+    if value.trim() != value {
+        return Some("must not have leading or trailing whitespace");
+    }
+    if value.contains(['/', '\\', ':']) || matches!(value, "." | "..") {
+        return Some("must be a portable file-basename pattern");
+    }
+    if value.contains(['[', ']', '{', '}']) {
+        return Some("may use only '*' and '?' glob metacharacters");
+    }
+    if value.contains('$') || value.contains('~') || value.contains('%') {
+        return Some("must not need shell or environment expansion");
     }
     None
 }
@@ -913,11 +949,12 @@ portability = "local-override"
     fn workspace_install_data_is_project_relative_and_share_owned() {
         let src = format!(
             "{SAMPLE}\n[workspace]\nmembers = ['plugins/*']\n\
-             [[workspace.install_data]]\nsource = 'profiles/motion'\ndestination = 'share/vrm/motion'\n"
+             [[workspace.install_data]]\nsource = 'profiles/motion'\ndestination = 'share/vrm/motion'\ninclude = ['*.yaml', '*.json']\n"
         );
         let workspace = Project::from_toml(&src).unwrap().workspace.unwrap();
         assert_eq!(workspace.install_data.len(), 1);
         assert_eq!(workspace.install_data[0].source, "profiles/motion");
+        assert_eq!(workspace.install_data[0].include, ["*.yaml", "*.json"]);
 
         for (source, destination, message) in [
             ("../profiles", "share/vrm", "'..'"),
@@ -936,6 +973,43 @@ portability = "local-override"
                 "expected {message}"
             );
         }
+
+        for (include, message) in [
+            ("", "must not be empty"),
+            ("nested/*.yaml", "file-basename"),
+            ("*.{yaml,json}", "only '*' and '?'"),
+        ] {
+            let invalid = format!(
+                "{SAMPLE}\n[workspace]\nmembers = ['plugins/*']\n\
+                 [[workspace.install_data]]\nsource = 'profiles'\ndestination = 'share/vrm'\ninclude = ['{include}']\n"
+            );
+            let error = Project::from_toml(&invalid).unwrap_err().to_string();
+            assert!(error.contains(message), "expected {message}: {error}");
+        }
+    }
+
+    #[test]
+    fn workspace_install_data_schema_tracks_the_serialized_fields() {
+        let mapping = WorkspaceInstallData {
+            source: "profiles/motion".into(),
+            destination: "share/vrm/motion".into(),
+            include: vec!["*.yaml".into()],
+        };
+        let serialized = serde_json::to_value(mapping).unwrap();
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/project.schema.json")).unwrap();
+        let properties =
+            &schema["properties"]["workspace"]["properties"]["install_data"]["items"]["properties"];
+
+        for field in serialized.as_object().unwrap().keys() {
+            assert!(
+                properties.get(field).is_some(),
+                "serialized workspace.install_data field '{field}' is absent from project.schema.json"
+            );
+        }
+        assert_eq!(properties["include"]["type"], "array");
+        assert_eq!(properties["include"]["uniqueItems"], true);
+        assert_eq!(properties["include"]["items"]["type"], "string");
     }
 
     #[test]

@@ -22,6 +22,7 @@ release_exclude = ["developerFixture"]
 [[workspace.install_data]]
 source = "profiles/motion"
 destination = "share/vrm/motion"
+include = ["*.yaml", "*.json"]
 ```
 
 `members` controls source discovery; it does not implicitly decide aggregate
@@ -35,9 +36,12 @@ Human and JSON packaging output print the resolved release members.
 duplicate copies to a plugin or tool. Each source is one regular file or
 directory below the project root; packaging expands it to a digest-and-size
 inventory, preserves directory structure, and installs it exactly once below
-the declared `share/` directory. Product verification checks every file before
-installation. Sources, destinations, globs, parent escapes, symlinks, empty
-directories, and destination collisions fail closed.
+the declared `share/` directory. An optional `include` list selects matching
+file basenames recursively with portable, case-sensitive `*` and `?` globs;
+omitting it preserves the whole-directory behavior. Product verification checks
+every selected file before installation. Sources, destinations, malformed
+filters, parent escapes, symlinks (even below excluded names), empty selections,
+and destination collisions fail closed.
 
 Each directory a **literal** pattern names must contain exactly one of
 `openstrata.plugin.yaml`, `openstrata.library.yaml`, or

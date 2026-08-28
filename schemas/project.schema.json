@@ -123,6 +123,14 @@
               "destination": {
                 "type": "string",
                 "pattern": "^share/[^:*?\\\\]+(?:/[^:*?\\\\]+)*$"
+              },
+              "include": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^(?!\\s)(?!.*\\s$)(?!\\.{1,2}$)[^/\\\\:\\[\\]{}$~%]+$"
+                }
               }
             }
           }

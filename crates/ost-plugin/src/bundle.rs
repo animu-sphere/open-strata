@@ -22,8 +22,8 @@ pub struct Bundle {
 impl Bundle {
     /// Load the bundle rooted at `root`.
     pub fn load(root: &Utf8Path) -> Result<Bundle> {
-        let manifest_path = root.join(PLUGIN_MANIFEST);
-        if !manifest_path.as_std_path().is_file() {
+        let input_manifest_path = root.join(PLUGIN_MANIFEST);
+        if !input_manifest_path.as_std_path().is_file() {
             return Err(Error::Operation(format!(
                 "no {PLUGIN_MANIFEST} in '{root}' (is this a plugin bundle? try `ost plugin new`)"
             )));
@@ -37,6 +37,8 @@ impl Bundle {
         // makes both fail silently. One canonicalize at the boundary removes the
         // whole class of bug — and is the prerequisite for `--with <bundle>`.
         let root = canonicalize_root(root)?;
+        let manifest_path = root.join(PLUGIN_MANIFEST);
+        check_existing_bundle_path(&root, PLUGIN_MANIFEST, PLUGIN_MANIFEST)?;
 
         let src = std::fs::read_to_string(manifest_path.as_std_path())
             .map_err(|e| Error::io(manifest_path.to_string(), e))?;
@@ -82,26 +84,30 @@ impl Bundle {
         // Every filesystem path a manifest can name must stay inside the bundle.
         // Validate them once, here, so all downstream resolution (`plug_info`,
         // fixtures, the verification levels) is operating on trusted input.
-        check_safe_relative("usd.plug_info", &manifest.usd.plug_info)?;
+        let check_path = |field: &str, rel: &str| -> Result<()> {
+            check_safe_relative(field, rel)?;
+            check_existing_bundle_path(&root, field, rel)
+        };
+        check_path("usd.plug_info", &manifest.usd.plug_info)?;
         for fixture in manifest.all_fixtures() {
-            check_safe_relative("test fixture", fixture)?;
+            check_path("test fixture", fixture)?;
         }
         for fixture in &manifest.tests.smoke {
             check_file_format_arguments(fixture)?;
         }
         for dir in &manifest.requires.runtime_libs {
-            check_safe_relative("requires.runtime_libs", dir)?;
+            check_path("requires.runtime_libs", dir)?;
         }
         for dir in &manifest.requires.runtime_plugin_paths {
-            check_safe_relative("requires.runtime_plugin_paths", dir)?;
+            check_path("requires.runtime_plugin_paths", dir)?;
         }
         // Notices are copied verbatim into a package, so they must stay in-bundle.
         for notice in &manifest.notices {
-            check_safe_relative("notices", notice)?;
+            check_path("notices", notice)?;
         }
         // The schema source is fed to usdGenSchema by the build step.
         if let Some(src) = manifest.schema.as_ref().and_then(|s| s.source.as_ref()) {
-            check_safe_relative("schema.source", src)?;
+            check_path("schema.source", src)?;
         }
 
         Ok(Bundle { root, manifest })
@@ -256,6 +262,43 @@ pub(crate) fn check_safe_relative(field: &str, rel: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject an existing manifest path, or its deepest existing ancestor, when
+/// canonical resolution leaves the canonical bundle root. Missing generated
+/// tails remain valid, but a symlinked parent cannot redirect their later use.
+fn check_existing_bundle_path(root: &Utf8Path, field: &str, rel: &str) -> Result<()> {
+    let mut probe = root.join(rel);
+    loop {
+        match std::fs::symlink_metadata(probe.as_std_path()) {
+            Ok(_) => {
+                let canonical = std::fs::canonicalize(probe.as_std_path()).map_err(|error| {
+                    Error::config(format!(
+                        "{field}: '{rel}' cannot be resolved safely inside the bundle: {error}"
+                    ))
+                })?;
+                let canonical = Utf8PathBuf::from_path_buf(canonical).map_err(|path| {
+                    Error::config(format!(
+                        "{field}: '{rel}' resolves to a non-UTF-8 path: {}",
+                        path.display()
+                    ))
+                })?;
+                let canonical = strip_verbatim(canonical);
+                if !canonical.starts_with(root) {
+                    return Err(Error::config(format!(
+                        "{field}: '{rel}' resolves outside the bundle root to '{canonical}'"
+                    )));
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if probe == root || !probe.pop() {
+                    return Ok(());
+                }
+            }
+            Err(error) => return Err(Error::io(probe.to_string(), error)),
+        }
+    }
+}
+
 /// Canonicalize the bundle root to an absolute path, stripping Windows'
 /// `\\?\` *verbatim* prefix that `std::fs::canonicalize` adds.
 ///
@@ -338,6 +381,34 @@ mod tests {
         root
     }
 
+    fn link_dir(target: &Utf8Path, link: &Utf8Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target.as_std_path(), link.as_std_path()).unwrap();
+        #[cfg(windows)]
+        {
+            let backslashed = |path: &Utf8Path| path.as_str().replace('/', "\\");
+            let status = std::process::Command::new("cmd")
+                .args([
+                    "/C",
+                    "mklink",
+                    "/J",
+                    &backslashed(link),
+                    &backslashed(target),
+                ])
+                .stdout(std::process::Stdio::null())
+                .status()
+                .expect("spawn mklink");
+            assert!(status.success(), "mklink /J {link} {target}");
+        }
+    }
+
+    fn unlink_dir(link: &Utf8Path) {
+        #[cfg(unix)]
+        std::fs::remove_file(link.as_std_path()).unwrap();
+        #[cfg(windows)]
+        std::fs::remove_dir(link.as_std_path()).unwrap();
+    }
+
     #[test]
     fn load_rejects_a_manifest_that_escapes_the_bundle() {
         let root = write_bundle("../../../etc/passwd");
@@ -358,6 +429,38 @@ mod tests {
             bundle.root.join("resources/plugInfo.json")
         );
         assert!(bundle.root.is_absolute(), "load must absolutize the root");
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn load_rejects_an_existing_symlink_escape() {
+        let root = write_bundle("resources/plugInfo.json");
+        let outside = Utf8PathBuf::from(format!("{root}-outside"));
+        std::fs::create_dir_all(outside.as_std_path()).unwrap();
+        std::fs::write(outside.join("plugInfo.json").as_std_path(), "outside").unwrap();
+        let link = root.join("resources");
+        link_dir(&outside, &link);
+
+        let error = Bundle::load(&root).expect_err("an escaping symlink must be rejected");
+        assert_eq!(error.code(), "INVALID_CONFIG");
+        assert!(error.to_string().contains("resolves outside"), "{error}");
+
+        unlink_dir(&link);
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+        std::fs::remove_dir_all(outside.as_std_path()).ok();
+    }
+
+    #[test]
+    fn load_accepts_an_existing_in_bundle_symlink() {
+        let root = write_bundle("resources/plugInfo.json");
+        let real = root.join("real-resources");
+        std::fs::create_dir_all(real.as_std_path()).unwrap();
+        std::fs::write(real.join("plugInfo.json").as_std_path(), "inside").unwrap();
+        let link = root.join("resources");
+        link_dir(&real, &link);
+
+        Bundle::load(&root).expect("an in-bundle symlink remains valid");
+        unlink_dir(&link);
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

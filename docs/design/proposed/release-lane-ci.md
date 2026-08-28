@@ -199,11 +199,12 @@ File modification time can identify a suspicious sidecar, but it does not prove
 that a PDB belongs to a DLL. Reproducible builds, copied files, and restored
 caches can make timestamp ordering misleading.
 
-If added, the initial check is a non-fatal structured warning when a same-basename
-PDB is older than its DLL, for example `DEBUG_SYMBOL_STALE_CANDIDATE`, with both
-paths and observed mtimes. It must not change archive identity or reject a
-package. A future Windows-aware validator may compare the PE CodeView reference
-with the PDB identity; only that stronger evidence can support a hard failure.
+Windows-target plugin and tool packaging emits the non-fatal structured warning
+`DEBUG_SYMBOL_STALE_CANDIDATE` when a same-basename PDB is older than its DLL.
+The warning carries both package-relative paths and observed mtimes; it does not
+change archive identity or reject a package. A future Windows-aware validator
+may compare the PE CodeView reference with the PDB identity; only that stronger
+evidence can support a hard failure.
 
 ## v0.14 acceptance impact
 
