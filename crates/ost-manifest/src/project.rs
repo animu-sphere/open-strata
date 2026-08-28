@@ -989,6 +989,30 @@ portability = "local-override"
     }
 
     #[test]
+    fn workspace_install_data_schema_tracks_the_serialized_fields() {
+        let mapping = WorkspaceInstallData {
+            source: "profiles/motion".into(),
+            destination: "share/vrm/motion".into(),
+            include: vec!["*.yaml".into()],
+        };
+        let serialized = serde_json::to_value(mapping).unwrap();
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/project.schema.json")).unwrap();
+        let properties =
+            &schema["properties"]["workspace"]["properties"]["install_data"]["items"]["properties"];
+
+        for field in serialized.as_object().unwrap().keys() {
+            assert!(
+                properties.get(field).is_some(),
+                "serialized workspace.install_data field '{field}' is absent from project.schema.json"
+            );
+        }
+        assert_eq!(properties["include"]["type"], "array");
+        assert_eq!(properties["include"]["uniqueItems"], true);
+        assert_eq!(properties["include"]["items"]["type"], "string");
+    }
+
+    #[test]
     fn workspace_members_reject_unbounded_or_nonportable_patterns() {
         for (member, expected) in [
             ("", "must not be empty"),
