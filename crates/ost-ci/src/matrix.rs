@@ -860,15 +860,24 @@ impl SupportMatrix {
                             required.platform, cell.platform
                         )));
                     }
-                    if self
-                        .resolved_os(cell)
-                        .is_some_and(|os| os.as_str() != required.os.as_str())
-                    {
-                        return Err(Error::InvalidManifest(format!(
-                            "cell '{name}': require_openusd selects OS '{}' but the runner resolves to '{}'",
-                            required.os.as_str(),
-                            self.resolved_os(cell).expect("checked OS").as_str()
-                        )));
+                    match self.resolved_os(cell) {
+                        Some(os) if os.as_str() != required.os.as_str() => {
+                            return Err(Error::InvalidManifest(format!(
+                                "cell '{name}': require_openusd selects OS '{}' but the runner resolves to '{}'",
+                                required.os.as_str(),
+                                os.as_str()
+                            )));
+                        }
+                        None => {
+                            return Err(Error::InvalidManifest(format!(
+                                "cell '{name}': require_openusd selects OS '{}' but the runner OS cannot be resolved from its labels",
+                                required.os.as_str()
+                            ))
+                            .with_hint(
+                                "add a linux, windows, or macos label to the self-hosted runner profile",
+                            ));
+                        }
+                        Some(_) => {}
                     }
                 }
                 None if cell.require_openusd_version.is_some() => {
@@ -1887,6 +1896,27 @@ cells:
             .unwrap_err()
             .to_string()
             .contains("runner resolves to 'linux'"));
+
+        let opaque_runner = valid_yaml()
+            .replacen(
+                "schema: 1\n",
+                "schema: 1\nrunners:\n  gpu:\n    kind: self-hosted\n    labels: [self-hosted, gpu]\n",
+                1,
+            )
+            .replacen(
+                "    platform: cy2026\n",
+                "    runner: gpu\n    require_openusd: cy2026/linux/x86_64/gl\n    platform: cy2026\n",
+                1,
+            )
+            .replacen(
+                "    host:\n      os: linux\n      labels: [self-hosted, linux]\n",
+                "",
+                1,
+            );
+        assert!(SupportMatrix::from_yaml(&opaque_runner)
+            .unwrap_err()
+            .to_string()
+            .contains("runner OS cannot be resolved"));
 
         let orphan_version = valid_yaml().replacen(
             "    platform: cy2026\n",

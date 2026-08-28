@@ -651,7 +651,9 @@ agree with the CI cell's `platform` and resolved runner OS. Generated remote
 pulls and local artifact gates enforce it; `ost ci validate --resolve` performs
 the same compatibility check against the local registry. `ost ci matrix --json`
 projects both requirement fields for hand-written lanes, so those workflows do
-not need to duplicate or weaken the matrix contract.
+not need to duplicate or weaken the matrix contract. A self-hosted runner
+profile must expose its OS with a `linux`, `windows`, or `macos` label rather
+than an opaque label set.
 
 Generated jobs use the stricter of a cell's target `trust` and its lane floor.
 Every consumed runtime/plugin artifact is verified with that minimum plus

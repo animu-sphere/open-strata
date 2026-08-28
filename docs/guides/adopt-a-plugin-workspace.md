@@ -166,6 +166,8 @@ also checks the pinned local artifact's compiler/runtime, Python, TBB, graphics,
 ABI, provider and version identity. Generated source, support and release jobs
 pass the same requirements to both remote pull and local artifact verification,
 so a wrong re-pin fails before runtime materialization or CMake configure.
+Self-hosted runner profiles must therefore include a `linux`, `windows`, or
+`macos` label; an opaque label set cannot prove the selector's OS contract.
 
 Not every workspace member is a bundle. A plain library that no bundle requires,
 and a CLI executable built from the workspace, are invisible to a cell that names
