@@ -2301,6 +2301,10 @@ fn package_bundle(
         }
     })?;
 
+    if tgt.variant.os == Os::Windows {
+        stage_warnings.extend(debug_symbol_stale_warnings(&stage, &staged));
+    }
+
     let name = &packaged_manifest.plugin.name;
     let version = &packaged_manifest.plugin.version;
     let archive_name = plugin_archive_name(name, version, &id);
@@ -2670,6 +2674,10 @@ fn package_tool(
             Error::io(stage.to_string(), e)
         }
     })?;
+
+    if tgt.variant.os == Os::Windows {
+        stage_warnings.extend(debug_symbol_stale_warnings(&stage, &staged));
+    }
 
     let name = tool.id().to_string();
     let version = tool.version().to_string();
@@ -3391,6 +3399,7 @@ fn stage_workspace_data(
             )));
         }
         let archive_root = Utf8Path::new("data").join(format!("{index:04}"));
+        let mut source_files = Vec::new();
         if meta.is_file() {
             let name = source.file_name().ok_or_else(|| {
                 Error::config(format!(
@@ -3398,9 +3407,9 @@ fn stage_workspace_data(
                     mapping.source
                 ))
             })?;
-            copy_file_required(&source, &archive_root.join(name), stage)?;
+            source_files.push((source.clone(), Utf8PathBuf::from(name)));
         } else if meta.is_dir() {
-            copy_tree_required(&source, &archive_root, stage)?;
+            collect_workspace_data_files(&source, Utf8Path::new(""), &mut source_files)?;
         } else {
             return Err(Error::validation(format!(
                 "workspace.install_data source '{}' must be a regular file or directory",
@@ -3408,23 +3417,30 @@ fn stage_workspace_data(
             )));
         }
 
-        let archived_root = stage.join(&archive_root);
-        let archived = stage_files(&archived_root)
-            .map_err(|error| Error::io(archived_root.to_string(), error))?;
-        if archived.is_empty() {
+        source_files.retain(|(_, relative)| {
+            mapping.include.is_empty()
+                || relative.file_name().is_some_and(|name| {
+                    mapping
+                        .include
+                        .iter()
+                        .any(|pattern| wildcard_component_matches(pattern, name))
+                })
+        });
+        if source_files.is_empty() {
+            let filter = if mapping.include.is_empty() {
+                String::new()
+            } else {
+                format!(" matching include filters {:?}", mapping.include)
+            };
             return Err(Error::validation(format!(
-                "workspace.install_data source '{}' contains no files",
-                mapping.source
+                "workspace.install_data source '{}' contains no files{filter}",
+                mapping.source,
             )));
         }
-        for path in archived {
-            let relative = path.strip_prefix(&archived_root).map_err(|_| {
-                Error::validation(format!(
-                    "workspace.install_data file '{path}' escaped its staging root"
-                ))
-            })?;
-            let source_in_product = archive_root.join(relative);
-            let destination = Utf8Path::new(&mapping.destination).join(relative);
+        for (source_file, relative) in source_files {
+            let source_in_product = archive_root.join(&relative);
+            copy_file_required(&source_file, &source_in_product, stage)?;
+            let destination = Utf8Path::new(&mapping.destination).join(&relative);
             let destination = portable(&destination);
             if !destinations.insert(destination.clone()) {
                 return Err(Error::coded(
@@ -3435,7 +3451,7 @@ fn stage_workspace_data(
                     ),
                 ));
             }
-            let (digest, size) = digest_file(&path)?;
+            let (digest, size) = digest_file(&stage.join(&source_in_product))?;
             files.push(serde_json::json!({
                 "source": portable(&source_in_product),
                 "destination": destination,
@@ -3445,6 +3461,52 @@ fn stage_workspace_data(
         }
     }
     Ok(files)
+}
+
+/// Walk every entry so excluded files cannot hide an unsafe symlink or special
+/// file. Selection happens only after this fail-closed inventory is complete.
+fn collect_workspace_data_files(
+    directory: &Utf8Path,
+    relative: &Utf8Path,
+    files: &mut Vec<(Utf8PathBuf, Utf8PathBuf)>,
+) -> Result<()> {
+    let mut entries = std::fs::read_dir(directory.as_std_path())
+        .map_err(|error| Error::io(directory.to_string(), error))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|error| Error::io(directory.to_string(), error))?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
+            Error::config(format!(
+                "non-UTF-8 path in workspace.install_data: {}",
+                path.display()
+            ))
+        })?;
+        let name = path.file_name().ok_or_else(|| {
+            Error::config(format!(
+                "cannot determine workspace.install_data file name: {path}"
+            ))
+        })?;
+        let child_relative = relative.join(name);
+        let file_type = entry
+            .file_type()
+            .map_err(|error| Error::io(path.to_string(), error))?;
+        if file_type.is_symlink() {
+            return Err(Error::validation(format!(
+                "symlink is not allowed in workspace.install_data: {path}"
+            )));
+        }
+        if file_type.is_dir() {
+            collect_workspace_data_files(&path, &child_relative, files)?;
+        } else if file_type.is_file() {
+            files.push((path, child_relative));
+        } else {
+            return Err(Error::validation(format!(
+                "special file is not allowed in workspace.install_data: {path}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Build one aggregate artifact from the exact per-bundle package outputs.
@@ -8757,6 +8819,77 @@ fn is_debug_symbol_file(path: &Utf8Path) -> bool {
     )
 }
 
+/// Report a timestamp-only PDB/DLL suspicion without changing package contents
+/// or success. Timestamp ordering is deliberately not treated as identity: a
+/// future PE CodeView/PDB comparison is required before this can be fatal.
+fn debug_symbol_stale_warnings(stage: &Utf8Path, files: &[Utf8PathBuf]) -> Vec<serde_json::Value> {
+    let mut dlls = BTreeMap::new();
+    let mut pdbs = BTreeMap::new();
+    for path in files {
+        let Some(extension) = path.extension() else {
+            continue;
+        };
+        let Some(stem) = path.file_stem() else {
+            continue;
+        };
+        let key = (
+            path.parent()
+                .unwrap_or_else(|| Utf8Path::new(""))
+                .to_path_buf(),
+            stem.to_ascii_lowercase(),
+        );
+        if extension.eq_ignore_ascii_case("dll") {
+            dlls.insert(key, path);
+        } else if extension.eq_ignore_ascii_case("pdb") {
+            pdbs.insert(key, path);
+        }
+    }
+
+    let mut warnings = Vec::new();
+    for (key, pdb) in pdbs {
+        let Some(dll) = dlls.get(&key) else {
+            continue;
+        };
+        let Some((dll_time, dll_json)) = file_modified_time(dll) else {
+            continue;
+        };
+        let Some((pdb_time, pdb_json)) = file_modified_time(pdb) else {
+            continue;
+        };
+        if pdb_time >= dll_time {
+            continue;
+        }
+        let dll_path = portable(dll.strip_prefix(stage).unwrap_or(dll));
+        let pdb_path = portable(pdb.strip_prefix(stage).unwrap_or(pdb));
+        warnings.push(serde_json::json!({
+            "code": "DEBUG_SYMBOL_STALE_CANDIDATE",
+            "message": format!(
+                "debug symbol sidecar '{pdb_path}' is older than same-basename DLL '{dll_path}'; rebuild or verify the PE/PDB identity"
+            ),
+            "dll": dll_path,
+            "pdb": pdb_path,
+            "dll_mtime": dll_json,
+            "pdb_mtime": pdb_json,
+        }));
+    }
+    warnings
+}
+
+fn file_modified_time(path: &Utf8Path) -> Option<(std::time::SystemTime, serde_json::Value)> {
+    let modified = std::fs::metadata(path.as_std_path())
+        .ok()?
+        .modified()
+        .ok()?;
+    let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some((
+        modified,
+        serde_json::json!({
+            "unix_seconds": since_epoch.as_secs(),
+            "nanoseconds": since_epoch.subsec_nanos(),
+        }),
+    ))
+}
+
 fn write_text(path: &Utf8Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent.as_std_path())
@@ -9777,6 +9910,43 @@ mod tests {
                 "{keep} must stay in the main package"
             );
         }
+    }
+
+    #[test]
+    fn older_same_basename_pdb_is_a_nonfatal_structured_warning() {
+        use std::fs::{File, FileTimes};
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let stage = unique_tmp("stale-pdb-warning");
+        let dll = stage.join("lib/Toy.DLL");
+        let pdb = stage.join("lib/toy.pdb");
+        let unrelated = stage.join("lib/other.pdb");
+        write_test_file(&dll, "dll");
+        write_test_file(&pdb, "pdb");
+        write_test_file(&unrelated, "unrelated");
+        File::options()
+            .write(true)
+            .open(pdb.as_std_path())
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(10)))
+            .unwrap();
+        File::options()
+            .write(true)
+            .open(dll.as_std_path())
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(20)))
+            .unwrap();
+
+        let files = stage_files(&stage).unwrap();
+        let warnings = debug_symbol_stale_warnings(&stage, &files);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0]["code"], "DEBUG_SYMBOL_STALE_CANDIDATE");
+        assert_eq!(warnings[0]["dll"], "lib/Toy.DLL");
+        assert_eq!(warnings[0]["pdb"], "lib/toy.pdb");
+        assert_eq!(warnings[0]["dll_mtime"]["unix_seconds"], 20);
+        assert_eq!(warnings[0]["pdb_mtime"]["unix_seconds"], 10);
+
+        std::fs::remove_dir_all(stage.as_std_path()).ok();
     }
 
     #[test]

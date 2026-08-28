@@ -3290,6 +3290,14 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     let motion_profile = sb.work_file("profiles/motion/walk.json");
     std::fs::create_dir_all(motion_profile.parent().unwrap()).unwrap();
     std::fs::write(&motion_profile, br#"{"clip":"walk"}"#).unwrap();
+    std::fs::write(
+        sb.work_file("profiles/motion/editor-notes.txt"),
+        b"not distributable",
+    )
+    .unwrap();
+    let nested_profile = sb.work_file("profiles/motion/retarget/run.json");
+    std::fs::create_dir_all(nested_profile.parent().unwrap()).unwrap();
+    std::fs::write(&nested_profile, br#"{"clip":"run"}"#).unwrap();
     let project_path = sb.work_file("openstrata.toml");
     let mut project = std::fs::read_to_string(&project_path).unwrap();
     project.push_str(
@@ -3297,7 +3305,8 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
          members = ['.', 'schema', 'consumer']\n\
          [[workspace.install_data]]\n\
          source = 'profiles/motion'\n\
-         destination = 'share/vrm/motion'\n",
+         destination = 'share/vrm/motion'\n\
+         include = ['*.json']\n",
     );
     std::fs::write(&project_path, project).unwrap();
 
@@ -3499,6 +3508,8 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         .iter()
         .any(|path| path.starts_with("members/consumer/") && path.ends_with("manifest.json")));
     assert!(product_files.contains(&"data/0000/walk.json"));
+    assert!(product_files.contains(&"data/0000/retarget/run.json"));
+    assert!(!product_files.contains(&"data/0000/editor-notes.txt"));
 
     let product_dist = product_manifest.parent().unwrap().to_str().unwrap();
     let verified = sb.ost(&["--json", "plugin", "product", "verify", product_dist]);
@@ -3514,7 +3525,7 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         verified["data"]["members"],
         serde_json::json!(["schema", "consumer"])
     );
-    assert_eq!(verified["data"]["data_files"], 1);
+    assert_eq!(verified["data"]["data_files"], 2);
 
     let install_prefix = sb.work_file("installed-product");
     let install_prefix_arg = install_prefix.to_str().unwrap();
@@ -3543,6 +3554,7 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         "openstrata_activate.py",
         "openstrata.product-install.json",
         "share/vrm/motion/walk.json",
+        "share/vrm/motion/retarget/run.json",
     ] {
         assert!(
             install_prefix.join(path).is_file(),
@@ -3553,6 +3565,9 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         std::fs::read(install_prefix.join("share/vrm/motion/walk.json")).unwrap(),
         br#"{"clip":"walk"}"#
     );
+    assert!(!install_prefix
+        .join("share/vrm/motion/editor-notes.txt")
+        .exists());
     let aggregate_activation: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(install_prefix.join("openstrata.activation.json")).unwrap(),
     )

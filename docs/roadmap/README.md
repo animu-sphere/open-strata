@@ -9,7 +9,7 @@ Legend: 🚧 in progress · ⬜ not started
 
 | Document | Contents |
 | --- | --- |
-| [current.md](current.md) | The next milestone and active carry-over work. |
+| [current.md](current.md) | The next milestone. |
 | [backlog.md](backlog.md) | Ordered but unscheduled work: the milestone ladder beyond next, future phases, and cross-cutting open items. |
 | [runtime-composition.md](runtime-composition.md) | The active v0.22.9-v0.22.10 runtime-composition slices. |
 
