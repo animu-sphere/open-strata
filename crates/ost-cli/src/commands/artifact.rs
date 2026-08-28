@@ -78,6 +78,14 @@ pub enum ArtifactCmd {
         /// Fail unless valid SLSA/in-toto provenance is attached.
         #[arg(long)]
         require_provenance: bool,
+        /// Require the stored runtime to satisfy an approved normalized
+        /// OpenUSD consumer cell.
+        #[arg(long, value_name = "PLATFORM/OS/ARCH/VARIANT")]
+        require_openusd: Option<String>,
+        /// Require an exact upstream OpenUSD release in addition to the
+        /// consumer cell.
+        #[arg(long, value_name = "VERSION", requires = "require_openusd")]
+        require_openusd_version: Option<String>,
     },
     /// Export an artifact's files into a directory (CI handoff).
     Export {
@@ -206,13 +214,19 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
             minimum_trust,
             require_sbom,
             require_provenance,
+            require_openusd,
+            require_openusd_version,
         } => verify(
             &store,
             &digest,
-            policy.as_deref(),
-            minimum_trust,
-            require_sbom,
-            require_provenance,
+            VerifyRequirements {
+                policy_path: policy.as_deref(),
+                minimum_trust,
+                require_sbom,
+                require_provenance,
+                require_openusd: require_openusd.as_deref(),
+                require_openusd_version: require_openusd_version.as_deref(),
+            },
             fmt,
         ),
         ArtifactCmd::Export { digest, dest } => export(&store, &digest, &dest, fmt),
@@ -672,56 +686,7 @@ fn timeout(seconds: u32) -> Option<Duration> {
 }
 
 fn resolve_openusd_requirement(value: &str) -> Result<ost_platform::ResolvedOpenUsdCompatibility> {
-    let parts = value.split('/').collect::<Vec<_>>();
-    if parts.len() != 4 || parts.iter().any(|part| part.is_empty()) {
-        return Err(Error::usage(format!(
-            "invalid OpenUSD requirement '{value}' (expected PLATFORM/OS/ARCH/VARIANT, for example cy2026/linux/x86_64/vulkan)"
-        )));
-    }
-    let os = match parts[1] {
-        "linux" => ost_core::host::Os::Linux,
-        "macos" => ost_core::host::Os::Macos,
-        "windows" => ost_core::host::Os::Windows,
-        other => {
-            return Err(Error::usage(format!(
-                "unknown OpenUSD requirement OS '{other}' (expected linux, macos, or windows)"
-            )))
-        }
-    };
-    let arch = match parts[2] {
-        "x86_64" => ost_core::host::Arch::X86_64,
-        "arm64" => ost_core::host::Arch::Arm64,
-        other => {
-            return Err(Error::usage(format!(
-                "unknown OpenUSD requirement architecture '{other}' (expected x86_64 or arm64)"
-            )))
-        }
-    };
-    let variant = match parts[3] {
-        "core" | "headless" => ost_platform::OpenUsdVariantId::Core,
-        "gl" | "standard" => ost_platform::OpenUsdVariantId::Gl,
-        "vulkan" => ost_platform::OpenUsdVariantId::Vulkan,
-        "metal" => ost_platform::OpenUsdVariantId::Metal,
-        other => {
-            return Err(Error::usage(format!(
-            "unknown OpenUSD requirement variant '{other}' (expected core, gl, vulkan, or metal)"
-        )))
-        }
-    };
-    let platform = ost_platform::load_one(parts[0])?;
-    platform
-        .resolve_openusd(os, arch, variant)
-        .map(|(compatibility, _)| compatibility)
-        .ok_or_else(|| {
-            Error::usage(format!(
-                "platform '{}' declares no approved OpenUSD {}/{} '{}' cell",
-                platform.id,
-                os.as_str(),
-                arch.as_str(),
-                variant.as_str(),
-            ))
-            .with_hint("choose a cell declared in the platform manifest's openusd matrix")
-        })
+    ost_platform::resolve_openusd_requirement(value)
 }
 
 /// Pull evidence as JSON (transport plan, "Minimum JSON output").
@@ -1002,17 +967,40 @@ fn show(store: &ArtifactStore, digest: &str, fmt: Format) -> Result<()> {
     Ok(())
 }
 
-fn verify(
-    store: &ArtifactStore,
-    digest: &str,
-    policy_path: Option<&camino::Utf8Path>,
+struct VerifyRequirements<'a> {
+    policy_path: Option<&'a Utf8Path>,
     minimum_trust: Option<TrustLevel>,
     require_sbom: bool,
     require_provenance: bool,
+    require_openusd: Option<&'a str>,
+    require_openusd_version: Option<&'a str>,
+}
+
+fn verify(
+    store: &ArtifactStore,
+    digest: &str,
+    requirements: VerifyRequirements<'_>,
     fmt: Format,
 ) -> Result<()> {
+    let VerifyRequirements {
+        policy_path,
+        minimum_trust,
+        require_sbom,
+        require_provenance,
+        require_openusd,
+        require_openusd_version,
+    } = requirements;
     let report = store.verify(digest)?;
     let record = store.resolve(digest)?;
+    let openusd_requirement = require_openusd
+        .map(resolve_openusd_requirement)
+        .transpose()?;
+    if require_openusd_version.is_some_and(|version| version.trim().is_empty()) {
+        return Err(Error::usage("--require-openusd-version cannot be empty"));
+    }
+    if let Some(required) = &openusd_requirement {
+        ost_artifact::verify_openusd_requirement(&record, required, require_openusd_version)?;
+    }
     let policy = policy_path.map(ArtifactPolicy::load).transpose()?;
     let policy_minimum = policy
         .as_ref()
@@ -1080,6 +1068,15 @@ fn verify(
                     "sbom": sbom.json(),
                     "provenance": provenance.json(),
                 },
+                "openusd_requirement": openusd_requirement.as_ref().map(|required| serde_json::json!({
+                    "selector": require_openusd,
+                    "version": require_openusd_version,
+                    "platform": required.platform,
+                    "os": required.os,
+                    "arch": required.arch,
+                    "variant": required.variant,
+                    "passed": true,
+                })),
             }),
         );
     } else {
@@ -1092,6 +1089,14 @@ fn verify(
             &sbom,
             &provenance,
         );
+        if let Some(selector) = require_openusd {
+            println!(
+                "  OpenUSD:       OK ({selector}{})",
+                require_openusd_version
+                    .map(|version| format!(" @ {version}"))
+                    .unwrap_or_default()
+            );
+        }
     }
     // The report above is this command's single document (§14.3); a failed
     // verification exits with the validation category code directly.

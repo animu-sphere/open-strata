@@ -491,6 +491,15 @@ pub struct SupportCell {
     pub support: Option<SupportClaim>,
     /// Full `sha256:<hex>` digest of the runtime artifact to materialize.
     pub runtime_artifact: String,
+    /// Approved normalized OpenUSD consumer cell the runtime artifact must
+    /// satisfy, written as PLATFORM/OS/ARCH/VARIANT. When present, generated
+    /// remote pulls enforce it before importing the pinned bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_openusd: Option<String>,
+    /// Exact upstream OpenUSD release required in addition to the normalized
+    /// consumer cell, for example `26.08`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_openusd_version: Option<String>,
     /// Remote transport reference for the runtime artifact. Required for
     /// source cells on GitHub-hosted runners (nothing else can seed their
     /// registry); optional for self-hosted cells, which may keep air-gapped
@@ -836,6 +845,54 @@ impl SupportMatrix {
                     "cell '{name}': runtime_artifact '{}' is not a full sha256:<64-hex> digest",
                     cell.runtime_artifact
                 )));
+            }
+            match &cell.require_openusd {
+                Some(selector) => {
+                    let required =
+                        ost_platform::resolve_openusd_requirement(selector).map_err(|error| {
+                            Error::InvalidManifest(format!(
+                                "cell '{name}': require_openusd '{selector}' is invalid: {error}"
+                            ))
+                        })?;
+                    if required.platform != cell.platform {
+                        return Err(Error::InvalidManifest(format!(
+                            "cell '{name}': require_openusd selects platform '{}' but the cell builds platform '{}'",
+                            required.platform, cell.platform
+                        )));
+                    }
+                    match self.resolved_os(cell) {
+                        Some(os) if os.as_str() != required.os.as_str() => {
+                            return Err(Error::InvalidManifest(format!(
+                                "cell '{name}': require_openusd selects OS '{}' but the runner resolves to '{}'",
+                                required.os.as_str(),
+                                os.as_str()
+                            )));
+                        }
+                        None => {
+                            return Err(Error::InvalidManifest(format!(
+                                "cell '{name}': require_openusd selects OS '{}' but the runner OS cannot be resolved from its labels",
+                                required.os.as_str()
+                            ))
+                            .with_hint(
+                                "add a linux, windows, or macos label to the self-hosted runner profile",
+                            ));
+                        }
+                        Some(_) => {}
+                    }
+                }
+                None if cell.require_openusd_version.is_some() => {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': require_openusd_version needs a matching require_openusd consumer cell"
+                    )));
+                }
+                None => {}
+            }
+            if let Some(version) = &cell.require_openusd_version {
+                if !is_major_minor(version) {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': require_openusd_version '{version}' must be an exact major.minor release like '26.08'"
+                    )));
+                }
             }
             match &cell.plugin_artifact {
                 Some(value) if !ost_artifact::is_sha256_ref(value) => {
@@ -1681,6 +1738,14 @@ pub fn starter_matrix() -> String {
 #     apt: [libx11-dev, libxt-dev]     # Linux runners
 #     brew: [some-formula]             # macOS runners
 #
+# A digest pin identifies bytes; it does not say which normalized OpenUSD
+# cell those bytes must provide. Declare the consumer selector (and optionally
+# the exact upstream release) so validation and generated artifact gates reject
+# a wrong re-pin before CMake configure runs:
+#
+#   require_openusd: cy2026/linux/x86_64/gl
+#   require_openusd_version: \"26.08\"
+#
 # Not every workspace member is a bundle. A plain library (described by
 # openstrata.library.yaml) that no bundle requires, and a CLI executable
 # built from the workspace against the runtime, are both invisible to a
@@ -1803,6 +1868,75 @@ cells:
             vec!["self-hosted".to_string(), "linux".to_string()]
         );
         assert!(!m.is_hosted(&m.cells[0]));
+    }
+
+    #[test]
+    fn openusd_requirements_are_approved_and_match_the_cell() {
+        let valid = valid_yaml().replacen(
+            "    platform: cy2026\n",
+            "    require_openusd: cy2026/linux/x86_64/gl\n    require_openusd_version: \"26.08\"\n    platform: cy2026\n",
+            1,
+        );
+        let matrix = SupportMatrix::from_yaml(&valid).unwrap();
+        assert_eq!(
+            matrix.cells[0].require_openusd.as_deref(),
+            Some("cy2026/linux/x86_64/gl")
+        );
+        assert_eq!(
+            matrix.cells[0].require_openusd_version.as_deref(),
+            Some("26.08")
+        );
+
+        let wrong_os = valid_yaml().replacen(
+            "    platform: cy2026\n",
+            "    require_openusd: cy2026/windows/x86_64/gl\n    platform: cy2026\n",
+            1,
+        );
+        assert!(SupportMatrix::from_yaml(&wrong_os)
+            .unwrap_err()
+            .to_string()
+            .contains("runner resolves to 'linux'"));
+
+        let opaque_runner = valid_yaml()
+            .replacen(
+                "schema: 1\n",
+                "schema: 1\nrunners:\n  gpu:\n    kind: self-hosted\n    labels: [self-hosted, gpu]\n",
+                1,
+            )
+            .replacen(
+                "    platform: cy2026\n",
+                "    runner: gpu\n    require_openusd: cy2026/linux/x86_64/gl\n    platform: cy2026\n",
+                1,
+            )
+            .replacen(
+                "    host:\n      os: linux\n      labels: [self-hosted, linux]\n",
+                "",
+                1,
+            );
+        assert!(SupportMatrix::from_yaml(&opaque_runner)
+            .unwrap_err()
+            .to_string()
+            .contains("runner OS cannot be resolved"));
+
+        let orphan_version = valid_yaml().replacen(
+            "    platform: cy2026\n",
+            "    require_openusd_version: \"26.08\"\n    platform: cy2026\n",
+            1,
+        );
+        assert!(SupportMatrix::from_yaml(&orphan_version)
+            .unwrap_err()
+            .to_string()
+            .contains("needs a matching require_openusd"));
+
+        let malformed_version = valid_yaml().replacen(
+            "    platform: cy2026\n",
+            "    require_openusd: cy2026/linux/x86_64/gl\n    require_openusd_version: latest\n    platform: cy2026\n",
+            1,
+        );
+        assert!(SupportMatrix::from_yaml(&malformed_version)
+            .unwrap_err()
+            .to_string()
+            .contains("exact major.minor"));
     }
 
     #[test]

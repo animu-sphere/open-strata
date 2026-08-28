@@ -20,6 +20,7 @@
 pub mod file;
 pub mod oci;
 mod verify;
+pub use verify::verify_openusd_requirement;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -204,10 +204,18 @@ fn evidence_gate_gaps(matrix: &SupportMatrix) -> Vec<String> {
                     cell.runtime_remote
                         .as_ref()
                         .map_or_else(String::new, |remote| {
+                            let openusd = cell.require_openusd.as_ref().map_or_else(
+                                String::new,
+                                |selector| format!(" --require-openusd {selector}"),
+                            );
+                            let version = cell.require_openusd_version.as_ref().map_or_else(
+                                String::new,
+                                |version| format!(" --require-openusd-version {version}"),
+                            );
                             format!(
                                 "; recover without changing the pinned artifact identity: \
-                             `ost artifact pull {} --expect-artifact {} --require-kind runtime`",
-                                remote.uri, cell.runtime_artifact
+                             `ost artifact pull {} --expect-artifact {} --require-kind runtime{openusd}{version}`",
+                                remote.uri, cell.runtime_artifact,
                             )
                         })
                 } else {
@@ -320,7 +328,23 @@ fn validate(
                         record.kind.as_str(),
                         expected.as_str()
                     )),
-                    Ok(_) => {}
+                    Ok(record) => {
+                        if what == "runtime" {
+                            if let Some(selector) = &cell.require_openusd {
+                                let required = ost_platform::resolve_openusd_requirement(selector)?;
+                                if let Err(error) = ost_artifact::verify_openusd_requirement(
+                                    &record,
+                                    &required,
+                                    cell.require_openusd_version.as_deref(),
+                                ) {
+                                    unresolved.push(format!(
+                                        "{}: runtime {digest} does not satisfy require_openusd '{selector}': {error}",
+                                        cell.name
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     Err(_) => unresolved.push(format!("{}: {what} {digest}", cell.name)),
                 }
             }
@@ -731,6 +755,8 @@ fn resolved_matrix(matrix_flag: Option<&str>, lane_flag: Option<&str>, fmt: Form
                     "up_to": (!cell.is_workspace()).then(|| cell.up_to()),
                     "verify": cell.is_workspace().then(|| cell.verify().as_str()),
                     "runtime_artifact": cell.runtime_artifact,
+                    "require_openusd": cell.require_openusd,
+                    "require_openusd_version": cell.require_openusd_version,
                     "runtime_remote": cell.runtime_remote.as_ref().map(|r| r.uri.as_str()),
                     "expected_oci_digest": cell
                         .runtime_remote
@@ -794,6 +820,16 @@ fn resolved_matrix(matrix_flag: Option<&str>, lane_flag: Option<&str>, fmt: Form
         );
         if let Some(remote) = &cell.runtime_remote {
             println!("      remote: {}", remote.uri);
+        }
+        if let Some(selector) = &cell.require_openusd {
+            println!(
+                "      OpenUSD: {}{}",
+                selector,
+                cell.require_openusd_version
+                    .as_deref()
+                    .map(|version| format!(" @ {version}"))
+                    .unwrap_or_default()
+            );
         }
     }
     if cells.is_empty() {

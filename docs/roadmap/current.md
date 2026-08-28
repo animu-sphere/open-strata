@@ -38,12 +38,6 @@ v0.22.9-v0.22.10 work is in the [runtime-composition plan](runtime-composition.m
   OpenUSD builds, protected GHCR publication, clean digest pulls, and the USD
   VRM release-lane dogfood with the released binary. The four macOS leaves are
   published; Linux and Windows remain.
-- **CI cells cannot state the OpenUSD variant the pull can require.**
-  `ost artifact pull` accepts `--require-openusd <platform>/<os>/<arch>/<variant>`
-  and `--require-openusd-version`, but `openstrata.ci.yaml`'s cell schema has no
-  field for either, so a contract pins bytes without saying what kind of runtime
-  the project requires. A wrong re-pin is then caught at CMake configure on every
-  runner rather than by the matrix validator (USD VRM report 36 §5.3, P3).
 - **`[[workspace.install_data]]` takes whole directories.** The CMake rule it
   parallels can filter (`PATTERN "*.yaml"`); the mapping cannot, so a source
   directory ships every file it holds. An include filter would close the gap
