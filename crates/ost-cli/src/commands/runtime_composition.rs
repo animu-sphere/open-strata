@@ -10,8 +10,9 @@ use ost_artifact::{
 use ost_core::{digest, Error, Result};
 use ost_formation::{
     canonical_json_digest, composition_error, resolve_runtime_composition, CompositionInput,
-    CompositionInventoryEntry, LockedCompositionArtifact, RuntimeCompositionLock,
-    RuntimeCompositionManifest,
+    CompositionInventoryEntry, ConsumerComponentIdentity, ConsumerPackageKind,
+    ConsumerPackageManifest, ConsumerRuntimeIdentity, LockedCompositionArtifact,
+    RuntimeCompositionLock, RuntimeCompositionManifest,
 };
 use ost_platform::{ResolvedDependencyIdentity, ResolvedSourceIdentity};
 use serde_json::{json, Value};
@@ -23,6 +24,142 @@ const LOCK_PATH: &str = "metadata/composition.lock.json";
 #[path = "runtime_sdk.rs"]
 mod sdk;
 pub use sdk::{environment, execute};
+
+pub fn consumer_manifest(
+    digest: &str,
+    kind: ConsumerPackageKind,
+    name: String,
+    version: String,
+    entrypoints: Vec<String>,
+    output_path: &Utf8Path,
+    fmt: Format,
+) -> Result<()> {
+    ost_formation::validate_full_digest("composed artifact", digest)?;
+    let store = ArtifactStore::discover();
+    let (artifact, producer) = verified_artifact(&store, digest)?;
+    if artifact.record.kind != ost_artifact::ArtifactKind::ComposedRuntime {
+        return Err(composition_error(
+            "COMPOSITION_ARTIFACT_REQUIRED",
+            "consumer packages must derive from an exported composed-runtime artifact",
+        ));
+    }
+    let runtime_digest = producer
+        .pointer("/composition/runtime_digest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            composition_error(
+                "COMPOSITION_ARTIFACT_REQUIRED",
+                "composed artifact has no pinned runtime identity",
+            )
+        })?;
+    if producer
+        .pointer("/composition/attribution/runtime_digest")
+        .and_then(Value::as_str)
+        != Some(runtime_digest)
+    {
+        return Err(composition_error(
+            "COMPOSITION_LOCK_MISMATCH",
+            "composed artifact composition and attribution identities differ",
+        ));
+    }
+    let component_values = producer
+        .pointer("/composition/attribution/components")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            composition_error(
+                "COMPOSITION_ARTIFACT_REQUIRED",
+                "composed artifact has no component attribution",
+            )
+        })?;
+    let mut components = component_values
+        .iter()
+        .map(|component| {
+            let field = |name| {
+                component.get(name).and_then(Value::as_str).ok_or_else(|| {
+                    composition_error(
+                        "COMPOSITION_ARTIFACT_REQUIRED",
+                        format!("component attribution has no '{name}'"),
+                    )
+                })
+            };
+            Ok(ConsumerComponentIdentity {
+                id: field("id")?.into(),
+                version: field("version")?.into(),
+                digest: field("digest")?.into(),
+                sbom_digest: component
+                    .get("sbom_digest")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                provenance_digest: component
+                    .get("provenance_digest")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    components.sort();
+    let attributed = components
+        .iter()
+        .map(|component| component.digest.as_str())
+        .collect::<BTreeSet<_>>();
+    let dependencies = artifact
+        .record
+        .dependency_identities
+        .iter()
+        .filter_map(|dependency| dependency.archive_digest.as_deref())
+        .collect::<BTreeSet<_>>();
+    if attributed != dependencies {
+        return Err(composition_error(
+            "COMPOSITION_LOCK_MISMATCH",
+            "composed artifact dependencies and component attribution differ",
+        ));
+    }
+    let sbom_digest = artifact.record.sbom_digest.clone().ok_or_else(|| {
+        composition_error(
+            "CONSUMER_PACKAGE_EVIDENCE_REQUIRED",
+            "composed runtime has no verified SBOM evidence",
+        )
+    })?;
+    let provenance_digest = artifact.record.provenance_digest.clone().ok_or_else(|| {
+        composition_error(
+            "CONSUMER_PACKAGE_EVIDENCE_REQUIRED",
+            "composed runtime has no verified provenance evidence",
+        )
+    })?;
+    let manifest = ConsumerPackageManifest::new(
+        kind,
+        name,
+        version,
+        ConsumerRuntimeIdentity {
+            artifact_digest: artifact.record.digest,
+            runtime_digest: runtime_digest.into(),
+            sbom_digest,
+            provenance_digest,
+            target: artifact.record.target,
+            components,
+        },
+        entrypoints,
+    )?;
+    let bytes = serde_json::to_string_pretty(&manifest).map_err(|error| {
+        Error::Operation(format!("cannot serialize consumer manifest: {error}"))
+    })?;
+    if let Some(parent) = output_path
+        .parent()
+        .filter(|path| !path.as_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| Error::io(parent.to_string(), error))?;
+    }
+    ost_core::fs::write_atomic(output_path.as_std_path(), format!("{bytes}\n").as_bytes())?;
+    if fmt.is_json() {
+        output::success(&json!({"manifest": manifest, "output": output_path}));
+    } else {
+        println!(
+            "Derived {} consumer manifest for {} at {}",
+            manifest.package.kind, manifest.runtime.artifact_digest, output_path
+        );
+    }
+    Ok(())
+}
 
 fn read_json(path: &Utf8Path) -> Result<Value> {
     serde_json::from_slice(&fs::read(path).map_err(|e| Error::io(path.to_string(), e))?)

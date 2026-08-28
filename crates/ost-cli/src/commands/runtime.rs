@@ -24,7 +24,7 @@ use ost_core::host::Os;
 use ost_core::paths::Store;
 use ost_core::variant::Abi;
 use ost_core::{tools, Error, Host, Result, Variant};
-use ost_formation::RuntimeCompositionManifest;
+use ost_formation::{ConsumerPackageKind, RuntimeCompositionManifest};
 use ost_platform::version_satisfies_constraint;
 use ost_runtime::{
     graphics_device_status, graphics_loader_probes_supported, graphics_loader_status, python_minor,
@@ -89,6 +89,27 @@ pub enum RuntimeCmd {
         composition: Utf8PathBuf,
         #[arg(last = true, required = true)]
         command: Vec<String>,
+    },
+    /// Derive a registry-neutral consumer package manifest from an exported composition.
+    ConsumerManifest {
+        /// Full digest of an exported composed-runtime artifact in the local store.
+        #[arg(long)]
+        from_artifact: String,
+        /// Consumer distribution shape.
+        #[arg(long)]
+        kind: ConsumerPackageKind,
+        /// Ecosystem package name (distribution, npm, or native SDK package name).
+        #[arg(long)]
+        name: String,
+        /// Ecosystem package version. Runtime identity remains independently pinned.
+        #[arg(long)]
+        version: String,
+        /// Public CMake package, Python import module, or JavaScript export key.
+        #[arg(long, required = true)]
+        entrypoint: Vec<String>,
+        /// Destination JSON manifest. Written atomically.
+        #[arg(long)]
+        output: Utf8PathBuf,
     },
     /// Materialize a runtime into the local store.
     Pull {
@@ -258,6 +279,22 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             composition,
             command,
         } => super::runtime_composition::execute(&composition, &command, fmt),
+        RuntimeCmd::ConsumerManifest {
+            from_artifact,
+            kind,
+            name,
+            version,
+            entrypoint,
+            output,
+        } => super::runtime_composition::consumer_manifest(
+            &from_artifact,
+            kind,
+            name,
+            version,
+            entrypoint,
+            &output,
+            fmt,
+        ),
         RuntimeCmd::Compose {
             manifest,
             lock,

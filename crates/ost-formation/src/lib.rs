@@ -17,6 +17,12 @@ use serde::{Deserialize, Serialize};
 mod composition;
 mod composition_lock;
 mod composition_sdk;
+mod consumer_package;
+
+pub use consumer_package::{
+    ConsumerComponentIdentity, ConsumerPackage, ConsumerPackageKind, ConsumerPackageManifest,
+    ConsumerPrivateLoader, ConsumerPublicApi, ConsumerRuntimeIdentity, CONSUMER_PACKAGE_SCHEMA,
+};
 
 pub use composition_sdk::{RuntimeSdkLayout, SdkFile, SDK_ROOTS};
 

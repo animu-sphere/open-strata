@@ -26,6 +26,20 @@ Versioned capability, compatibility, environment, and install metadata embedded 
 | `schema` | — | yes |  |
 | `version` | string | yes |  |
 
+## `consumer-package.schema.json`
+
+OpenStrata Consumer Package Manifest
+
+Registry-neutral contract for a native SDK, Python wheel, or npm distribution derived from one digest-pinned composed-runtime artifact. Public ecosystem entrypoints stay separate from the package-private OST loader protocol.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `package` | object | yes |  |
+| `private_loader` | object | yes | Package implementation contract. Consumers use public_api and do not parse OST metadata directly. |
+| `public_api` | object | yes |  |
+| `runtime` | object | yes |  |
+| `schema` | — | yes |  |
+
 ## `formation-lock.schema.json`
 
 OpenStrata Formation Lock
