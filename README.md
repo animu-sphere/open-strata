@@ -44,8 +44,10 @@ in the [roadmap](docs/roadmap/README.md).
 
 The active **v0.22.9** milestone derives ecosystem-native consumer packages from
 canonical OST/OCI artifacts while preserving one runtime identity and provenance
-graph. Runtime UX/diagnostics follows in v0.22.10, and DCC host adapters remain
-v0.23.0.
+graph. Its unreleased foundation now assembles deterministic wheel/npm archives
+with package-private runtime loaders and exercises them through isolated
+clean-consumer probes. Registry-facing acceptance remains. Runtime
+UX/diagnostics follows in v0.22.10, and DCC host adapters remain v0.23.0.
 See the [composition guide](docs/guides/compose-a-runtime.md),
 [v0.22.8 record](docs/releases/v0.22.8.md),
 [current roadmap](docs/roadmap/current.md) and

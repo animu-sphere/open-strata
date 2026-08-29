@@ -14,6 +14,8 @@ Secret values are consumed from the environment and must never be committed or p
 | `OST_USD_SRC` | environment | input | ost runtime pull --build | no | OpenUSD source tree used when --build has no path. |
 | `OST_USD_DEPS` | environment | input | ost runtime pull --build | no | Platform-path-separated dependency prefixes used when --deps is omitted. |
 | `OST_UV` | environment | input | ost uv | no | uv executable override. |
+| `OST_CONSUMER_CACHE` | environment | input | generated wheel/npm private loader | no | Override the per-user cache where a derived consumer package reconstructs its verified composed runtime. |
+| `OST_EXECUTABLE` | environment | input | generated wheel/npm private loader | no | Explicit ost executable used by a derived consumer package; defaults to ost on PATH. |
 | `OST_UV_ALLOW_SHADOWED` | environment | input | ost uv | no | Allow a project dependency to shadow a runtime-provided package when set. |
 | `OST_REGISTRY_TOKEN` | environment | input | OCI artifact pull | yes | Static bearer token accepted for registry reads, not pushes. |
 | `OST_REGISTRY_USER` | environment | input | OCI artifact push | yes | Registry username used with OST_REGISTRY_PASSWORD. |

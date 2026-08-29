@@ -448,6 +448,8 @@ version = "0.22.8"
 dependencies = [
  "anyhow",
  "camino",
+ "crc32fast",
+ "flate2",
  "ost-core",
  "serde",
  "serde_json",

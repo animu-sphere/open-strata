@@ -90,6 +90,50 @@ SDK and native entrypoint claims, then compares the exact runtime, target,
 component, SBOM and provenance identities with the consumer manifest. A missing
 artifact or any mismatch fails before adapter-owned extraction and activation.
 
-This foundation emits the registry-neutral identity contract. Wheel and npm
-archive assembly, platform-specific native loading, and registry publication
-remain adapter-owned work and must preserve the manifest unchanged.
+## 3. Assemble a wheel or npm package
+
+An adapter directory owns the ecosystem-facing code. OpenStrata verifies that
+directory against the consumer manifest, adds a package-private loader, embeds
+the exact composed-runtime archive and evidence sidecars, and emits a
+deterministic ecosystem archive:
+
+```text
+ost runtime consumer-package \
+  --manifest consumer-package.json \
+  --adapter adapters/python \
+  --output-dir dist
+```
+
+For `python-wheel`, the command generates the wheel metadata, `RECORD`, and a
+lightweight `.pth` import hook. The hook does not verify or reconstruct the
+runtime during unrelated Python startups. It activates only when code imports a
+declared public entrypoint, then restarts that Python invocation once under the
+verified SDK environment before loading the entrypoint. The declared package
+name and version must be portable wheel metadata. Linux compatibility tags
+retain the target's locked glibc floor. Targets without a trustworthy platform
+floor, including macOS targets, require
+`--wheel-tag <python>-<abi>-<platform>`.
+
+For `npm-javascript` and `npm-wasm`, the adapter must contain a `package.json`
+whose `name`, `version`, and `exports` match the consumer manifest. The emitted
+`.tgz` adds reserved `openstrata` package metadata that points to
+`./_openstrata/loader.cjs`; adapter implementation code calls that private
+loader before loading runtime-owned native or Wasm code. The loader is not
+added to the public `exports` map.
+
+Both archive shapes carry the consumer manifest byte-for-byte plus the exact
+canonical artifact archive, producer manifest, checksums, SBOM and provenance.
+The generated loader invokes `ost` from `PATH`, imports and verifies those
+bytes, reconstructs them in the per-user cache, and applies the verified SDK
+environment. A cache binding records the exact artifact, runtime, and target
+identity after verification; cache hits still verify the reconstructed prefix
+and compare the identity returned by `ost runtime env`, but do not rehash the
+embedded artifact on every activation. The npm loader refreshes Node's
+`NODE_PATH` search paths after activation. Native Node add-ons must use an
+adapter-owned absolute/RPATH-aware loading strategy because changing the
+platform dynamic-loader environment after Node starts is not retroactive. The
+loader never exposes the composition lock or activation metadata to the
+adapter's callers. Registry publication and platform-specific adapter code
+remain package-owner responsibilities. `OST_EXECUTABLE` selects an explicit
+`ost` binary when `PATH` lookup is unsuitable, and `OST_CONSUMER_CACHE` selects
+an isolated reconstruction cache for CI or an embedding host.

@@ -117,6 +117,22 @@ pub enum RuntimeCmd {
         #[arg(long)]
         manifest: Utf8PathBuf,
     },
+    /// Assemble a verified Python wheel or npm tarball with its private runtime loader.
+    ConsumerPackage {
+        /// Registry-neutral consumer manifest produced by consumer-manifest.
+        #[arg(long)]
+        manifest: Utf8PathBuf,
+        /// Adapter files that implement the declared ecosystem public API.
+        #[arg(long)]
+        adapter: Utf8PathBuf,
+        /// Directory that receives the canonical .whl or .tgz filename.
+        #[arg(long)]
+        output_dir: Utf8PathBuf,
+        /// Python wheel compatibility tag (for example cp313-cp313-win_amd64).
+        /// Derived from the runtime target when omitted.
+        #[arg(long)]
+        wheel_tag: Option<String>,
+    },
     /// Materialize a runtime into the local store.
     Pull {
         /// Platform calendar-year id, e.g. `cy2026`.
@@ -304,6 +320,18 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
         RuntimeCmd::ConsumerVerify { manifest } => {
             super::runtime_composition::consumer_verify(&manifest, fmt)
         }
+        RuntimeCmd::ConsumerPackage {
+            manifest,
+            adapter,
+            output_dir,
+            wheel_tag,
+        } => super::runtime_composition::consumer_package(
+            &manifest,
+            &adapter,
+            &output_dir,
+            wheel_tag.as_deref(),
+            fmt,
+        ),
         RuntimeCmd::Compose {
             manifest,
             lock,

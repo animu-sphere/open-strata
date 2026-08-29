@@ -34,10 +34,14 @@ versions are distribution/routing metadata only.
   above a package-private `verify -> extract -> activate` binder/loader
   protocol. Callers must not parse OST locks or activation metadata.
 
-The manifest, native entrypoint check and consumer-to-runtime identity
-verification have landed on `main` after v0.22.8. Wheel/npm archive assembly,
-their private loaders and clean-consumer acceptance remain milestone work; the
-unreleased implementation does not make v0.22.9 shipped.
+The manifest, native entrypoint check, consumer-to-runtime identity verification,
+deterministic wheel/npm archive assembly, and generated package-private loaders
+have landed on `main` after v0.22.8. The clean-consumer harness installs and
+executes the wheel in a fresh store, installs the npm tarball, and executes its
+loader when host policy permits Node.js child processes; strict SDK CI requires
+all tools and does not accept that capability SKIP. Registry-facing acceptance
+remains milestone work, so the unreleased implementation does not make v0.22.9
+shipped.
 
 ### Acceptance
 

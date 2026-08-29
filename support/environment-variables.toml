@@ -45,6 +45,20 @@ scope = "ost uv"
 description = "uv executable override."
 
 [[variables]]
+name = "OST_CONSUMER_CACHE"
+kind = "environment"
+direction = "input"
+scope = "generated wheel/npm private loader"
+description = "Override the per-user cache where a derived consumer package reconstructs its verified composed runtime."
+
+[[variables]]
+name = "OST_EXECUTABLE"
+kind = "environment"
+direction = "input"
+scope = "generated wheel/npm private loader"
+description = "Explicit ost executable used by a derived consumer package; defaults to ost on PATH."
+
+[[variables]]
 name = "OST_UV_ALLOW_SHADOWED"
 kind = "environment"
 direction = "input"
