@@ -105,10 +105,14 @@ ost runtime consumer-package \
 ```
 
 For `python-wheel`, the command generates the wheel metadata, `RECORD`, and a
-`.pth` activation hook. The declared package name and version must be portable
-wheel metadata. The compatibility tag is derived from the runtime target; use
-`--wheel-tag <python>-<abi>-<platform>` when a custom or legacy target cannot be
-derived safely.
+lightweight `.pth` import hook. The hook does not verify or reconstruct the
+runtime during unrelated Python startups. It activates only when code imports a
+declared public entrypoint, then restarts that Python invocation once under the
+verified SDK environment before loading the entrypoint. The declared package
+name and version must be portable wheel metadata. Linux compatibility tags
+retain the target's locked glibc floor. Targets without a trustworthy platform
+floor, including macOS targets, require
+`--wheel-tag <python>-<abi>-<platform>`.
 
 For `npm-javascript` and `npm-wasm`, the adapter must contain a `package.json`
 whose `name`, `version`, and `exports` match the consumer manifest. The emitted
@@ -121,8 +125,15 @@ Both archive shapes carry the consumer manifest byte-for-byte plus the exact
 canonical artifact archive, producer manifest, checksums, SBOM and provenance.
 The generated loader invokes `ost` from `PATH`, imports and verifies those
 bytes, reconstructs them in the per-user cache, and applies the verified SDK
-environment. It never exposes the composition lock or activation metadata to
-the adapter's callers. Registry publication and platform-specific adapter code
+environment. A cache binding records the exact artifact, runtime, and target
+identity after verification; cache hits still verify the reconstructed prefix
+and compare the identity returned by `ost runtime env`, but do not rehash the
+embedded artifact on every activation. The npm loader refreshes Node's
+`NODE_PATH` search paths after activation. Native Node add-ons must use an
+adapter-owned absolute/RPATH-aware loading strategy because changing the
+platform dynamic-loader environment after Node starts is not retroactive. The
+loader never exposes the composition lock or activation metadata to the
+adapter's callers. Registry publication and platform-specific adapter code
 remain package-owner responsibilities. `OST_EXECUTABLE` selects an explicit
 `ost` binary when `PATH` lookup is unsuitable, and `OST_CONSUMER_CACHE` selects
 an isolated reconstruction cache for CI or an embedding host.

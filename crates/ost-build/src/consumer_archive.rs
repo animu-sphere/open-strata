@@ -89,16 +89,24 @@ pub fn wheel_record(entries: &[ConsumerArchiveEntry], record_path: &str) -> io::
         let mut file = File::open(&entry.source)?;
         let (sha256, size) = digest::sha256_hex_reader(&mut file)?;
         let bytes = decode_hex(sha256.strip_prefix("sha256:").unwrap_or_default())?;
-        output.push_str(&entry.path);
+        output.push_str(&csv_field(&entry.path));
         output.push_str(",sha256=");
         output.push_str(&base64_url_no_pad(&bytes));
         output.push(',');
         output.push_str(&size.to_string());
         output.push('\n');
     }
-    output.push_str(record_path);
+    output.push_str(&csv_field(record_path));
     output.push_str(",,\n");
     Ok(output)
+}
+
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
 }
 
 fn decode_hex(value: &str) -> io::Result<Vec<u8>> {
@@ -412,12 +420,15 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a.txt"), b"alpha\n").unwrap();
         std::fs::write(root.join("b.txt"), b"beta\n").unwrap();
+        std::fs::write(root.join("comma,name.txt"), b"gamma\n").unwrap();
         let entries = vec![
             ConsumerArchiveEntry::new(root.join("b.txt"), "b.txt").unwrap(),
             ConsumerArchiveEntry::new(root.join("a.txt"), "a.txt").unwrap(),
+            ConsumerArchiveEntry::new(root.join("comma,name.txt"), "comma,name.txt").unwrap(),
         ];
         let record = wheel_record(&entries, "x.dist-info/RECORD").unwrap();
         assert!(record.contains("a.txt,sha256="));
+        assert!(record.contains("\"comma,name.txt\",sha256="));
         assert!(!record.lines().any(|line| line
             .split(',')
             .nth(1)
@@ -428,7 +439,7 @@ mod tests {
         assert_eq!(first.archive_digest, second.archive_digest);
         assert_eq!(
             stored_zip_paths(&std::fs::read(root.join("first.whl")).unwrap()),
-            ["a.txt", "b.txt"]
+            ["a.txt", "b.txt", "comma,name.txt"]
         );
         let first = pack_npm_tgz(&entries, &root.join("first.tgz")).unwrap();
         let second = pack_npm_tgz(&entries, &root.join("second.tgz")).unwrap();
@@ -447,7 +458,10 @@ mod tests {
                     .into_owned()
             })
             .collect::<Vec<_>>();
-        assert_eq!(paths, ["package/a.txt", "package/b.txt"]);
+        assert_eq!(
+            paths,
+            ["package/a.txt", "package/b.txt", "package/comma,name.txt"]
+        );
         std::fs::remove_dir_all(root).ok();
     }
 }

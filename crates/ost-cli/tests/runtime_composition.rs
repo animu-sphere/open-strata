@@ -721,7 +721,9 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
         b"import os\nVALUE = os.environ['FIXTURE_PATH']\n",
     )
     .unwrap();
-    let wheel_dist = producer.base.join("wheel-dist");
+    let wheel_dist = python_adapter.join("wheel-dist");
+    std::fs::create_dir_all(&wheel_dist).unwrap();
+    std::fs::write(wheel_dist.join("stale.txt"), b"must not be packaged\n").unwrap();
     let wheel = json(producer.ost(&[
         "--json",
         "runtime",
@@ -729,9 +731,9 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
         "--manifest",
         path(&consumer_manifest_path),
         "--adapter",
-        path(&python_adapter),
+        "python-adapter",
         "--output-dir",
-        path(&wheel_dist),
+        "python-adapter/wheel-dist",
         "--wheel-tag",
         "py3-none-any",
     ]));
@@ -740,12 +742,14 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
         "openstrata.consumer-package-archive/v1alpha1"
     );
     assert!(wheel["data"]["output"].as_str().unwrap().ends_with(".whl"));
-    assert!(std::path::Path::new(wheel["data"]["output"].as_str().unwrap()).is_file());
+    let wheel_path = producer
+        .base
+        .join(wheel["data"]["output"].as_str().unwrap());
+    assert!(wheel_path.is_file());
     assert!(wheel["data"]["archive_digest"]
         .as_str()
         .unwrap()
         .starts_with("sha256:"));
-    let wheel_path = PathBuf::from(wheel["data"]["output"].as_str().unwrap());
     let python = ost_core::tools::which("python").or_else(|| ost_core::tools::which("python3"));
     if std::env::var_os("OST_TEST_REQUIRE_SDK_TOOLS").is_some() {
         assert!(python.is_some(), "consumer-package CI requires Python");
@@ -754,16 +758,28 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
         let clean = Sandbox::new();
         let site = clean.base.join("wheel-site");
         let cache = clean.base.join("consumer-cache");
-        let script = r#"import importlib, pathlib, site, sys, zipfile
-wheel, destination = map(pathlib.Path, sys.argv[1:])
+        let script = r#"import importlib, os, pathlib, site, sys, zipfile
+wheel, destination, cache = map(pathlib.Path, sys.argv[1:4])
+runtime_digest = sys.argv[4]
 zipfile.ZipFile(wheel).extractall(destination)
 site.addsitedir(str(destination))
+if os.environ.get("_OST_CONSUMER_ACTIVE_RUNTIME") is None:
+    assert not cache.exists(), "the .pth hook must not activate before a public API import"
 api = importlib.import_module("fixture.api")
 assert pathlib.Path(api.VALUE).is_absolute(), api.VALUE
+assert os.environ["_OST_CONSUMER_ACTIVE_RUNTIME"] == runtime_digest
+assert not (destination / "wheel-dist" / "stale.txt").exists()
 print(api.VALUE)
 "#;
-        let output = Command::new(python)
-            .args(["-c", script, path(&wheel_path), path(&site)])
+        let output = Command::new(&python)
+            .args([
+                "-c",
+                script,
+                path(&wheel_path),
+                path(&site),
+                path(&cache),
+                identity.as_str().unwrap(),
+            ])
             .current_dir(&clean.base)
             .env("OST_HOME", &clean.home)
             .env("OST_CONSUMER_CACHE", &cache)
@@ -774,7 +790,8 @@ print(api.VALUE)
             .expect("run clean wheel consumer");
         assert!(
             output.status.success(),
-            "wheel consumer stdout: {}\nstderr: {}",
+            "wheel consumer status: {}\nstdout: {}\nstderr: {}",
+            output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -783,6 +800,35 @@ print(api.VALUE)
             "private loader must reconstruct in its cache"
         );
         assert!(clean.home.join("artifacts/objects/sha256").is_dir());
+
+        let private = site.join(format!(
+            "_openstrata_fixture_python_{}",
+            &artifact_digest[7..19]
+        ));
+        std::fs::remove_file(private.join("artifact/manifest.json")).unwrap();
+        std::fs::remove_dir_all(clean.home.join("artifacts")).unwrap();
+        let cached_script = r#"import importlib, pathlib, site, sys
+site.addsitedir(sys.argv[1])
+api = importlib.import_module("fixture.api")
+assert pathlib.Path(api.VALUE).is_absolute(), api.VALUE
+"#;
+        let cached = Command::new(&python)
+            .args(["-c", cached_script, path(&site)])
+            .current_dir(&clean.base)
+            .env("OST_HOME", &clean.home)
+            .env("OST_CONSUMER_CACHE", &cache)
+            .env("OST_EXECUTABLE", ost_bin())
+            .env("PATH", path_with_ost())
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .expect("run cached wheel consumer");
+        assert!(
+            cached.status.success(),
+            "cached wheel consumer status: {}\nstdout: {}\nstderr: {}",
+            cached.status,
+            String::from_utf8_lossy(&cached.stdout),
+            String::from_utf8_lossy(&cached.stderr)
+        );
     }
 
     let npm_manifest_path = producer.base.join("npm-consumer.json");
