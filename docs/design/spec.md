@@ -3,12 +3,15 @@
 
 > **OpenStrata** は、VFX Reference Platform の年次互換性を、実行・検証・配布可能な不変ランタイムレイヤーへ変換するための、VFX / OpenUSD 向け runtime・build・extension・validation プラットフォームである。
 > CLI 名は **`ost`** とする。
+> 直近方針の基準日: **2026-08-29**。
 
 ---
 
 ## 0. このドキュメントの目的
 
-この文書は、OpenStrata の初期実装を開始するための設計方針である。
+この文書は、OpenStrata の初期実装から継続する設計方針である。リリース
+済みの事実は [releases](../releases/README.md)、未完の実行順は
+[roadmap](../roadmap/README.md) が所有する。
 
 実装の第一目標は、既存 DCC のランチャーや互換性レイヤーではない。以下を優先する。
 
@@ -20,6 +23,20 @@
 6. Jenkins などの CI で build matrix を並列実行できる。
 7. host OS / GPU driver / accelerator capability を検出・検証・記録できる。
 8. runtime・extension・session を lockfile と digest で再現可能にする。
+
+v0.22.8 までに runtime / artifact / Formation composition の基盤が成立した
+ため、直近は新しい低レベル機能を広げるよりも、次の順に収束させる。
+
+```text
+v0.22.9  consumer packaging foundation
+v0.22.10 runtime UX and diagnostics
+v0.23.0  DCC host adapters and matrix
+v1.0.0   trusted production arc
+```
+
+この順序では「配る」「普通に使い説明・診断する」「実 DCC host へ接続する」
+を一つずつ閉じる。Sessions / sandbox、Kubernetes backend、広範な AI/GPU
+profile、renderer template 拡張は主線へ混ぜない。
 
 ---
 
@@ -45,10 +62,12 @@
 ```text
 VFX Reference Platform
   -> machine-readable platform manifest
-  -> immutable runtime artifact
-  -> controlled extensions
-  -> validated capability graph
-  -> reproducible build / extension / session
+  -> component artifacts (digest / provenance / SBOM)
+  -> Formation graph
+  -> composition lock
+  -> composed runtime artifact
+  -> consumer package / DCC adapter
+  -> execution evidence
 ```
 
 OpenStrata は DCC 中心ではなく runtime 中心である。
@@ -251,15 +270,20 @@ A runtime is not merely an OpenUSD install prefix. It resolves and validates the
 OpenUSD, plugins, libraries, tools, environment contributions and compatibility
 evidence needed for execution under one identity.
 
-From v0.22.3, runtime composition resolves individual immutable OST artifacts
-from the same dependency/capability/provider graph, locks them, materializes them
-into a predictable SDK layout, and can distribute the result as a runtime
-artifact. A purpose-specific Formation remains distinct from a distributable
-composed runtime, but both share the resolver, environment, lock and diagnostic
-contracts; OpenStrata does not add a second composition mechanism. The
+The v0.22.3-v0.22.7 line established component artifacts, resolution, locking,
+materialization, a predictable SDK layout and self-contained composed-runtime
+distribution. A purpose-specific Formation remains distinct from a
+distributable composed runtime, but both share the resolver, environment, lock
+and diagnostic contracts; OpenStrata does not add a second composition
+mechanism. The
 [runtime composition proposal](proposed/runtime-composition.md) and
-[v0.22.x roadmap](../roadmap/runtime-composition.md) own the not-yet-implemented
-contract and staged acceptance criteria.
+[v0.22.x roadmap](../roadmap/runtime-composition.md) own the design boundary and
+remaining staged acceptance criteria.
+
+Consumer packages and DCC adapters are derived boundaries above that runtime.
+Their ecosystem or host metadata never replaces the OST artifact digest,
+runtime/component identities, Formation lock, provenance or SBOM as canonical
+dependency truth.
 
 The OpenUSD base runtime treats `profile` and graphics `variant` as separate
 identity axes. The canonical variants for `profile = usd` are `core`, `gl`,
@@ -1755,6 +1779,12 @@ provenance metadata
 
 # 19. Implementation Phases
 
+The phases below are the original architectural decomposition, not the current
+release order. The active milestone ladder in [roadmap](../roadmap/README.md)
+supersedes their sequencing; in particular, sessions and AI/GPU profiles remain
+future work while consumer packaging, runtime UX and DCC adapters form the
+v0.22.9-v0.23.0 mainline.
+
 ## Phase 0 — Foundation
 
 Goal:
@@ -2009,25 +2039,27 @@ Success means:
 
 # 22. Immediate Implementation Tasks
 
-Implement in this order:
+The original bootstrap list has shipped and is retained in release history. From
+2026-08-29, implement in this order:
 
-1. Create Rust workspace and `ost` CLI skeleton.
-2. Add platform manifest schema and CY2025/CY2026 sample manifests.
-3. Implement `ost platform list/show/diff`.
-4. Add project manifest and lockfile schemas.
-5. Implement `ost init`.
-6. Implement runtime target model.
-7. Implement `ost env` and `ost devshell` with a mock/local runtime.
-8. Implement CMake toolchain + preset generation.
-9. Implement `ost configure`, `ost build`, `ost validate`, `ost package`.
-10. Add OpenUSD / MaterialX extension manifests.
-11. Add `usd` profile and capability resolver.
-12. Add USD fileformat plugin template.
-13. Add `ost doctor usd`.
-14. Add pytest-based fileformat validation.
-15. Add Jenkinsfile template and JUnit output.
-16. Add artifact digest and local store.
-17. Add multi-target build matrix support.
+1. Close v0.22.9 with one registry-neutral consumer identity contract across
+   native SDK, Python wheel and npm/JavaScript/Wasm entrypoints.
+2. Use native SDK as the reference path:
+   `canonical artifact -> consumer manifest -> clean/relocated consumer ->
+   find_package -> build -> execute`, without changing runtime identity.
+3. Place Python and JavaScript public APIs above a private
+   `verify -> extract -> activate` binder/loader boundary. Registry metadata is
+   routing metadata, not dependency truth.
+4. Converge routine runtime work on compose / explain / doctor / exec, with
+   stable JSON schemas, diagnostic codes and remediation for humans, CI and
+   agents.
+5. Keep component verification, composition verification, execution, plugin
+   load, render and physical-device claims separate; retain explained SKIPs.
+6. Complete the geospatial clean-consumer acceptance and decide whether the
+   runtime-composition proposal can move to accepted.
+7. Only then complete v0.23.0 DCC headless adapters, Maya `.mod`, Houdini package
+   JSON and matrix cells pinned to host records, artifact digests, tiers and
+   execution evidence on Windows/Linux/macOS.
 
 ---
 
@@ -2043,6 +2075,8 @@ Implement in this order:
   - dependency reason
   - validation requirements
 - Every published artifact must include provenance and validation result.
+- Every published artifact must carry complete third-party attribution; missing
+  upstream license/NOTICE data is a publication failure.
 - Build logic must remain in OpenStrata / CMake metadata, not be duplicated across Jenkinsfiles.
 - OpenStrata must work without a preinstalled Python environment.
 - Linux x86_64 is the first supported implementation target; other OS targets must be modeled from the beginning but can be unavailable initially.

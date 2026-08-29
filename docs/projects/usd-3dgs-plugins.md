@@ -76,8 +76,8 @@ authoring, `plugInfo.json`, and fixtures. OpenUSD types do not enter the public
 
 ## Workflows demonstrated
 
-These are current OpenStrata 0.18 commands; the repository's README and install
-guide are authoritative:
+These commands have been available since OpenStrata 0.18; the repository's
+README and install guide are authoritative:
 
 ```sh
 ost plugin build plugins/gaussian-ply
@@ -101,14 +101,13 @@ ost plugin run plugins/gaussian-ply -- \
 
 The downstream repository keeps an append-only
 [`docs/reports/ost/`](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost)
-series. The first two reports found four upstream product seams now tracked in
-the [v0.19.0 reach plan](../roadmap/current.md):
+series. The first two reports found four upstream product seams that fed the
+[v0.19.0 reachability release](../releases/v0.19.0.md):
 
-- package-origin L5 did not receive the adjacent golden (implemented on the
-  v0.19.0 branch via the versioned packaged verification-content contract);
+- package-origin L5 did not receive the adjacent golden (shipped in v0.19.0 via
+  the versioned packaged verification-content contract);
 - packaging was not bound to the output of the last managed plugin build
-  (implemented on the v0.19.0 branch with output digests and fail-closed
-  mismatch reporting);
+  (shipped in v0.19.0 with output digests and fail-closed mismatch reporting);
 - CI evidence-gap diagnostics do not print the exact safe repull command even
   when every immutable input is already known;
 - a package run outside a project defaults to `core` instead of deriving or
@@ -139,7 +138,7 @@ the existing package-twice gate only compares one build.
   [reference/plugin-workspace.md](../reference/plugin-workspace.md).
 - Transferable procedure:
   [Adopt a plugin workspace](../guides/adopt-a-plugin-workspace.md).
-- Planned Formation examples:
+- Formation examples:
   [combined-formations.md](combined-formations.md),
   [Formation design](../design/proposed/formations.md).
 - Reference Projects overview: [README.md](README.md).

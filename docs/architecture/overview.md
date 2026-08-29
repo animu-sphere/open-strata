@@ -1,24 +1,25 @@
 # Architecture
 
-*Last verified against: v0.13.0 (workspace version 0.13.0).* This document
+*Last verified against: v0.22.8 (workspace version 0.22.8).* This document
 describes the system as it exists on the default branch; historical alternatives
 belong in design notes, not here.
 
 ## Workspace layout
 
 OpenStrata is a Rust workspace. The CLI is thin; domain logic lives in libraries so
-it can be reused by future surfaces (CI helpers, a daemon, tests). The ten `ost-*`
+it can be reused by future surfaces (CI helpers, a daemon, tests). The twelve `ost-*`
 crates and their boundaries are documented in [crates.md](crates.md).
 
 ```text
-crates/           the ost-cli binary + nine ost-* domain libraries (see crates.md)
+crates/           the ost-cli binary + eleven ost-* domain libraries (see crates.md)
 platforms/        built-in CY manifests, embedded into the binary
 profiles/         capability bundles (core / dev / usd / lookdev)
 extensions/       controlled extension manifests (openusd / materialx)
 templates/        project + plugin scaffolds (usd-fileformat-cpp, usd-schema-codeless,
                   usd-schema-cpp, usd-asset-resolver-cpp, usd-package-resolver-cpp,
                   usd-exec-cpp, …)
-schemas/          JSON schemas for platform / project / lock / Formation / plugin documents
+schemas/          JSON schemas for platform, artifact, Formation, runtime,
+                  consumer-package, host and evidence documents
 docs/             this documentation
 ```
 
@@ -35,10 +36,34 @@ docs/             this documentation
 | **Extension** | A controlled VFX-adjacent component (OpenUSD, MaterialX). | implemented |
 | **Runtime** | Platform + variant + profile + resolved artifacts, with a digest and a backend source (`mock`/`local`/`build`). | implemented |
 | **Plugin bundle** | A self-describing OpenUSD plugin (`openstrata.plugin.yaml` + sources + `plugInfo.json` + fixtures), verified by levels 0–5. | implemented |
-| **Plugin workspace** | Deterministically discovered plugin bundles plus a read-only, version/contract-checked dependency graph; build ordering is not inferred yet. | implemented |
+| **Plugin workspace** | Deterministically discovered plugin bundles plus a version/contract-checked dependency graph used for dependency-ordered build, test and aggregate packaging. | implemented |
 | **Artifact** | An immutable, digest-addressed bundle (`tar.zst` + manifest + validation report) in the local registry, transportable over OCI. | implemented |
+| **Component** | A versioned artifact-facing contract for capabilities, requirements, target/ABI facts, environment contributions, install ownership, provenance and evidence. | implemented |
+| **Formation** | A purpose-specific, digest-pinned graph that selects a runtime and components, resolves compatibility, locks the environment and launches a command. | implemented |
+| **Composed runtime** | A Formation-resolved graph materialized as a self-contained, relocatable execution/SDK artifact while retaining component identity and evidence. | implemented |
+| **Consumer package** | A registry-neutral identity manifest for a native SDK, Python wheel or npm/JavaScript/Wasm entrypoint derived from one exact composed runtime. Package archive assembly remains adapter-owned. | foundation implemented; adapters in progress |
 | **Support matrix** | `openstrata.ci.yaml`: digest-pinned runtime×plugin support lines, runner profiles, lanes, and trust floors, rendered to CI workflows. | implemented |
+| **Host record** | A versioned, fingerprinted record for a discovered third-party DCC installation. Discovery is implemented; headless adapters and matrix execution are planned for v0.23.0. | partial |
 | **Session** | A mutable workspace over an immutable runtime. | planned |
+
+## Canonical identity and adapter boundaries
+
+OpenStrata keeps one dependency and identity graph across distribution and host
+integration:
+
+```text
+source
+  -> component artifact (digest, provenance, SBOM)
+  -> Formation resolution and lock
+  -> composed runtime artifact
+  -> consumer package or DCC adapter
+  -> execution evidence
+```
+
+The final two layers are adapters. A wheel/npm/native package may add an
+ecosystem name, version and public entrypoint; a DCC adapter may add a validated
+host record and launch/package contract. Neither may resolve a parallel
+dependency graph, change runtime identity or build a separate environment path.
 
 ## On-disk layout
 
@@ -49,7 +74,7 @@ Two roots matter:
   config.toml
   platforms/ profiles/ extensions/   # user manifests, overlaid over built-ins
   runtimes/<id>/             # runtime.json (+ real artifacts for build/mock)
-  artifacts/ cache/ sessions/ logs/  # cache/ holds e.g. usd-build/ trees
+  artifacts/ cache/ sessions/ logs/  # digest store and derived working state
 
 <project>/
   openstrata.toml            # authored project manifest
@@ -59,6 +84,11 @@ Two roots matter:
 <plugin-bundle>/             # an ost-plugin bundle (may live anywhere)
   openstrata.plugin.yaml     # bundle contract
   .strata/reports/<plugin>/<UTC>/   # report.json, summary.txt, environment.json
+
+<composed-runtime>/
+  bin/ lib/ include/ share/ plugins/ python/ node/
+  components/<component-id>/ # retained component prefixes
+  metadata/                  # lock, SDK inventory, producer/evidence records
 ```
 
 An adopted (`local`) runtime keeps only its `runtime.json` in the store; its real

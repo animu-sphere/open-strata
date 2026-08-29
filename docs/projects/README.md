@@ -110,7 +110,7 @@ validated, and composed into one reproducible execution environment**. The
 plugin workspaces exercise format, schema and ordinary-library boundaries; the
 HTTP resolver owns transport; the raster and point-cloud projects consume that
 transport without coupling formats to it; hdMerlin exercises the renderer
-boundary; and USD Geospatial Runtime will bind those artifacts into one locked,
+boundary; and USD Geospatial Runtime binds those artifacts into one locked,
 distributable runtime/SDK. A separate Formation case opens VRM through the VRM
 bundles and renders it with hdMerlin; other stage inspections do not imply
 renderer compatibility.
@@ -145,13 +145,13 @@ other's source of truth:
   references, support tables, and architecture documents are **not** copied here.
 - **Downstream repositories link back.** Each reference project keeps a short
   *OpenStrata project* section linking to this repository, its OpenStrata
-  reference-project page, and — once v0.19.0 ships — the Formation documentation.
+  reference-project page and the Formation documentation.
 - **No duplicated source of truth.** Any snippet included on an OpenStrata page
   is minimal, labeled current or planned, and linked to the authoritative
   downstream guide. Downstream dogfooding reports are linked as evidence, not
   copied; the two v0.17.0 passes that drove the v0.18.0 plan are indexed in the
   [delivery reports](../reports/README.md), including the USD 3DGS bootstrap and
-  package-provenance reports that extend the v0.19.0 reach plan.
+  package-provenance reports that informed the v0.19.0 release.
 
 See the [documentation overview](../README.md) for how these pages relate to the
 rest of the docs, and [concepts/overview.md](../concepts/overview.md) for what

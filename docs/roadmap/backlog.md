@@ -20,7 +20,8 @@ composition slices is in [runtime-composition.md](runtime-composition.md).
 - ⬜ **v0.23.0 - DCC host adapters and matrix.** Run minimal headless
   load/open/validate probes with preserved output and explained SKIPs; generate
   Maya `.mod` and Houdini package JSON; publish matrix cells with pinned host
-  records, artifact digests, tiers and execution evidence; and complete
+  records, DCC/OS/OpenUSD/Python identities, runtime and plugin artifact digests,
+  validation tiers and execution evidence; and complete
   Linux/macOS discovery acceptance. OpenStrata does not install, license or
   mutate hosts, and adapters do not abstract DCC APIs. Direction:
   [dcc-hosts.md](../design/proposed/dcc-hosts.md).
@@ -28,6 +29,10 @@ composition slices is in [runtime-composition.md](runtime-composition.md).
   DCC-host execution arc is supported, digest-addressed and dogfooded.
 
 ## Future phases
+
+These remain outside the v0.22.9 -> v0.22.10 -> v0.23.0 mainline. Device
+diagnostics in v0.22.10 may prepare later GPU work, and `runtime exec` may prepare
+later sessions, but neither expands the active milestone into those systems.
 
 - ⬜ **OpenUSD template catalog maturity.** Automate clean-install consumer
   gates, prove compiled schemas on a second platform/OpenUSD line, harden the

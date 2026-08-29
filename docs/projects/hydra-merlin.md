@@ -65,8 +65,8 @@ architecture instead of forcing one abstraction.
 
 ## Workflows demonstrated
 
-These are **current** commands available today (v0.17 / v0.18); the repository's
-guide is authoritative.
+These commands have been available since v0.17/v0.18; the repository's guide is
+authoritative.
 
 Pull a runtime, preflight, build, and validate:
 
@@ -89,7 +89,7 @@ hdMerlin's v0.17.0 renderer-lifecycle pass (downstream report
 `2026-07-15-v0.17.0-dogfooding-v0.18.0-asks.md`, findings OST18-RND-001..006)
 found a renderer assertion becoming PASS from a CTest that later timed out, and
 two concurrent invocations writing the same managed target. Those findings are
-half of the [v0.18.0 evidence-integrity milestone](../roadmap/current.md) — one
+half of the [v0.18.0 evidence-integrity release](../releases/v0.18.0.md) — one
 completed producer behind every renderer PASS, and an exclusive target lease.
 
 The Windows managed-view acceptance is recorded in the
@@ -112,9 +112,9 @@ compatibility. The assertions remained bound to the completed managed producer.
   [renderer-templates.md](../design/proposed/renderer-templates.md)).
 - Full hosted OS/OpenUSD renderer acceptance is environment-dependent and
   ongoing.
-- Composing hdMerlin with plugins from another repository (VRM rendered by
-  hdMerlin) is a **planned** Formation workflow, not a current capability — see
-  [combined-formations.md](combined-formations.md).
+- Formation can express hdMerlin plus plugins from another repository. A
+  retained real-project VRM-rendered-by-hdMerlin run remains a downstream
+  evidence scenario — see [combined-formations.md](combined-formations.md).
 - The authoritative renderer feature/backend support matrix lives in the
   repository, not here.
 
@@ -128,7 +128,7 @@ compatibility. The assertions remained bound to the completed managed producer.
   [Adopt a renderer project](../guides/adopt-a-renderer-project.md).
 - Renderer direction:
   [renderer-templates.md](../design/proposed/renderer-templates.md).
-- Planned cross-repository composition:
+- Cross-repository composition cases:
   [combined-formations.md](combined-formations.md),
   [Formation design](../design/proposed/formations.md).
 - Reference Projects overview: [README.md](README.md).
