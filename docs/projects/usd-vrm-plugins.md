@@ -68,8 +68,8 @@ contract.
 
 ## Workflows demonstrated
 
-These are **current** commands available today (v0.17 / v0.18). They are
-illustrative; the repository's guide is authoritative.
+These commands have been available since v0.17/v0.18. They are illustrative;
+the repository's guide is authoritative.
 
 Validate the graph, then test every bundle in dependency order:
 
@@ -113,7 +113,7 @@ OpenStrata's roadmap. The v0.17.0 pass recorded in the downstream report
 `22-2026-07-17-v0.17.0-evidence-gate-v0.18.0-asks.md` found that `ost ci
 generate` emitted an evidence gate no existing artifact could satisfy while
 `ArtifactStore::import` silently dropped the evidence that would satisfy it — the
-core of the [v0.18.0 evidence-integrity milestone](../roadmap/current.md).
+core of the [v0.18.0 evidence-integrity release](../releases/v0.18.0.md).
 
 These reports are linked as evidence, not copied. The downstream passes that
 drove v0.18.0 are indexed in the [delivery reports](../reports/README.md).
@@ -123,15 +123,15 @@ The 2026-08-24
 drove the v0.22.3 runtime and component-artifact contracts. The release composes
 ordinary-library dependencies, installs project-owned shared data, and pins
 aggregate membership while preserving per-member evidence. Re-running the
-downstream release lane with the v0.22.3 binary is tracked as post-release
-validation in the [current roadmap](../roadmap/current.md).
+downstream release lane with that binary is downstream post-release validation,
+not part of the current v0.22.9 roadmap.
 
 ## Current limitations
 
 - The `execVrm` runtime evaluation layer is planned, not shipped.
-- Cross-repository composition with a renderer (VRM rendered by hdMerlin) is a
-  **planned** Formation workflow, not a current capability — see
-  [combined-formations.md](combined-formations.md).
+- Formation can express cross-repository plugin/renderer composition. A retained
+  real-project VRM-rendered-by-hdMerlin acceptance run is still a downstream
+  evidence scenario — see [combined-formations.md](combined-formations.md).
 - Aggregate product packaging now supports explicit membership, non-leaf
   ordinary-library composition, project-owned shared data, and per-member
   evidence. The authoritative release lane still needs to adopt and validate
@@ -149,7 +149,7 @@ validation in the [current roadmap](../roadmap/current.md).
   [reference/plugin-workspace.md](../reference/plugin-workspace.md).
 - Transferable procedure:
   [Adopt a plugin workspace](../guides/adopt-a-plugin-workspace.md).
-- Planned cross-repository composition:
+- Cross-repository composition cases:
   [combined-formations.md](combined-formations.md),
   [Formation design](../design/proposed/formations.md).
 - Reference Projects overview: [README.md](README.md).

@@ -1,6 +1,9 @@
 # OpenStrata × DCC hosts — third-party host support (direction)
 
-> Status: directional plan. OpenStrata's first-class surface is **applications
+> Status: directional plan for the v0.23.0 adapter/matrix milestone. Discovery
+> and versioned host records shipped in v0.21.0; host execution remains after
+> the v0.22.9 consumer-packaging and v0.22.10 runtime-UX milestones.
+> OpenStrata's first-class surface is **applications
 > grown on the OpenStrata Runtime** (`ost app` over the certified runtime,
 > capabilities, extensions, and sessions). Existing DCCs — Maya, Houdini, Nuke —
 > are supported as **third-party external hosts**: discovered, fingerprinted,
@@ -157,14 +160,17 @@ component-assembly layer rather than introducing a second composition mechanism:
 This keeps the non-goal above literal: **no parallel DCC environment mechanism.**
 The DCC adapter still decides *how* the host process runs; Formation decides
 *which* runtime, components, and environment it runs inside. Formation is the
-v0.19.0 milestone and lands before this one — see [formations.md](formations.md)
+shipped assembly layer from v0.19.0-v0.20.0 — see
+[formations.md](formations.md), the [v0.19.0 release](../../releases/v0.19.0.md)
 and the [roadmap backlog](../../roadmap/backlog.md).
 
 ## Matrix
 
 A naïve `Maya × Houdini × USD × OS × renderer` product explodes into thousands of
 cells. Instead, a **matrix cell** is a single, production-guaranteed runtime set
-(host + platform + profile + pinned runtime + tier + support line). DCC versions
+(DCC family/version + host record/fingerprint + OS + OpenUSD + Python + pinned
+runtime and plugin artifact digests + validation tier + execution evidence).
+DCC versions
 are **support lines** (`current / supported / maintenance`), not bare strings.
 Cross-DCC data contracts are **edges** (`from` cell → `to` cell + USD checks), so
 the matrix is a graph, not a Cartesian product.

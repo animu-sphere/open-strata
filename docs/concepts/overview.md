@@ -7,10 +7,11 @@ validation manager for VFX and OpenUSD work.
 ```text
 VFX Reference Platform
   -> machine-readable platform manifest
-  -> immutable runtime artifact
-  -> controlled extensions
-  -> validated capability graph
-  -> reproducible build / extension / session
+  -> component artifacts (digest + provenance + SBOM)
+  -> Formation graph and composition lock
+  -> composed runtime artifact
+  -> consumer package or DCC adapter
+  -> reproducible execution evidence
 ```
 
 OpenStrata is **runtime-centric, not DCC-centric**. The long-term goal is a small,
@@ -40,6 +41,30 @@ deps), Jenkins (CI orchestration), OCI (transport), and Git (workspace history).
 5. **Resolve from capability, not package name.** A project requests
    `usd-materialx`, not `materialx`; the resolver derives packages, extensions,
    environment, and validation from capabilities.
+6. **One canonical identity graph.** A wheel, npm package, native SDK or DCC
+   adapter is an entry point to an exact composed runtime. Its ecosystem version
+   does not replace the OST artifact digest, component graph, lock, provenance or
+   SBOM as dependency truth.
+
+## Near-term product direction
+
+The runtime/artifact/Formation foundation is established through v0.22.8. The
+near-term work deliberately converges that foundation instead of widening the
+low-level feature set:
+
+```text
+v0.22.9  distribute it through ecosystem-native consumer entrypoints
+v0.22.10 make composition ordinary to use, explain and diagnose
+v0.23.0  bind the same runtime contract to discovered DCC hosts
+v1.0.0   trust the complete produce -> CI -> Formation -> DCC execution arc
+```
+
+The intended ordinary surface is a small task-oriented runtime workflow:
+compose, explain, doctor and exec. Details such as platform, profile, provider,
+artifact and lock remain inspectable and machine-readable, but users should not
+need to manipulate every internal concept for routine execution. Sessions,
+Kubernetes execution, broad GPU profiles and renderer-template expansion remain
+later work; see the [roadmap](../roadmap/README.md).
 
 ## Relationship to other projects
 

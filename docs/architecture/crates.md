@@ -1,6 +1,6 @@
 # Crates
 
-*Last verified against: v0.12.0 (workspace version 0.12.0).*
+*Last verified against: v0.22.8 (workspace version 0.22.8).*
 
 OpenStrata is a Rust workspace. The CLI is thin; domain logic lives in libraries
 so it can be reused by future surfaces (CI helpers, a daemon, tests). The
@@ -54,8 +54,9 @@ authoritative crate list is the `members` array in the root
   into GitHub Actions workflows (`ost ci plan | validate | generate github`).
 - **`ost-formation`** owns strict Formation declarations, the deterministic
   resolved/lock model, artifact/runtime/plugin compatibility checks, and portable
-  environment contributions. Materialization and foreground process launch stay
-  at the CLI boundary.
+  environment contributions. It also owns the composed-runtime lock/SDK model
+  and the registry-neutral consumer-package identity contract. Materialization,
+  verification and foreground process launch stay at the CLI boundary.
 - **`ost-host`** owns the third-party DCC host record: its status model,
   deterministic instance id, versioned fingerprint, order-stable discovery
   providers, and the per-family validators that confirm or refuse a candidate

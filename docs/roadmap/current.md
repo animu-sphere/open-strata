@@ -11,14 +11,43 @@ The next milestone. Shipped detail is in
 Derive ecosystem-native consumer entry points from canonical OST/OCI artifacts
 without creating a second source of runtime identity or dependency truth.
 
+The governing boundary is:
+
+```text
+source -> component artifacts -> Formation lock -> composed runtime artifact
+       -> consumer package
+```
+
+The OST artifact digest, runtime identity, component graph, target, SBOM and
+provenance remain canonical throughout that path. Registry package names and
+versions are distribution/routing metadata only.
+
+### Workstreams
+
+- **Registry-neutral identity contract:** retain the exact composed-runtime
+  artifact and runtime identities, target, component identities, SBOM,
+  provenance, evidence and public entrypoints in the consumer manifest.
+- **Native SDK reference path:** derive the manifest only from a verified,
+  SDK-bearing composed runtime; require declared CMake entrypoints to exist; and
+  re-verify the exact runtime at the clean/relocated consumer boundary.
+- **Python and JavaScript/Wasm adapters:** keep their public import/export APIs
+  above a package-private `verify -> extract -> activate` binder/loader
+  protocol. Callers must not parse OST locks or activation metadata.
+
+The manifest, native entrypoint check and consumer-to-runtime identity
+verification have landed on `main` after v0.22.8. Wheel/npm archive assembly,
+their private loaders and clean-consumer acceptance remain milestone work; the
+unreleased implementation does not make v0.22.9 shipped.
+
 ### Acceptance
 
 - Define Python wheel, npm/JavaScript/Wasm and native SDK packages as derived
   distributions of digest-pinned runtime artifacts.
 - Preserve OST component/runtime identity, provenance and dependency truth when
   publishing through ecosystem registries.
-- Prove one native SDK consumer and specify the binder/loader boundary for Python
-  and JavaScript without exposing OST internals as public APIs.
+- Prove one relocated, clean native SDK consumer and specify the binder/loader
+  boundary for Python and JavaScript without exposing OST internals as public
+  APIs.
 
 ### Exit criteria
 

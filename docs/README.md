@@ -23,6 +23,17 @@ spec wins and the summary is a bug.
 category documents above are navigable, current-state summaries that track what is
 actually implemented; the spec is the source of truth when they disagree.
 
+## Near-term direction
+
+After the v0.22.8 geospatial runtime dogfood, development is converging the
+existing runtime/artifact/Formation foundation in a fixed order: consumer
+packaging in v0.22.9, runtime UX and diagnostics in v0.22.10, then DCC host
+adapters and their evidence matrix in v0.23.0. Ecosystem packages and DCC
+adapters remain derived entry points to the same digest-pinned composed runtime;
+they do not become parallel dependency stores. See
+[Current](roadmap/current.md) and the
+[runtime-composition plan](roadmap/runtime-composition.md).
+
 ## Reorganization status
 
 The documentation is being reorganized in phases (see the reorg plan). Category

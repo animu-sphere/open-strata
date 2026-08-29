@@ -131,6 +131,6 @@ depend on the selected profile and the capability exercised.
 - Renderer direction:
   [design/proposed/renderer-templates.md](../design/proposed/renderer-templates.md).
 - Composing this renderer with plugins from another repository (VRM rendered by
-  hdMerlin) is the planned [Formation](../design/proposed/formations.md) model —
-  see [compose a formation](compose-a-formation.md) and
+  hdMerlin) uses the shipped [Formation](../design/proposed/formations.md)
+  model. See [compose a formation](compose-a-formation.md) and the retained
   [combined-formations.md](../projects/combined-formations.md).
