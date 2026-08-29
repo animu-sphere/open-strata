@@ -22,7 +22,7 @@ jobs:
       # Versions are pinned: cargo-about's output formatting can change between
       # releases, which would make the THIRD_PARTY_NOTICES.md sync check below
       # fail on an unrelated PR. Bump deliberately and regenerate the file.
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2
+      - uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
         with:
           tool: cargo-deny@0.19.9,cargo-about@0.9.0
 
