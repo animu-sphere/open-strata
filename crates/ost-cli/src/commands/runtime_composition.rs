@@ -104,6 +104,11 @@ pub fn consumer_manifest(
         },
         entrypoints,
     )?;
+    validate_consumer_entrypoints(
+        lock,
+        manifest.package.kind,
+        &manifest.public_api.entrypoints,
+    )?;
     let bytes = serde_json::to_string_pretty(&manifest).map_err(|error| {
         Error::Operation(format!("cannot serialize consumer manifest: {error}"))
     })?;
@@ -121,6 +126,47 @@ pub fn consumer_manifest(
             "Derived {} consumer manifest for {} at {}",
             manifest.package.kind, manifest.runtime.artifact_digest, output_path
         );
+    }
+    Ok(())
+}
+
+/// Native SDK entrypoints name CMake config packages already carried by the
+/// canonical runtime. Verify that claim from the locked SDK inventory without
+/// executing target package code on the producer host. Python and JavaScript
+/// entrypoints are adapter-owned public APIs, so only their portable syntax is
+/// validated by `ConsumerPackageManifest`.
+fn validate_consumer_entrypoints(
+    lock: &RuntimeCompositionLock,
+    kind: ConsumerPackageKind,
+    entrypoints: &[String],
+) -> Result<()> {
+    if kind != ConsumerPackageKind::NativeSdk {
+        return Ok(());
+    }
+    let sdk = lock.sdk.as_ref().ok_or_else(|| {
+        composition_error(
+            "COMPOSITION_SDK_REQUIRED",
+            "consumer packages require a composed runtime with an SDK; compose and export it again",
+        )
+    })?;
+    for entrypoint in entrypoints {
+        let canonical = format!("{entrypoint}Config.cmake");
+        let lowercase = format!("{}-config.cmake", entrypoint.to_ascii_lowercase());
+        let installed = sdk.files.iter().any(|entry| {
+            Utf8Path::new(&entry.file.path)
+                .file_name()
+                .is_some_and(|name| name == canonical || name == lowercase)
+        });
+        if !installed {
+            return Err(composition_error(
+                "CONSUMER_PACKAGE_ENTRYPOINT_MISSING",
+                format!(
+                    "native SDK entrypoint '{entrypoint}' has no installed '{canonical}' or \
+                     '{lowercase}' in the verified runtime SDK; install that CMake config package \
+                     before composing, or select an existing --entrypoint"
+                ),
+            ));
+        }
     }
     Ok(())
 }

@@ -47,7 +47,12 @@ prefix, and verifies its embedded lock, inventory, SDK, attribution, target, and
 exact dependencies. It also requires verified SPDX SBOM and provenance
 sidecars, then writes the manifest atomically. The composed-runtime SBOM and
 provenance digests, plus any component evidence digests, remain pinned in the
-result. A legacy composition without an SDK cannot become a consumer package.
+result. For `native-sdk`, every entrypoint must match an installed
+`<Name>Config.cmake` or lowercase `<name>-config.cmake` in the verified SDK
+inventory. This structural check is deterministic and does not execute target
+CMake package code; use `runtime validate --sdk --cmake-package <Name>` before
+export for the opt-in configure probe. A legacy composition without an SDK
+cannot become a consumer package.
 
 ## Binder and loader boundary
 
