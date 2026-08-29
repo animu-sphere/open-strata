@@ -11,6 +11,7 @@
 //! This crate renders those artifacts as strings/values; the CLI owns the I/O.
 
 mod completion;
+mod consumer_archive;
 mod external;
 pub mod glibc;
 mod lease;
@@ -27,6 +28,9 @@ pub use completion::{
     BuildCompletion, BuildIntent, BuildOutput, BuildProjectIdentity, CMakeCacheEntry,
     CMakeCacheType, CachePathPortability, RendererEvidenceBinding, TestCompletion, TestTotals,
     BUILD_COMPLETION_FILE, BUILD_COMPLETION_SCHEMA, TEST_COMPLETION_FILE, TEST_COMPLETION_SCHEMA,
+};
+pub use consumer_archive::{
+    pack_npm_tgz, pack_wheel, wheel_record, ConsumerArchiveEntry, ConsumerArchiveResult,
 };
 pub use external::{
     CMakeCache, ExternalBuildProvenance, ExternalImportScope, ExternalRequirement,

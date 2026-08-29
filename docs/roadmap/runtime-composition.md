@@ -46,10 +46,12 @@ one of those contracts.
   `verify -> extract -> activate` binder/loader contract. Do not expose OST
   locks, component graphs or activation metadata as their public API.
 
-The registry-neutral manifest, native entrypoint validation and exact
-consumer/runtime identity check are present on `main` after v0.22.8. Adapter
-archive assembly and clean-consumer evidence remain open until the milestone is
-released.
+The registry-neutral manifest, native entrypoint validation, exact
+consumer/runtime identity check, deterministic wheel/npm assembly and generated
+private loaders are present on `main` after v0.22.8. Clean-consumer wheel
+execution and npm install/loader probes now run in isolated stores, retaining an
+explained Node child-process capability SKIP outside strict SDK CI.
+Registry-facing evidence remains open until the milestone is released.
 
 ## v0.22.10 - runtime UX and diagnostics
 

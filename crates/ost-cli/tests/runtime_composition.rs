@@ -155,6 +155,14 @@ fn path(path: &Path) -> &str {
     path.to_str().unwrap()
 }
 
+fn path_with_ost() -> std::ffi::OsString {
+    let mut paths = vec![Path::new(ost_bin()).parent().unwrap().to_path_buf()];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    std::env::join_paths(paths).unwrap()
+}
+
 fn exported_runtime_composition(sandbox: &Sandbox, python_dir: &str) -> (PathBuf, String) {
     json(sandbox.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
     sandbox.promote_runtime_with_python_dir(python_dir);
@@ -706,6 +714,188 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
         verified_consumer["data"]["runtime"],
         consumer_manifest["data"]["manifest"]["runtime"]
     );
+    let python_adapter = producer.base.join("python-adapter");
+    std::fs::create_dir_all(python_adapter.join("fixture")).unwrap();
+    std::fs::write(
+        python_adapter.join("fixture/api.py"),
+        b"import os\nVALUE = os.environ['FIXTURE_PATH']\n",
+    )
+    .unwrap();
+    let wheel_dist = producer.base.join("wheel-dist");
+    let wheel = json(producer.ost(&[
+        "--json",
+        "runtime",
+        "consumer-package",
+        "--manifest",
+        path(&consumer_manifest_path),
+        "--adapter",
+        path(&python_adapter),
+        "--output-dir",
+        path(&wheel_dist),
+        "--wheel-tag",
+        "py3-none-any",
+    ]));
+    assert_eq!(
+        wheel["data"]["schema"],
+        "openstrata.consumer-package-archive/v1alpha1"
+    );
+    assert!(wheel["data"]["output"].as_str().unwrap().ends_with(".whl"));
+    assert!(std::path::Path::new(wheel["data"]["output"].as_str().unwrap()).is_file());
+    assert!(wheel["data"]["archive_digest"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    let wheel_path = PathBuf::from(wheel["data"]["output"].as_str().unwrap());
+    let python = ost_core::tools::which("python").or_else(|| ost_core::tools::which("python3"));
+    if std::env::var_os("OST_TEST_REQUIRE_SDK_TOOLS").is_some() {
+        assert!(python.is_some(), "consumer-package CI requires Python");
+    }
+    if let Some(python) = python {
+        let clean = Sandbox::new();
+        let site = clean.base.join("wheel-site");
+        let cache = clean.base.join("consumer-cache");
+        let script = r#"import importlib, pathlib, site, sys, zipfile
+wheel, destination = map(pathlib.Path, sys.argv[1:])
+zipfile.ZipFile(wheel).extractall(destination)
+site.addsitedir(str(destination))
+api = importlib.import_module("fixture.api")
+assert pathlib.Path(api.VALUE).is_absolute(), api.VALUE
+print(api.VALUE)
+"#;
+        let output = Command::new(python)
+            .args(["-c", script, path(&wheel_path), path(&site)])
+            .current_dir(&clean.base)
+            .env("OST_HOME", &clean.home)
+            .env("OST_CONSUMER_CACHE", &cache)
+            .env("OST_EXECUTABLE", ost_bin())
+            .env("PATH", path_with_ost())
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .expect("run clean wheel consumer");
+        assert!(
+            output.status.success(),
+            "wheel consumer stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            cache.is_dir(),
+            "private loader must reconstruct in its cache"
+        );
+        assert!(clean.home.join("artifacts/objects/sha256").is_dir());
+    }
+
+    let npm_manifest_path = producer.base.join("npm-consumer.json");
+    json(producer.ost(&[
+        "--json",
+        "runtime",
+        "consumer-manifest",
+        "--from-artifact",
+        artifact_digest,
+        "--kind",
+        "npm-javascript",
+        "--name",
+        "@fixture/runtime",
+        "--version",
+        "1.0.0",
+        "--entrypoint",
+        ".",
+        "--output",
+        path(&npm_manifest_path),
+    ]));
+    let npm_adapter = producer.base.join("npm-adapter");
+    std::fs::create_dir_all(&npm_adapter).unwrap();
+    std::fs::write(
+        npm_adapter.join("package.json"),
+        br#"{"name":"@fixture/runtime","version":"1.0.0","exports":"./index.cjs"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        npm_adapter.join("index.cjs"),
+        b"require('./_openstrata/loader.cjs').activate(); module.exports = {value: 42};\n",
+    )
+    .unwrap();
+    let npm_dist = producer.base.join("npm-dist");
+    let npm = json(producer.ost(&[
+        "--json",
+        "runtime",
+        "consumer-package",
+        "--manifest",
+        path(&npm_manifest_path),
+        "--adapter",
+        path(&npm_adapter),
+        "--output-dir",
+        path(&npm_dist),
+    ]));
+    assert!(npm["data"]["output"].as_str().unwrap().ends_with(".tgz"));
+    assert!(std::path::Path::new(npm["data"]["output"].as_str().unwrap()).is_file());
+    assert_eq!(
+        npm["data"]["runtime"],
+        consumer_manifest["data"]["manifest"]["runtime"]
+    );
+    let node = ost_core::tools::which("node");
+    let npm_executable = ost_core::tools::which("npm");
+    if std::env::var_os("OST_TEST_REQUIRE_SDK_TOOLS").is_some() {
+        assert!(
+            node.is_some() && npm_executable.is_some(),
+            "consumer-package CI requires Node.js and npm"
+        );
+    }
+    if let (Some(node), Some(npm_executable)) = (node, npm_executable) {
+        let clean = Sandbox::new();
+        let cache = clean.base.join("consumer-cache");
+        let npm_cache = clean.base.join("npm-cache");
+        let npm_path = npm["data"]["output"].as_str().unwrap();
+        let installed = Command::new(npm_executable)
+            .args([
+                "install",
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+                npm_path,
+            ])
+            .current_dir(&clean.base)
+            .env("npm_config_cache", &npm_cache)
+            .output()
+            .expect("install clean npm consumer");
+        assert!(
+            installed.status.success(),
+            "npm install stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&installed.stdout),
+            String::from_utf8_lossy(&installed.stderr)
+        );
+        let executed = Command::new(node)
+            .args([
+                "-e",
+                "const api=require('@fixture/runtime'); if(api.value!==42) process.exit(2)",
+            ])
+            .current_dir(&clean.base)
+            .env("OST_HOME", &clean.home)
+            .env("OST_CONSUMER_CACHE", &cache)
+            .env("OST_EXECUTABLE", ost_bin())
+            .env("PATH", path_with_ost())
+            .output()
+            .expect("run clean npm consumer");
+        let stderr = String::from_utf8_lossy(&executed.stderr);
+        let spawn_blocked =
+            !executed.status.success() && stderr.contains("spawnSync") && stderr.contains("EPERM");
+        if spawn_blocked && std::env::var_os("OST_TEST_REQUIRE_SDK_TOOLS").is_none() {
+            eprintln!(
+                "[skip] clean npm loader execution: host policy blocks Node.js child processes (EPERM)"
+            );
+        } else {
+            assert!(
+                executed.status.success(),
+                "npm consumer stdout: {}\nstderr: {stderr}",
+                String::from_utf8_lossy(&executed.stdout)
+            );
+            assert!(
+                cache.is_dir(),
+                "private loader must reconstruct in its cache"
+            );
+            assert!(clean.home.join("artifacts/objects/sha256").is_dir());
+        }
+    }
     let mut mismatched = consumer_manifest["data"]["manifest"].clone();
     mismatched["package"]["name"] = "unsafe\u{1b}[2Jpackage".into();
     mismatched["runtime"]["runtime_digest"] = format!("sha256:{}", "f0".repeat(32)).into();
