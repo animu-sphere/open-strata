@@ -38,12 +38,7 @@ pub fn consumer_manifest(
     let verified =
         verified_composed_artifact(&store, digest, Staging::temporary_in(store.root())?)?;
     let lock = &verified.lock;
-    if lock.sdk.is_none() {
-        return Err(composition_error(
-            "COMPOSITION_SDK_REQUIRED",
-            "consumer packages require a composed runtime with an SDK; compose and export it again",
-        ));
-    }
+    require_consumer_sdk(lock)?;
     let manifest = ConsumerPackageManifest::new(
         kind,
         name,
@@ -91,13 +86,16 @@ pub fn consumer_verify(manifest_path: &Utf8Path, fmt: Format) -> Result<()> {
         &manifest.runtime.artifact_digest,
         Staging::temporary_in(store.root())?,
     )?;
+    require_consumer_sdk(&verified.lock)?;
     let observed = consumer_runtime_identity(&verified)?;
     if manifest.runtime != observed {
         return Err(composition_error(
             "CONSUMER_PACKAGE_RUNTIME_MISMATCH",
             format!(
                 "consumer package '{}' {} does not match composed runtime {}",
-                manifest.package.name, manifest.package.version, manifest.runtime.artifact_digest
+                terminal_safe_label(&manifest.package.name),
+                terminal_safe_label(&manifest.package.version),
+                manifest.runtime.artifact_digest
             ),
         )
         .with_hint(
@@ -121,8 +119,8 @@ pub fn consumer_verify(manifest_path: &Utf8Path, fmt: Format) -> Result<()> {
         println!(
             "Verified {} consumer package {} {} against {}",
             manifest.package.kind,
-            manifest.package.name,
-            manifest.package.version,
+            terminal_safe_label(&manifest.package.name),
+            terminal_safe_label(&manifest.package.version),
             manifest.runtime.artifact_digest
         );
     }
@@ -174,6 +172,31 @@ fn consumer_runtime_identity(
         target: lock.resolved.target.clone(),
         components,
     })
+}
+
+fn require_consumer_sdk(lock: &RuntimeCompositionLock) -> Result<()> {
+    if lock.sdk.is_none() {
+        return Err(composition_error(
+            "COMPOSITION_SDK_REQUIRED",
+            "consumer packages require a composed runtime with an SDK; compose and export it again",
+        ));
+    }
+    Ok(())
+}
+
+/// Package routing metadata comes from the caller's manifest. Keep it intact
+/// in JSON, but never pass terminal control characters through human output or
+/// the stderr mirror used by JSON failures.
+fn terminal_safe_label(value: &str) -> String {
+    let mut safe = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character.is_control() {
+            safe.extend(character.escape_default());
+        } else {
+            safe.push(character);
+        }
+    }
+    safe
 }
 
 /// Native SDK entrypoints name CMake config packages already carried by the
@@ -1303,7 +1326,15 @@ pub fn export(root: &Utf8Path, dist: Option<&str>, level: i32, fmt: Format) -> R
 
 #[cfg(test)]
 mod consumer_entrypoint_tests {
-    use super::cmake_config_path_matches;
+    use super::{cmake_config_path_matches, terminal_safe_label};
+
+    #[test]
+    fn package_labels_cannot_emit_terminal_controls() {
+        let rendered = terminal_safe_label("safe\u{1b}[2J\u{7}label");
+        assert!(!rendered.chars().any(char::is_control));
+        assert!(rendered.contains("safe"));
+        assert!(rendered.contains("label"));
+    }
 
     #[test]
     fn cmake_config_entrypoints_require_a_searchable_prefix_layout() {
