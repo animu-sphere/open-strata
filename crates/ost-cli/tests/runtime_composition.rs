@@ -694,6 +694,36 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
         .unwrap(),
         consumer_manifest["data"]["manifest"]
     );
+    let verified_consumer = json(producer.ost(&[
+        "--json",
+        "runtime",
+        "consumer-verify",
+        "--manifest",
+        path(&consumer_manifest_path),
+    ]));
+    assert_eq!(verified_consumer["data"]["verified"], true);
+    assert_eq!(
+        verified_consumer["data"]["runtime"],
+        consumer_manifest["data"]["manifest"]["runtime"]
+    );
+    let mut mismatched = consumer_manifest["data"]["manifest"].clone();
+    mismatched["runtime"]["runtime_digest"] = format!("sha256:{}", "f0".repeat(32)).into();
+    let mismatched_path = producer.base.join("mismatched-consumer.json");
+    std::fs::write(
+        &mismatched_path,
+        serde_json::to_vec_pretty(&mismatched).unwrap(),
+    )
+    .unwrap();
+    error(
+        producer.ost(&[
+            "--json",
+            "runtime",
+            "consumer-verify",
+            "--manifest",
+            path(&mismatched_path),
+        ]),
+        "CONSUMER_PACKAGE_RUNTIME_MISMATCH",
+    );
     let missing_entrypoint = producer.base.join("missing-native-consumer.json");
     error(
         producer.ost(&[

@@ -44,64 +44,11 @@ pub fn consumer_manifest(
             "consumer packages require a composed runtime with an SDK; compose and export it again",
         ));
     }
-    let components = lock
-        .resolved
-        .components
-        .iter()
-        .map(|component| {
-            let source = lock
-                .artifacts
-                .iter()
-                .find(|artifact| artifact.record.digest == component.digest)
-                .ok_or_else(|| {
-                    composition_error(
-                        "COMPOSITION_LOCK_INVALID",
-                        format!("component '{}' has no locked artifact", component.id),
-                    )
-                })?;
-            Ok(ConsumerComponentIdentity {
-                id: component.id.clone(),
-                version: component.version.clone(),
-                digest: component.digest.clone(),
-                sbom_digest: source.record.sbom_digest.clone(),
-                provenance_digest: source.record.provenance_digest.clone(),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let sbom_digest = verified
-        .artifact
-        .record
-        .sbom_digest
-        .clone()
-        .ok_or_else(|| {
-            composition_error(
-                "CONSUMER_PACKAGE_EVIDENCE_REQUIRED",
-                "composed runtime has no verified SBOM evidence",
-            )
-        })?;
-    let provenance_digest = verified
-        .artifact
-        .record
-        .provenance_digest
-        .clone()
-        .ok_or_else(|| {
-            composition_error(
-                "CONSUMER_PACKAGE_EVIDENCE_REQUIRED",
-                "composed runtime has no verified provenance evidence",
-            )
-        })?;
     let manifest = ConsumerPackageManifest::new(
         kind,
         name,
         version,
-        ConsumerRuntimeIdentity {
-            artifact_digest: verified.artifact.record.digest.clone(),
-            runtime_digest: lock.runtime_digest.clone(),
-            sbom_digest,
-            provenance_digest,
-            target: lock.resolved.target.clone(),
-            components,
-        },
+        consumer_runtime_identity(&verified)?,
         entrypoints,
     )?;
     validate_consumer_entrypoints(
@@ -128,6 +75,105 @@ pub fn consumer_manifest(
         );
     }
     Ok(())
+}
+
+/// Verify the package-private identity boundary before an adapter extracts or
+/// activates native code. Acquisition remains separate (`artifact pull`), but
+/// every canonical identity and retained evidence digest must still match.
+pub fn consumer_verify(manifest_path: &Utf8Path, fmt: Format) -> Result<()> {
+    let manifest: ConsumerPackageManifest = serde_json::from_value(read_json(manifest_path)?)
+        .map_err(|error| Error::parse(manifest_path.to_string(), anyhow::Error::new(error)))?;
+    manifest.validate()?;
+
+    let store = ArtifactStore::discover();
+    let verified = verified_composed_artifact(
+        &store,
+        &manifest.runtime.artifact_digest,
+        Staging::temporary_in(store.root())?,
+    )?;
+    let observed = consumer_runtime_identity(&verified)?;
+    if manifest.runtime != observed {
+        return Err(composition_error(
+            "CONSUMER_PACKAGE_RUNTIME_MISMATCH",
+            format!(
+                "consumer package '{}' {} does not match composed runtime {}",
+                manifest.package.name, manifest.package.version, manifest.runtime.artifact_digest
+            ),
+        )
+        .with_hint(
+            "derive the consumer manifest again from the exact exported artifact and preserve it unchanged in the ecosystem package",
+        ));
+    }
+    validate_consumer_entrypoints(
+        &verified.lock,
+        manifest.package.kind,
+        &manifest.public_api.entrypoints,
+    )?;
+
+    if fmt.is_json() {
+        output::success(&json!({
+            "schema": "openstrata.consumer-package-verification/v1alpha1",
+            "package": manifest.package,
+            "runtime": observed,
+            "verified": true
+        }));
+    } else {
+        println!(
+            "Verified {} consumer package {} {} against {}",
+            manifest.package.kind,
+            manifest.package.name,
+            manifest.package.version,
+            manifest.runtime.artifact_digest
+        );
+    }
+    Ok(())
+}
+
+fn consumer_runtime_identity(
+    verified: &VerifiedComposedArtifact,
+) -> Result<ConsumerRuntimeIdentity> {
+    let lock = &verified.lock;
+    let mut components = lock
+        .resolved
+        .components
+        .iter()
+        .map(|component| {
+            let source = lock
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.record.digest == component.digest)
+                .ok_or_else(|| {
+                    composition_error(
+                        "COMPOSITION_LOCK_INVALID",
+                        format!("component '{}' has no locked artifact", component.id),
+                    )
+                })?;
+            Ok(ConsumerComponentIdentity {
+                id: component.id.clone(),
+                version: component.version.clone(),
+                digest: component.digest.clone(),
+                sbom_digest: source.record.sbom_digest.clone(),
+                provenance_digest: source.record.provenance_digest.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    components.sort();
+    let evidence = |kind: &str, digest: &Option<String>| {
+        digest.clone().ok_or_else(|| {
+            composition_error(
+                "CONSUMER_PACKAGE_EVIDENCE_REQUIRED",
+                format!("composed runtime has no verified {kind} evidence"),
+            )
+        })
+    };
+    Ok(ConsumerRuntimeIdentity {
+        artifact_digest: verified.artifact.record.digest.clone(),
+        runtime_digest: lock.runtime_digest.clone(),
+        sbom_digest: evidence("SBOM", &verified.artifact.record.sbom_digest)?,
+        provenance_digest: evidence("provenance", &verified.artifact.record.provenance_digest)?,
+        target: lock.resolved.target.clone(),
+        components,
+    })
 }
 
 /// Native SDK entrypoints name CMake config packages already carried by the

@@ -1347,6 +1347,7 @@ Resolve component models and manage runtimes in the local store
 
 - [`ost runtime compose`](#ost-runtime-compose) — Resolve a component manifest without materializing any files
 - [`ost runtime consumer-manifest`](#ost-runtime-consumer-manifest) — Derive a registry-neutral consumer package manifest from an exported composition
+- [`ost runtime consumer-verify`](#ost-runtime-consumer-verify) — Verify that a consumer manifest still resolves to its exact canonical runtime
 - [`ost runtime env`](#ost-runtime-env) — Print a verified composed SDK's isolated environment
 - [`ost runtime exec`](#ost-runtime-exec) — Run a command with a verified composed SDK's isolated search paths
 - [`ost runtime explain`](#ost-runtime-explain) — Explain how a profile resolves to capabilities and extensions
@@ -1394,6 +1395,18 @@ Derive a registry-neutral consumer package manifest from an exported composition
 | `--name <NAME>` | Ecosystem package name (distribution, npm, or native SDK package name) |
 | `--output <OUTPUT>` | Destination JSON manifest. Written atomically |
 | `--version <VERSION>` | Ecosystem package version. Runtime identity remains independently pinned |
+
+#### `ost runtime consumer-verify`
+
+Verify that a consumer manifest still resolves to its exact canonical runtime
+
+**Usage:** `ost runtime consumer-verify [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--manifest <MANIFEST>` | Consumer package manifest to verify against the local artifact store |
 
 #### `ost runtime env`
 
