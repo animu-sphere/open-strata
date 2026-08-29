@@ -1234,10 +1234,7 @@ fn library_scoped_build_test_package_uses_only_its_install_tree() {
         refused_value["error"]["code"],
         "LIBRARY_CONSUMER_CONFIGURE_FAILED"
     );
-    assert_eq!(
-        refused_value["error"]["data"]["checks"]["link"]["status"],
-        "not-run"
-    );
+    assert_eq!(refused_value["data"]["checks"]["link"]["status"], "not-run");
     std::fs::write(&descriptor_path, &descriptor).unwrap();
 
     let mut relocated = record.clone();
