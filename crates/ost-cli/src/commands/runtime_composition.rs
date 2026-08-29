@@ -152,23 +152,114 @@ fn validate_consumer_entrypoints(
     for entrypoint in entrypoints {
         let canonical = format!("{entrypoint}Config.cmake");
         let lowercase = format!("{}-config.cmake", entrypoint.to_ascii_lowercase());
-        let installed = sdk.files.iter().any(|entry| {
-            Utf8Path::new(&entry.file.path)
-                .file_name()
-                .is_some_and(|name| name == canonical || name == lowercase)
-        });
+        let installed = sdk
+            .files
+            .iter()
+            .any(|entry| cmake_config_path_matches(&entry.file.path, entrypoint));
         if !installed {
             return Err(composition_error(
                 "CONSUMER_PACKAGE_ENTRYPOINT_MISSING",
                 format!(
                     "native SDK entrypoint '{entrypoint}' has no installed '{canonical}' or \
-                     '{lowercase}' in the verified runtime SDK; install that CMake config package \
-                     before composing, or select an existing --entrypoint"
+                     '{lowercase}' in a CMake config-mode search location in the verified runtime \
+                     SDK; install that CMake config package before composing, or select an \
+                     existing --entrypoint"
                 ),
             ));
         }
     }
     Ok(())
+}
+
+/// Mirror the CMake config-mode installation-prefix layouts without executing
+/// package code. Package-name directory matches are case-insensitive and may
+/// carry a version suffix, as specified by `find_package`; fixed layout names
+/// retain their portable spelling.
+fn cmake_config_path_matches(path: &str, package: &str) -> bool {
+    let path = Utf8Path::new(path);
+    let Some(file_name) = path.file_name() else {
+        return false;
+    };
+    let canonical = format!("{package}Config.cmake");
+    let lowercase = format!("{}-config.cmake", package.to_ascii_lowercase());
+    if file_name != canonical && file_name != lowercase {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let directories = parent
+        .components()
+        .filter_map(|component| match component {
+            camino::Utf8Component::Normal(value) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    cmake_config_directory_matches(&directories, package)
+}
+
+fn cmake_config_directory_matches(directories: &[&str], package: &str) -> bool {
+    let package_directory = |value: &str| {
+        value
+            .to_ascii_lowercase()
+            .starts_with(&package.to_ascii_lowercase())
+    };
+    let cmake_directory = |value: &str| matches!(value, "cmake" | "CMake");
+    let library_root = |value: &str| value == "share" || value.starts_with("lib");
+    let unix_tail = |tail: &[&str]| match tail {
+        [name] => package_directory(name),
+        [first, second] => {
+            (cmake_directory(first) && package_directory(second))
+                || (package_directory(first) && cmake_directory(second))
+        }
+        _ => false,
+    };
+    let after_library_root = |value: &[&str]| {
+        value
+            .first()
+            .is_some_and(|root| library_root(root) && unix_tail(&value[1..]))
+            || matches!(value, ["lib", _, tail @ ..] if unix_tail(tail))
+    };
+
+    let windows_layout = match directories {
+        [] => true,
+        [only] => cmake_directory(only) || package_directory(only),
+        [first, second] => {
+            (cmake_directory(first) && package_directory(second))
+                || (package_directory(first) && cmake_directory(second))
+        }
+        [name, cmake, nested] => {
+            package_directory(name) && cmake_directory(cmake) && package_directory(nested)
+        }
+        _ => false,
+    };
+    let apple_layout = match directories {
+        [framework, "Resources"] => framework
+            .strip_suffix(".framework")
+            .is_some_and(|name| name.eq_ignore_ascii_case(package)),
+        [framework, "Resources", "CMake"] => framework
+            .strip_suffix(".framework")
+            .is_some_and(|name| name.eq_ignore_ascii_case(package)),
+        [framework, "Versions", _, "Resources"] => framework
+            .strip_suffix(".framework")
+            .is_some_and(|name| name.eq_ignore_ascii_case(package)),
+        [framework, "Versions", _, "Resources", "CMake"] => framework
+            .strip_suffix(".framework")
+            .is_some_and(|name| name.eq_ignore_ascii_case(package)),
+        [app, "Contents", "Resources"] => app
+            .strip_suffix(".app")
+            .is_some_and(|name| name.eq_ignore_ascii_case(package)),
+        [app, "Contents", "Resources", "CMake"] => app
+            .strip_suffix(".app")
+            .is_some_and(|name| name.eq_ignore_ascii_case(package)),
+        _ => false,
+    };
+    let unix_layout = after_library_root(directories)
+        || directories
+            .first()
+            .is_some_and(|name| package_directory(name) && after_library_root(&directories[1..]));
+
+    windows_layout || apple_layout || unix_layout
 }
 
 fn read_json(path: &Utf8Path) -> Result<Value> {
@@ -1162,4 +1253,42 @@ pub fn export(root: &Utf8Path, dist: Option<&str>, level: i32, fmt: Format) -> R
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod consumer_entrypoint_tests {
+    use super::cmake_config_path_matches;
+
+    #[test]
+    fn cmake_config_entrypoints_require_a_searchable_prefix_layout() {
+        for path in [
+            "TinyConfig.cmake",
+            "cmake/TinyConfig.cmake",
+            "Tiny-1.0/tiny-config.cmake",
+            "Tiny/CMake/tiny-config.cmake",
+            "Tiny/CMake/Tiny-1.0/TinyConfig.cmake",
+            "lib/cmake/Tiny/TinyConfig.cmake",
+            "lib/x86_64-linux-gnu/cmake/Tiny/TinyConfig.cmake",
+            "share/Tiny-1.0/tiny-config.cmake",
+            "Tiny/lib64/cmake/Tiny/TinyConfig.cmake",
+            "Tiny.framework/Resources/TinyConfig.cmake",
+            "Tiny.app/Contents/Resources/CMake/tiny-config.cmake",
+        ] {
+            assert!(
+                cmake_config_path_matches(path, "Tiny"),
+                "expected searchable CMake config path: {path}"
+            );
+        }
+        for path in [
+            "share/docs/TinyConfig.cmake",
+            "docs/Tiny/TinyConfig.cmake",
+            "lib/cmake/Other/TinyConfig.cmake",
+            "share/Tiny/OtherConfig.cmake",
+        ] {
+            assert!(
+                !cmake_config_path_matches(path, "Tiny"),
+                "unexpected CMake config match: {path}"
+            );
+        }
+    }
 }

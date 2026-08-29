@@ -74,6 +74,70 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "package": { "properties": { "kind": { "const": "native-sdk" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "public_api": {
+            "properties": {
+              "entrypoints": {
+                "items": { "pattern": "^[A-Za-z0-9][A-Za-z0-9_+.-]*$" }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "package": { "properties": { "kind": { "const": "python-wheel" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "public_api": {
+            "properties": {
+              "entrypoints": {
+                "items": {
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "package": {
+            "properties": {
+              "kind": { "enum": ["npm-javascript", "npm-wasm"] }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "public_api": {
+            "properties": {
+              "entrypoints": {
+                "items": {
+                  "pattern": "^(?!.*\\s$)(?:\\.|\\./(?!\\.{1,2}(?:/|$))[^/\\\\:\\u0000\\r\\n]+(?:/(?!\\.{1,2}(?:/|$))[^/\\\\:\\u0000\\r\\n]+)*)$"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "digest": {
       "type": "string",
