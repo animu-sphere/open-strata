@@ -77,6 +77,19 @@ API. Registry package version and name are routing metadata; OST artifact,
 runtime, target, provenance, attribution, and dependency identity remain
 canonical.
 
+After the adapter has obtained the pinned artifact (for example with
+`ost artifact pull`), it can enforce the verification step without exposing OST
+metadata to callers:
+
+```text
+ost runtime consumer-verify --manifest consumer-package.json
+```
+
+This verifies the artifact bytes, evidence sidecars, embedded composition lock,
+SDK and native entrypoint claims, then compares the exact runtime, target,
+component, SBOM and provenance identities with the consumer manifest. A missing
+artifact or any mismatch fails before adapter-owned extraction and activation.
+
 This foundation emits the registry-neutral identity contract. Wheel and npm
 archive assembly, platform-specific native loading, and registry publication
 remain adapter-owned work and must preserve the manifest unchanged.

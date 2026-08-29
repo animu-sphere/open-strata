@@ -694,6 +694,37 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
         .unwrap(),
         consumer_manifest["data"]["manifest"]
     );
+    let verified_consumer = json(producer.ost(&[
+        "--json",
+        "runtime",
+        "consumer-verify",
+        "--manifest",
+        path(&consumer_manifest_path),
+    ]));
+    assert_eq!(verified_consumer["data"]["verified"], true);
+    assert_eq!(
+        verified_consumer["data"]["runtime"],
+        consumer_manifest["data"]["manifest"]["runtime"]
+    );
+    let mut mismatched = consumer_manifest["data"]["manifest"].clone();
+    mismatched["package"]["name"] = "unsafe\u{1b}[2Jpackage".into();
+    mismatched["runtime"]["runtime_digest"] = format!("sha256:{}", "f0".repeat(32)).into();
+    let mismatched_path = producer.base.join("mismatched-consumer.json");
+    std::fs::write(
+        &mismatched_path,
+        serde_json::to_vec_pretty(&mismatched).unwrap(),
+    )
+    .unwrap();
+    let mismatched_output = producer.ost(&[
+        "--json",
+        "runtime",
+        "consumer-verify",
+        "--manifest",
+        path(&mismatched_path),
+    ]);
+    assert!(!mismatched_output.stdout.contains(&0x1b));
+    assert!(!mismatched_output.stderr.contains(&0x1b));
+    error(mismatched_output, "CONSUMER_PACKAGE_RUNTIME_MISMATCH");
     let missing_entrypoint = producer.base.join("missing-native-consumer.json");
     error(
         producer.ost(&[
@@ -1650,6 +1681,64 @@ fn legacy_component_only_locks_reconstruct_without_identity_migration() {
         "COMPOSITION_SDK_REQUIRED",
     );
     assert!(!consumer_output.exists());
+
+    // Verification is also a trust boundary: a hand-authored Python/npm
+    // manifest must not bypass the SDK requirement just because it has no
+    // native CMake entrypoint to inspect.
+    let artifact_digest = exported["data"]["digest"].as_str().unwrap();
+    let shown = json(clean.ost(&["--json", "artifact", "show", artifact_digest]));
+    let record: ost_artifact::ArtifactRecord =
+        serde_json::from_value(shown["data"]["artifact"].clone()).unwrap();
+    let components = legacy
+        .resolved
+        .components
+        .iter()
+        .map(|component| {
+            let source = legacy
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.record.digest == component.digest)
+                .unwrap();
+            ost_formation::ConsumerComponentIdentity {
+                id: component.id.clone(),
+                version: component.version.clone(),
+                digest: component.digest.clone(),
+                sbom_digest: source.record.sbom_digest.clone(),
+                provenance_digest: source.record.provenance_digest.clone(),
+            }
+        })
+        .collect();
+    let hand_authored = ost_formation::ConsumerPackageManifest::new(
+        ost_formation::ConsumerPackageKind::PythonWheel,
+        "legacy-python".into(),
+        "1.0.0".into(),
+        ost_formation::ConsumerRuntimeIdentity {
+            artifact_digest: artifact_digest.into(),
+            runtime_digest: legacy.runtime_digest.clone(),
+            sbom_digest: record.sbom_digest.unwrap(),
+            provenance_digest: record.provenance_digest.unwrap(),
+            target: legacy.resolved.target.clone(),
+            components,
+        },
+        vec!["legacy.api".into()],
+    )
+    .unwrap();
+    let hand_authored_path = clean.base.join("legacy-python-consumer.json");
+    std::fs::write(
+        &hand_authored_path,
+        serde_json::to_vec_pretty(&hand_authored).unwrap(),
+    )
+    .unwrap();
+    error(
+        clean.ost(&[
+            "--json",
+            "runtime",
+            "consumer-verify",
+            "--manifest",
+            path(&hand_authored_path),
+        ]),
+        "COMPOSITION_SDK_REQUIRED",
+    );
 }
 
 #[test]

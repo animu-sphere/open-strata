@@ -111,6 +111,12 @@ pub enum RuntimeCmd {
         #[arg(long)]
         output: Utf8PathBuf,
     },
+    /// Verify that a consumer manifest still resolves to its exact canonical runtime.
+    ConsumerVerify {
+        /// Consumer package manifest to verify against the local artifact store.
+        #[arg(long)]
+        manifest: Utf8PathBuf,
+    },
     /// Materialize a runtime into the local store.
     Pull {
         /// Platform calendar-year id, e.g. `cy2026`.
@@ -295,6 +301,9 @@ pub fn run(cmd: RuntimeCmd, fmt: Format) -> Result<()> {
             &output,
             fmt,
         ),
+        RuntimeCmd::ConsumerVerify { manifest } => {
+            super::runtime_composition::consumer_verify(&manifest, fmt)
+        }
         RuntimeCmd::Compose {
             manifest,
             lock,
