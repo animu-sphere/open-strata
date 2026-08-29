@@ -398,5 +398,40 @@ mod tests {
                 .len(),
             4
         );
+        let entrypoint_pattern = |kind: &str| {
+            schema["allOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|condition| {
+                    let selected = &condition["if"]["properties"]["package"]["properties"]["kind"];
+                    selected["const"] == kind
+                        || selected["enum"]
+                            .as_array()
+                            .is_some_and(|values| values.iter().any(|value| value == kind))
+                })
+                .and_then(|condition| {
+                    condition["then"]["properties"]["public_api"]["properties"]["entrypoints"]
+                        ["items"]["pattern"]
+                        .as_str()
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            entrypoint_pattern("native-sdk"),
+            "^[A-Za-z0-9][A-Za-z0-9_+.-]*$"
+        );
+        assert_eq!(
+            entrypoint_pattern("python-wheel"),
+            "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+        );
+        assert_eq!(
+            entrypoint_pattern("npm-javascript"),
+            "^(?!.*\\s$)(?:\\.|\\./(?!\\.{1,2}(?:/|$))[^/\\\\:\\u0000\\r\\n]+(?:/(?!\\.{1,2}(?:/|$))[^/\\\\:\\u0000\\r\\n]+)*)$"
+        );
+        assert_eq!(
+            entrypoint_pattern("npm-wasm"),
+            entrypoint_pattern("npm-javascript")
+        );
     }
 }

@@ -638,7 +638,7 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
     ]));
     assert_eq!(exported["data"]["runtime_digest"], identity);
     let artifact_digest = exported["data"]["digest"].as_str().unwrap();
-    let consumer_manifest_path = producer.base.join("native-consumer.json");
+    let consumer_manifest_path = producer.base.join("python-consumer.json");
     let consumer_manifest = json(producer.ost(&[
         "--json",
         "runtime",
@@ -646,13 +646,13 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
         "--from-artifact",
         artifact_digest,
         "--kind",
-        "native-sdk",
+        "python-wheel",
         "--name",
-        "tiny-sdk",
+        "fixture-python",
         "--version",
         "1.0.0",
         "--entrypoint",
-        "Tiny",
+        "fixture.api",
         "--output",
         path(&consumer_manifest_path),
     ]));
@@ -694,6 +694,28 @@ fn lock_reconstruct_export_and_clean_artifact_consumer_preserve_identity() {
         .unwrap(),
         consumer_manifest["data"]["manifest"]
     );
+    let missing_entrypoint = producer.base.join("missing-native-consumer.json");
+    error(
+        producer.ost(&[
+            "--json",
+            "runtime",
+            "consumer-manifest",
+            "--from-artifact",
+            artifact_digest,
+            "--kind",
+            "native-sdk",
+            "--name",
+            "missing-sdk",
+            "--version",
+            "1.0.0",
+            "--entrypoint",
+            "Missing",
+            "--output",
+            path(&missing_entrypoint),
+        ]),
+        "CONSUMER_PACKAGE_ENTRYPOINT_MISSING",
+    );
+    assert!(!missing_entrypoint.exists());
     assert!(dist.join("sbom.spdx.json").is_file());
     assert!(dist.join("provenance.intoto.jsonl").is_file());
     let provenance: serde_json::Value =
@@ -1842,6 +1864,29 @@ fn relocated_sdk_builds_and_runs_a_clean_native_cmake_consumer() {
         "--level",
         "1",
     ]));
+    let consumer_manifest = sandbox.base.join("tiny-consumer.json");
+    let derived = json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "consumer-manifest",
+        "--from-artifact",
+        exported["data"]["digest"].as_str().unwrap(),
+        "--kind",
+        "native-sdk",
+        "--name",
+        "tiny-sdk",
+        "--version",
+        "1.0.0",
+        "--entrypoint",
+        "Tiny",
+        "--output",
+        path(&consumer_manifest),
+    ]));
+    assert_eq!(
+        derived["data"]["manifest"]["public_api"]["entrypoints"],
+        serde_json::json!(["Tiny"])
+    );
+    assert!(consumer_manifest.is_file());
     // Delete only this test's own producer output; no source/build prefix is
     // available to hide a non-relocatable package or missing dependency.
     std::fs::remove_dir_all(&stage).unwrap();
