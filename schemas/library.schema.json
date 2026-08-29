@@ -32,6 +32,50 @@
         "target": { "type": "string", "pattern": "^[^:]+(::[^:]+)+$" }
       }
     },
+    "package": {
+      "type": "object",
+      "required": ["standalone", "aggregate_member"],
+      "additionalProperties": false,
+      "properties": {
+        "standalone": { "type": "boolean" },
+        "aggregate_member": { "type": "boolean" }
+      },
+      "anyOf": [
+        { "properties": { "standalone": { "const": true } } },
+        { "properties": { "aggregate_member": { "const": true } } }
+      ]
+    },
+    "package_contract": {
+      "type": "object",
+      "required": ["package_name", "exported_targets"],
+      "additionalProperties": false,
+      "properties": {
+        "package_name": { "type": "string", "minLength": 1 },
+        "exported_targets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[^:]+(::[^:]+)+$" }
+        },
+        "public_headers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "consumer": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "include": { "type": "string", "minLength": 1 },
+            "symbol": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$"
+            }
+          },
+          "dependencies": { "symbol": ["include"] }
+        }
+      }
+    },
     "requires": {
       "type": "object",
       "additionalProperties": false,
@@ -53,6 +97,9 @@
         }
       }
     }
+  },
+  "dependencies": {
+    "package_contract": ["package"]
   },
   "definitions": {
     "libraryDependency": {

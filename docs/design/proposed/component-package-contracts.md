@@ -190,13 +190,23 @@ foreign toolchain.
 
 ## Installed-component consumer verification
 
-Candidate command shapes are:
+The ordinary-library prototype is available as `ost library verify-consumer`;
+the plugin and workspace-wide command shapes remain candidates:
 
 ```text
 ost library verify-consumer <path>
 ost plugin verify-consumer <path>
 ost workspace verify-consumers
 ```
+
+The ordinary-library command rebuilds the declared library closure, creates a
+fresh generated consumer below the selected target state, disables ambient
+CMake package registries and prefix variables, and configures and links only
+against the isolated install prefixes named by that closure. It writes
+`library-consumer.json` with separate configure and link results on both success
+and failure. Descriptor adoption remains incremental: existing libraries build,
+test, and package unchanged, while `verify-consumer` requires explicit
+`package` and `package_contract` blocks.
 
 Names are provisional until CLI design and implementation land. Each command
 performs the same bounded lifecycle:

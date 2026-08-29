@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `ost library` — build, test, and package one descriptor-owned CMake library.
+//! `ost library` — build, test, package, and verify one descriptor-owned CMake library.
 //!
 //! Plain libraries participate in plugin workspace composition, but an optional
 //! adapter also needs to remain independently shippable. These commands reuse
@@ -7,7 +7,7 @@
 //! prefix and digest-bound completion record.
 
 use std::fs::File;
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -29,6 +29,7 @@ use crate::output::{self, Format};
 const LIBRARY_BUILD_SCHEMA: &str = "openstrata.library-build/v1";
 const LIBRARY_BUILD_FILE: &str = "library-build.json";
 const LIBRARY_TEST_FILE: &str = "library-test.json";
+const LIBRARY_CONSUMER_FILE: &str = "library-consumer.json";
 const LIBRARY_JUNIT_FILE: &str = ".ost-library-test-results.xml";
 
 #[derive(Debug, Subcommand)]
@@ -104,6 +105,28 @@ pub enum LibraryCmd {
         #[arg(long)]
         profile: Option<String>,
     },
+
+    /// Build, install, and link a generated consumer against the declared package closure.
+    VerifyConsumer {
+        /// Directory containing openstrata.library.yaml.
+        #[arg(default_value = ".")]
+        library: Utf8PathBuf,
+
+        /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's.
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Runtime profile. Defaults to the enclosing project's profile.
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Path to the Ninja executable if it is not on PATH.
+        #[arg(long)]
+        ninja: Option<String>,
+
+        #[command(flatten)]
+        compiler: CompilerOpts,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +197,13 @@ pub fn run(cmd: LibraryCmd, fmt: Format) -> Result<()> {
             target,
             profile,
         } => package(&library, target, profile, fmt),
+        LibraryCmd::VerifyConsumer {
+            library,
+            target,
+            profile,
+            ninja,
+            compiler,
+        } => verify_consumer(&library, target, profile, ninja, compiler, fmt),
     }
 }
 
@@ -186,6 +216,20 @@ fn build(
     ninja: Option<String>,
     compiler: CompilerOpts,
     fmt: Format,
+) -> Result<()> {
+    build_inner(root, target, profile, dry_run, ninja, compiler, fmt, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_inner(
+    root: &Utf8Path,
+    target: Option<String>,
+    profile: Option<String>,
+    dry_run: bool,
+    ninja: Option<String>,
+    compiler: CompilerOpts,
+    fmt: Format,
+    emit_output: bool,
 ) -> Result<()> {
     let library = Library::load(root)?;
     let dependencies = plugin::selected_workspace_libraries_for_library(&library)?;
@@ -204,7 +248,7 @@ fn build(
             .iter()
             .map(|dependency| isolated_prefix(dependency, &id))
             .collect::<Vec<_>>();
-        if !fmt.is_json() && member.id() != library.id() {
+        if emit_output && !fmt.is_json() && member.id() != library.id() {
             println!("== build prerequisite {} ==", member.id());
         }
         let built = build_library_member(
@@ -218,6 +262,7 @@ fn build(
             dry_run,
             ninja.clone(),
             compiler.clone(),
+            !emit_output,
         )?;
         if member.id() == library.id() {
             record = built;
@@ -229,6 +274,9 @@ fn build(
     let record = record.expect("the primary library is always built last");
     let prefix = isolated_prefix(&library, &id);
 
+    if !emit_output {
+        return Ok(());
+    }
     if fmt.is_json() {
         output::success(&serde_json::json!({
             "built": true,
@@ -264,6 +312,7 @@ fn build_library_member(
     dry_run: bool,
     ninja: Option<String>,
     compiler: CompilerOpts,
+    quiet: bool,
 ) -> Result<Option<LibraryBuildRecord>> {
     let prefix = isolated_prefix(library, target_id);
     if !dry_run {
@@ -278,6 +327,7 @@ fn build_library_member(
         compiler,
         &prefix,
         prerequisite_prefixes,
+        quiet,
     )?;
     if dry_run {
         return Ok(None);
@@ -570,6 +620,354 @@ fn package(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn verify_consumer(
+    root: &Utf8Path,
+    target: Option<String>,
+    profile: Option<String>,
+    ninja: Option<String>,
+    compiler: CompilerOpts,
+    fmt: Format,
+) -> Result<()> {
+    let library = Library::load(root)?;
+    let package = library.manifest.package.as_ref().ok_or_else(|| {
+        Error::config(format!("library '{}' has no package mode", library.id())).with_hint(
+            "declare package.standalone and package.aggregate_member in openstrata.library.yaml",
+        )
+    })?;
+    if !package.standalone {
+        return Err(Error::coded(
+            "LIBRARY_NOT_STANDALONE",
+            Category::Precondition,
+            format!(
+                "library '{}' is aggregate-only and cannot be verified as a standalone consumer package",
+                library.id()
+            ),
+        ));
+    }
+    let contract = library.manifest.package_contract.as_ref().ok_or_else(|| {
+        Error::config(format!(
+            "library '{}' has no package_contract",
+            library.id()
+        ))
+        .with_hint(
+            "declare the installed package name, exported targets, and optional consumer probe",
+        )
+    })?;
+
+    // `verify-consumer` owns the complete lifecycle: refresh the selected
+    // library and its declared closure before creating an unrelated consumer
+    // build tree. Suppress the nested build renderer so JSON remains one value.
+    build_inner(
+        root,
+        target.clone(),
+        profile.clone(),
+        false,
+        ninja.clone(),
+        compiler,
+        fmt,
+        false,
+    )?;
+
+    let (platform, profile) = selection(target, profile)?;
+    let (target, resolved) = build_target(&platform, &profile)?;
+    let target_id = target.id();
+    validated_build_record(&library, &target_id, &target.runtime_id, &resolved.prefix)?;
+    let compiler_record = library_compiler_record(&library, &target_id)?;
+    let prerequisites = plugin::selected_workspace_libraries_for_library(&library)?;
+    let mut closure = prerequisites
+        .iter()
+        .map(|dependency| {
+            (
+                dependency.id().to_string(),
+                isolated_prefix(dependency, &target_id),
+            )
+        })
+        .collect::<Vec<_>>();
+    closure.push((
+        library.id().to_string(),
+        isolated_prefix(&library, &target_id),
+    ));
+    if closure
+        .iter()
+        .any(|(_, prefix)| prefix.as_str().contains(';'))
+    {
+        return Err(Error::precondition(
+            "library consumer prefixes containing ';' are not supported by CMake list arguments",
+        ));
+    }
+
+    let consumer_root = plugin::target_state_dir(&library.root, &target_id).join("consumer");
+    if consumer_root.as_std_path().exists() {
+        std::fs::remove_dir_all(consumer_root.as_std_path())
+            .map_err(|error| Error::io(consumer_root.to_string(), error))?;
+    }
+    let source_dir = consumer_root.join("src");
+    let consumer_build_dir = consumer_root.join("build");
+    std::fs::create_dir_all(source_dir.as_std_path())
+        .map_err(|error| Error::io(source_dir.to_string(), error))?;
+    write_atomic(
+        source_dir.join("CMakeLists.txt").as_std_path(),
+        consumer_cmake(contract, closure.len()).as_bytes(),
+    )?;
+    write_atomic(
+        source_dir.join("main.cpp").as_std_path(),
+        consumer_source(contract).as_bytes(),
+    )?;
+
+    let cmake = tools::which("cmake").ok_or_else(|| {
+        Error::coded(
+            "REQUIRED_TOOL_MISSING",
+            Category::Precondition,
+            "`cmake` not found on PATH",
+        )
+    })?;
+    let ninja = ninja
+        .map(std::path::PathBuf::from)
+        .or_else(|| tools::which("ninja"))
+        .ok_or_else(|| {
+            Error::coded(
+                "REQUIRED_TOOL_MISSING",
+                Category::Precondition,
+                "`ninja` not found on PATH",
+            )
+        })?;
+    let mut configure_args = vec![
+        "-S".to_string(),
+        source_dir.to_string(),
+        "-B".to_string(),
+        consumer_build_dir.to_string(),
+        "-G".to_string(),
+        "Ninja".to_string(),
+        "-DCMAKE_BUILD_TYPE=Release".to_string(),
+        format!(
+            "-DCMAKE_MAKE_PROGRAM={}",
+            ninja.display().to_string().replace('\\', "/")
+        ),
+        "-DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE".to_string(),
+        "-DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE".to_string(),
+    ];
+    configure_args.extend(
+        closure.iter().enumerate().map(|(index, (_, prefix))| {
+            format!("-DOST_CONSUMER_PREFIX_{index}={}", portable(prefix))
+        }),
+    );
+    if let Some(cxx) = &compiler_record.cxx {
+        configure_args.push(format!("-DCMAKE_CXX_COMPILER={cxx}"));
+    }
+
+    let build_args = vec![
+        "--build".to_string(),
+        consumer_build_dir.to_string(),
+        "--config".to_string(),
+        "Release".to_string(),
+    ];
+    let msvc_env = consumer_msvc_env(target.os());
+    let configure = run_consumer_step(&cmake, &configure_args, &source_dir, &msvc_env)?;
+    let mut report = consumer_report(
+        &library,
+        &target_id,
+        contract,
+        &closure,
+        &compiler_record,
+        &source_dir,
+        &consumer_build_dir,
+        &configure,
+        None,
+    );
+    let record_path = consumer_root.join(LIBRARY_CONSUMER_FILE);
+    if !configure.status.success() {
+        write_value(&record_path, &report)?;
+        return Err(Error::coded(
+            "LIBRARY_CONSUMER_CONFIGURE_FAILED",
+            Category::Validation,
+            format!(
+                "installed package '{}' did not configure from its declared closure{}",
+                contract.package_name,
+                exit_detail(configure.status.code())
+            ),
+        )
+        .with_hint(format!("inspect {record_path}"))
+        .with_phase("library-consumer-configure")
+        .with_data(report));
+    }
+
+    let linked = run_consumer_step(&cmake, &build_args, &source_dir, &msvc_env)?;
+    report = consumer_report(
+        &library,
+        &target_id,
+        contract,
+        &closure,
+        &compiler_record,
+        &source_dir,
+        &consumer_build_dir,
+        &configure,
+        Some(&linked),
+    );
+    write_value(&record_path, &report)?;
+    if !linked.status.success() {
+        return Err(Error::coded(
+            "LIBRARY_CONSUMER_LINK_FAILED",
+            Category::Validation,
+            format!(
+                "installed targets for package '{}' did not compile and link{}",
+                contract.package_name,
+                exit_detail(linked.status.code())
+            ),
+        )
+        .with_hint(format!("inspect {record_path}"))
+        .with_phase("library-consumer-link")
+        .with_data(report));
+    }
+
+    if fmt.is_json() {
+        output::success(&report);
+    } else {
+        println!(
+            "Verified installed consumer for {} {}",
+            library.id(),
+            library.version()
+        );
+        println!("  package: {}", contract.package_name);
+        println!("  targets: {}", contract.exported_targets.join(", "));
+        println!("  closure: {} package(s)", closure.len());
+        println!("  record:  {record_path}");
+    }
+    Ok(())
+}
+
+fn consumer_cmake(contract: &ost_plugin::LibraryPackageContract, closure_len: usize) -> String {
+    let prefix_variables = (0..closure_len)
+        .map(|index| {
+            format!(
+                "if(DEFINED OST_CONSUMER_PREFIX_{index})\n  list(APPEND CMAKE_PREFIX_PATH \"${{OST_CONSUMER_PREFIX_{index}}}\")\nendif()"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "cmake_minimum_required(VERSION 3.23)\nproject(OpenStrataLibraryConsumer LANGUAGES CXX)\nset(CMAKE_FIND_USE_PACKAGE_REGISTRY FALSE)\nset(CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY FALSE)\n{prefix_variables}\nfind_package({} CONFIG REQUIRED PATHS ${{CMAKE_PREFIX_PATH}} NO_DEFAULT_PATH)\nadd_executable(openstrata-consumer main.cpp)\ntarget_compile_features(openstrata-consumer PRIVATE cxx_std_17)\ntarget_link_libraries(openstrata-consumer PRIVATE {})\n",
+        contract.package_name,
+        contract.exported_targets.join(" ")
+    )
+}
+
+fn consumer_source(contract: &ost_plugin::LibraryPackageContract) -> String {
+    let Some(consumer) = &contract.consumer else {
+        return "int main() { return 0; }\n".into();
+    };
+    let include = consumer
+        .include
+        .as_ref()
+        .map(|include| format!("#include <{include}>\n"))
+        .unwrap_or_default();
+    let body = consumer.symbol.as_ref().map_or_else(
+        || "return 0;".to_string(),
+        |symbol| {
+            format!(
+                "auto openstrata_consumer_symbol = &{symbol};\n  return openstrata_consumer_symbol == nullptr;"
+            )
+        },
+    );
+    format!("{include}int main() {{\n  {body}\n}}\n")
+}
+
+fn run_consumer_step(
+    program: &std::path::Path,
+    args: &[String],
+    current_dir: &Utf8Path,
+    environment: &[(String, String)],
+) -> Result<Output> {
+    let mut command = Command::new(program);
+    command.args(args).current_dir(current_dir.as_std_path());
+    for (key, _) in std::env::vars().filter(|(key, _)| {
+        key.starts_with("CMAKE_") || key.ends_with("_ROOT") || key.ends_with("_DIR")
+    }) {
+        command.env_remove(key);
+    }
+    command.env_remove("CMAKE_PREFIX_PATH");
+    for (key, value) in environment {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .map_err(|error| Error::io(format!("run {}", program.display()), error))
+}
+
+fn consumer_msvc_env(os: ost_core::host::Os) -> Vec<(String, String)> {
+    if os != ost_core::host::Os::Windows || tools::which("cl").is_some() {
+        return Vec::new();
+    }
+    ost_build::msvc::bootstrap()
+        .ok()
+        .flatten()
+        .map(|environment| environment.vars)
+        .unwrap_or_default()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn consumer_report(
+    library: &Library,
+    target_id: &str,
+    contract: &ost_plugin::LibraryPackageContract,
+    closure: &[(String, Utf8PathBuf)],
+    compiler: &ost_build::LockCompiler,
+    source_dir: &Utf8Path,
+    build_dir: &Utf8Path,
+    configure: &Output,
+    linked: Option<&Output>,
+) -> serde_json::Value {
+    let step = |output: &Output| {
+        serde_json::json!({
+            "status": if output.status.success() { "pass" } else { "fail" },
+            "exit_code": output.status.code(),
+            "stdout": bounded_output(&output.stdout),
+            "stderr": bounded_output(&output.stderr),
+        })
+    };
+    serde_json::json!({
+        "schema": "openstrata.library-consumer-verification/v1alpha1",
+        "library": {"id": library.id(), "version": library.version()},
+        "target": target_id,
+        "package": contract.package_name,
+        "exported_targets": contract.exported_targets,
+        "public_headers": contract.public_headers,
+        "compiler": compiler,
+        "closure": closure.iter().map(|(id, prefix)| serde_json::json!({"id": id, "prefix": prefix})).collect::<Vec<_>>(),
+        "build_record_sha256": file_digest(&build_record_path(library, target_id)).ok().map(|value| value.0),
+        "source_dir": source_dir,
+        "build_dir": build_dir,
+        "checks": {
+            "configure": step(configure),
+            "link": linked.map(step).unwrap_or_else(|| serde_json::json!({"status": "not-run", "reason": "configure failed"})),
+        },
+        "outcome": if configure.status.success() && linked.is_some_and(|output| output.status.success()) { "success" } else { "failure" },
+    })
+}
+
+fn library_compiler_record(library: &Library, target_id: &str) -> Result<ost_build::LockCompiler> {
+    let path = plugin::target_state_dir(&library.root, target_id).join("compiler.lock.json");
+    let source = std::fs::read_to_string(path.as_std_path()).map_err(|error| {
+        Error::precondition(format!(
+            "library '{}' compiler evidence is unavailable: {error}",
+            library.id()
+        ))
+        .with_hint(format!("rerun `ost library build {}`", library.root))
+    })?;
+    serde_json::from_str(&source).map_err(|error| {
+        Error::precondition(format!(
+            "library compiler evidence '{path}' is invalid: {error}"
+        ))
+        .with_hint(format!("rerun `ost library build {}`", library.root))
+    })
+}
+
+fn bounded_output(bytes: &[u8]) -> String {
+    const LIMIT: usize = 32 * 1024;
+    let start = bytes.len().saturating_sub(LIMIT);
+    String::from_utf8_lossy(&bytes[start..]).into_owned()
+}
+
 fn selection(target: Option<String>, profile: Option<String>) -> Result<(String, String)> {
     plugin::selection(target, profile).ok_or_else(|| {
         Error::usage(
@@ -840,5 +1238,22 @@ mod tests {
             "C:/other/library/.strata/targets/example/library-prefix",
             expected
         ));
+    }
+
+    #[test]
+    fn generated_consumer_uses_only_declared_prefix_variables() {
+        let manifest = ost_plugin::LibraryManifest::parse(
+            "schema: openstrata.library/v1alpha1\nlibrary: { id: sample, version: 1.0.0 }\ncmake: { package: Sample, target: 'Sample::sample' }\npackage: { standalone: true, aggregate_member: true }\npackage_contract:\n  package_name: Sample\n  exported_targets: ['Sample::sample']\n  consumer: { include: sample/sample.hpp, symbol: 'Sample::version' }\n",
+        )
+        .unwrap();
+        let contract = manifest.package_contract.as_ref().unwrap();
+        let cmake = consumer_cmake(contract, 2);
+        assert!(cmake.contains("OST_CONSUMER_PREFIX_0"));
+        assert!(cmake.contains("OST_CONSUMER_PREFIX_1"));
+        assert!(!cmake.contains("OST_CONSUMER_PREFIX_2"));
+        assert!(cmake.contains("NO_DEFAULT_PATH"));
+        let source = consumer_source(contract);
+        assert!(source.contains("#include <sample/sample.hpp>"));
+        assert!(source.contains("&Sample::version"));
     }
 }

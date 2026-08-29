@@ -5,5 +5,15 @@ library:
 cmake:
   package: {{Name}}
   target: {{Name}}::{{name}}
+package:
+  standalone: true
+  aggregate_member: true
+package_contract:
+  package_name: {{Name}}
+  exported_targets: [{{Name}}::{{name}}]
+  public_headers: [include/{{name}}/**]
+  consumer:
+    include: {{name}}/{{name}}.hpp
+    symbol: {{Name}}::version
 runtime:
   directories: [bin, lib]

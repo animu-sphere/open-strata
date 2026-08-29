@@ -177,6 +177,16 @@ library:
 cmake:
   package: vrmContainer
   target: vrmContainer::vrmContainer
+package:
+  standalone: true
+  aggregate_member: true
+package_contract:
+  package_name: vrmContainer
+  exported_targets: [vrmContainer::vrmContainer]
+  public_headers: [include/vrmContainer/**]
+  consumer:
+    include: vrmContainer/vrmContainer.hpp
+    symbol: vrmContainer::version
 runtime:
   directories: [bin, lib]
 ```
@@ -220,6 +230,9 @@ graph rather than asking each caller to restate it:
   missing prerequisite build evidence; the library package records dependency
   identities and evidence digests but contains only the selected library's
   install tree;
+- `library verify-consumer <library>` rebuilds the closure, excludes ambient
+  CMake package registries and prefixes, then configures and links a generated
+  external consumer using only the declared installed package closure;
 - plain-library runtime directories materialized below that prefix are added to
   the loader environment for selected test/run/view sessions;
 - `plugin inspect --json` and test report `dependencies.json` expose selected

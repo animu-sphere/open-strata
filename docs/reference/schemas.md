@@ -110,6 +110,8 @@ The openstrata.library.yaml descriptor for an ordinary installed CMake package p
 | --- | --- | --- | --- |
 | `cmake` | object | yes |  |
 | `library` | object | yes |  |
+| `package` | object | no |  |
+| `package_contract` | object | no |  |
 | `requires` | object | no |  |
 | `runtime` | object | no |  |
 | `schema` | string | yes |  |

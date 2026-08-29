@@ -772,6 +772,7 @@ fn build(
             compiler_opts.clone(),
             &prefix,
             &[],
+            false,
         )?;
     }
     for dependency in &dependencies {
@@ -818,6 +819,7 @@ pub(crate) fn build_library_one(
     compiler_opts: CompilerOpts,
     install_prefix: &Utf8Path,
     dependency_prefixes: &[Utf8PathBuf],
+    quiet: bool,
 ) -> Result<()> {
     let (platform, profile) = selection(target, profile).ok_or_else(|| {
         Error::usage(
@@ -860,13 +862,15 @@ pub(crate) fn build_library_one(
         "Release".to_string(),
     ];
     if dry_run {
-        println!("# dry run — would generate {toolchain} then:");
-        if tgt.os() == Os::Windows && tools::which("cl").is_none() {
-            println!("# (would auto-load the MSVC environment via vcvars64.bat)");
+        if !quiet {
+            println!("# dry run — would generate {toolchain} then:");
+            if tgt.os() == Os::Windows && tools::which("cl").is_none() {
+                println!("# (would auto-load the MSVC environment via vcvars64.bat)");
+            }
+            println!("cmake {}", configure_args.join(" "));
+            println!("cmake {}", build_args.join(" "));
+            println!("cmake {}", install_args.join(" "));
         }
-        println!("cmake {}", configure_args.join(" "));
-        println!("cmake {}", build_args.join(" "));
-        println!("cmake {}", install_args.join(" "));
         return Ok(());
     }
     std::fs::create_dir_all(target_dir.as_std_path())
@@ -904,10 +908,16 @@ pub(crate) fn build_library_one(
     })?;
     let lock_compiler = compiler::to_lock(&compiler, &r.artifact_prefix, tgt.os());
     invalidate_plugin_build_tree_if_toolchain_moved(&library.root, &id, &lock_compiler);
-    let build_env = maybe_bootstrap_msvc(tgt.os());
-    run_step(PHASE_CONFIGURE, &cmake, &configure_args, &build_env)?;
-    run_step(PHASE_COMPILE_LINK, &cmake, &build_args, &build_env)?;
-    run_step("workspace-install", &cmake, &install_args, &build_env)?;
+    let build_env = maybe_bootstrap_msvc(tgt.os(), quiet);
+    run_step_mode(PHASE_CONFIGURE, &cmake, &configure_args, &build_env, quiet)?;
+    run_step_mode(PHASE_COMPILE_LINK, &cmake, &build_args, &build_env, quiet)?;
+    run_step_mode(
+        "workspace-install",
+        &cmake,
+        &install_args,
+        &build_env,
+        quiet,
+    )?;
     let record = target_dir.join("compiler.lock.json");
     if let Ok(json) = serde_json::to_string_pretty(&lock_compiler) {
         let _ = std::fs::write(record.as_std_path(), json);
@@ -1092,7 +1102,7 @@ fn build_one(
     // Ninja itself) on PATH. When they aren't — a plain shell rather than a VS
     // Developer Prompt — load the MSVC developer environment the same way
     // `ost build` does, so a plugin build need not be wrapped in a vcvars shell.
-    let msvc_env = maybe_bootstrap_msvc(tgt.os());
+    let msvc_env = maybe_bootstrap_msvc(tgt.os(), false);
 
     // A schema bundle's build runs `usdGenSchema` as a CMake step, which loads
     // `pxr` and resolves the base USD schemas (`@usd/schema.usda@`, where
@@ -9252,6 +9262,57 @@ fn run_step(
     args: &[String],
     env: &[(String, String)],
 ) -> Result<()> {
+    run_step_mode(phase, program, args, env, false)
+}
+
+fn run_step_mode(
+    phase: &'static str,
+    program: &std::path::Path,
+    args: &[String],
+    env: &[(String, String)],
+    quiet: bool,
+) -> Result<()> {
+    if quiet {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let output = cmd.output().map_err(|e| {
+            Error::external_tool(format!(
+                "failed to launch {} for the {phase} phase: {e}",
+                program.display()
+            ))
+            .with_phase(phase)
+        })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let detail = String::from_utf8_lossy(if output.stderr.is_empty() {
+            &output.stdout
+        } else {
+            &output.stderr
+        });
+        let tail = detail
+            .chars()
+            .rev()
+            .take(2000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>();
+        return Err(Error::external_tool(format!(
+            "the {phase} phase failed{}: {}\n{}",
+            output
+                .status
+                .code()
+                .map(|code| format!(" (exit {code})"))
+                .unwrap_or_default(),
+            program.display(),
+            tail
+        ))
+        .with_phase(phase));
+    }
     println!("==> [{phase}] {} {}", program.display(), args.join(" "));
     let mut cmd = Command::new(program);
     cmd.args(args);
@@ -9284,27 +9345,33 @@ fn run_step(
 /// `ost build` so a plugin build need not run from a VS Developer Prompt. An
 /// empty vec means "use the current environment" — non-Windows, `cl` already
 /// present, or no Visual Studio found (a warning is printed in that last case).
-fn maybe_bootstrap_msvc(os: Os) -> Vec<(String, String)> {
+fn maybe_bootstrap_msvc(os: Os, quiet: bool) -> Vec<(String, String)> {
     if os != Os::Windows || tools::which("cl").is_some() {
         return Vec::new();
     }
     match ost_build::msvc::bootstrap() {
         Ok(Some(env)) => {
-            println!(
-                "==> loaded MSVC environment ({} vars) from {}",
-                env.vars.len(),
-                env.vcvars.display()
-            );
+            if !quiet {
+                println!(
+                    "==> loaded MSVC environment ({} vars) from {}",
+                    env.vars.len(),
+                    env.vcvars.display()
+                );
+            }
             env.vars
         }
         Ok(None) => {
-            eprintln!(
-                "warning: MSVC not found; relying on the current environment (cl must be on PATH)"
-            );
+            if !quiet {
+                eprintln!(
+                    "warning: MSVC not found; relying on the current environment (cl must be on PATH)"
+                );
+            }
             Vec::new()
         }
         Err(e) => {
-            eprintln!("warning: failed to load the MSVC environment: {e}");
+            if !quiet {
+                eprintln!("warning: failed to load the MSVC environment: {e}");
+            }
             Vec::new()
         }
     }

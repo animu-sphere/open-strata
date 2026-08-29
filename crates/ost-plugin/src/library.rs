@@ -37,6 +37,38 @@ pub struct LibraryCmake {
     pub target: String,
 }
 
+/// Distribution modes owned by the component descriptor.  These are explicit
+/// because directory layout cannot tell whether a workspace member is useful
+/// outside an aggregate product.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryPackage {
+    pub standalone: bool,
+    pub aggregate_member: bool,
+}
+
+/// Optional source used by the generated installed-package consumer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryConsumer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+}
+
+/// Public installed CMake surface promised to consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryPackageContract {
+    pub package_name: String,
+    pub exported_targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub public_headers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer: Option<LibraryConsumer>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LibraryRequires {
@@ -72,6 +104,10 @@ pub struct LibraryManifest {
     pub schema: String,
     pub library: LibraryIdentity,
     pub cmake: LibraryCmake,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<LibraryPackage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_contract: Option<LibraryPackageContract>,
     #[serde(default)]
     pub requires: LibraryRequires,
     #[serde(default)]
@@ -105,6 +141,72 @@ impl LibraryManifest {
         if self.cmake.package.trim().is_empty() {
             return Err(Error::config("library cmake.package must not be empty"));
         }
+        if self
+            .package
+            .as_ref()
+            .is_some_and(|package| !package.standalone && !package.aggregate_member)
+        {
+            return Err(Error::config(
+                "library package must be standalone, an aggregate member, or both",
+            ));
+        }
+        if let Some(contract) = &self.package_contract {
+            let package = self.package.as_ref().ok_or_else(|| {
+                Error::config("library package_contract requires an explicit package mode")
+            })?;
+            validate_cmake_atom("package name", &contract.package_name)?;
+            if contract.package_name != self.cmake.package {
+                return Err(Error::config(format!(
+                    "library package_contract.package_name '{}' differs from cmake.package '{}'",
+                    contract.package_name, self.cmake.package
+                )));
+            }
+            if contract.exported_targets.is_empty() {
+                return Err(Error::config(
+                    "library package_contract.exported_targets must not be empty",
+                ));
+            }
+            for target in &contract.exported_targets {
+                validate_exported_target(target)?;
+            }
+            if contract
+                .exported_targets
+                .iter()
+                .enumerate()
+                .any(|(index, target)| contract.exported_targets[..index].contains(target))
+            {
+                return Err(Error::config(
+                    "library package_contract.exported_targets contains duplicates",
+                ));
+            }
+            if !contract.exported_targets.contains(&self.cmake.target) {
+                return Err(Error::config(format!(
+                    "library package_contract.exported_targets must include cmake.target '{}'",
+                    self.cmake.target
+                )));
+            }
+            for header in &contract.public_headers {
+                validate_header_pattern(header)?;
+            }
+            if let Some(consumer) = &contract.consumer {
+                if let Some(include) = &consumer.include {
+                    check_safe_relative("package_contract.consumer.include", include)?;
+                }
+                if let Some(symbol) = &consumer.symbol {
+                    validate_cpp_symbol(symbol)?;
+                    if consumer.include.is_none() {
+                        return Err(Error::config(
+                            "library package_contract.consumer.symbol requires consumer.include",
+                        ));
+                    }
+                }
+            }
+            if !package.standalone && contract.consumer.is_some() {
+                return Err(Error::config(
+                    "aggregate-only library package cannot declare a standalone consumer probe",
+                ));
+            }
+        }
         // Match schemas/library.schema.json: two or more non-empty `::`
         // segments (nested export namespaces are legal CMake), no stray ':'.
         let segments: Vec<&str> = self.cmake.target.split("::").collect();
@@ -122,6 +224,62 @@ impl LibraryManifest {
             check_safe_relative("runtime.directories", directory)?;
         }
         Ok(())
+    }
+}
+
+fn validate_exported_target(target: &str) -> Result<()> {
+    let segments: Vec<&str> = target.split("::").collect();
+    if segments.len() < 2
+        || segments
+            .iter()
+            .any(|segment| validate_cmake_atom("target segment", segment).is_err())
+    {
+        return Err(Error::config(format!(
+            "library exported target '{target}' must be namespaced such as Package::Target"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_cmake_atom(label: &str, value: &str) -> Result<()> {
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'+' | b'.' | b'-'))
+    {
+        Ok(())
+    } else {
+        Err(Error::config(format!(
+            "library {label} '{value}' contains characters unsafe for generated CMake"
+        )))
+    }
+}
+
+fn validate_header_pattern(pattern: &str) -> Result<()> {
+    if pattern.contains(['?', '[', ']']) {
+        return Err(Error::config(format!(
+            "library public header pattern '{pattern}' uses an unsupported glob"
+        )));
+    }
+    let path = pattern.replace('*', "placeholder");
+    check_safe_relative("package_contract.public_headers", &path)
+}
+
+fn validate_cpp_symbol(symbol: &str) -> Result<()> {
+    if symbol.split("::").all(|segment| {
+        segment
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && segment
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    }) {
+        Ok(())
+    } else {
+        Err(Error::config(format!(
+            "library consumer symbol '{symbol}' must be a C++ qualified identifier"
+        )))
     }
 }
 
@@ -197,6 +355,26 @@ mod tests {
         assert_eq!(manifest.library.id, "vrmContainer");
         assert_eq!(manifest.runtime.directories, vec!["bin", "lib"]);
         assert!(manifest.requires.libraries.is_empty());
+        assert!(manifest.package_contract.is_none());
+    }
+
+    #[test]
+    fn validates_installed_package_contract() {
+        let manifest = LibraryManifest::parse(&descriptor(
+            "package: { standalone: true, aggregate_member: true }\npackage_contract:\n  package_name: vrmContainer\n  exported_targets: ['vrmContainer::vrmContainer']\n  public_headers: ['include/vrmContainer/**']\n  consumer: { include: vrmContainer/api.hpp, symbol: 'vrm::version' }\n",
+        ))
+        .unwrap();
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn package_contract_cannot_diverge_from_existing_cmake_identity() {
+        let manifest = LibraryManifest::parse(&descriptor(
+            "package: { standalone: true, aggregate_member: false }\npackage_contract:\n  package_name: other\n  exported_targets: ['other::target']\n",
+        ))
+        .unwrap();
+        let error = manifest.validate().unwrap_err().to_string();
+        assert!(error.contains("differs from cmake.package"), "{error}");
     }
 
     #[test]

@@ -89,7 +89,7 @@ enum Command {
     #[command(subcommand)]
     Plugin(plugin::PluginCmd),
 
-    /// Build, test, and package one descriptor-owned plain CMake library.
+    /// Build, test, package, and verify one descriptor-owned plain CMake library.
     #[command(subcommand)]
     Library(library::LibraryCmd),
 
