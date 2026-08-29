@@ -755,6 +755,21 @@ path; existing generated source remains project-owned.
 12. Add an explicit template diff/gap report before any migration or automatic
     manifest-editing command.
 
+Installed package correctness and architecture policy are developed in the
+[component package-contract proposal](component-package-contracts.md). Template
+promotion consumes that contract rather than adding template-local
+`check_boundaries.py` or installed-consumer scripts. The plain-library and USD
+plugin scaffolds should declare their exported package surface and consumer
+probe; an adapter remains an ordinary library with an architecture role, and an
+OpenExec scaffold keeps registration separate from its I/O-free computation
+layer.
+
+Large template migrations follow a contract-first sequence: add destination
+identity and boundary rules, scaffold the destination, move code, migrate
+callers, then remove the old identity after clean-consumer and negative-edge
+evidence passes. The template system does not automate project-owned source
+moves.
+
 The next implementation slice makes already validated source dependency fields
 control composition. It must not bootstrap a new repository, parallel CLI,
 product command family, general-purpose text templating engine, or CI-only

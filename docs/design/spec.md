@@ -985,7 +985,49 @@ consumer に配布する build result は同じ artifact contract へ収束さ�
 各 kind は project-owned identity を保ち、composition は provenance や
 dependency edge を opaque archive へ潰さない。
 
-## 10.3 Content-addressed identity
+## 10.3 Installed component package contract
+
+workspace build の成功と、install 後の component package が外部 consumer
+から利用可能であることは別の検証境界とする。普通の CMake library / plugin
+package は、clean prefix で少なくとも以下を証明できなければならない。
+
+```text
+declared component closure
+  -> install/package
+  -> find_package(CONFIG)
+  -> exported target link
+  -> optional runtime/plugin smoke
+```
+
+package contract は package name、export target、public header、consumer probe、
+package mode は standalone / aggregate membership を component descriptor に
+追加して表す。
+既存の component identity、`requires` graph、artifact digest、provenance、SBOM
+を置き換えず、source tree target や ambient `CMAKE_PREFIX_PATH` への暗黙依存を
+許可しない。
+
+PUBLIC / INTERFACE dependency は installed package config の resolution と
+一致しなければならない。必要な `find_dependency()`、export 後の
+`INTERFACE_LINK_LIBRARIES`、PRIVATE dependency の非漏洩、条件付き platform
+dependency を検査する。詳細と段階導入は
+[component package-contract proposal](proposed/component-package-contracts.md)
+および [roadmap](../roadmap/component-package-contracts.md) が所有する。
+
+## 10.4 Workspace architecture contract
+
+workspace dependency graph は build 順だけでなく、再利用可能な architecture
+boundary の検査入力にもする。最初は dependency / include prefix / namespace
+の explicit allow/deny を扱い、複数 project で実証された後に `role` / layer
+policy へ一般化する。adapter、tool、aggregate などの role は build kind と
+分離し、repository 固有 semantics は project 側に残す。
+
+aggregate release membership は引き続き明示 contract とし、standalone package
+の成立性、aggregate 参加可否、role exclusion を directory discovery から推測
+しない。CI は artifact ごとに build、test、standalone closure、external
+consumer、public dependency resolution、forbidden-edge lint の証拠を分けて
+報告する。
+
+## 10.5 Content-addressed identity
 
 All runtime and extension artifacts must have digest identity.
 
@@ -995,7 +1037,7 @@ or
 blake3:...
 ```
 
-## 10.4 Local storage
+## 10.6 Local storage
 
 Initial layout:
 
@@ -2060,6 +2102,12 @@ The original bootstrap list has shipped and is retained in release history. From
 7. Only then complete v0.23.0 DCC headless adapters, Maya `.mod`, Houdini package
    JSON and matrix cells pinned to host records, artifact digests, tiers and
    execution evidence on Windows/Linux/macOS.
+8. Add component package contracts on top of the existing workspace graph:
+   isolated installed-package consumers, PUBLIC/package dependency consistency,
+   standalone closure, declarative boundary lint, and per-artifact evidence.
+9. Integrate those contracts into plain-library, USD plugin, adapter, and
+   OpenExec scaffolds only after dogfood proves reusable policy; keep domain
+   semantics and source moves project-owned.
 
 ---
 

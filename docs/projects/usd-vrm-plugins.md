@@ -126,6 +126,17 @@ aggregate membership while preserving per-member evidence. Re-running the
 downstream release lane with that binary is downstream post-release validation,
 not part of the current v0.22.9 roadmap.
 
+The 2026-08-29 workspace migration exposed the next reusable gap: a green source
+workspace does not prove that every installed CMake package has complete
+`find_dependency()` resolution, a closed standalone prefix, or an architecture
+boundary free of sibling-adapter/vendor leakage. Those requirements are now
+captured in the proposed
+[component package contract and workspace lint](../design/proposed/component-package-contracts.md)
+instead of being normalized as VRM-specific scripts. The corresponding
+[candidate delivery plan](../roadmap/component-package-contracts.md) starts with
+installed consumers and public dependency closure, then generalizes only the
+reusable boundary primitives.
+
 ## Current limitations
 
 - The `execVrm` runtime evaluation layer is planned, not shipped.
@@ -147,6 +158,8 @@ not part of the current v0.22.9 roadmap.
   release notes).
 - OpenStrata plugin-workspace contract:
   [reference/plugin-workspace.md](../reference/plugin-workspace.md).
+- Proposed installed component and architecture contract:
+  [component-package-contracts.md](../design/proposed/component-package-contracts.md).
 - Transferable procedure:
   [Adopt a plugin workspace](../guides/adopt-a-plugin-workspace.md).
 - Cross-repository composition cases:

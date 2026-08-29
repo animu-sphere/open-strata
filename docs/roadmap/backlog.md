@@ -40,6 +40,14 @@ later sessions, but neither expands the active milestone into those systems.
   Extend `ost plugin new`; add Hydra/tool templates only after independent
   evidence. Direction:
   [openusd-plugin-templates.md](../design/proposed/openusd-plugin-templates.md).
+- ⬜ **Component package contracts and workspace architecture lint.** Prove each
+  installed CMake package from only its declared closure; validate public target
+  dependencies against package resolution; add standalone/aggregate package
+  modes, explicit boundary policy, graph lint, and component-level CI evidence.
+  This extends the existing workspace graph and aggregate membership contracts;
+  it does not create another resolver. Direction:
+  [component-package-contracts.md](../design/proposed/component-package-contracts.md);
+  staged work: [component-package-contracts.md](component-package-contracts.md).
 - ⬜ **Renderer skeleton promotion.** Complete the hosted OS/OpenUSD matrix and
   apply the contract to a second independent renderer. Instancing, materials,
   upload policy and zero-copy interop remain renderer-owned. Direction:
