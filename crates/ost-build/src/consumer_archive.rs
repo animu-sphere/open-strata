@@ -169,6 +169,14 @@ fn write_u64(writer: &mut impl Write, value: u64) -> io::Result<()> {
     writer.write_all(&value.to_le_bytes())
 }
 
+fn needs_zip64_u32(value: u64) -> bool {
+    value >= u32::MAX as u64
+}
+
+fn needs_zip64_count(value: usize) -> bool {
+    value >= u16::MAX as usize
+}
+
 fn zip64_extra(size: u64, offset: Option<u64>) -> Vec<u8> {
     let mut extra = Vec::with_capacity(if offset.is_some() { 28 } else { 20 });
     extra.extend_from_slice(&1u16.to_le_bytes());
@@ -231,7 +239,7 @@ pub fn pack_wheel(
         }
         let crc32 = crc.finalize();
         let offset = writer.stream_position()?;
-        let zip64 = size > u32::MAX as u64;
+        let zip64 = needs_zip64_u32(size);
         let extra = if zip64 {
             zip64_extra(size, None)
         } else {
@@ -264,8 +272,8 @@ pub fn pack_wheel(
     let central_offset = writer.stream_position()?;
     for entry in &central {
         let name = entry.path.as_bytes();
-        let size64 = entry.size > u32::MAX as u64;
-        let offset64 = entry.offset > u32::MAX as u64;
+        let size64 = needs_zip64_u32(entry.size);
+        let offset64 = needs_zip64_u32(entry.offset);
         let extra = if size64 || offset64 {
             zip64_central_extra(entry.size, size64, entry.offset, offset64)
         } else {
@@ -305,12 +313,12 @@ pub fn pack_wheel(
         writer.write_all(&extra)?;
     }
     let central_size = writer.stream_position()? - central_offset;
-    let zip64 = central.len() > u16::MAX as usize
-        || central_offset > u32::MAX as u64
-        || central_size > u32::MAX as u64
+    let zip64 = needs_zip64_count(central.len())
+        || needs_zip64_u32(central_offset)
+        || needs_zip64_u32(central_size)
         || central
             .iter()
-            .any(|entry| entry.size > u32::MAX as u64 || entry.offset > u32::MAX as u64);
+            .any(|entry| needs_zip64_u32(entry.size) || needs_zip64_u32(entry.offset));
     if zip64 {
         let zip64_offset = writer.stream_position()?;
         write_u32(&mut writer, 0x0606_4b50)?;
@@ -380,6 +388,14 @@ pub fn pack_npm_tgz(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zip64_sentinels_are_not_used_as_ordinary_values() {
+        assert!(!needs_zip64_u32(u32::MAX as u64 - 1));
+        assert!(needs_zip64_u32(u32::MAX as u64));
+        assert!(!needs_zip64_count(u16::MAX as usize - 1));
+        assert!(needs_zip64_count(u16::MAX as usize));
+    }
 
     fn stored_zip_paths(bytes: &[u8]) -> Vec<String> {
         let mut cursor = 0usize;

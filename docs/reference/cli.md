@@ -31,7 +31,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost formation`](#ost-formation) — Resolve, inspect, diagnose, export, lock, and run digest-pinned Formations
 - [`ost host`](#ost-host) — Discover, list, and inspect third-party DCC hosts (Maya, Houdini)
 - [`ost init`](#ost-init) — Initialise an OpenStrata project in the current directory
-- [`ost library`](#ost-library) — Build, test, and package one descriptor-owned plain CMake library
+- [`ost library`](#ost-library) — Build, test, package, and verify one descriptor-owned plain CMake library
 - [`ost lock`](#ost-lock) — Generate or verify the project lockfile (strata.lock)
 - [`ost package`](#ost-package) — Install and pack a built target into a tar.zst artifact
 - [`ost platform`](#ost-platform) — Inspect VFX Reference Platform calendar-year definitions
@@ -699,7 +699,7 @@ Initialise an OpenStrata project in the current directory
 
 ### `ost library`
 
-Build, test, and package one descriptor-owned plain CMake library
+Build, test, package, and verify one descriptor-owned plain CMake library
 
 **Usage:** `ost library <COMMAND>`
 
@@ -708,6 +708,7 @@ Build, test, and package one descriptor-owned plain CMake library
 - [`ost library build`](#ost-library-build) — Configure, build, and install one plain CMake library
 - [`ost library package`](#ost-library-package) — Package one library's isolated install tree as a tar.zst artifact
 - [`ost library test`](#ost-library-test) — Run CTest for one completed library build
+- [`ost library verify-consumer`](#ost-library-verify-consumer) — Build, install, and link a generated consumer against the declared package closure
 
 #### `ost library build`
 
@@ -774,6 +775,29 @@ Run CTest for one completed library build
 | `--profile <PROFILE>` | Runtime profile. Defaults to the enclosing project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 | `--timeout <TIMEOUT>` | Per-test timeout in seconds; 0 disables it |
+
+#### `ost library verify-consumer`
+
+Build, install, and link a generated consumer against the declared package closure
+
+**Usage:** `ost library verify-consumer [OPTIONS] [<LIBRARY>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<LIBRARY>` | no | Directory containing openstrata.library.yaml |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--cc <CC>` | C compiler path (implies `--compiler explicit`) |
+| `--compiler <COMPILER>` | Compiler policy: `host` (default), `runtime`, or `explicit` |
+| `--cxx <CXX>` | C++ compiler path (implies `--compiler explicit`) |
+| `--ninja <NINJA>` | Path to the Ninja executable if it is not on PATH |
+| `--profile <PROFILE>` | Runtime profile. Defaults to the enclosing project's profile |
+| `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 
 ### `ost lock`
 

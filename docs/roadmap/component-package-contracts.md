@@ -16,16 +16,16 @@ into independently reviewable slices. It is intentionally not assigned a
 release until the active consumer-packaging/runtime-UX/DCC milestone ladder is
 reconciled with release capacity.
 
-Legend: ⬜ not started
+Legend: 🚧 in progress · ⬜ not started
 
 ## Phase A - installed consumer correctness (P0)
 
-- ⬜ Prototype one descriptor-scoped `verify-consumer` lifecycle for ordinary
+- 🚧 Prototype one descriptor-scoped `verify-consumer` lifecycle for ordinary
   libraries: build, install, clean prefix, generated CMake consumer, link, and
   optional execution.
-- ⬜ Add package name, exported target, public-header, standalone, aggregate, and
+- 🚧 Add package name, exported target, public-header, standalone, aggregate, and
   consumer-probe metadata without breaking `openstrata.library/v1alpha1`.
-- ⬜ Verify only the declared package closure and exclude source-tree targets,
+- 🚧 Verify only the declared package closure and exclude source-tree targets,
   ambient prefixes, and unrelated workspace installs.
 - ⬜ Add a workspace-wide orchestration path and per-component structured result.
 - ⬜ Integrate the result into source CI with negative tests for missing targets

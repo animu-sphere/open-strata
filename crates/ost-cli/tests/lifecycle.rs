@@ -1186,6 +1186,57 @@ fn library_scoped_build_test_package_uses_only_its_install_tree() {
     );
     assert!(target.join("library-test.json").is_file());
 
+    let consumer = sb.ost(&["--json", "library", "verify-consumer", "."]);
+    assert!(
+        consumer.status.success(),
+        "installed consumer verification failed:\n{}",
+        out_text(&consumer)
+    );
+    let consumer_value: serde_json::Value = serde_json::from_slice(&consumer.stdout)
+        .unwrap_or_else(|error| {
+            panic!("consumer JSON is invalid: {error}\n{}", out_text(&consumer))
+        });
+    assert_eq!(
+        consumer_value["data"]["schema"],
+        "openstrata.library-consumer-verification/v1alpha1"
+    );
+    assert_eq!(
+        consumer_value["data"]["checks"]["configure"]["status"],
+        "pass"
+    );
+    assert_eq!(consumer_value["data"]["checks"]["link"]["status"], "pass");
+    assert!(target.join("consumer/library-consumer.json").is_file());
+
+    let descriptor_path = sb.work_file("openstrata.library.yaml");
+    let descriptor = std::fs::read_to_string(&descriptor_path).unwrap();
+    let missing_target = descriptor.replace(
+        "exported_targets: [Work::work]",
+        "exported_targets: [Work::work, Missing::target]",
+    );
+    assert_ne!(
+        missing_target, descriptor,
+        "template package contract changed"
+    );
+    std::fs::write(&descriptor_path, missing_target).unwrap();
+    let refused_consumer = sb.ost(&["--json", "library", "verify-consumer", "."]);
+    assert!(
+        !refused_consumer.status.success(),
+        "missing exported target must fail consumer verification"
+    );
+    let refused_value: serde_json::Value = serde_json::from_slice(&refused_consumer.stdout)
+        .unwrap_or_else(|error| {
+            panic!(
+                "consumer error JSON is invalid: {error}\n{}",
+                out_text(&refused_consumer)
+            )
+        });
+    assert_eq!(
+        refused_value["error"]["code"],
+        "LIBRARY_CONSUMER_CONFIGURE_FAILED"
+    );
+    assert_eq!(refused_value["data"]["checks"]["link"]["status"], "not-run");
+    std::fs::write(&descriptor_path, &descriptor).unwrap();
+
     let mut relocated = record.clone();
     relocated["build_dir"] = serde_json::Value::String(
         sb.work_file("foreign-build-tree")
