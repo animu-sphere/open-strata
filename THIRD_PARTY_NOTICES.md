@@ -24,6 +24,7 @@ Used by:
 - zeroize 1.9.0 — https://github.com/RustCrypto/utils
 
 ```
+
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
