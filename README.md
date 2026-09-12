@@ -31,27 +31,25 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.22.8** — geospatial runtime dogfooding and directly
-composable aggregate products. Workspace products retain exact member archives
-and install their verified payloads into the advertised aggregate layout. A
-canonical OpenUSD 26.08 runtime, HTTP resolver, point-cloud formats and GeoTIFF
-support were composed, probed, exported and reconstructed with the same locked
-identity on a clean Windows consumer. v0.22.7 locks, SDKs and leaf artifacts keep
-their contracts.
+The current release is **v0.22.9** — registry-neutral consumer packaging and
+downstream report intake. Deterministic native, wheel and npm distributions
+retain the exact OST runtime identity and are exercised through relocated or
+isolated clean consumers. Installed ordinary-library packages also have a
+descriptor-scoped consumer verification path. v0.22.8 runtime, lock, aggregate
+product and geospatial dogfood contracts remain valid.
 Per-release detail (objective, shipped capabilities, compatibility, known
 limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
 in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.22.9** milestone derives ecosystem-native consumer packages from
-canonical OST/OCI artifacts while preserving one runtime identity and provenance
-graph. Its unreleased foundation now assembles deterministic wheel/npm archives
-with package-private runtime loaders and exercises them through isolated
-clean-consumer probes. Registry-facing acceptance remains. Runtime
-UX/diagnostics follows in v0.22.10, and DCC host adapters remain v0.23.0.
+The active **v0.22.10** milestone makes composition ordinary to use, explain and
+diagnose, and closes the reusable correctness gaps found across all 71
+downstream OST reports. Registry-facing consumer acceptance, relocatable runtime
+metadata, package/lock identity enforcement and bounded probe diagnostics are
+part of that work. CI/release expansion and DCC host adapters remain v0.23.0.
 See the [composition guide](docs/guides/compose-a-runtime.md),
-[v0.22.8 record](docs/releases/v0.22.8.md),
+[v0.22.9 record](docs/releases/v0.22.9.md),
 [current roadmap](docs/roadmap/current.md) and
-[runtime-composition plan](docs/roadmap/runtime-composition.md).
+[downstream report intake](docs/roadmap/downstream-report-intake.md).
 
 ## Reference projects
 

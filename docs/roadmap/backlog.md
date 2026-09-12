@@ -9,15 +9,15 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-v0.22.9 consumer packaging is active in [current.md](current.md).
-Detailed acceptance for the remaining v0.22.x runtime
-composition slices is in [runtime-composition.md](runtime-composition.md).
+v0.22.10 runtime correctness, UX and diagnostics is active in
+[current.md](current.md). Detailed acceptance is in
+[runtime-composition.md](runtime-composition.md) and the
+[downstream report intake](downstream-report-intake.md).
 
-- ⬜ **v0.22.10 - runtime UX and diagnostics.** Stabilize runtime
-  compose/explain/doctor/exec and machine-readable diagnostics, complete the
-  geospatial clean-consumer pass and decide whether to accept the runtime
-  composition design.
-- ⬜ **v0.23.0 - DCC host adapters and matrix.** Run minimal headless
+- ⬜ **v0.23.0 - release CI, host adapters and matrix.** Add runtime-free and
+  intent-aware workspace cells, pyramid/package release verification,
+  generated/hand-authored lane reconciliation, orphan detection and per-member
+  test evidence. Run minimal headless
   load/open/validate probes with preserved output and explained SKIPs; generate
   Maya `.mod` and Houdini package JSON; publish matrix cells with pinned host
   records, DCC/OS/OpenUSD/Python identities, runtime and plugin artifact digests,
@@ -30,7 +30,7 @@ composition slices is in [runtime-composition.md](runtime-composition.md).
 
 ## Future phases
 
-These remain outside the v0.22.9 -> v0.22.10 -> v0.23.0 mainline. Device
+These remain outside the v0.22.10 -> v0.23.0 mainline. Device
 diagnostics in v0.22.10 may prepare later GPU work, and `runtime exec` may prepare
 later sessions, but neither expands the active milestone into those systems.
 

@@ -124,7 +124,9 @@ drove the v0.22.3 runtime and component-artifact contracts. The release composes
 ordinary-library dependencies, installs project-owned shared data, and pins
 aggregate membership while preserving per-member evidence. Re-running the
 downstream release lane with that binary is downstream post-release validation,
-not part of the current v0.22.9 roadmap.
+not an open OpenStrata implementation item. The later v0.22.8 report series and
+all other reference-repository reports are reconciled in the
+[downstream report intake](../roadmap/downstream-report-intake.md).
 
 The 2026-08-29 workspace migration exposed the next reusable gap: a green source
 workspace does not prove that every installed CMake package has complete
