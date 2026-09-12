@@ -1,8 +1,8 @@
 # OpenStrata × DCC hosts — third-party host support (direction)
 
 > Status: directional plan for the v0.23.0 adapter/matrix milestone. Discovery
-> and versioned host records shipped in v0.21.0; host execution remains after
-> the v0.22.9 consumer-packaging and v0.22.10 runtime-UX milestones.
+> and versioned host records shipped in v0.21.0; consumer packaging shipped in
+> v0.22.9, and host execution remains after the v0.22.10 runtime-UX milestone.
 > OpenStrata's first-class surface is **applications
 > grown on the OpenStrata Runtime** (`ost app` over the certified runtime,
 > capabilities, extensions, and sessions). Existing DCCs — Maya, Houdini, Nuke —

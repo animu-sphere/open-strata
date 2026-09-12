@@ -4,7 +4,7 @@ status: candidate
 owners:
   - openstrata-maintainers
 created: 2026-08-29
-updated: 2026-08-29
+updated: 2026-09-12
 applies_to: post-v0.22.9
 ---
 
@@ -16,17 +16,15 @@ into independently reviewable slices. It is intentionally not assigned a
 release until the active consumer-packaging/runtime-UX/DCC milestone ladder is
 reconciled with release capacity.
 
-Legend: 🚧 in progress · ⬜ not started
+The descriptor-scoped ordinary-library consumer lifecycle, package/target
+metadata and declared-closure isolation shipped in
+[v0.22.9](../releases/v0.22.9.md). This plan now contains only the remaining
+workspace-wide, dependency and architecture work.
+
+Legend: ⬜ not started
 
 ## Phase A - installed consumer correctness (P0)
 
-- 🚧 Prototype one descriptor-scoped `verify-consumer` lifecycle for ordinary
-  libraries: build, install, clean prefix, generated CMake consumer, link, and
-  optional execution.
-- 🚧 Add package name, exported target, public-header, standalone, aggregate, and
-  consumer-probe metadata without breaking `openstrata.library/v1alpha1`.
-- 🚧 Verify only the declared package closure and exclude source-tree targets,
-  ambient prefixes, and unrelated workspace installs.
 - ⬜ Add a workspace-wide orchestration path and per-component structured result.
 - ⬜ Integrate the result into source CI with negative tests for missing targets
   and source-tree leakage.

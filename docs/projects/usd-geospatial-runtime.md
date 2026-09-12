@@ -95,5 +95,7 @@ runtime from immutable artifacts and demonstrates:
   [USD Point Cloud Plugins](usd-pointcloud-plugins.md).
 - Transport provider: [USD HTTP Resolver](usd-http-resolver.md).
 - Raster workspace: [USD Raster Plugins](usd-raster-plugins.md).
+- Planned vector-format expansion:
+  [USD Vector Plugins](usd-vector-plugins.md).
 - Formation execution/composition model:
   [formations.md](../design/proposed/formations.md).

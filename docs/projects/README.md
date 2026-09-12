@@ -2,9 +2,9 @@
 
 **Reference projects** are real downstream repositories that actively exercise
 OpenStrata's contracts. OpenStrata is developed against them rather than against
-isolated examples: they prove the runtime, artifact, plugin, renderer, CI, and
-validation contracts work on substantially different, independently released
-project types.
+isolated examples: they prove the runtime, artifact, plugin, library, host,
+renderer, CI, and validation contracts work on substantially different,
+independently released project types.
 
 They are **not** samples, demos, toy projects, or bundled examples. Each is its
 own repository with its own architecture, release policy, and authoritative
@@ -33,8 +33,14 @@ OpenStrata ecosystem
 ├── usd-raster-plugins
 │   └── reference GeoTIFF/raster plugin workspace
 │
+├── usd-vector-plugins
+│   └── reference GeoJSON/vector plugin workspace
+│
 ├── usd-vrm-plugins
 │   └── reference multi-bundle OpenUSD plugin workspace
+│
+├── usd-stage-runner
+│   └── reference interactive Stage runtime and host workspace
 │
 └── hydra-merlin
     └── reference renderer project
@@ -56,7 +62,9 @@ every build unit into an artificial package abstraction.
 | [USD Point Cloud Plugins](usd-pointcloud-plugins.md) | Plugin workspace | Four geospatial file formats, shared authoring/tiling stack, format arguments | `configure` / `build` / `test`, `plugin build` / `test` / `view` |
 | [USD HTTP Resolver](usd-http-resolver.md) | Resolver workspace | Random-access HTTP transport, cache identity, resolver/file-format separation | `runtime pull`, `build`, `test` |
 | [USD Raster Plugins](usd-raster-plugins.md) | Plugin workspace | Windowed GeoTIFF reads, explicit georeferencing, transport-neutral raster boundary | `configure`, `build`, `test` |
+| [USD Vector Plugins](usd-vector-plugins.md) | Plugin workspace | GeoJSON import, deterministic vector authoring, mixed plugin/library product provenance | `configure` / `build` / `test`, `plugin build` / `test` / `run` / `package` |
 | [USD VRM Plugins](usd-vrm-plugins.md) | Plugin workspace | Typed schemas, file formats, resolver, bundle graph | `plugin build` / `test` / `run` / `view` / `package` |
+| [USD Stage Runner](usd-stage-runner.md) | Application workspace | Mixed library/schema/tool graph, named build intent, standalone and usdview host integration | `build` / `test`, `library build` / `test`, `plugin build` / `test` / `view` |
 | [hdMerlin](hydra-merlin.md) | Renderer project | Managed renderer build, evidence, Hydra discovery | `build`, `validate`, `renderer view` |
 
 - **[USD Geospatial Runtime](usd-geospatial-runtime.md)** —
@@ -89,12 +97,24 @@ every build unit into an artificial package abstraction.
   an early GeoTIFF/raster workspace with OpenUSD-independent core libraries,
   explicit georeferencing and windowed reads. Read it for the raster side of the
   resolver/file-format boundary and the staged path to packaged USD authoring.
+- **[USD Vector Plugins](usd-vector-plugins.md)** —
+  [`animu-sphere/usd-vector-plugins`](https://github.com/animu-sphere/usd-vector-plugins):
+  a GeoJSON `SdfFileFormat` bundle backed by format-independent vector,
+  GeoJSON-reader and OpenUSD-authoring libraries. Read it for deterministic
+  GIS feature mapping, generated-template adoption, L0–L5 verification, and a
+  release-provenance mismatch caught by downstream composition.
 - **[USD VRM Plugins](usd-vrm-plugins.md)** —
   [`animu-sphere/usd-vrm-plugins`](https://github.com/animu-sphere/usd-vrm-plugins):
   a multi-bundle OpenUSD plugin workspace (schema bundle, `SdfFileFormat` plugin,
   `ArPackageResolver`, shared container library). Read it for workspace
   dependency composition, plugin lifecycle testing, packaging, clean-install
   validation, and generated CI matrices.
+- **[USD Stage Runner](usd-stage-runner.md)** —
+  [`animu-sphere/usd-stage-runner`](https://github.com/animu-sphere/usd-stage-runner):
+  an experimental real-time Stage runtime composed from backend-neutral core
+  libraries, SDL and Jolt adapters, a codeless schema plugin, a standalone tool,
+  and a usdview host add-on. Read it for mixed-member release graphs, scoped
+  library lifecycles, named build intents, and host-plugin composition feedback.
 - **[hdMerlin](hydra-merlin.md)** —
   [`animu-sphere/hydra-merlin`](https://github.com/animu-sphere/hydra-merlin): a
   host-neutral Vulkan renderer with an optional Hydra 2 adapter. Read it for
@@ -108,12 +128,13 @@ The strongest narrative is not that downstream projects independently use
 `ost`. It is that **independently released OpenUSD components can be resolved,
 validated, and composed into one reproducible execution environment**. The
 plugin workspaces exercise format, schema and ordinary-library boundaries; the
-HTTP resolver owns transport; the raster and point-cloud projects consume that
-transport without coupling formats to it; hdMerlin exercises the renderer
-boundary; and USD Geospatial Runtime binds those artifacts into one locked,
-distributable runtime/SDK. A separate Formation case opens VRM through the VRM
-bundles and renders it with hdMerlin; other stage inspections do not imply
-renderer compatibility.
+HTTP resolver owns transport; the raster, vector and point-cloud projects keep
+format behavior independent of transport; USD Stage Runner exercises the
+application-host and interactive runtime boundary; hdMerlin exercises the
+renderer boundary; and USD Geospatial Runtime binds selected geospatial
+artifacts into one locked, distributable runtime/SDK. A separate Formation case
+opens VRM through the VRM bundles and renders it with hdMerlin; other stage
+inspections do not imply renderer compatibility.
 
 Per-command composition is the [Formation](../design/proposed/formations.md)
 model: `ost formation resolve|inspect|lock|run` shipped in v0.19.0 and

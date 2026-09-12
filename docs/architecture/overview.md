@@ -1,6 +1,6 @@
 # Architecture
 
-*Last verified against: v0.22.8 (workspace version 0.22.8).* This document
+*Last verified against: v0.22.9 (workspace version 0.22.9).* This document
 describes the system as it exists on the default branch; historical alternatives
 belong in design notes, not here.
 
