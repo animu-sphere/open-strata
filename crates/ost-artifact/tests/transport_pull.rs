@@ -1169,6 +1169,7 @@ fn advancing_blob_can_outlast_the_body_idle_budget() {
             response_timeout: Some(Duration::from_secs(1)),
             body_idle_timeout: Some(Duration::from_millis(100)),
             overall_timeout: None,
+            max_attempts: 1,
             ..OciTransferPolicy::default()
         },
     );

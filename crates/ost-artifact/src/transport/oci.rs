@@ -31,6 +31,10 @@ use std::io::{Read, Write};
 use std::time::{Duration, Instant, SystemTime};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use ureq::unversioned::resolver::DefaultResolver;
+use ureq::unversioned::transport::{
+    Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport,
+};
 
 use ost_core::{digest, Category, Error, Result};
 
@@ -91,6 +95,12 @@ const MAX_PRODUCER_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
 /// Maximum redirect hops on a blob GET (registries bounce to CDN storage).
 const MAX_REDIRECTS: usize = 5;
 
+/// `ureq` 3.4.1 correctly treats `timeout_recv_body` as a total body budget.
+/// OpenStrata exposes an idle budget instead, so keep ureq's phase marker far
+/// enough in the future for the transport wrapper below to renew the actual
+/// socket wait on every read.
+const UREQ_BODY_PHASE_SENTINEL: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+
 /// Incomplete OCI blobs live outside per-invocation scratch directories so a
 /// later digest-pinned pull can resume them. They are never indexed by the
 /// artifact store and only move into the verification path after descriptor
@@ -105,6 +115,7 @@ const ENV_PASSWORD: &str = "OST_REGISTRY_PASSWORD";
 /// Read-only OCI registry backend.
 pub struct OciTransport {
     agent: ureq::Agent,
+    streaming_agent: ureq::Agent,
     transfer: OciTransferPolicy,
     /// Use plain `http://` instead of `https://` — fixture registries and
     /// air-gapped mirrors only, never the public internet.
@@ -167,9 +178,11 @@ impl OciTransport {
         // `WWW-Authenticate` for the token exchange). `max_redirects(0)` +
         // `max_redirects_will_error(false)` returns the 3xx response instead of
         // erroring, so blob redirects are still followed manually (see
-        // get_following_redirects). Blob bodies use an idle timeout, not a
-        // total-duration timeout: a continuously advancing large transfer may
-        // run for as long as it needs unless an overall ceiling is requested.
+        // get_following_redirects). `ureq`'s receive-body timeout is a total
+        // phase budget, while streamed blobs need the idle timeout this API
+        // promises. Their dedicated agent gets a distant phase marker and
+        // BodyIdleTimeoutTransport renews the actual socket wait for each read;
+        // DeadlineReader enforces the blob's optional end-to-end ceiling.
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .max_redirects(0)
@@ -180,8 +193,26 @@ impl OciTransport {
             .timeout_global(transfer.overall_timeout)
             .user_agent(format!("ost/{}", env!("CARGO_PKG_VERSION")))
             .build();
+        let streaming_config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .max_redirects_will_error(false)
+            .timeout_connect(transfer.connect_timeout)
+            .timeout_recv_response(transfer.response_timeout)
+            .timeout_recv_body(transfer.body_idle_timeout.map(|_| UREQ_BODY_PHASE_SENTINEL))
+            .timeout_global(None)
+            .user_agent(format!("ost/{}", env!("CARGO_PKG_VERSION")))
+            .build();
+        let connector = DefaultConnector::default().chain(BodyIdleTimeoutConnector {
+            timeout: transfer.body_idle_timeout,
+        });
         OciTransport {
             agent: ureq::Agent::new_with_config(config),
+            streaming_agent: ureq::Agent::with_parts(
+                streaming_config,
+                connector,
+                DefaultResolver::default(),
+            ),
             transfer,
             plain_http,
             tokens: RefCell::new(HashMap::new()),
@@ -214,9 +245,10 @@ impl OciTransport {
         url: &str,
         accept: &str,
         headers: &[(&str, String)],
+        stream_body: bool,
     ) -> Result<HttpResponse> {
         let auth = self.auth_header(reference)?;
-        match self.raw_get(url, accept, auth.as_deref(), headers) {
+        match self.raw_get(url, accept, auth.as_deref(), headers, stream_body) {
             Err(RequestFailure::Status(401, resp)) => {
                 let challenge = resp_header(&resp, "www-authenticate")
                     .unwrap_or("")
@@ -224,7 +256,7 @@ impl OciTransport {
                 let scope = format!("repository:{}:pull", reference.repository);
                 let token = self.exchange_token(reference, &challenge, &scope)?;
                 let bearer = format!("Bearer {token}");
-                match self.raw_get(url, accept, Some(&bearer), headers) {
+                match self.raw_get(url, accept, Some(&bearer), headers, stream_body) {
                     Ok(resp) => Ok(resp),
                     Err(f) => Err(self.classify(reference, url, false, f)),
                 }
@@ -242,7 +274,7 @@ impl OciTransport {
         url: &str,
         accept: &str,
     ) -> Result<(HttpResponse, String)> {
-        self.get_following_redirects_with_headers(reference, url, accept, &[], false)
+        self.get_following_redirects_with_headers(reference, url, accept, &[], false, false)
     }
 
     fn get_following_redirects_with_headers(
@@ -252,10 +284,11 @@ impl OciTransport {
         accept: &str,
         headers: &[(&str, String)],
         allow_range_not_satisfiable: bool,
+        stream_body: bool,
     ) -> Result<(HttpResponse, String)> {
         let registry_origin = origin_of(url).to_string();
         let mut auth_still_allowed = true;
-        let mut resp = self.get_with_headers(reference, url, accept, headers)?;
+        let mut resp = self.get_with_headers(reference, url, accept, headers, stream_body)?;
         let mut hops = 0;
         let mut current_url = url.to_string();
 
@@ -282,7 +315,7 @@ impl OciTransport {
                 None
             };
             resp = self
-                .raw_get(&next, accept, auth.as_deref(), headers)
+                .raw_get(&next, accept, auth.as_deref(), headers, stream_body)
                 .map_err(|f| self.classify(reference, &next, false, f))?;
             current_url = next;
         }
@@ -307,8 +340,14 @@ impl OciTransport {
         accept: &str,
         auth: Option<&str>,
         headers: &[(&str, String)],
+        stream_body: bool,
     ) -> std::result::Result<HttpResponse, RequestFailure> {
-        let mut req = self.agent.get(url).header("Accept", accept);
+        let agent = if stream_body {
+            &self.streaming_agent
+        } else {
+            &self.agent
+        };
+        let mut req = agent.get(url).header("Accept", accept);
         for (name, value) in headers {
             req = req.header(*name, value);
         }
@@ -500,7 +539,7 @@ impl OciTransport {
         };
 
         let resp = self
-            .raw_get(&url, "application/json", basic.as_deref(), &[])
+            .raw_get(&url, "application/json", basic.as_deref(), &[], false)
             .map_err(|f| match f {
                 RequestFailure::Status(code, _) => {
                     auth_denied(format!("token endpoint {realm} answered HTTP {code}"))
@@ -636,6 +675,7 @@ impl OciTransport {
                 "application/octet-stream",
                 &range_headers,
                 offset > 0,
+                true,
             );
             let (resp, final_url) = match response {
                 Ok(value) => value,
@@ -1084,6 +1124,63 @@ impl OciTransport {
             ));
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct BodyIdleTimeoutConnector {
+    timeout: Option<Duration>,
+}
+
+impl<T: Transport> Connector<T> for BodyIdleTimeoutConnector {
+    type Out = BodyIdleTimeoutTransport<T>;
+
+    fn connect(
+        &self,
+        _: &ConnectionDetails<'_>,
+        chained: Option<T>,
+    ) -> std::result::Result<Option<Self::Out>, ureq::Error> {
+        Ok(chained.map(|inner| BodyIdleTimeoutTransport {
+            inner,
+            timeout: self.timeout,
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct BodyIdleTimeoutTransport<T> {
+    inner: T,
+    timeout: Option<Duration>,
+}
+
+impl<T: Transport> Transport for BodyIdleTimeoutTransport<T> {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        self.inner.buffers()
+    }
+
+    fn transmit_output(
+        &mut self,
+        amount: usize,
+        timeout: NextTimeout,
+    ) -> std::result::Result<(), ureq::Error> {
+        self.inner.transmit_output(amount, timeout)
+    }
+
+    fn await_input(&mut self, mut timeout: NextTimeout) -> std::result::Result<bool, ureq::Error> {
+        if timeout.reason == ureq::Timeout::RecvBody {
+            if let Some(idle_timeout) = self.timeout {
+                timeout.after = idle_timeout.into();
+            }
+        }
+        self.inner.await_input(timeout)
+    }
+
+    fn is_open(&mut self) -> bool {
+        self.inner.is_open()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.inner.is_tls()
     }
 }
 

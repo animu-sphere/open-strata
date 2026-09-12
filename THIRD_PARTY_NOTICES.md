@@ -20,7 +20,7 @@ not edit by hand.
 ## Apache License 2.0
 
 Used by:
-- ureq-proto 0.6.1 — https://github.com/algesten/ureq-proto
+- ureq-proto 0.6.2 — https://github.com/algesten/ureq-proto
 - zeroize 1.9.0 — https://github.com/RustCrypto/utils
 
 ```
@@ -453,11 +453,11 @@ Used by:
 - clap_derive 4.6.4 — https://github.com/clap-rs/clap
 - clap_lex 1.1.0 — https://github.com/clap-rs/clap
 - colorchoice 1.0.5 — https://github.com/rust-cli/anstyle.git
-- crc32fast 1.5.0 — https://github.com/srijs/rust-crc32fast
+- crc32fast 1.5.1 — https://github.com/srijs/rust-crc32fast
 - is_terminal_polyfill 1.70.2 — https://github.com/polyfill-rs/is_terminal_polyfill
 - once_cell_polyfill 1.70.2 — https://github.com/polyfill-rs/once_cell_polyfill
 - serde_spanned 1.1.1 — https://github.com/toml-rs/toml
-- toml 1.1.4+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml 1.1.5+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_datetime 1.1.1+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_edit 0.25.13+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_parser 1.1.3+spec-1.1.0 — https://github.com/toml-rs/toml
@@ -1310,11 +1310,11 @@ Used by:
 - errno 0.3.14 — https://github.com/lambda-fairy/rust-errno
 - filetime 0.2.29 — https://github.com/alexcrichton/filetime
 - find-msvc-tools 0.1.9 — https://github.com/rust-lang/cc-rs
-- flate2 1.1.9 — https://github.com/rust-lang/flate2-rs
+- flate2 1.1.10 — https://github.com/rust-lang/flate2-rs
 - hashbrown 0.17.1 — https://github.com/rust-lang/hashbrown
 - heck 0.5.0 — https://github.com/withoutboats/heck
 - httparse 1.10.1 — https://github.com/seanmonstar/httparse
-- indexmap 2.14.0 — https://github.com/indexmap-rs/indexmap
+- indexmap 2.14.2 — https://github.com/indexmap-rs/indexmap
 - jobserver 0.1.34 — https://github.com/rust-lang/jobserver-rs
 - linux-raw-sys 0.12.1 — https://github.com/sunfishcode/linux-raw-sys
 - log 0.4.33 — https://github.com/rust-lang/log
@@ -2189,7 +2189,7 @@ Used by:
 - dirs-sys 0.5.0 — https://github.com/dirs-dev/dirs-sys-rs
 - itoa 1.0.18 — https://github.com/dtolnay/itoa
 - libc 0.2.186 — https://github.com/rust-lang/libc
-- miniz_oxide 0.8.9 — https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
+- miniz_oxide 0.9.1 — https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
 - proc-macro2 1.0.106 — https://github.com/dtolnay/proc-macro2
 - quote 1.0.46 — https://github.com/dtolnay/quote
 - ryu 1.0.23 — https://github.com/dtolnay/ryu
@@ -2502,7 +2502,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- ureq 3.4.0 — https://github.com/algesten/ureq
+- ureq 3.4.1 — https://github.com/algesten/ureq
 
 ```
 MIT License
