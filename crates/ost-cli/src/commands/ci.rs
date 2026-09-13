@@ -334,6 +334,151 @@ fn host_requirement_gaps(matrix: &SupportMatrix) -> Vec<String> {
 const HOST_REQUIREMENT_GAP_HINT: &str = "copy each pinned runtime requirement into the \
      source cell's host_packages block, then regenerate the workflow";
 
+fn yaml_strings_for_key(value: &serde_yaml::Value, key: &str) -> Vec<String> {
+    fn visit(value: &serde_yaml::Value, key: &str, found: &mut Vec<String>) {
+        match value {
+            serde_yaml::Value::Mapping(mapping) => {
+                for (name, value) in mapping {
+                    if name.as_str() == Some(key) {
+                        if let Some(value) = value.as_str() {
+                            found.push(value.to_string());
+                        }
+                    }
+                    visit(value, key, found);
+                }
+            }
+            serde_yaml::Value::Sequence(sequence) => {
+                for value in sequence {
+                    visit(value, key, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut found = Vec::new();
+    visit(value, key, &mut found);
+    found
+}
+
+/// Check each declared hand-authored workflow against the matrix contract it
+/// mirrors. A workflow can consume runtime pins through `ost ci matrix` (the
+/// preferred path), or carry the exact literals itself. Either way the cell
+/// names make the scope explicit and the bootstrap version stays checkable
+/// before the workflow has installed `ost`.
+fn external_workflow_issues(matrix: &SupportMatrix) -> Vec<String> {
+    let mut issues = Vec::new();
+    for workflow in &matrix.external_workflows {
+        let source = match std::fs::read_to_string(&workflow.path) {
+            Ok(source) => source,
+            Err(error) => {
+                issues.push(format!(
+                    "{}: cannot read declared external workflow: {error}",
+                    workflow.path
+                ));
+                continue;
+            }
+        };
+        let document: serde_yaml::Value = match serde_yaml::from_str(&source) {
+            Ok(document) => document,
+            Err(error) => {
+                issues.push(format!(
+                    "{}: declared external workflow is not valid YAML: {error}",
+                    workflow.path
+                ));
+                continue;
+            }
+        };
+        // Re-rendering the parsed tree removes comments. Literal pin checks
+        // must be satisfied by workflow data or scripts, not by an explanatory
+        // comment that happens to mention the current digest.
+        let effective_source = serde_yaml::to_string(&document).unwrap_or_default();
+
+        match &matrix.bootstrap {
+            Some(bootstrap) => {
+                let versions = yaml_strings_for_key(&document, "OST_VERSION");
+                if versions.is_empty() {
+                    issues.push(format!(
+                        "{}: declares no OST_VERSION equal to bootstrap.ost.version '{}'",
+                        workflow.path, bootstrap.ost.version
+                    ));
+                } else {
+                    for version in versions {
+                        if version != bootstrap.ost.version {
+                            issues.push(format!(
+                                "{}: OST_VERSION '{}' differs from bootstrap.ost.version '{}'",
+                                workflow.path, version, bootstrap.ost.version
+                            ));
+                        }
+                    }
+                }
+            }
+            None => issues.push(format!(
+                "{}: an external workflow needs matrix-level bootstrap.ost.version so its CLI pin can be checked",
+                workflow.path
+            )),
+        }
+
+        let run_scripts = yaml_strings_for_key(&document, "run");
+        for name in &workflow.cells {
+            let Some(cell) = matrix.cells.iter().find(|cell| cell.name == *name) else {
+                // Structural validation reports this first. Keep this function
+                // total in case it is reused with a programmatically-built
+                // matrix that has not yet been validated.
+                continue;
+            };
+            if run_scripts
+                .iter()
+                .any(|run| run.contains("ci matrix") && run.contains(name))
+            {
+                continue;
+            }
+
+            let mut missing = Vec::new();
+            if let Some(runtime) = &cell.runtime_artifact {
+                if !effective_source.contains(runtime) {
+                    missing.push("runtime_artifact");
+                }
+            }
+            if let Some(remote) = &cell.runtime_remote {
+                if let Some(digest) = remote.pinned_oci_digest() {
+                    if !effective_source.contains(&digest) {
+                        missing.push("runtime_remote digest");
+                    }
+                }
+            }
+            if let Some(plugin) = &cell.plugin_artifact {
+                if !effective_source.contains(plugin) {
+                    missing.push("plugin_artifact");
+                }
+            }
+            if !missing.is_empty() {
+                issues.push(format!(
+                    "{}: cell '{}' neither consumes it by name through `ost ci matrix` nor contains its exact {} pin(s)",
+                    workflow.path,
+                    name,
+                    missing.join(", ")
+                ));
+            }
+        }
+    }
+    issues
+}
+
+fn bootstrap_version_skew(matrix: &SupportMatrix) -> Option<String> {
+    if matrix.external_workflows.is_empty() {
+        return None;
+    }
+    let bootstrap = matrix.bootstrap.as_ref()?;
+    (bootstrap.ost.version != env!("CARGO_PKG_VERSION")).then(|| {
+        format!(
+            "local ost {} differs from CI bootstrap {}; validate generated and external lanes with the pinned CLI before relying on behavior introduced after it",
+            env!("CARGO_PKG_VERSION"),
+            bootstrap.ost.version
+        )
+    })
+}
+
 fn validate(
     matrix_flag: Option<&str>,
     resolve: bool,
@@ -414,12 +559,15 @@ fn validate(
     let evidence_gaps = evidence_gate_gaps(&matrix);
     let host_requirement_gaps = host_requirement_gaps(&matrix);
     let stale_workflows = stale_generated_workflows(&path, &matrix);
+    let external_workflow_issues = external_workflow_issues(&matrix);
+    let bootstrap_version_skew = bootstrap_version_skew(&matrix);
 
     let ok = unresolved.is_empty()
         && ack_errors.is_empty()
         && support_issues.is_empty()
         && evidence_gaps.is_empty()
-        && host_requirement_gaps.is_empty();
+        && host_requirement_gaps.is_empty()
+        && external_workflow_issues.is_empty();
     if fmt.is_json() {
         let mut warnings: Vec<serde_json::Value> = placeholders
             .iter()
@@ -445,6 +593,12 @@ fn validate(
                 "message": stale_workflow_message(path),
             })
         }));
+        if let Some(message) = &bootstrap_version_skew {
+            warnings.push(serde_json::json!({
+                "code": "CI_BOOTSTRAP_VERSION_SKEW",
+                "message": message,
+            }));
+        }
         output::report_with_warnings(
             ok,
             &serde_json::json!({
@@ -460,6 +614,8 @@ fn validate(
                 "evidence_gaps": evidence_gaps,
                 "host_requirement_gaps": host_requirement_gaps,
                 "stale_workflows": stale_workflows,
+                "external_workflows": matrix.external_workflows.iter().map(|workflow| &workflow.path).collect::<Vec<_>>(),
+                "external_workflow_issues": external_workflow_issues,
             }),
             &warnings,
         );
@@ -481,6 +637,9 @@ fn validate(
         for stale in &stale_workflows {
             println!("  WARNING: {}", stale_workflow_message(stale));
         }
+        if let Some(message) = &bootstrap_version_skew {
+            println!("  WARNING: {message}");
+        }
         for hit in &ack_errors {
             println!("  ERROR: publish-capable cell needs billing acknowledgement — {hit}");
         }
@@ -501,6 +660,9 @@ fn validate(
         }
         if !host_requirement_gaps.is_empty() {
             println!("  {HOST_REQUIREMENT_GAP_HINT}");
+        }
+        for issue in &external_workflow_issues {
+            println!("  EXTERNAL WORKFLOW DRIFT: {issue}");
         }
         if let Some(support_path) = &support_path {
             if support_issues.is_empty() {
@@ -660,6 +822,16 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
             "candidate_cells": matrix.candidate_cells().iter().map(|cell| cell.name.as_str()).collect::<Vec<_>>(),
         })
     });
+    let external_workflows = matrix
+        .external_workflows
+        .iter()
+        .map(|workflow| {
+            serde_json::json!({
+                "path": workflow.path,
+                "cells": workflow.cells,
+            })
+        })
+        .collect::<Vec<_>>();
 
     if fmt.is_json() {
         let warnings = stale_workflows
@@ -678,6 +850,7 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
                 "cells": matrix.cells.len(),
                 "lanes": lanes,
                 "workflows": workflows,
+                "external_workflows": external_workflows,
                 "stale_workflows": stale_workflows,
                 "hosted_jobs": hosted_jobs,
                 "metered_runner_classes": metered,
@@ -705,6 +878,13 @@ fn plan(matrix_flag: Option<&str>, fmt: Format) -> Result<()> {
         lane_count(Lane::WorkflowDispatch),
     );
     println!("  workflows:        {}", workflows.join(", "));
+    for workflow in &matrix.external_workflows {
+        println!(
+            "  external:         {} (cells: {})",
+            workflow.path,
+            workflow.cells.join(", ")
+        );
+    }
     for stale in &stale_workflows {
         println!("  WARNING: {}", stale_workflow_message(stale));
     }

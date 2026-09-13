@@ -1154,6 +1154,88 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
         .contains("pull_request, main, scheduled, workflow_dispatch"));
 }
 
+/// Hand-authored lanes are part of the validated CI contract once declared:
+/// their bootstrap pin and the cells whose runtime pins they consume cannot
+/// silently drift away from `openstrata.ci.yaml`.
+#[test]
+fn declared_external_workflow_is_checked_for_pin_drift() {
+    let sb = Sandbox::new("external-workflow-drift");
+    let matrix = linux_pr_lanes_yaml().replace(
+        "schema: 1\n",
+        "schema: 1\nexternal_workflows:\n  - path: .github/workflows/windows-extra.yml\n    cells: [plugin-pr-linux]\n",
+    );
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), matrix).unwrap();
+    let workflow = sb.base.join(".github/workflows/windows-extra.yml");
+    std::fs::create_dir_all(workflow.parent().unwrap()).unwrap();
+    std::fs::write(
+        &workflow,
+        "env:\n  OST_VERSION: 0.9.0\njobs:\n  extra:\n    steps:\n      - run: ost ci matrix --lane pull_request --json | jq '.data.cells[] | select(.name == \"plugin-pr-linux\")'\n",
+    )
+    .unwrap();
+
+    let valid = stdout_json(&sb.ost(&["--json", "ci", "validate"]));
+    assert_eq!(
+        valid["ok"], true,
+        "declared projection should validate: {valid}"
+    );
+    assert_eq!(
+        valid["data"]["external_workflows"],
+        serde_json::json!([".github/workflows/windows-extra.yml"])
+    );
+    assert_eq!(
+        valid["data"]["external_workflow_issues"],
+        serde_json::json!([])
+    );
+    let plan = stdout_json(&sb.ost(&["--json", "ci", "plan"]));
+    assert_eq!(
+        plan["data"]["external_workflows"][0]["path"],
+        ".github/workflows/windows-extra.yml"
+    );
+    assert_eq!(
+        plan["data"]["external_workflows"][0]["cells"],
+        serde_json::json!(["plugin-pr-linux"])
+    );
+    assert!(valid["warnings"].as_array().unwrap().iter().any(|warning| {
+        warning["code"] == "CI_BOOTSTRAP_VERSION_SKEW"
+            && warning["message"].as_str().unwrap().contains("0.9.0")
+    }));
+
+    // A copied old CLI pin plus a cell name without the matrix projection is
+    // not accepted as evidence that the runtime digest is still canonical.
+    std::fs::write(
+        &workflow,
+        "env:\n  OST_VERSION: 0.8.0\n# plugin-pr-linux\njobs: {}\n",
+    )
+    .unwrap();
+    let out = sb.ost(&["--json", "ci", "validate"]);
+    assert_eq!(out.status.code(), Some(5));
+    let invalid: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let issues = invalid["data"]["external_workflow_issues"]
+        .as_array()
+        .unwrap();
+    assert!(issues.iter().any(|issue| issue
+        .as_str()
+        .unwrap()
+        .contains("bootstrap.ost.version '0.9.0'")));
+    assert!(issues
+        .iter()
+        .any(|issue| issue.as_str().unwrap().contains("runtime_artifact")));
+
+    // A specialized workflow may still carry literal pins. They are accepted
+    // only when every declared cell pin exactly matches the matrix.
+    std::fs::write(
+        &workflow,
+        format!(
+            "env:\n  OST_VERSION: 0.9.0\n  RUNTIME_ARTIFACT: sha256:{}\n  RUNTIME_OCI_DIGEST: sha256:{}\njobs: {{}}\n",
+            "ab".repeat(32),
+            "ee".repeat(32)
+        ),
+    )
+    .unwrap();
+    let literal = stdout_json(&sb.ost(&["--json", "ci", "validate"]));
+    assert_eq!(literal["ok"], true, "exact literal pins should validate");
+}
+
 /// A workspace cell is the shape a plain library or a workspace-built
 /// executable has (reports 28 §2 / 32 §1). End to end: it validates, projects
 /// as its own kind, and generates a job that runs the workspace verbs.

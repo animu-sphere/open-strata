@@ -659,6 +659,25 @@ ost ci generate github --stdout   # print instead (inspect / pipe)
 ost ci generate github --force    # regenerate over the existing workflow
 ```
 
+Repository-specific lanes that the generator cannot express can be declared
+without copying the matrix into a second contract:
+
+```yaml
+external_workflows:
+  - path: .github/workflows/plugin-windows-ci.yml
+    cells: [workspace-graph-pr-windows]
+```
+
+The external workflow should expose its CLI pin as `OST_VERSION` (equal to
+`bootstrap.ost.version`), then obtain its resolved cell with `ost ci matrix
+--json` and select the declared cell by name.
+`ost ci validate` reads the workflow and fails if the bootstrap version drifts,
+the file disappears, or the workflow neither consumes the named matrix cell nor
+contains its exact runtime/plugin pins. With `--support`, the same declared cell
+is also checked against the public support contract. A local CLI version that
+differs from the bootstrap pin produces `CI_BOOTSTRAP_VERSION_SKEW`, so behavior
+introduced after the CI version is not silently assumed.
+
 When they select the canonical `openstrata.ci.yaml`, all three commands account
 for OST-owned workflows that the current matrix no longer emits. If, for
 example, the last scheduled cell is removed while

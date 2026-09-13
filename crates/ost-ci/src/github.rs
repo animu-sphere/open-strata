@@ -1504,6 +1504,7 @@ mod tests {
             runners: BTreeMap::new(),
             source_checks: vec![],
             release: None,
+            external_workflows: vec![],
             cells: vec![
                 SupportCell {
                     up_to: Some(4),
@@ -1553,6 +1554,7 @@ mod tests {
             runners,
             source_checks: vec![],
             release: None,
+            external_workflows: vec![],
             cells: vec![
                 SupportCell {
                     lane: Lane::PullRequest,
