@@ -489,10 +489,31 @@ fn orphaned_generated_workflows_are_reported_and_preserved() {
     );
     let source_only = matrix.replace(&support_cell, "");
     assert_ne!(source_only, matrix, "fixture must remove the support cell");
+
+    // A candidate matrix is not the provenance source named by the generated
+    // banner. Validating it must not claim that the canonical matrix's support
+    // workflow is stale and invite the maintainer to delete a live lane.
+    std::fs::write(sb.base.join("source-only.yaml"), &source_only).unwrap();
+    let candidate =
+        stdout_json(&sb.ost(&["--json", "ci", "validate", "--matrix", "source-only.yaml"]));
+    assert_eq!(candidate["data"]["stale_workflows"], serde_json::json!([]));
+    assert!(!candidate["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| { warning["code"] == "CI_STALE_GENERATED_WORKFLOW" }));
+
     std::fs::write(sb.base.join("openstrata.ci.yaml"), source_only).unwrap();
 
     for command in [
-        vec!["--json", "ci", "validate"],
+        // An explicit path spelling of the canonical matrix still diagnoses it.
+        vec![
+            "--json",
+            "ci",
+            "validate",
+            "--matrix",
+            "./openstrata.ci.yaml",
+        ],
         vec!["--json", "ci", "plan"],
         vec!["--json", "ci", "generate", "github", "--force"],
     ] {
