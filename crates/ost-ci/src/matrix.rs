@@ -449,6 +449,11 @@ pub enum WorkspaceVerify {
     /// and never runs its assertions is coverage in name only.
     #[default]
     Test,
+    /// …then run every discovered plugin bundle through its verification
+    /// pyramid against the composed workspace build.
+    Pyramid,
+    /// …then package every workspace bundle/tool and the aggregate product.
+    Package,
 }
 
 impl WorkspaceVerify {
@@ -457,6 +462,8 @@ impl WorkspaceVerify {
             WorkspaceVerify::Graph => "graph",
             WorkspaceVerify::Build => "build",
             WorkspaceVerify::Test => "test",
+            WorkspaceVerify::Pyramid => "pyramid",
+            WorkspaceVerify::Package => "package",
         }
     }
 }
@@ -537,8 +544,8 @@ pub struct SupportCell {
     /// Profile, e.g. `usd`.
     pub profile: String,
     /// Highest verification level to run (`ost plugin test --up-to`), 0..=6.
-    /// Unset means [`DEFAULT_UP_TO`]; a workspace cell must leave it unset,
-    /// since it runs no bundle pyramid.
+    /// Unset means [`DEFAULT_UP_TO`]. A workspace cell may set it only for the
+    /// `pyramid` and `package` rungs, which run every discovered bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub up_to: Option<u8>,
     /// CPython `major.minor` (e.g. `3.13`) the runtime's schema tooling
@@ -1034,10 +1041,27 @@ impl SupportMatrix {
                         "cell '{name}': kind 'workspace' builds source members and cannot verify a pinned plugin_artifact"
                     )));
                 }
-                if cell.up_to.is_some() {
+                if cell.up_to.is_some()
+                    && !matches!(
+                        cell.verify(),
+                        WorkspaceVerify::Pyramid | WorkspaceVerify::Package
+                    )
+                {
                     return Err(Error::InvalidManifest(format!(
-                        "cell '{name}': up_to is the bundle verification pyramid and does not \
-                         apply to kind 'workspace' — use 'verify' (graph|build|test) instead"
+                        "cell '{name}': up_to applies to a kind 'workspace' cell only when \
+                         verify is 'pyramid' or 'package'"
+                    )));
+                }
+                if cell.is_runtime_free()
+                    && matches!(
+                        cell.verify(),
+                        WorkspaceVerify::Pyramid | WorkspaceVerify::Package
+                    )
+                {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': verify '{}' runs the OpenUSD plugin pyramid and requires \
+                         a runtime_artifact — use graph, build, or test for a runtime-free workspace",
+                        cell.verify().as_str()
                     )));
                 }
                 if cell.publish != Publish::Never {
@@ -1834,9 +1858,10 @@ pub fn starter_matrix() -> String {
 # openstrata.library.yaml) that no bundle requires, and a CLI executable
 # built from the workspace against the runtime, are both invisible to a
 # `bundle:` cell. Declare `kind: workspace` for a cell that builds the
-# workspace CMake tree instead: it validates the dependency graph, runs
-# `ost build`, then runs the workspace's own CTest suite. Source lanes only,
-# and it names no bundle, no up_to, and never publishes.
+# workspace CMake tree instead. Its cumulative ladder can stop after the graph,
+# build, or CTest suite, or continue through every bundle's verification
+# pyramid and workspace/product packaging. Source lanes only; it names no
+# bundle and never publishes.
 #
 #   cells:
 #     - name: workspace-pr-linux
@@ -1848,7 +1873,8 @@ pub fn starter_matrix() -> String {
 #         uri: oci://ghcr.io/<owner>/<runtime-repo>@sha256:<oci-digest>
 #       platform: cy2026
 #       profile: usd
-#       verify: test        # graph | build | test (default test)
+#       verify: package     # graph | build | test | pyramid | package
+#       up_to: 5            # pyramid/package only; default 5
 #
 # A workspace build can intentionally consume no runtime. Omit
 # `runtime_artifact` (and every runtime-only field) and optionally select one
@@ -2240,7 +2266,7 @@ cells:
         assert!(err.to_string().contains("release_min_trust"), "{err}");
     }
 
-    /// A workspace cell: no bundle, no pyramid, and a rung of its own.
+    /// A workspace cell: no bundle, and a cumulative ladder of its own.
     fn workspace_yaml() -> String {
         format!(
             "\
@@ -2277,6 +2303,34 @@ cells:
         let yaml = workspace_yaml().replace("        verify: build\n", "");
         let m = SupportMatrix::from_yaml(&yaml).unwrap();
         assert_eq!(m.cells[0].verify(), WorkspaceVerify::Test);
+    }
+
+    #[test]
+    fn workspace_release_rungs_accept_a_workspace_pyramid_level() {
+        for verify in ["pyramid", "package"] {
+            let yaml = workspace_yaml().replace(
+                "        verify: build\n",
+                &format!("        verify: {verify}\n        up_to: 6\n"),
+            );
+            let matrix = SupportMatrix::from_yaml(&yaml).unwrap();
+            assert_eq!(matrix.cells[0].up_to(), 6);
+            assert_eq!(matrix.cells[0].verify().as_str(), verify);
+        }
+    }
+
+    #[test]
+    fn workspace_plugin_rungs_require_a_runtime() {
+        let yaml = workspace_yaml()
+            .replace(
+                &format!("        runtime_artifact: sha256:{}\n", "ab".repeat(32)),
+                "",
+            )
+            .replace("        verify: build\n", "        verify: pyramid\n");
+        let error = SupportMatrix::from_yaml(&yaml).expect_err("the pyramid needs OpenUSD");
+        assert!(
+            error.to_string().contains("requires a runtime_artifact"),
+            "{error}"
+        );
     }
 
     #[test]

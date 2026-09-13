@@ -185,12 +185,17 @@ cells:
     require_openusd_version: "26.08"
     platform: cy2026
     profile: usd
-    verify: test          # graph | build | test (default test)
+    verify: package       # graph | build | test | pyramid | package
+    up_to: 5              # pyramid/package only; default 5
 ```
 
-It validates the dependency graph, runs `ost build`, then runs the workspace's
-own CTest suite — the members the bundle verbs never reach. Source lanes only; a
-workspace cell names no bundle and publishes nothing.
+The ladder is cumulative. It validates the dependency graph, runs `ost build`,
+and from `verify: test` runs the workspace's own CTest suite — the members the
+bundle verbs never reach. `verify: pyramid` additionally runs `ost plugin test
+--workspace`; `verify: package` then runs `ost plugin package --workspace
+--product`. The optional `up_to` selects the pyramid ceiling for those upper two
+rungs and defaults to 5. Source lanes only; a workspace cell names no bundle and
+publishes nothing.
 
 A workspace lane whose contract is that it needs no OpenUSD runtime omits
 `runtime_artifact` and the other runtime-only fields. It may select a named
@@ -243,7 +248,9 @@ output.
 `verify: graph` is the cheap early PR gate, and it gets a job of its own
 (`pr-workspace-graph`) that stops after the checkout: the graph alone, with
 nothing built and no runtime fetched, verified, or materialized. `verify: build`
-and `verify: test` share one job, since both need the same runtime.
+through `verify: package` share one job, since all of those rungs need the same
+runtime. A runtime-free workspace is limited to graph/build/test because plugin
+pyramid and package verification require OpenUSD.
 
 ## 6. Keep OpenStrata and plain CMake both working
 
