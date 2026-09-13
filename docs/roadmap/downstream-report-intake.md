@@ -49,10 +49,15 @@ superseded failures are not carried forward.
   against `bootstrap.ost.version` and the support contract. Warn when the local
   developer CLI and CI pin exercise meaningfully different behavior. This
   merges HTTP report 03 with VRM reports 36 and 39.
-- Detect stale generated workflow files that are no longer emitted by the
-  current support matrix, as reported in VRM report 38.
 - Attribute `ost test --json` results to each discovered workspace member and
   warn when a testable member contributes zero tests, also from VRM report 38.
+
+### Completed during v0.23.0 development
+
+- `ost ci validate`, `ost ci plan`, and `ost ci generate github` now detect an
+  OST-generated default workflow that the current matrix no longer emits and
+  report `CI_STALE_GENERATED_WORKFLOW` without deleting it. Hand-authored files
+  at the same paths are not claimed. Source: VRM report 38.
 
 ## Closed through v0.22.10
 

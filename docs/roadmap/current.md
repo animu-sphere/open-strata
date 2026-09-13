@@ -5,7 +5,7 @@ The next milestone. Shipped detail is in
 
 ## v0.23.0 - release CI, host adapters and matrix
 
-**Status:** next. **Depends on:** the
+**Status:** active. **Depends on:** the
 [v0.22.10 runtime-correctness foundation](../releases/v0.22.10.md).
 
 Expand release automation and bind the same canonical, digest-pinned runtime
