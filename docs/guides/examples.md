@@ -912,7 +912,8 @@ ost ci matrix --json --lane pull_request   # resolved cells + the bootstrap pin
 ```
 
 Each cell carries its name, lane, resolved `runs_on`, hosted flag, platform,
-profile, kind, optional intent, bundle/up-to or workspace verification rung,
+profile, kind, optional intent, bundle/up-to or workspace verification rung
+(plus up-to for workspace pyramid/package),
 optional `runtime_artifact`/`runtime_remote`, host Python and host packages — so
 a hand-written lane consumes the matrix instead of copying it.
 

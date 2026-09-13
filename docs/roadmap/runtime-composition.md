@@ -23,8 +23,8 @@ summarized in [current.md](current.md); later slices are ordered in
 **Objective:** exercise the same composed runtime identity through complete
 release lanes and truthful DCC-host entry points.
 
-- Extend generated verification through pyramid/package release claims and
-  reconcile generated, externally managed and removed workflow lanes.
+- Reconcile generated and externally managed workflow lanes against the same
+  release pins and support declaration.
 - Attribute test evidence to each discovered workspace member.
 - Model `usdview` and DCC adapters as first-class components rather than
   codeless schema bundles or alternate dependency stores.

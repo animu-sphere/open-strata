@@ -1174,7 +1174,8 @@ fn a_workspace_cell_validates_projects_and_generates() {
              \x20   platform: cy2026\n\
              \x20   profile: usd\n\
              \x20   intent: core-ci\n\
-             \x20   verify: test\n\
+             \x20   verify: package\n\
+             \x20   up_to: 4\n\
              \x20 - name: linux-usd-support\n",
             a = "ab".repeat(32),
             o = "ee".repeat(32),
@@ -1193,9 +1194,9 @@ fn a_workspace_cell_validates_projects_and_generates() {
         .expect("the workspace cell is projected");
     assert_eq!(workspace["kind"], "workspace");
     assert_eq!(workspace["intent"], "core-ci");
-    assert_eq!(workspace["verify"], "test");
+    assert_eq!(workspace["verify"], "package");
     assert_eq!(workspace["bundle"], serde_json::Value::Null);
-    assert_eq!(workspace["up_to"], serde_json::Value::Null);
+    assert_eq!(workspace["up_to"], 4);
     // It still carries the pins a hand-written lane would otherwise copy.
     assert_eq!(
         workspace["runtime_artifact"],
@@ -1214,6 +1215,9 @@ fn a_workspace_cell_validates_projects_and_generates() {
     assert!(text.contains("ost build --target"));
     assert!(text.contains("--intent core-ci"));
     assert!(text.contains("ost test --target"));
+    assert!(text.contains("ost plugin test --workspace --target"));
+    assert!(text.contains("--up-to ${{ matrix.up_to }}"));
+    assert!(text.contains("ost plugin package --workspace --product"));
 }
 
 /// Report 31's step must reach the release lane too: a `publish: candidate`

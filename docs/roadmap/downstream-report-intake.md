@@ -37,10 +37,6 @@ superseded failures are not carried forward.
   in workspace build, package, product composition and capability-aware
   `plugin view` selection. Do not disguise Python/native host integration as a
   codeless schema bundle. Source: [Stage Runner report 03](https://github.com/animu-sphere/usd-stage-runner/blob/main/docs/reports/ost/03-2026-09-02-v0.22.8-usdview-host-plugin-composition.md).
-- Extend workspace CI verification beyond graph/build/test with `pyramid` and
-  `package`, or generate an equivalent release contract/lane. Source:
-  [VRM report 38](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/38-2026-08-30-v0.22.8-workspace-cell-verbs-and-orphaned-lanes.md)
-  and [report 39](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/39-2026-09-01-v0.22.8-release-lane-first-execution.md).
 - Add an externally managed (`generate = false` or equivalent) cell/mirror
   declaration so hand-authored workflow CLI pins and runtime digests are checked
   against `bootstrap.ost.version` and the support contract. Warn when the local
@@ -51,6 +47,11 @@ superseded failures are not carried forward.
 
 ### Completed during v0.23.0 development
 
+- Workspace source cells accept cumulative `verify: pyramid` and
+  `verify: package` rungs. They run the whole-workspace plugin pyramid at the
+  declared `up_to` level, then package every member and the aggregate product,
+  so generated lanes can exercise the same verbs as a release without
+  bundles-times-platforms duplicate cells. Source: VRM reports 38 and 39.
 - Source workspace cells may omit `runtime_artifact` and select a project
   `[build.intents.*]` declaration. Generated runtime-free jobs are isolated
   from runtime-backed jobs, carry no runtime cache/pull/validation/evidence

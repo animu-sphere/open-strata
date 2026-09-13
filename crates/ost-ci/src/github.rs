@@ -207,10 +207,9 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
         lane = cell.lane.as_str(),
         platform = cell.platform,
         profile = cell.profile,
-        // The bundle verification pyramid, and only for a cell that runs one: a
-        // workspace cell is refused an `up_to` in the manifest, so rendering the
-        // default into its matrix would put a key in the contract that no step
-        // reads and the author could not have written.
+        // Bundle cells always run a pyramid. Workspace pyramid/package cells
+        // add this key through `workspace_include_keys`; lower workspace rungs
+        // omit it so the generated contract contains no unread value.
         up_to = if cell.is_workspace() {
             String::new()
         } else {
@@ -590,12 +589,16 @@ fn runtime_cache_save_step(bootstrap: Option<&Bootstrap>) -> String {
 /// line plus a literal block scalar (`run: |`) whose every line is re-indented to
 /// 10 spaces, so a multi-line script stays inside its own step (the validator
 /// already rejected control chars and structural breakouts). Empty when the
-/// matrix declares no checks, so it renders nothing.
-fn source_check_steps(checks: &[SourceCheck]) -> String {
+/// matrix declares no checks, so it renders nothing. `condition` gates every
+/// rendered check when one job shape carries multiple verification rungs.
+fn source_check_steps(checks: &[SourceCheck], condition: Option<&str>) -> String {
     let mut out = String::new();
     for check in checks {
+        let condition = condition
+            .map(|condition| format!("        if: {condition}\n"))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "      - name: \"{name}\"\n        shell: bash\n        run: |\n",
+            "      - name: \"{name}\"\n{condition}        shell: bash\n        run: |\n",
             name = check.name,
         ));
         for line in check.run.lines() {
@@ -779,14 +782,19 @@ fn workspace_graph_steps(matrix: &SupportMatrix) -> String {
 }
 
 /// The step list of a **workspace** source-CI job: the dependency-graph gate,
-/// then the workspace CMake tree, then its CTest suite.
+/// then the workspace CMake tree, its CTest suite, the per-bundle verification
+/// pyramid, and workspace packaging. Each rung includes every rung before it.
 ///
 /// This is the cell shape a plain library or a workspace-built executable has;
 /// `ost build` and `ost test` are the verbs that reach them, and the graph gate
 /// is `ost plugin test --workspace --graph-only`, which needs no build at all.
 /// The graph rung has a job of its own ([`workspace_graph_steps`]), so every
-/// step here builds: only the CTest rung is gated.
+/// step here builds; later verification/package rungs are gated by `verify`.
 fn workspace_steps(matrix: &SupportMatrix) -> String {
+    let checks = source_check_steps(
+        &matrix.source_checks,
+        Some("${{ matrix.verify == 'pyramid' || matrix.verify == 'package' }}"),
+    );
     format!(
         "\
 {preamble}\
@@ -797,9 +805,18 @@ fn workspace_steps(matrix: &SupportMatrix) -> String {
         shell: bash
         run: ost build --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} ${{{{ matrix.intent_flags }}}}
       - name: Run the workspace test suite
-        if: ${{{{ matrix.verify == 'test' }}}}
+        if: ${{{{ matrix.verify != 'build' }}}}
         shell: bash
         run: ost test --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} ${{{{ matrix.intent_flags }}}}
+      - name: Run the workspace verification pyramid
+        if: ${{{{ matrix.verify == 'pyramid' || matrix.verify == 'package' }}}}
+        shell: bash
+        run: ost plugin test --workspace --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --up-to ${{{{ matrix.up_to }}}} --json
+{checks}\
+\x20     - name: Package the workspace and aggregate product (never published from this workflow)
+        if: ${{{{ matrix.verify == 'package' }}}}
+        shell: bash
+        run: ost plugin package --workspace --product --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --json
       - name: Upload the build logs and CI evidence
         if: always()
         uses: {UPLOAD_ARTIFACT}
@@ -807,6 +824,10 @@ fn workspace_steps(matrix: &SupportMatrix) -> String {
           name: report-${{{{ matrix.name }}}}
           path: |
             .strata/targets/
+            **/.strata/reports/
+            **/dist/plugins/
+            **/dist/tools/
+            dist/products/
             .ost-ci/
 ",
         preamble = source_preamble(matrix),
@@ -876,7 +897,7 @@ fn source_steps(matrix: &SupportMatrix) -> String {
             .ost-ci/
 ",
         preamble = source_preamble(matrix),
-        checks = source_check_steps(&matrix.source_checks),
+        checks = source_check_steps(&matrix.source_checks, None),
     )
 }
 
@@ -902,16 +923,22 @@ fn source_build_include_keys(cell: &SupportCell) -> String {
 }
 
 /// The include keys a **workspace** cell needs: the same build prerequisites,
-/// plus the rung the CTest step is gated on. It deliberately defines no `bundle`
-/// key — nothing in a workspace job addresses one, and a key that no step reads
-/// is how a stale contract hides.
+/// plus the rung later steps are gated on. Pyramid/package cells also carry the
+/// level passed to the workspace pyramid. It deliberately defines no `bundle`
+/// key — nothing in a workspace job addresses one.
 fn workspace_include_keys(cell: &SupportCell) -> String {
     let intent_flags = cell
         .intent
         .as_ref()
         .map_or_else(String::new, |intent| format!("--intent {intent}"));
+    let up_to = matches!(
+        cell.verify(),
+        WorkspaceVerify::Pyramid | WorkspaceVerify::Package
+    )
+    .then(|| format!("            up_to: {}\n", cell.up_to()))
+    .unwrap_or_default();
     format!(
-        "            verify: {}\n            intent_flags: \"{}\"\n{}",
+        "            verify: {}\n            intent_flags: \"{}\"\n{up_to}{}",
         cell.verify().as_str(),
         intent_flags,
         prerequisite_include_keys(cell)
@@ -1156,8 +1183,8 @@ fn release_candidate_steps(matrix: &SupportMatrix) -> String {
     } else {
         ""
     };
-    let mut checks = source_check_steps(&matrix.source_checks);
-    checks.push_str(&source_check_steps(&release.checks));
+    let mut checks = source_check_steps(&matrix.source_checks, None);
+    checks.push_str(&source_check_steps(&release.checks, None));
     format!(
         "\
 \x20   steps:
@@ -1738,6 +1765,10 @@ mod tests {
         assert_eq!(entries[0]["name"], "workspace-pr-linux");
         assert_eq!(entries[0]["verify"], "test");
         assert!(
+            entries[0].get("up_to").is_none(),
+            "lower workspace rungs must not expose an unread pyramid level"
+        );
+        assert!(
             entries[0].get("bundle").is_none(),
             "a workspace cell addresses no bundle"
         );
@@ -1885,8 +1916,8 @@ mod tests {
         );
     }
 
-    /// The build/test rungs share one job, since both need the same runtime;
-    /// only the CTest rung is gated.
+    /// The build and later rungs share one job, since all need the same runtime;
+    /// only the steps after the declared cumulative rung are gated out.
     #[test]
     fn the_workspace_job_gates_only_the_test_rung() {
         let mut m = lanes_matrix();
@@ -1925,11 +1956,111 @@ mod tests {
         );
         assert_eq!(
             gated("workspace test suite").as_deref(),
-            Some("${{ matrix.verify == 'test' }}")
+            Some("${{ matrix.verify != 'build' }}")
         );
         // The runtime this job builds against is still obtained and trusted.
         let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
         assert!(names.iter().any(|n| n.contains("materialize the pinned")));
+    }
+
+    #[test]
+    fn workspace_package_rung_runs_ctest_pyramid_and_aggregate_packaging() {
+        let mut matrix = lanes_matrix();
+        matrix.cells.push(SupportCell {
+            kind: CellKind::Workspace,
+            lane: Lane::PullRequest,
+            plugin_artifact: None,
+            up_to: Some(6),
+            verify: Some(WorkspaceVerify::Package),
+            host: HostSpec {
+                os: HostOs::Linux,
+                labels: vec!["self-hosted".into(), "linux".into()],
+            },
+            ..cell("workspace-package-linux")
+        });
+        matrix.source_checks = vec![SourceCheck {
+            name: "Run corpus CTest smoke".into(),
+            run: "ctest --test-dir build/corpus --output-on-failure".into(),
+        }];
+        matrix.validate().unwrap();
+
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&generate_source(&matrix).unwrap()).unwrap();
+        let job = &doc["jobs"]["pr-workspace"];
+        let entry = job["strategy"]["matrix"]["include"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["name"] == "workspace-package-linux")
+            .unwrap();
+        assert_eq!(entry["verify"], "package");
+        assert_eq!(entry["up_to"], 6);
+        assert!(entry.get("bundle").is_none());
+
+        let steps = job["steps"].as_sequence().unwrap();
+        let step = |name: &str| {
+            steps
+                .iter()
+                .find(|step| {
+                    step["name"]
+                        .as_str()
+                        .is_some_and(|value| value.contains(name))
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            step("workspace test suite")["if"],
+            "${{ matrix.verify != 'build' }}"
+        );
+        assert_eq!(
+            step("workspace verification pyramid")["if"],
+            "${{ matrix.verify == 'pyramid' || matrix.verify == 'package' }}"
+        );
+        assert!(step("workspace verification pyramid")["run"]
+            .as_str()
+            .unwrap()
+            .contains("--workspace"));
+        assert!(step("workspace verification pyramid")["run"]
+            .as_str()
+            .unwrap()
+            .contains("--up-to ${{ matrix.up_to }}"));
+        assert_eq!(
+            step("Package the workspace")["if"],
+            "${{ matrix.verify == 'package' }}"
+        );
+        let package = step("Package the workspace")["run"].as_str().unwrap();
+        assert!(package.contains("plugin package --workspace --product"));
+        assert!(package.ends_with("--json"));
+
+        let names: Vec<&str> = steps
+            .iter()
+            .map(|step| step["name"].as_str().unwrap())
+            .collect();
+        let pyramid = names
+            .iter()
+            .position(|name| name.contains("workspace verification pyramid"))
+            .unwrap();
+        let check = names
+            .iter()
+            .position(|name| *name == "Run corpus CTest smoke")
+            .unwrap();
+        let package = names
+            .iter()
+            .position(|name| name.contains("Package the workspace"))
+            .unwrap();
+        assert!(pyramid < check && check < package);
+        assert_eq!(
+            steps[check]["if"],
+            "${{ matrix.verify == 'pyramid' || matrix.verify == 'package' }}"
+        );
+
+        let upload_paths = step("Upload the build logs")["with"]["path"]
+            .as_str()
+            .unwrap();
+        assert!(upload_paths.contains("**/dist/plugins/"));
+        assert!(upload_paths.contains("**/dist/tools/"));
+        assert!(upload_paths.contains("dist/products/"));
+        assert!(!upload_paths.contains(".strata/dist/"));
     }
 
     #[test]

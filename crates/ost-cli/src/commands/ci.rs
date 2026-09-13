@@ -822,11 +822,17 @@ fn resolved_matrix(matrix_flag: Option<&str>, lane_flag: Option<&str>, fmt: Form
                     "platform": cell.platform,
                     "profile": cell.profile,
                     "kind": cell.kind.as_str(),
-                    // A workspace cell addresses no bundle and runs no pyramid;
-                    // it carries its own ladder instead.
+                    // A workspace cell addresses no bundle. Its upper rungs do
+                    // reuse `up_to` for the per-member plugin pyramid.
                     "bundle": (!cell.is_workspace())
                         .then(|| cell.bundle.as_deref().unwrap_or(".")),
-                    "up_to": (!cell.is_workspace()).then(|| cell.up_to()),
+                    "up_to": (!cell.is_workspace()
+                        || matches!(
+                            cell.verify(),
+                            ost_ci::WorkspaceVerify::Pyramid
+                                | ost_ci::WorkspaceVerify::Package
+                        ))
+                    .then(|| cell.up_to()),
                     "verify": cell.is_workspace().then(|| cell.verify().as_str()),
                     "intent": cell.intent,
                     "runtime_artifact": cell.runtime_artifact,

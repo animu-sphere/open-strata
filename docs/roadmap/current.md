@@ -14,8 +14,8 @@ host-owned APIs.
 
 ### Workstreams
 
-- **Release-lane completeness:** add pyramid/package verification, reconcile
-  generated and externally managed lanes, and detect stale generated workflows.
+- **Release-lane completeness:** reconcile generated and externally managed
+  lanes against the same pins and support declaration.
 - **Attributable evidence:** report workspace test results per discovered member
   and warn when a testable member contributes no tests.
 - **Host add-ons:** model `usdview` and later DCC bindings as first-class
