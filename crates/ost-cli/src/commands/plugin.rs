@@ -1627,6 +1627,7 @@ fn assess_bundle_local_build_provenance(
         Ok(completion) => completion,
         Err(detail) => return Ok(evidence_error(detail)),
     };
+    let (_, declared_intent) = scoped_build_intent(&bundle.root)?;
     let build_fingerprint = completion.fingerprint();
     let build_identity = || {
         (
@@ -1657,6 +1658,13 @@ fn assess_bundle_local_build_provenance(
                 &build_rel,
             )
             .err()
+            .or_else(|| {
+                crate::commands::build::validate_completed_intent(
+                    &completion.intent,
+                    &declared_intent,
+                )
+                .err()
+            })
             .map(|detail| format!("last managed build completion is incompatible: {detail}"))
     };
     if let Some(detail) = identity_error {
@@ -2211,8 +2219,8 @@ fn package_bundle(
         .map(|runtime| runtime.source.as_str());
     validate_runtime_against_project_lock(
         &bundle.root,
-        &tgt.runtime_id,
-        &tgt.runtime_digest,
+        Some(&tgt.runtime_id),
+        Some(&tgt.runtime_digest),
         runtime_source,
     )?;
 
@@ -4575,23 +4583,18 @@ fn verify_product_member(
     let manifest: serde_json::Value = serde_json::from_str(&manifest_source)
         .map_err(|error| Error::parse(member_manifest.to_string(), anyhow::Error::new(error)))?;
     verify_product_member_manifest(product_target, member, &manifest)?;
-    if let (Some(runtime_id), Some(runtime_digest)) = (
+    validate_runtime_against_project_lock(
+        project_hint,
         manifest
             .pointer("/provenance/runtime/id")
             .and_then(|value| value.as_str()),
         manifest
             .pointer("/provenance/runtime/digest")
             .and_then(|value| value.as_str()),
-    ) {
-        validate_runtime_against_project_lock(
-            project_hint,
-            runtime_id,
-            runtime_digest,
-            manifest
-                .pointer("/provenance/runtime/source")
-                .and_then(|value| value.as_str()),
-        )?;
-    }
+        manifest
+            .pointer("/provenance/runtime/source")
+            .and_then(|value| value.as_str()),
+    )?;
 
     let checksums = safe_product_join(root, &member.checksums, "product member checksums")?;
     verify_member_checksums(
@@ -5730,6 +5733,7 @@ fn test_workspace_from_package(
         }
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
+    require_workspace_bundles(&bundles)?;
 
     let (platform, profile) = selection(target, profile).ok_or_else(|| {
         Error::usage(
@@ -6050,6 +6054,18 @@ fn load_workspace_graph() -> Result<(
     Ok((bundles, libraries, tool_count, graph))
 }
 
+fn require_workspace_bundles(bundles: &[Bundle]) -> Result<()> {
+    if bundles.is_empty() {
+        return Err(Error::precondition(
+            "workspace bundle testing requires at least one plugin bundle",
+        )
+        .with_hint(
+            "use `ost plugin test --workspace --graph-only` to validate a library/tool-only workspace",
+        ));
+    }
+    Ok(())
+}
+
 /// The one-line graph shape, in the same wording whether it passed or failed.
 fn print_graph_summary(graph: &ost_plugin::WorkspaceValidation, tool_count: usize) {
     let plural = if graph.libraries.len() == 1 {
@@ -6103,6 +6119,7 @@ fn test_workspace(
         }
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
+    require_workspace_bundles(&bundles)?;
     if !fmt.is_json() {
         print_graph_summary(&graph, tool_count);
         println!();
@@ -9090,8 +9107,8 @@ pub(crate) fn selection(
 /// existing workflow; malformed locks and identity drift fail closed.
 fn validate_runtime_against_project_lock(
     hint: &Utf8Path,
-    runtime_id: &str,
-    runtime_digest: &str,
+    runtime_id: Option<&str>,
+    runtime_digest: Option<&str>,
     runtime_source: Option<&str>,
 ) -> Result<()> {
     let absolute = if hint.is_absolute() {
@@ -9117,6 +9134,19 @@ fn validate_runtime_against_project_lock(
         .map_err(|error| Error::io(path.to_string(), error))?;
     let locked = ost_manifest::Lock::from_json(&source)
         .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
+    let (Some(runtime_id), Some(runtime_digest)) = (runtime_id, runtime_digest) else {
+        return Err(Error::coded(
+            "PACKAGE_RUNTIME_LOCK_MISMATCH",
+            Category::Validation,
+            format!(
+                "packaged runtime identity is incomplete and cannot be matched to strata.lock runtime '{}@{}'",
+                locked.runtime.id, locked.runtime.digest,
+            ),
+        )
+        .with_hint(
+            "repackage every product member so its manifest records provenance.runtime.id and provenance.runtime.digest",
+        ));
+    };
     let source_mismatch = locked
         .runtime
         .source
@@ -10096,6 +10126,64 @@ mod tests {
                 .contains("cy2026-windows-x86_64-msvc143-py313-usd"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn project_lock_rejects_incomplete_packaged_runtime_identity() {
+        let root = unique_tmp("product-runtime-identity");
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        write_test_file(
+            &root.join(PROJECT_MANIFEST),
+            "[project]\nname = 'runtime-identity'\nversion = '0.1.0'\n",
+        );
+        let os = if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::Linux
+        };
+        let host = ost_core::host::Host {
+            os,
+            arch: Arch::X86_64,
+        };
+        let locked = ost_manifest::Lock {
+            lock_version: 1,
+            runtime: ost_manifest::LockRuntime {
+                id: "openstrata-test-runtime".into(),
+                platform: "test".into(),
+                profile: "usd".into(),
+                variant: ost_core::variant::Variant::new(
+                    &host,
+                    ost_core::variant::Abi::default_for(os),
+                    "313",
+                ),
+                digest: format!("sha256:{}", "ab".repeat(32)),
+                source: Some("artifact".into()),
+            },
+            python: ost_manifest::LockPython {
+                version: "3.13.0".into(),
+                abi: "cpython-313".into(),
+                manager: "uv".into(),
+                uv_lock_hash: None,
+            },
+            extensions: Vec::new(),
+            validation: ost_manifest::Validation::Passed,
+        };
+        write_test_file(
+            &root.join(crate::commands::lock::LOCK_FILE),
+            &locked.to_json().unwrap(),
+        );
+
+        let error = validate_runtime_against_project_lock(
+            &root,
+            None,
+            Some(&locked.runtime.digest),
+            Some("artifact"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), "PACKAGE_RUNTIME_LOCK_MISMATCH");
+        assert!(error.to_string().contains("identity is incomplete"));
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[test]

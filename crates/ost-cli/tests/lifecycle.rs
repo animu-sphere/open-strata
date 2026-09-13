@@ -2568,6 +2568,28 @@ fn plugin_package_refuses_overwritten_managed_outputs_without_an_explicit_overri
     assert_eq!(matched["data"]["build_provenance"]["status"], "matched");
     assert_eq!(matched["data"]["build_provenance"]["origin"], "ost-managed");
 
+    let project_manifest = sb.work_file("openstrata.toml");
+    let project_source = std::fs::read_to_string(&project_manifest).unwrap();
+    std::fs::write(
+        &project_manifest,
+        format!("{project_source}\n[build.cache.REVIEW_INTENT]\ntype = \"BOOL\"\nvalue = true\n"),
+    )
+    .unwrap();
+    let stale_intent = sb.ost(&["--json", "plugin", "package", "toy"]);
+    assert_eq!(
+        stale_intent.status.code(),
+        Some(5),
+        "{}",
+        out_text(&stale_intent)
+    );
+    let stale_intent_text = out_text(&stale_intent);
+    assert!(
+        stale_intent_text.contains("PLUGIN_PACKAGE_OUTPUT_MISMATCH")
+            && stale_intent_text.contains("build intent"),
+        "{stale_intent_text}"
+    );
+    std::fs::write(&project_manifest, project_source).unwrap();
+
     std::fs::write(&library, b"plain CMake replacement").unwrap();
     let refused = sb.ost(&["--json", "plugin", "package", "toy"]);
     assert_eq!(refused.status.code(), Some(5), "{}", out_text(&refused));
@@ -3200,6 +3222,27 @@ fn workspace_graph_accepts_library_and_tool_members_without_bundles() {
     assert_eq!(value["data"]["libraries"], 2);
     assert_eq!(value["data"]["tools"], 1);
     assert_eq!(value["data"]["graph"]["passed"], true);
+
+    for args in [
+        vec!["--json", "plugin", "test", "--workspace"],
+        vec!["--json", "plugin", "test", "--workspace", "--from-package"],
+    ] {
+        let test = sb.ost(&args);
+        assert_eq!(test.status.code(), Some(4), "{}", out_text(&test));
+        let error: serde_json::Value = serde_json::from_slice(&test.stdout).unwrap();
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("at least one plugin bundle")),
+            "{error}"
+        );
+        assert!(
+            error["error"]["hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("--graph-only")),
+            "{error}"
+        );
+    }
 }
 
 #[test]

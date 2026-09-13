@@ -1454,22 +1454,14 @@ fn bounded_output(
     let mut child = command
         .spawn()
         .map_err(|error| format!("start process inventory: {error}"))?;
-    let stdout = child.stdout.take().map(|mut pipe| {
-        thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = pipe.read_to_end(&mut bytes);
-            bytes.truncate(limit);
-            bytes
-        })
-    });
-    let stderr = child.stderr.take().map(|mut pipe| {
-        thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = pipe.read_to_end(&mut bytes);
-            bytes.truncate(limit);
-            bytes
-        })
-    });
+    let stdout = child
+        .stdout
+        .take()
+        .map(|mut pipe| thread::spawn(move || read_bounded(&mut pipe, limit)));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|mut pipe| thread::spawn(move || read_bounded(&mut pipe, limit)));
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -1493,6 +1485,25 @@ fn bounded_output(
         .and_then(|reader| reader.join().ok())
         .unwrap_or_default();
     Ok((status, stdout, stderr))
+}
+
+/// Drain a child pipe completely so the producer cannot block, while retaining
+/// at most `limit` bytes for the diagnostic document.
+fn read_bounded(mut pipe: impl Read, limit: usize) -> Vec<u8> {
+    let mut retained = Vec::with_capacity(limit.min(8 * 1024));
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                let keep = limit.saturating_sub(retained.len()).min(read);
+                retained.extend_from_slice(&chunk[..keep]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    retained
 }
 
 /// Seconds since the Unix epoch, for plain-mode timestamps.
@@ -1546,6 +1557,17 @@ mod tests {
         assert_eq!(hms(Duration::from_secs(142)), "02:22");
         assert_eq!(hms(Duration::from_secs(5)), "00:05");
         assert_eq!(hms(Duration::from_secs(3661)), "1:01:01");
+    }
+
+    #[test]
+    fn bounded_reader_drains_the_source_without_retaining_past_the_limit() {
+        let source = vec![b'x'; 32 * 1024];
+        let mut reader = std::io::Cursor::new(source);
+
+        let retained = read_bounded(&mut reader, 127);
+
+        assert_eq!(retained, vec![b'x'; 127]);
+        assert_eq!(reader.position(), 32 * 1024);
     }
 
     #[test]
