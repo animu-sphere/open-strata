@@ -2,9 +2,10 @@
 //! `ost-ci` — the CI support matrix and workflow generation (Phase 5).
 //!
 //! A project declares the runtime×plugin combinations it stands behind as
-//! **explicit support cells** in `openstrata.ci.yaml`, each pinning a runtime
-//! artifact and a plugin artifact by full registry digest. Generators render
-//! that one source of truth into CI configuration — GitHub Actions first
+//! **explicit support cells** in `openstrata.ci.yaml`. Bundle/support cells pin
+//! runtime and plugin artifacts by full registry digest; source workspace cells
+//! may instead prove an explicitly runtime-independent build intent. Generators
+//! render that one source of truth into CI configuration — GitHub Actions first
 //! ([`generate_github`]), Jenkins later.
 
 pub mod github;

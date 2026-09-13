@@ -4,6 +4,11 @@
 use ost_core::host::Os;
 use ost_core::Variant;
 
+/// Stable lock/evidence identity for a build that intentionally consumes no
+/// OpenStrata runtime. This is distinct from an ordinary runtime whose digest
+/// is temporarily empty because it has not been pulled yet.
+pub const NO_RUNTIME_ID: &str = "none";
+
 /// A fully-described build target. Holds everything the generators need so they
 /// stay pure (no catalog or filesystem access).
 #[derive(Debug, Clone)]
@@ -28,6 +33,13 @@ pub struct Target {
 impl Target {
     /// Target id, e.g. `cy2026-linux-x86_64-py313-usd` (§4.6).
     pub fn id(&self) -> String {
+        if !self.uses_runtime() {
+            return format!(
+                "{}-{}-runtime-free",
+                self.platform,
+                self.variant.short_slug(),
+            );
+        }
         format!(
             "{}-{}-{}",
             self.platform,
@@ -38,6 +50,10 @@ impl Target {
 
     pub fn os(&self) -> Os {
         self.variant.os
+    }
+
+    pub fn uses_runtime(&self) -> bool {
+        self.runtime_id != NO_RUNTIME_ID
     }
 
     pub fn has_usd(&self) -> bool {

@@ -23,7 +23,6 @@ summarized in [current.md](current.md); later slices are ordered in
 **Objective:** exercise the same composed runtime identity through complete
 release lanes and truthful DCC-host entry points.
 
-- Support runtime-free and per-cell intent-aware workspace CI.
 - Extend generated verification through pyramid/package release claims and
   reconcile generated, externally managed and removed workflow lanes.
 - Attribute test evidence to each discovered workspace member.

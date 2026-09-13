@@ -60,7 +60,7 @@ pub use python::{
     usd_python_requirement, PythonHints, PythonSource, SchemaDepsOutcome, SCHEMA_GEN_MODULES,
     SCHEMA_GEN_PACKAGES,
 };
-pub use target::Target;
+pub use target::{Target, NO_RUNTIME_ID};
 pub use toolchain::{render_toolchain, Compiler};
 
 /// Normalize a path to forward slashes, which CMake accepts on every platform

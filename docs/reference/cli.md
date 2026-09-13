@@ -39,7 +39,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost presets`](#ost-presets) — Manage OpenStrata's CMake preset includes in CMakePresets.json
 - [`ost renderer`](#ost-renderer) — Inspect renderer projects in host applications
 - [`ost runtime`](#ost-runtime) — Resolve component models and manage runtimes in the local store
-- [`ost test`](#ost-test) — Run a built target's tests under the runtime that built it
+- [`ost test`](#ost-test) — Run a built target's tests under the same runtime contract (or explicit absence)
 - [`ost uv`](#ost-uv) — Run `uv` pinned to the project's runtime Python
 - [`ost validate`](#ost-validate) — Validate a built/packaged target
 
@@ -267,6 +267,7 @@ Configure and build a target with CMake + Ninja
 | `--progress <PROGRESS>` | Progress rendering: `auto` (human on a TTY, plain otherwise), `plain`, or `json` (one JSON event per line) |
 | `--quiet` | Suppress progress output; child output goes to the log. Failures, the exit code and the log path are still reported |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
+| `--without-runtime` | Build with the host toolchain and no OpenStrata runtime materialized or added to the CMake/environment contract |
 
 ### `ost ci`
 
@@ -278,7 +279,7 @@ Manage the CI support matrix and generate CI configuration
 
 - [`ost ci generate`](#ost-ci-generate) — Generate CI configuration from the support matrix
 - [`ost ci init`](#ost-ci-init) — Write a starter openstrata.ci.yaml support matrix
-- [`ost ci matrix`](#ost-ci-matrix) — Emit the resolved cells so a workflow `ost ci generate` cannot express can consume the same pins instead of copying them
+- [`ost ci matrix`](#ost-ci-matrix) — Emit resolved cells for an externally managed workflow without copying pins
 - [`ost ci plan`](#ost-ci-plan) — Report preflight execution facts (lanes, runners, billing)
 - [`ost ci validate`](#ost-ci-validate) — Validate the support matrix
 
@@ -323,7 +324,7 @@ Write a starter openstrata.ci.yaml support matrix
 
 #### `ost ci matrix`
 
-Emit the resolved cells so a workflow `ost ci generate` cannot express can consume the same pins instead of copying them
+Emit resolved cells for an externally managed workflow without copying pins
 
 **Usage:** `ost ci matrix [OPTIONS]`
 
@@ -1634,7 +1635,7 @@ Validate a pulled runtime and record the outcome in its manifest
 
 ### `ost test`
 
-Run a built target's tests under the runtime that built it
+Run a built target's tests under the same runtime contract (or explicit absence)
 
 **Usage:** `ost test [OPTIONS]`
 
@@ -1657,6 +1658,7 @@ Run a built target's tests under the runtime that built it
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 | `--test-timeout <TEST_TIMEOUT>` | Per-test timeout in seconds; 0 disables it |
 | `--timeout <TIMEOUT>` | Timeout for the whole run in seconds; 0 disables it. On expiry the test process tree is terminated, not just the CTest process |
+| `--without-runtime` | Test a build produced with `ost build --without-runtime`, without adding an OpenStrata runtime to the test process environment |
 
 ### `ost uv`
 

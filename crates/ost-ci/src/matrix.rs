@@ -472,7 +472,8 @@ pub struct SupportClaim {
     pub features: Vec<String>,
 }
 
-/// One explicit support line: runtime digest × plugin digest × target/profile.
+/// One CI cell: either a digest-pinned runtime/plugin support line or an
+/// explicitly runtime-independent source workspace build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SupportCell {
@@ -490,7 +491,12 @@ pub struct SupportCell {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support: Option<SupportClaim>,
     /// Full `sha256:<hex>` digest of the runtime artifact to materialize.
-    pub runtime_artifact: String,
+    ///
+    /// A source-lane workspace cell may omit this to prove that its selected
+    /// build intent is runtime-independent. Bundle and support cells always
+    /// require a runtime because their claims are defined against one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_artifact: Option<String>,
     /// Approved normalized OpenUSD consumer cell the runtime artifact must
     /// satisfy, written as PLATFORM/OS/ARCH/VARIANT. When present, generated
     /// remote pulls enforce it before importing the pinned bytes.
@@ -520,6 +526,12 @@ pub struct SupportCell {
     /// default; declaring it on a bundle cell is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify: Option<WorkspaceVerify>,
+    /// Project-declared `[build.intents.<name>]` selected by a workspace cell.
+    /// The same intent is passed to `ost build` and `ost test`, keeping their
+    /// isolated build tree and evidence identity aligned. Bundle cells use the
+    /// bundle-owned default build contract and must leave this unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
     /// Platform calendar-year id, e.g. `cy2026`.
     pub platform: String,
     /// Profile, e.g. `usd`.
@@ -576,6 +588,11 @@ impl SupportCell {
     /// Whether this cell builds the workspace rather than one bundle.
     pub fn is_workspace(&self) -> bool {
         self.kind == CellKind::Workspace
+    }
+
+    /// Whether this cell's claim is intentionally independent of a runtime.
+    pub fn is_runtime_free(&self) -> bool {
+        self.runtime_artifact.is_none()
     }
 }
 
@@ -646,6 +663,15 @@ fn is_ci_atom(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+fn is_build_intent_name(value: &str) -> bool {
+    value != "default"
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && is_ci_atom(value)
 }
 
 /// A bare `<major>.<minor>` CPython version (e.g. `3.13`) — the only form
@@ -837,14 +863,48 @@ impl SupportMatrix {
                 )));
             }
 
-            // CI pins exact bytes: a full digest is required, a prefix is
-            // not — a prefix can silently start matching a different
-            // artifact as the registry grows.
-            if !ost_artifact::is_sha256_ref(&cell.runtime_artifact) {
-                return Err(Error::InvalidManifest(format!(
-                    "cell '{name}': runtime_artifact '{}' is not a full sha256:<64-hex> digest",
-                    cell.runtime_artifact
-                )));
+            // CI pins exact bytes whenever a runtime participates: a full
+            // digest is required, not a prefix. Only source workspace cells
+            // may intentionally omit the runtime and prove that property.
+            match &cell.runtime_artifact {
+                Some(runtime) if !ost_artifact::is_sha256_ref(runtime) => {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': runtime_artifact '{runtime}' is not a full sha256:<64-hex> digest"
+                    )));
+                }
+                None if !cell.is_workspace() => {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': runtime_artifact is required for bundle and support cells; only a source-lane kind 'workspace' cell may omit it"
+                    )));
+                }
+                _ => {}
+            }
+            if cell.is_runtime_free() {
+                if cell.runtime_remote.is_some() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': runtime_remote contradicts an omitted runtime_artifact"
+                    )));
+                }
+                if cell.require_openusd.is_some() || cell.require_openusd_version.is_some() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': require_openusd and require_openusd_version need a runtime_artifact"
+                    )));
+                }
+                if cell.host_python.is_some() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': host_python configures runtime schema tooling and needs a runtime_artifact"
+                    )));
+                }
+                if cell.require_evidence.is_some() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': require_evidence gates artifact sidecars and cannot apply without a runtime_artifact"
+                    )));
+                }
+                if cell.trust != ost_artifact::TrustLevel::default() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': trust gates an artifact and cannot apply without a runtime_artifact"
+                    )));
+                }
             }
             match &cell.require_openusd {
                 Some(selector) => {
@@ -969,6 +1029,11 @@ impl SupportMatrix {
                          also name a bundle — drop 'bundle', or use the default kind"
                     )));
                 }
+                if cell.plugin_artifact.is_some() {
+                    return Err(Error::InvalidManifest(format!(
+                        "cell '{name}': kind 'workspace' builds source members and cannot verify a pinned plugin_artifact"
+                    )));
+                }
                 if cell.up_to.is_some() {
                     return Err(Error::InvalidManifest(format!(
                         "cell '{name}': up_to is the bundle verification pyramid and does not \
@@ -981,10 +1046,26 @@ impl SupportMatrix {
                          candidate is a packaged bundle, so publish from a bundle cell"
                     )));
                 }
+                if let Some(intent) = &cell.intent {
+                    if cell.verify() == WorkspaceVerify::Graph {
+                        return Err(Error::InvalidManifest(format!(
+                            "cell '{name}': intent is unused by verify 'graph'; select build or test, or remove intent"
+                        )));
+                    }
+                    if !is_build_intent_name(intent) {
+                        return Err(Error::InvalidManifest(format!(
+                            "cell '{name}': intent '{intent}' must name a non-default project build intent matching [A-Za-z0-9][A-Za-z0-9._-]*"
+                        )));
+                    }
+                }
             } else if cell.verify.is_some() {
                 return Err(Error::InvalidManifest(format!(
                     "cell '{name}': verify applies only to kind 'workspace' — a bundle cell's \
                      ladder is 'up_to'"
+                )));
+            } else if cell.intent.is_some() {
+                return Err(Error::InvalidManifest(format!(
+                    "cell '{name}': intent applies only to kind 'workspace'"
                 )));
             }
             if let Some(py) = &cell.host_python {
@@ -1073,7 +1154,7 @@ impl SupportMatrix {
             // (remote-artifact-transport.md, Phase 2). Self-hosted source
             // cells may keep air-gapped local import.
             if cell.lane.is_source() && self.is_hosted(cell) {
-                if cell.runtime_remote.is_none() {
+                if !cell.is_runtime_free() && cell.runtime_remote.is_none() {
                     return Err(Error::InvalidManifest(format!(
                         "cell '{name}': source cells on GitHub-hosted runners require a \
                          runtime_remote reference (uri: oci://…@sha256:<digest>) — \
@@ -1637,7 +1718,10 @@ impl SupportMatrix {
     pub fn placeholder_digests(&self) -> Vec<String> {
         let mut hits = Vec::new();
         for cell in &self.cells {
-            let mut digests = vec![("runtime_artifact", &cell.runtime_artifact)];
+            let mut digests = Vec::new();
+            if let Some(runtime) = &cell.runtime_artifact {
+                digests.push(("runtime_artifact", runtime));
+            }
             if let Some(plugin) = &cell.plugin_artifact {
                 digests.push(("plugin_artifact", plugin));
             }
@@ -1657,11 +1741,11 @@ pub fn starter_matrix() -> String {
         "\
 # OpenStrata CI support matrix.
 #
-# Each cell is an explicit support line: a runtime artifact x a plugin
-# artifact x a platform/profile, verified up to a level (ost plugin test
-# --up-to N) on a host. Both sides are pinned by FULL registry digest --
-# produce them with `ost runtime export` and `ost plugin publish`, then
-# paste the digests here.
+# Bundle/support cells are explicit support lines: a runtime artifact x a
+# plugin artifact x a platform/profile, verified up to a level (`ost plugin
+# test --up-to N`) on a host. Both sides are pinned by FULL registry digest.
+# Source workspace cells may instead prove a runtime-independent CMake build;
+# that shape intentionally omits its runtime artifact.
 #
 # Cells may declare a lane (pull_request | main | scheduled |
 # workflow_dispatch; default scheduled) and reference a named runner
@@ -1766,10 +1850,26 @@ pub fn starter_matrix() -> String {
 #       profile: usd
 #       verify: test        # graph | build | test (default test)
 #
+# A workspace build can intentionally consume no runtime. Omit
+# `runtime_artifact` (and every runtime-only field) and optionally select one
+# project-declared `[build.intents.<name>]`. The generated job passes the same
+# intent to `ost build --without-runtime` and `ost test --without-runtime`, and
+# carries no runtime cache, pull, validation, or evidence keys:
+#
+#   cells:
+#     - name: core-asan-linux
+#       kind: workspace
+#       lane: pull_request
+#       runner: linux-hosted
+#       platform: cy2026
+#       profile: usd
+#       intent: core-asan
+#       verify: test
+#
 # `verify: graph` is the cheap early gate: the dependency graph alone, in
 # milliseconds. It renders as its own job that stops after the checkout, so
-# it never fetches or materializes a runtime — a graph cell still pins one
-# for the record, but its job does not pay for it.
+# it never fetches or materializes a runtime. Its cell may retain a runtime pin
+# as context or omit one when the repository is runtime-independent.
 #
 # Self-hosted cells may omit runtime_remote and keep air-gapped local
 # import (`ost artifact import` on the runner); CI evidence records the
@@ -2177,6 +2277,59 @@ cells:
         let yaml = workspace_yaml().replace("        verify: build\n", "");
         let m = SupportMatrix::from_yaml(&yaml).unwrap();
         assert_eq!(m.cells[0].verify(), WorkspaceVerify::Test);
+    }
+
+    #[test]
+    fn a_source_workspace_cell_may_be_runtime_free_and_select_an_intent() {
+        let yaml = workspace_yaml()
+            .replace(
+                &format!("        runtime_artifact: sha256:{}\n", "ab".repeat(32)),
+                "",
+            )
+            .replace(
+                "        verify: build\n",
+                "        verify: test\n        intent: core-asan\n",
+            );
+        let matrix = SupportMatrix::from_yaml(&yaml).unwrap();
+        let cell = &matrix.cells[0];
+        assert!(cell.is_runtime_free());
+        assert_eq!(cell.intent.as_deref(), Some("core-asan"));
+        assert!(matrix.placeholder_digests().is_empty());
+    }
+
+    #[test]
+    fn runtime_free_and_intent_fields_fail_when_their_values_would_be_ignored() {
+        let runtime_free = workspace_yaml().replace(
+            &format!("        runtime_artifact: sha256:{}\n", "ab".repeat(32)),
+            "",
+        );
+        for (yaml, expected) in [
+            (
+                valid_yaml().replace(
+                    &format!("    runtime_artifact: sha256:{}\n", "ab".repeat(32)),
+                    "",
+                ),
+                "runtime_artifact is required",
+            ),
+            (
+                runtime_free.replace(
+                    "        platform: cy2026\n",
+                    "        runtime_remote:\n            uri: oci://ghcr.io/acme/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n        platform: cy2026\n",
+                ),
+                "runtime_remote contradicts",
+            ),
+            (
+                runtime_free.replace("        verify: build\n", "        verify: graph\n        intent: core\n"),
+                "intent is unused",
+            ),
+            (
+                valid_yaml().replace("    up_to: 4\n", "    intent: core\n"),
+                "intent applies only",
+            ),
+        ] {
+            let error = SupportMatrix::from_yaml(&yaml).expect_err("invalid cell must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     /// Every knob that addresses one bundle is a contradiction on a cell that
