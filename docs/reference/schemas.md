@@ -292,6 +292,27 @@ Deterministic file ownership and portable Formation activation contributions, em
 | `schema` | — | yes |  |
 | `settings` | — | yes |  |
 
+## `stall-diagnostic.schema.json`
+
+OpenStrata managed-build stall diagnostic
+
+A bounded first-stall snapshot. It contains selected build identity and process/file evidence, never the inherited process environment.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `child` | object | yes |  |
+| `context` | ["object","null"] | yes |  |
+| `last_output_tail` | string | yes |  |
+| `logs` | object | yes |  |
+| `phase` | object | yes |  |
+| `process_tree` | object | yes |  |
+| `schema` | — | yes |  |
+| `silence` | object | yes |  |
+| `supervisor` | object | yes |  |
+| `timeout` | object | yes |  |
+| `timestamp` | integer | yes |  |
+| `tools` | array | yes |  |
+
 ## `tool.schema.json`
 
 OpenStrata Workspace Tool Manifest

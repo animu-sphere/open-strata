@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.22.10 | [v0.22.10.md](v0.22.10.md) | Runtime correctness, UX and diagnostics |
 | v0.22.9 | [v0.22.9.md](v0.22.9.md) | Consumer packaging and downstream intake |
 | v0.22.8 | [v0.22.8.md](v0.22.8.md) | Geospatial runtime dogfood |
 | v0.22.7 | [v0.22.7.md](v0.22.7.md) | Locked composed runtime and native SDK |

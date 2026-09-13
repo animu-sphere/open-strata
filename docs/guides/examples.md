@@ -133,6 +133,12 @@ ost runtime export   cy2026 --profile usd --level 12  # faster pack, larger arch
 # or a runtime that has not passed validation
 ```
 
+Export rewrites the archive copy of OpenUSD's `pxrConfig.cmake` and exported
+target files so producer-machine absolute `Python3_EXECUTABLE`, library, and
+include paths do not travel. Consumer-side Python discovery (or the generated
+OpenStrata toolchain pins) supplies those values. The adopted/source runtime is
+not modified; the artifact manifest records which CMake files were rewritten.
+
 A managed `runtime pull --build` records the exact Git-backed OpenUSD checkout
 and every source archive actually selected by `build_usd.py`. The sorted closure
 is visible in `runtime show` and automatically enters `record.json`, the OpenUSD
@@ -277,6 +283,33 @@ ost renderer viewport --intent viewport-usd -- --usd scene.usda
 Unknown manifest keys and malformed intent entries fail closed. `default` is a
 reserved intent name; omit `--intent` for the historical default build tree.
 
+External CMake inputs shared by the root build, direct plugin/library builds,
+and generated CI belong in the default `[build.cache]` map. Portable paths are
+resolved from the project root. `CMAKE_TOOLCHAIN_FILE` is chain-loaded by the
+OpenStrata-generated toolchain, so the runtime/compiler contract remains in
+force while package managers such as vcpkg can configure dependencies:
+
+```toml
+[build.cache.CMAKE_PREFIX_PATH]
+type = "PATH"
+value = "third_party/install"
+portability = "portable"
+
+[build.cache.CMAKE_TOOLCHAIN_FILE]
+type = "FILEPATH"
+value = "third_party/vcpkg/scripts/buildsystems/vcpkg.cmake"
+portability = "portable"
+
+[build.cache.ZLIB_ROOT]
+type = "PATH"
+value = "third_party/install"
+portability = "portable"
+```
+
+A selected `[build.intents.<name>.cache]` map overlays these defaults for that
+isolated root build. Scoped plugin/library builds and generated workspace CI use
+the default map; per-cell named intent selection remains a separate CI feature.
+
 ### renderer — inspect a Hydra adapter in usdview
 
 The renderer template's default build is host-neutral. Pull or adopt one real
@@ -368,6 +401,14 @@ stdout (in the log) so the stream stays pure:
 {"event":"completed","duration_ms":2573,"timestamp":1782541332}
 ```
 
+When a child first produces no output for 120 seconds, `ost build` emits one
+`stalled` event and writes `stall-<phase>-<timestamp>-<pid>.json` beside the
+target `build.log`. The bounded snapshot records the supervisor/descendant
+process tree, CMake/generator/compiler identities and version probes, phase and
+timeout thresholds, plus size/mtime/tails for the build log and watched CMake
+logs. It never records the inherited environment. A stall is diagnostic only;
+the configured timeout still decides whether the child is terminated.
+
 ## extension — controlled components
 
 ```bash
@@ -380,6 +421,12 @@ ost extension add materialx            # record it in openstrata.toml (idempoten
 
 The verification pyramid: L0–L1 are static (any backend); L2–L5 execute the
 runtime's tools and need a **real** runtime (adopt or build a source first).
+For asset resolvers, L2 proves scheme dispatch offline with
+`Ar.GetResolver().CreateIdentifier()` and a reserved
+`<scheme>://openstrata.invalid/...` identifier. It does not fetch or stat a
+live asset; live retrieval belongs in an explicit higher-level integration
+fixture. A failed probe retains bounded stdout/stderr and spawn/exit detail in
+the diagnostic report.
 
 ```bash
 # scaffold a bundle (C++ SdfFileFormat + plugInfo.json + CMake + fixtures + manifest)

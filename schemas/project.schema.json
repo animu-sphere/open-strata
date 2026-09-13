@@ -42,6 +42,43 @@
         "compiler": { "type": "string", "enum": ["host", "runtime", "explicit"], "default": "host" },
         "cc": { "type": "string" },
         "cxx": { "type": "string" },
+        "cache": {
+          "description": "Default typed CMake inputs shared by root builds, scoped workspace builds, and generated CI. CMAKE_TOOLCHAIN_FILE is chain-loaded by the OpenStrata toolchain.",
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+          "additionalProperties": {
+            "type": "object",
+            "required": ["type", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "type": "string", "enum": ["BOOL", "STRING", "PATH", "FILEPATH"] },
+              "value": { "type": ["boolean", "string"] },
+              "portability": { "type": "string", "enum": ["portable", "local-override"] }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "type": { "const": "BOOL" } } },
+                "then": { "properties": { "value": { "type": "boolean" } } },
+                "else": { "properties": { "value": { "type": "string" } } }
+              },
+              {
+                "if": { "properties": { "type": { "enum": ["PATH", "FILEPATH"] } } },
+                "then": { "required": ["portability"] },
+                "else": { "not": { "required": ["portability"] } }
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "if": { "required": ["CMAKE_TOOLCHAIN_FILE"] },
+              "then": { "properties": { "CMAKE_TOOLCHAIN_FILE": { "properties": { "type": { "const": "FILEPATH" } } } } }
+            },
+            {
+              "if": { "required": ["CMAKE_PREFIX_PATH"] },
+              "then": { "properties": { "CMAKE_PREFIX_PATH": { "properties": { "type": { "const": "PATH" } } } } }
+            }
+          ]
+        },
         "intents": {
           "type": "object",
           "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$", "not": { "const": "default" } },
@@ -73,7 +110,17 @@
                       "else": { "not": { "required": ["portability"] } }
                     }
                   ]
-                }
+                },
+                "allOf": [
+                  {
+                    "if": { "required": ["CMAKE_TOOLCHAIN_FILE"] },
+                    "then": { "properties": { "CMAKE_TOOLCHAIN_FILE": { "properties": { "type": { "const": "FILEPATH" } } } } }
+                  },
+                  {
+                    "if": { "required": ["CMAKE_PREFIX_PATH"] },
+                    "then": { "properties": { "CMAKE_PREFIX_PATH": { "properties": { "type": { "const": "PATH" } } } } }
+                  }
+                ]
               }
             }
           }

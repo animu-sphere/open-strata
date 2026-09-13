@@ -30,6 +30,10 @@ pub struct LockRuntime {
     /// Content-addressed digest, e.g. `sha256:...` (empty until built).
     #[serde(default)]
     pub digest: String,
+    /// Runtime acquisition source (`mock`, `local`, `build`, or `artifact`).
+    /// Absent in locks written before v0.22.10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +88,31 @@ impl Lock {
     pub fn from_json(src: &str) -> Result<Lock, serde_json::Error> {
         serde_json::from_str(src)
     }
+
+    /// Return the semantic lock contract in its canonical comparison order.
+    ///
+    /// JSON object ordering and formatting are already discarded by parsing.
+    /// Extension and feature arrays are sets in the resolved contract, so their
+    /// producer order must not make `ost lock --check` report false drift.
+    pub fn normalized(mut self) -> Lock {
+        for extension in &mut self.extensions {
+            extension.features.sort();
+            extension.features.dedup();
+        }
+        self.extensions.sort_by(|left, right| {
+            (&left.id, &left.version, &left.features).cmp(&(
+                &right.id,
+                &right.version,
+                &right.features,
+            ))
+        });
+        self
+    }
+
+    /// Compare the parsed, normalized contract rather than its JSON encoding.
+    pub fn semantically_eq(&self, other: &Lock) -> bool {
+        self.clone().normalized() == other.clone().normalized()
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +138,7 @@ mod tests {
                 profile: "usd".into(),
                 variant,
                 digest: "sha256:abc".into(),
+                source: Some("artifact".into()),
             },
             python: LockPython {
                 version: "3.13.1".into(),
@@ -157,5 +187,24 @@ mod tests {
         let lock = Lock::from_json(&value.to_string()).unwrap();
         assert!(lock.extensions.is_empty());
         assert_eq!(lock.python.manager, "uv");
+    }
+
+    #[test]
+    fn semantic_equality_ignores_extension_and_feature_order() {
+        let left = sample_lock();
+        let mut right = left.clone();
+        right.extensions.reverse();
+        right.extensions[0].features.reverse();
+
+        assert!(left.semantically_eq(&right));
+    }
+
+    #[test]
+    fn semantic_equality_still_detects_identity_drift() {
+        let left = sample_lock();
+        let mut right = left.clone();
+        right.runtime.digest = "sha256:def".into();
+
+        assert!(!left.semantically_eq(&right));
     }
 }

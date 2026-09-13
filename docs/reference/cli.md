@@ -809,7 +809,7 @@ Generate or verify the project lockfile (strata.lock)
 
 | Option | Description |
 | --- | --- |
-| `--check` | Verify the on-disk lock is up to date instead of writing it (exit 1 if not) |
+| `--check` | Verify the on-disk lock is up to date instead of writing it (exit 5 if not) |
 | `--profile <PROFILE>` | Profile to lock. Defaults to the project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 

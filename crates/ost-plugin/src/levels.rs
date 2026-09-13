@@ -21,9 +21,9 @@
 //!   `*API` schemas to a prim, and its authored attributes survive a flatten
 //!   round-trip unchanged (the analogue of `python.stage_open`).
 //!
-//! An **asset resolver** uses L2 `resolver.registration` to resolve the smoke
-//! fixture through its declared URI scheme, proving discovery, library loading,
-//! resolver construction, and dispatch before the normal stage-open levels.
+//! An **asset resolver** uses L2 `resolver.registration` to create an identifier
+//! through its declared URI scheme, proving discovery, library loading, resolver
+//! construction, and dispatch without accessing a live remote asset.
 //!
 //! A **package resolver** uses L2 `package_resolver.registration` to prove the
 //! plug registry discovers the plugin and its library loads (`ArPackageResolver`
@@ -474,23 +474,12 @@ fn level2_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnosti
     let Some(python) = &session.python else {
         return Diagnostic::skip(ID, 2, "no python interpreter on the session PATH");
     };
-    let Some(fixture) = smoke_fixture(bundle) else {
-        return Diagnostic::skip(ID, 2, "no smoke fixture declared");
-    };
-    if !fixture.path.as_std_path().is_file() {
-        return Diagnostic::fail(
-            ID,
-            2,
-            format!("fixture '{}' is missing", fixture.path),
-            vec![],
-        );
-    }
-
-    let path = fixture.path.to_string().replace('\\', "/");
-    let uri = format!("{scheme}:{path}");
+    // `.invalid` is reserved for offline testing. CreateIdentifier exercises
+    // scheme routing without asking the resolver to fetch or stat the asset.
+    let uri = format!("{scheme}://openstrata.invalid/__ost_resolver_probe__");
     let uri_literal = serde_json::to_string(&uri).unwrap_or_else(|_| "\"\"".into());
     let script = format!(
-        "import sys\nfrom pxr import Ar\np = Ar.GetResolver().Resolve({uri_literal})\nsys.exit(0 if p else 7)"
+        "import sys\nfrom pxr import Ar\np = Ar.GetResolver().CreateIdentifier({uri_literal})\nsys.exit(0 if p else 7)"
     );
     let out = session
         .probe
@@ -501,13 +490,14 @@ fn level2_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnosti
             2,
             format!("could not run python ({python})"),
             vec!["ensure the runtime python is on PATH".into()],
-        );
+        )
+        .with_probe_output(out.code, &out.stdout, &out.stderr);
     }
     if out.ok() {
         Diagnostic::pass(
             ID,
             2,
-            format!("USD dispatched '{scheme}:' to the resolver and resolved the fixture"),
+            format!("USD dispatched '{scheme}:' without accessing a remote asset"),
         )
     } else {
         Diagnostic::fail(
@@ -515,13 +505,18 @@ fn level2_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnosti
             2,
             format!(
                 "resolver registration or dispatch failed: {}",
-                tail(&out.stderr)
+                tail(if out.stderr.trim().is_empty() {
+                    &out.stdout
+                } else {
+                    &out.stderr
+                })
             ),
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
                 "verify uriSchemes, LibraryPath, and AR_DEFINE_RESOLVER agree".into(),
             ],
         )
+        .with_probe_output(out.code, &out.stdout, &out.stderr)
     }
 }
 
@@ -1671,6 +1666,35 @@ tests: { smoke: [tests/fixtures/basic.usda] }
         let diagnostic = &run_levels(&bundle, &session, 2)[0];
         assert_eq!(diagnostic.id, "resolver.registration");
         assert_eq!(diagnostic.status, Status::Pass);
+        let calls = probe.calls.borrow();
+        assert!(calls[0].contains("CreateIdentifier"), "{calls:?}");
+        assert!(calls[0].contains("openstrata.invalid"), "{calls:?}");
+        assert!(!calls[0].contains("Resolve("), "{calls:?}");
+    }
+
+    #[test]
+    fn resolver_failure_retains_bounded_stdout_when_stderr_is_empty() {
+        let (_d, bundle) = resolver_bundle_with_fixture();
+        let noisy = format!("prefix-{}-useful stdout", "x".repeat(5000));
+        let probe = FakeProbe::new().on("python", Some(7), &noisy, "");
+        let session = Session {
+            probe: &probe,
+            usdcat: None,
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+
+        let diagnostic = &run_levels(&bundle, &session, 2)[0];
+        assert_eq!(diagnostic.status, Status::Fail);
+        let evidence = diagnostic.probe.as_ref().expect("probe evidence");
+        assert_eq!(evidence.status, "exited");
+        assert_eq!(evidence.exit_code, Some(7));
+        assert!(evidence.stderr.is_empty());
+        assert!(evidence.stdout.ends_with("useful stdout"));
+        assert!(evidence.stdout_truncated);
+        assert!(!evidence.stderr_truncated);
+        assert!(evidence.detail.ends_with("useful stdout"));
     }
 
     #[test]

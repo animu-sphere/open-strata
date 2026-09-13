@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openstrata.dev/schemas/stall-diagnostic.schema.json",
+  "title": "OpenStrata managed-build stall diagnostic",
+  "description": "A bounded first-stall snapshot. It contains selected build identity and process/file evidence, never the inherited process environment.",
+  "type": "object",
+  "required": ["schema", "timestamp", "phase", "silence", "timeout", "supervisor", "context", "tools", "child", "last_output_tail", "logs", "process_tree"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "openstrata.stall-diagnostic.v1" },
+    "timestamp": { "type": "integer", "minimum": 0 },
+    "phase": {
+      "type": "object",
+      "required": ["name", "slug", "index", "total", "elapsed_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "slug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "index": { "type": "integer", "minimum": 1 },
+        "total": { "type": "integer", "minimum": 1 },
+        "elapsed_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "silence": {
+      "type": "object",
+      "required": ["threshold_ms", "observed_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "threshold_ms": { "type": "integer", "minimum": 1 },
+        "observed_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "timeout": {
+      "type": "object",
+      "required": ["configured_ms", "remaining_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "configured_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "remaining_ms": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "supervisor": {
+      "type": "object",
+      "required": ["pid"],
+      "additionalProperties": false,
+      "properties": { "pid": { "type": "integer", "minimum": 1 } }
+    },
+    "context": { "type": ["object", "null"] },
+    "tools": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": ["name", "program", "args", "file"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "program": { "type": "string" },
+          "args": { "type": "array", "items": { "type": "string" } },
+          "file": { "$ref": "#/$defs/file" },
+          "exit_code": { "type": ["integer", "null"] },
+          "version": { "type": ["string", "null"] },
+          "probe_error": { "type": "string" }
+        }
+      }
+    },
+    "child": {
+      "type": "object",
+      "required": ["pid", "command", "cwd"],
+      "additionalProperties": false,
+      "properties": {
+        "pid": { "type": "integer", "minimum": 1 },
+        "command": { "type": "string" },
+        "cwd": { "type": "string" }
+      }
+    },
+    "last_output_tail": { "type": "string", "maxLength": 4096 },
+    "logs": {
+      "type": "object",
+      "required": ["build", "watched"],
+      "additionalProperties": false,
+      "properties": {
+        "build": { "oneOf": [{ "$ref": "#/$defs/file" }, { "type": "null" }] },
+        "watched": { "type": "array", "items": { "$ref": "#/$defs/file" } }
+      }
+    },
+    "process_tree": {
+      "type": "object",
+      "required": ["root_pid", "limit", "entries"],
+      "additionalProperties": false,
+      "properties": {
+        "root_pid": { "type": "integer", "minimum": 1 },
+        "limit": { "const": 128 },
+        "collection_error": { "type": "string" },
+        "entries": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "required": ["pid", "ppid", "executable", "command"],
+            "additionalProperties": false,
+            "properties": {
+              "pid": { "type": "integer", "minimum": 1 },
+              "ppid": { "type": "integer", "minimum": 0 },
+              "name": { "type": "string" },
+              "executable": { "type": "string" },
+              "command": { "type": "string", "maxLength": 1025 },
+              "elapsed_ms": { "type": ["integer", "null"], "minimum": 0 },
+              "cpu_ms": { "type": "integer", "minimum": 0 },
+              "elapsed": { "type": "string" },
+              "cpu": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "required": ["path", "exists"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "exists": { "type": ["boolean", "null"] },
+        "size_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "modified_unix": { "type": ["integer", "null"], "minimum": 0 },
+        "tail": { "type": ["string", "null"] },
+        "error": { "type": "string" }
+      }
+    }
+  }
+}

@@ -29,7 +29,7 @@ pub struct LockArgs {
     #[arg(long)]
     profile: Option<String>,
 
-    /// Verify the on-disk lock is up to date instead of writing it (exit 1 if not).
+    /// Verify the on-disk lock is up to date instead of writing it (exit 5 if not).
     #[arg(long)]
     check: bool,
 }
@@ -40,9 +40,12 @@ pub fn run(args: LockArgs, fmt: Format) -> Result<()> {
     let path = root.join(LOCK_FILE);
 
     if args.check {
-        let on_disk = std::fs::read_to_string(path.as_std_path()).ok();
-        let expected = render(&lock)?;
-        let up_to_date = on_disk.as_deref() == Some(expected.as_str());
+        let on_disk = std::fs::read_to_string(path.as_std_path())
+            .ok()
+            .and_then(|source| Lock::from_json(&source).ok());
+        let up_to_date = on_disk
+            .as_ref()
+            .is_some_and(|observed| observed.semantically_eq(&lock));
 
         if fmt.is_json() {
             output::report(
@@ -151,6 +154,9 @@ pub(crate) fn build_lock(root: &Utf8Path, platform: &str, profile: &str) -> Resu
             profile: profile.to_string(),
             variant: r.runtime.variant.clone(),
             digest: digest_str,
+            source: manifest
+                .as_ref()
+                .map(|runtime| runtime.source.as_str().to_string()),
         },
         python: LockPython {
             version: r.python_version.clone(),

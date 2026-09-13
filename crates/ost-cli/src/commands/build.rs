@@ -254,7 +254,9 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         configure_args.push(format!("-DCMAKE_MAKE_PROGRAM={np}"));
     }
     for (key, entry) in &intent.cache {
-        configure_args.push(entry.cmake_arg(key));
+        if key != "CMAKE_TOOLCHAIN_FILE" {
+            configure_args.push(materialize_cache_entry(&root, entry).cmake_arg(key));
+        }
     }
 
     let mut build_args = vec![
@@ -297,6 +299,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
                 "root": root.to_string(),
                 "bootstrap_msvc": pre.will_bootstrap_msvc,
                 "build_intent": intent,
+                "external_toolchain": external_toolchain(&root, &intent),
                 "commands": [configure_cmd, build_cmd],
                 "would_generate": files,
                 "runtime_env": env_pairs,
@@ -310,6 +313,9 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         }
         println!("{configure_cmd}");
         println!("{build_cmd}");
+        if let Some(toolchain) = external_toolchain(&root, &intent) {
+            println!("# would chain-load external toolchain: {toolchain}");
+        }
         println!("# would apply runtime env (prepended):");
         for (k, v) in &runtime_env {
             println!("#   {k}={v}");
@@ -326,6 +332,62 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     // event stream, tees child output to the per-target log, names the failing
     // phase + exit code, and (with --notify) fires a desktop toast at the end.
     let mut rep = Reporter::new(args.progress, 4, args.quiet).with_notify(args.notify, "ost build");
+    let compiler_detection = pre
+        .checks
+        .iter()
+        .find(|check| check.name == "compiler")
+        .map(|check| match &check.status {
+            Status::Ok(detail) | Status::Info(detail) => detail.clone(),
+            Status::Failed { detail, .. } => detail.clone(),
+        });
+    rep.set_diagnostic_context(serde_json::json!({
+        "target": {
+            "id": id,
+            "platform": target.platform,
+            "profile": target.profile,
+            "variant": target.variant,
+            "generator": args.generator,
+            "configuration": args.config,
+        },
+        "runtime": {
+            "id": target.runtime_id,
+            "digest": target.runtime_digest,
+            "prefix": resolved.artifact_prefix,
+            "python_version": target.python_version,
+            "cxx_standard": target.cxx_standard,
+        },
+        "compiler": {
+            "policy": compiler.policy(),
+            "detected": compiler_detection,
+        },
+        "build_intent": intent,
+    }));
+    rep.diagnostic_tool("cmake", cmake_prog.clone(), vec!["--version".into()]);
+    if let Some(ninja) = &pre.ninja {
+        rep.diagnostic_tool("generator", ninja.clone(), vec!["--version".into()]);
+    }
+    let (resolved_cc, resolved_cxx) =
+        compiler.resolved_paths(&resolved.artifact_prefix, target.os());
+    let compiler_program = resolved_cxx.or(resolved_cc).map(PathBuf::from).or_else(|| {
+        if target.os() == Os::Windows {
+            tools::which("cl")
+        } else {
+            tools::which("c++")
+                .or_else(|| tools::which("clang++"))
+                .or_else(|| tools::which("g++"))
+        }
+    });
+    if let Some(program) = compiler_program {
+        let args = if program
+            .file_stem()
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("cl"))
+        {
+            vec!["/Bv".into()]
+        } else {
+            vec!["--version".into()]
+        };
+        rep.diagnostic_tool("compiler", program, args);
+    }
 
     // 5. Take the target lease before the first write and hold it through
     //    completion publication. Configure, build, verification and the
@@ -377,6 +439,14 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     invalidate_completion(&build_dir)?;
     let g = generate_with_generator(&root, &platform, &profile, &compiler, &args.generator)?;
     debug_assert_eq!(g.id, id);
+    if let Some(external) = external_toolchain(&root, &intent) {
+        let toolchain = root
+            .join(STATE_DIR)
+            .join("targets")
+            .join(&id)
+            .join("toolchain.cmake");
+        chainload_external_toolchain(&toolchain, &external)?;
+    }
     for dropped in &g.presets.pruned {
         rep.note(&format!("dropped stale preset include {dropped}"));
     }
@@ -838,6 +908,52 @@ pub(crate) fn build_dir_for_intent(id: &str, intent: &BuildIntent) -> Utf8PathBu
     }
 }
 
+/// Resolve a portable path-valued cache input against the project that owns the
+/// declaration. Scoped builds may run with another current directory, so they
+/// must not reinterpret the same manifest value relative to the member.
+pub(crate) fn materialize_cache_entry(
+    project_root: &Utf8Path,
+    entry: &CMakeCacheEntry,
+) -> CMakeCacheEntry {
+    let mut materialized = entry.clone();
+    if entry.kind.is_path()
+        && entry.portability == Some(CachePathPortability::Portable)
+        && !entry.value.contains('$')
+    {
+        materialized.value = entry
+            .value
+            .split(';')
+            .map(|part| {
+                let path = Utf8Path::new(part);
+                if part.is_empty() || path.is_absolute() {
+                    part.to_string()
+                } else {
+                    project_root.join(path).to_string().replace('\\', "/")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(";");
+    }
+    materialized
+}
+
+pub(crate) fn external_toolchain(root: &Utf8Path, intent: &BuildIntent) -> Option<String> {
+    intent
+        .cache
+        .get("CMAKE_TOOLCHAIN_FILE")
+        .map(|entry| materialize_cache_entry(root, entry).value)
+}
+
+pub(crate) fn chainload_external_toolchain(generated: &Utf8Path, external: &str) -> Result<()> {
+    let mut source = std::fs::read_to_string(generated.as_std_path())
+        .map_err(|error| Error::io(generated.to_string(), error))?;
+    let escaped = external.replace('\\', "/").replace('"', "\\\"");
+    source.push_str(&format!(
+        "\n# Project-declared external toolchain; still composed through the OpenStrata wrapper.\ninclude(\"{escaped}\")\n"
+    ));
+    write_atomic(generated.as_std_path(), source.as_bytes())
+}
+
 pub(crate) fn validate_completed_intent(
     completed: &BuildIntent,
     declared: &BuildIntent,
@@ -868,26 +984,42 @@ pub(crate) fn resolve_declared_intent(
     root: &Utf8Path,
     selected: Option<&str>,
 ) -> Result<BuildIntent> {
-    let Some(name) = selected else {
-        return Ok(BuildIntent::default());
-    };
     let project = load_project(root)?;
-    let declarations = project
+    let mut cache = project
         .build
         .as_ref()
-        .map(|build| &build.intents)
-        .ok_or_else(|| Error::config(format!("unknown build intent '{name}'")))?;
-    let declaration = declarations.get(name).ok_or_else(|| {
-        let available = declarations.keys().cloned().collect::<Vec<_>>().join(", ");
-        Error::config(format!("unknown build intent '{name}'")).with_hint(if available.is_empty() {
-            "declare it under [build.intents.<name>] in openstrata.toml".into()
-        } else {
-            format!("available intents: {available}")
-        })
-    })?;
+        .map(|build| convert_declared_cache(&build.cache))
+        .unwrap_or_default();
+    let name = selected.unwrap_or("default");
+    if let Some(selected) = selected {
+        let declarations = project
+            .build
+            .as_ref()
+            .map(|build| &build.intents)
+            .ok_or_else(|| Error::config(format!("unknown build intent '{selected}'")))?;
+        let declaration = declarations.get(selected).ok_or_else(|| {
+            let available = declarations.keys().cloned().collect::<Vec<_>>().join(", ");
+            Error::config(format!("unknown build intent '{selected}'")).with_hint(
+                if available.is_empty() {
+                    "declare it under [build.intents.<name>] in openstrata.toml".into()
+                } else {
+                    format!("available intents: {available}")
+                },
+            )
+        })?;
+        cache.extend(convert_declared_cache(&declaration.cache));
+    }
+    Ok(BuildIntent {
+        name: name.to_string(),
+        cache,
+    })
+}
 
+fn convert_declared_cache(
+    declared: &std::collections::BTreeMap<String, ost_manifest::BuildCacheEntry>,
+) -> std::collections::BTreeMap<String, CMakeCacheEntry> {
     let mut cache = std::collections::BTreeMap::new();
-    for (variable, entry) in &declaration.cache {
+    for (variable, entry) in declared {
         let kind = match entry.kind {
             ost_manifest::BuildCacheType::Bool => CMakeCacheType::Bool,
             ost_manifest::BuildCacheType::String => CMakeCacheType::String,
@@ -915,10 +1047,7 @@ pub(crate) fn resolve_declared_intent(
             },
         );
     }
-    Ok(BuildIntent {
-        name: name.to_string(),
-        cache,
-    })
+    cache
 }
 
 /// A single preflight check and its outcome.

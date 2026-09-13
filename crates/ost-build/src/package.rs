@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ost_core::digest;
 
@@ -188,6 +188,21 @@ pub fn pack_dir_with(
     opts: PackOptions,
     progress: &mut dyn FnMut(PackProgress),
 ) -> io::Result<PackResult> {
+    pack_dir_with_overrides(stage, archive, files, opts, &BTreeMap::new(), progress)
+}
+
+/// Pack with in-memory content replacements for selected regular files. Keys
+/// are archive-relative forward-slash paths. Runtime export uses this to make
+/// producer-authored CMake metadata relocatable without copying or mutating a
+/// multi-gigabyte adopted SDK tree.
+pub fn pack_dir_with_overrides(
+    stage: &Utf8Path,
+    archive: &Utf8Path,
+    files: &[Utf8PathBuf],
+    opts: PackOptions,
+    overrides: &BTreeMap<String, Vec<u8>>,
+    progress: &mut dyn FnMut(PackProgress),
+) -> io::Result<PackResult> {
     if let Some(parent) = archive.parent() {
         std::fs::create_dir_all(parent.as_std_path())?;
     }
@@ -253,7 +268,10 @@ pub fn pack_dir_with(
             }
         } else {
             let meta = std::fs::symlink_metadata(abs.as_std_path())?;
-            let data = std::fs::read(abs.as_std_path())?;
+            let data = match overrides.get(&rel) {
+                Some(data) => data.clone(),
+                None => std::fs::read(abs.as_std_path())?,
+            };
             // Preserve the execute bit so a materialized runtime tool stays
             // runnable, but normalize everything else to a canonical mode: the
             // archive must be deterministic (identical input → identical bytes),

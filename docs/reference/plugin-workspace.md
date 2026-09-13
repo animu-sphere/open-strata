@@ -84,6 +84,10 @@ lane rather than behind everything the per-bundle pyramid requires. Without it
 the two were welded together: on a fresh checkout the verb validated the graph,
 reported it valid, and then failed because nothing had been built yet, leaving a
 repository to either build every bundle or parse the graph out of `--json`.
+Library-only and tool-only workspaces are valid graph inputs: zero plugin
+bundles is not an error when at least one declared library or tool member was
+loaded. JSON keeps the historical bundle `total` and additionally reports
+`member_total`, `bundles`, `libraries`, and `tools`.
 
 ## Versioned manifest extension
 
@@ -353,6 +357,11 @@ including `--intent <name>` for a named root build.
 
 `ost plugin package --workspace --product` additionally emits one aggregate
 `openstrata.plugin-product` artifact. Its archive has this fixed layout:
+
+In JSON output, workspace packaging always includes `.data.product`. It is
+`null` for `ost plugin package --workspace` and becomes the aggregate product
+object only when `--product` is selected. Consumers should test for `null`
+rather than using field presence to infer that a product was requested.
 
 ```text
 openstrata.product.json
