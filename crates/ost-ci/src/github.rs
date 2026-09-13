@@ -589,12 +589,16 @@ fn runtime_cache_save_step(bootstrap: Option<&Bootstrap>) -> String {
 /// line plus a literal block scalar (`run: |`) whose every line is re-indented to
 /// 10 spaces, so a multi-line script stays inside its own step (the validator
 /// already rejected control chars and structural breakouts). Empty when the
-/// matrix declares no checks, so it renders nothing.
-fn source_check_steps(checks: &[SourceCheck]) -> String {
+/// matrix declares no checks, so it renders nothing. `condition` gates every
+/// rendered check when one job shape carries multiple verification rungs.
+fn source_check_steps(checks: &[SourceCheck], condition: Option<&str>) -> String {
     let mut out = String::new();
     for check in checks {
+        let condition = condition
+            .map(|condition| format!("        if: {condition}\n"))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "      - name: \"{name}\"\n        shell: bash\n        run: |\n",
+            "      - name: \"{name}\"\n{condition}        shell: bash\n        run: |\n",
             name = check.name,
         ));
         for line in check.run.lines() {
@@ -787,6 +791,10 @@ fn workspace_graph_steps(matrix: &SupportMatrix) -> String {
 /// The graph rung has a job of its own ([`workspace_graph_steps`]), so every
 /// step here builds; later verification/package rungs are gated by `verify`.
 fn workspace_steps(matrix: &SupportMatrix) -> String {
+    let checks = source_check_steps(
+        &matrix.source_checks,
+        Some("${{ matrix.verify == 'pyramid' || matrix.verify == 'package' }}"),
+    );
     format!(
         "\
 {preamble}\
@@ -804,7 +812,8 @@ fn workspace_steps(matrix: &SupportMatrix) -> String {
         if: ${{{{ matrix.verify == 'pyramid' || matrix.verify == 'package' }}}}
         shell: bash
         run: ost plugin test --workspace --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --up-to ${{{{ matrix.up_to }}}} --json
-      - name: Package the workspace and aggregate product (never published from this workflow)
+{checks}\
+\x20     - name: Package the workspace and aggregate product (never published from this workflow)
         if: ${{{{ matrix.verify == 'package' }}}}
         shell: bash
         run: ost plugin package --workspace --product --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --json
@@ -816,7 +825,9 @@ fn workspace_steps(matrix: &SupportMatrix) -> String {
           path: |
             .strata/targets/
             **/.strata/reports/
-            **/.strata/dist/
+            **/dist/plugins/
+            **/dist/tools/
+            dist/products/
             .ost-ci/
 ",
         preamble = source_preamble(matrix),
@@ -886,7 +897,7 @@ fn source_steps(matrix: &SupportMatrix) -> String {
             .ost-ci/
 ",
         preamble = source_preamble(matrix),
-        checks = source_check_steps(&matrix.source_checks),
+        checks = source_check_steps(&matrix.source_checks, None),
     )
 }
 
@@ -1172,8 +1183,8 @@ fn release_candidate_steps(matrix: &SupportMatrix) -> String {
     } else {
         ""
     };
-    let mut checks = source_check_steps(&matrix.source_checks);
-    checks.push_str(&source_check_steps(&release.checks));
+    let mut checks = source_check_steps(&matrix.source_checks, None);
+    checks.push_str(&source_check_steps(&release.checks, None));
     format!(
         "\
 \x20   steps:
@@ -1967,6 +1978,10 @@ mod tests {
             },
             ..cell("workspace-package-linux")
         });
+        matrix.source_checks = vec![SourceCheck {
+            name: "Run corpus CTest smoke".into(),
+            run: "ctest --test-dir build/corpus --output-on-failure".into(),
+        }];
         matrix.validate().unwrap();
 
         let doc: serde_yaml::Value =
@@ -2016,6 +2031,36 @@ mod tests {
         let package = step("Package the workspace")["run"].as_str().unwrap();
         assert!(package.contains("plugin package --workspace --product"));
         assert!(package.ends_with("--json"));
+
+        let names: Vec<&str> = steps
+            .iter()
+            .map(|step| step["name"].as_str().unwrap())
+            .collect();
+        let pyramid = names
+            .iter()
+            .position(|name| name.contains("workspace verification pyramid"))
+            .unwrap();
+        let check = names
+            .iter()
+            .position(|name| *name == "Run corpus CTest smoke")
+            .unwrap();
+        let package = names
+            .iter()
+            .position(|name| name.contains("Package the workspace"))
+            .unwrap();
+        assert!(pyramid < check && check < package);
+        assert_eq!(
+            steps[check]["if"],
+            "${{ matrix.verify == 'pyramid' || matrix.verify == 'package' }}"
+        );
+
+        let upload_paths = step("Upload the build logs")["with"]["path"]
+            .as_str()
+            .unwrap();
+        assert!(upload_paths.contains("**/dist/plugins/"));
+        assert!(upload_paths.contains("**/dist/tools/"));
+        assert!(upload_paths.contains("dist/products/"));
+        assert!(!upload_paths.contains(".strata/dist/"));
     }
 
     #[test]
