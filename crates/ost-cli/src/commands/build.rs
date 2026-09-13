@@ -1004,6 +1004,19 @@ pub(crate) fn validate_completed_intent(
     completed: &BuildIntent,
     declared: &BuildIntent,
 ) -> std::result::Result<(), String> {
+    let command = if declared.name == "default" {
+        "ost build".to_string()
+    } else {
+        format!("ost build --intent {}", declared.name)
+    };
+    validate_completed_intent_for_command(completed, declared, &command)
+}
+
+pub(crate) fn validate_completed_intent_for_command(
+    completed: &BuildIntent,
+    declared: &BuildIntent,
+    command: &str,
+) -> std::result::Result<(), String> {
     let mut completed_cache = completed.cache.clone();
     completed_cache.remove("CMAKE_BUILD_TYPE");
     // Domain workflows may add reserved OpenStrata cache entries around a
@@ -1013,11 +1026,6 @@ pub(crate) fn validate_completed_intent(
     // completion look stale.
     completed_cache.remove("OST_RENDERER_ADAPTERS");
     if completed.name != declared.name || completed_cache != declared.cache {
-        let command = if declared.name == "default" {
-            "ost build".to_string()
-        } else {
-            format!("ost build --intent {}", declared.name)
-        };
         return Err(format!(
             "completion build intent '{}' no longer matches the declared '{}' intent; rerun `{command}`",
             completed.name, declared.name,

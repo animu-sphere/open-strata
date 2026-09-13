@@ -828,6 +828,7 @@ fn resolved_matrix(matrix_flag: Option<&str>, lane_flag: Option<&str>, fmt: Form
                         .then(|| cell.bundle.as_deref().unwrap_or(".")),
                     "up_to": (!cell.is_workspace()).then(|| cell.up_to()),
                     "verify": cell.is_workspace().then(|| cell.verify().as_str()),
+                    "intent": cell.intent,
                     "runtime_artifact": cell.runtime_artifact,
                     "require_openusd": cell.require_openusd,
                     "require_openusd_version": cell.require_openusd_version,

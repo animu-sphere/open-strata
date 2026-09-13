@@ -147,6 +147,8 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     };
     let id = target.id();
     let intent = crate::commands::build::resolve_declared_intent(&root, args.intent.as_deref())?;
+    let rebuild_command = matching_build_command(&args);
+    let rebuild_hint = format!("run `{rebuild_command}` before `ost test`");
 
     // 1. A test run is only meaningful against a completed build, and the build
     //    record is also where the configuration and generator come from. Read it
@@ -155,8 +157,9 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     let build_dir = root.join(&relative_build_dir);
     let project = load_project(&root)?;
     let project_version = project.effective_version(&root)?;
-    let lock = read_lock(&root, &id)?;
-    let build = read_build_completion(&build_dir)?;
+    let lock = read_lock(&root, &id).map_err(|error| error.with_hint(rebuild_hint.clone()))?;
+    let build =
+        read_build_completion(&build_dir).map_err(|error| error.with_hint(rebuild_hint.clone()))?;
     build
         .validate_against(
             &lock,
@@ -166,10 +169,14 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         )
         .map_err(|detail| {
             Error::precondition(format!("target '{id}' is not built: {detail}"))
-                .with_hint("run `ost build` before `ost test`")
+                .with_hint(rebuild_hint.clone())
         })?;
-    crate::commands::build::validate_completed_intent(&build.intent, &intent)
-        .map_err(Error::precondition)?;
+    crate::commands::build::validate_completed_intent_for_command(
+        &build.intent,
+        &intent,
+        &rebuild_command,
+    )
+    .map_err(Error::precondition)?;
 
     // The configuration is propagated, not re-chosen: CMAKE_BUILD_TYPE as the
     // build actually used it. A multi-config generator needs it at test time
@@ -449,6 +456,23 @@ fn read_build_completion(build_dir: &Utf8Path) -> Result<BuildCompletion> {
         .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))
 }
 
+fn matching_build_command(args: &TestArgs) -> String {
+    let mut command = String::from("ost build");
+    if args.without_runtime {
+        command.push_str(" --without-runtime");
+    }
+    if let Some(target) = &args.target {
+        command.push_str(&format!(" --target {target}"));
+    }
+    if let Some(profile) = &args.profile {
+        command.push_str(&format!(" --profile {profile}"));
+    }
+    if let Some(intent) = &args.intent {
+        command.push_str(&format!(" --intent {intent}"));
+    }
+    command
+}
+
 fn locate_ctest(override_path: Option<&str>) -> Result<PathBuf> {
     if let Some(path) = override_path {
         let candidate = PathBuf::from(path);
@@ -613,6 +637,19 @@ mod tests {
         assert!(!joined.contains("--timeout"), "0 disables it: {joined}");
         assert!(joined.contains("-R ^renderer"));
         assert!(joined.contains("-j 4"));
+    }
+
+    #[test]
+    fn runtime_free_recovery_command_preserves_the_target_selection() {
+        let mut a = args();
+        a.without_runtime = true;
+        a.target = Some("cy2027".into());
+        a.profile = Some("minimal".into());
+        a.intent = Some("core-asan".into());
+        assert_eq!(
+            matching_build_command(&a),
+            "ost build --without-runtime --target cy2027 --profile minimal --intent core-asan"
+        );
     }
 
     /// Paths handed to CTest are forward-slashed, so a Windows build directory

@@ -1090,6 +1090,7 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
             "host_packages",
             "host_python",
             "hosted",
+            "intent",
             "kind",
             "lane",
             "minimum_trust",
@@ -1120,6 +1121,7 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
     // A bundle cell carries its pyramid level and no workspace rung; the two
     // ladders are mutually exclusive and the projection says which one applies.
     assert_eq!(pr["kind"], "bundle");
+    assert_eq!(pr["intent"], serde_json::Value::Null);
     assert_eq!(pr["up_to"], 4);
     assert_eq!(pr["verify"], serde_json::Value::Null);
     assert_eq!(pr["host_python"], "3.13");
@@ -1171,6 +1173,7 @@ fn a_workspace_cell_validates_projects_and_generates() {
              \x20     expected_oci_digest: sha256:{o}\n\
              \x20   platform: cy2026\n\
              \x20   profile: usd\n\
+             \x20   intent: core-ci\n\
              \x20   verify: test\n\
              \x20 - name: linux-usd-support\n",
             a = "ab".repeat(32),
@@ -1189,6 +1192,7 @@ fn a_workspace_cell_validates_projects_and_generates() {
         .find(|c| c["name"] == "workspace-pr-linux")
         .expect("the workspace cell is projected");
     assert_eq!(workspace["kind"], "workspace");
+    assert_eq!(workspace["intent"], "core-ci");
     assert_eq!(workspace["verify"], "test");
     assert_eq!(workspace["bundle"], serde_json::Value::Null);
     assert_eq!(workspace["up_to"], serde_json::Value::Null);
@@ -1208,6 +1212,7 @@ fn a_workspace_cell_validates_projects_and_generates() {
     );
     assert!(text.contains("ost plugin test --workspace --graph-only"));
     assert!(text.contains("ost build --target"));
+    assert!(text.contains("--intent core-ci"));
     assert!(text.contains("ost test --target"));
 }
 

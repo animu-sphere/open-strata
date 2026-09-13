@@ -248,7 +248,14 @@ mod tests {
             &Compiler::Host,
             None,
         );
-        assert!(t.id().ends_with("-runtime-free"));
+        assert!(t.id().ends_with("-usd-runtime-free"));
+        let mut other_profile = t.clone();
+        other_profile.profile = "minimal".into();
+        assert_ne!(
+            t.id(),
+            other_profile.id(),
+            "runtime-free targets with different profiles need isolated locks and build trees"
+        );
         assert!(out.contains("# runtime:  none"));
         assert!(out.contains("Runtime: intentionally omitted"));
         assert!(!out.contains("/store/must-not-appear"));

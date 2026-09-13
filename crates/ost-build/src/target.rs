@@ -35,9 +35,10 @@ impl Target {
     pub fn id(&self) -> String {
         if !self.uses_runtime() {
             return format!(
-                "{}-{}-runtime-free",
+                "{}-{}-{}-runtime-free",
                 self.platform,
                 self.variant.short_slug(),
+                self.profile,
             );
         }
         format!(
