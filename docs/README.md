@@ -25,11 +25,11 @@ actually implemented; the spec is the source of truth when they disagree.
 
 ## Near-term direction
 
-With the v0.22.9 consumer-packaging foundation shipped, development is
-converging runtime UX, identity correctness and diagnostics in v0.22.10, then CI
-release expansion and DCC host adapters in v0.23.0. Ecosystem packages and DCC
-adapters remain derived entry points to the same digest-pinned composed runtime;
-they do not become parallel dependency stores. All unimplemented reusable asks
+With the v0.22.10 runtime-correctness and diagnostics release shipped,
+development is moving to CI/release expansion and DCC host adapters in v0.23.0.
+Ecosystem packages and DCC adapters remain derived entry points to the same
+digest-pinned composed runtime; they do not become parallel dependency stores.
+All unimplemented reusable asks
 from the reference repositories are in the
 [downstream report intake](roadmap/downstream-report-intake.md). See
 [Current](roadmap/current.md) and the

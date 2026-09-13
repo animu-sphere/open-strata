@@ -537,6 +537,77 @@ portability = "local-override"
 }
 
 #[test]
+fn default_build_cache_flows_to_root_and_scoped_plugin_builds() {
+    let sb = Sandbox::new("default-build-cache");
+    init_and_pull(&sb);
+    let manifest = sb.work_file("openstrata.toml");
+    let mut source = std::fs::read_to_string(&manifest).unwrap();
+    source.push_str(
+        r#"
+[build.cache.CMAKE_PREFIX_PATH]
+type = "PATH"
+value = "third_party/prefix"
+portability = "portable"
+
+[build.cache.CMAKE_TOOLCHAIN_FILE]
+type = "FILEPATH"
+value = "cmake/external.cmake"
+portability = "portable"
+"#,
+    );
+    std::fs::write(&manifest, source).unwrap();
+
+    let root = sb.ost(&["--json", "build", "--dry-run"]);
+    assert!(
+        root.status.success(),
+        "root dry-run failed:\n{}",
+        out_text(&root)
+    );
+    let root_json: serde_json::Value = serde_json::from_slice(&root.stdout).unwrap();
+    let prefix = sb
+        .work_file("third_party/prefix")
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let external = sb
+        .work_file("cmake/external.cmake")
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    assert_eq!(root_json["data"]["external_toolchain"], external);
+    assert!(
+        root_json["data"]["commands"].to_string().contains(&prefix),
+        "root configure must materialize the shared prefix: {root_json}"
+    );
+
+    let scaffold = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "toy",
+        "--extension",
+        "toy",
+    ]);
+    assert!(
+        scaffold.status.success(),
+        "plugin scaffold failed:\n{}",
+        out_text(&scaffold)
+    );
+    let scoped = sb.ost(&["plugin", "build", "toy", "--dry-run"]);
+    let scoped_text = out_text(&scoped);
+    assert!(
+        scoped.status.success(),
+        "scoped dry-run failed:\n{scoped_text}"
+    );
+    assert!(scoped_text.contains(&prefix), "{scoped_text}");
+    assert!(scoped_text.contains(&external), "{scoped_text}");
+    let generated = find_first(&sb.work.join("toy/.strata/targets"), "toolchain.cmake")
+        .expect("scoped dry-run generates its managed toolchain plan");
+    let generated = std::fs::read_to_string(generated).unwrap();
+    assert!(generated.contains(&format!("include(\"{external}\")")));
+}
+
+#[test]
 fn public_build_dry_run_redacts_paths_and_managed_environment() {
     let sb = Sandbox::new("redacted-build-dryrun");
     init_and_pull(&sb);
@@ -2384,6 +2455,49 @@ fn generated_plugin_scaffolds_and_inspects() {
 }
 
 #[test]
+fn plugin_package_rejects_a_runtime_that_differs_from_strata_lock() {
+    let sb = Sandbox::new("package-runtime-lock");
+    init_and_pull(&sb);
+    let new = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "toy",
+        "--extension",
+        "toy",
+    ]);
+    assert!(new.status.success(), "{}", out_text(&new));
+    let bundle = sb.work.join("toy");
+    std::fs::create_dir_all(bundle.join("lib")).unwrap();
+    std::fs::write(
+        bundle
+            .join("lib")
+            .join(format!("libToyFileFormat{}", std::env::consts::DLL_SUFFIX)),
+        b"fake shared library for static package validation",
+    )
+    .unwrap();
+
+    let lock = sb.ost(&["lock"]);
+    assert!(lock.status.success(), "{}", out_text(&lock));
+    let lock_path = sb.work_file("strata.lock");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+    assert_eq!(document["runtime"]["source"], "mock");
+    document["runtime"]["digest"] = format!("sha256:{}", "ab".repeat(32)).into();
+    document["runtime"]["source"] = "artifact".into();
+    std::fs::write(&lock_path, serde_json::to_string_pretty(&document).unwrap()).unwrap();
+
+    let package = sb.ost(&["--json", "plugin", "package", "toy"]);
+    assert_eq!(package.status.code(), Some(5), "{}", out_text(&package));
+    let error: serde_json::Value = serde_json::from_slice(&package.stdout).unwrap();
+    assert_eq!(error["error"]["code"], "PACKAGE_RUNTIME_LOCK_MISMATCH");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("source mock"), "{message}");
+    assert!(message.contains("source artifact"), "{message}");
+    assert!(message.contains("sha256:"), "{message}");
+}
+
+#[test]
 fn plugin_package_refuses_overwritten_managed_outputs_without_an_explicit_override() {
     let sb = Sandbox::new("plugin-output-provenance");
     init_and_pull(&sb);
@@ -2453,6 +2567,28 @@ fn plugin_package_refuses_overwritten_managed_outputs_without_an_explicit_overri
     let matched: serde_json::Value = serde_json::from_slice(&matched.stdout).unwrap();
     assert_eq!(matched["data"]["build_provenance"]["status"], "matched");
     assert_eq!(matched["data"]["build_provenance"]["origin"], "ost-managed");
+
+    let project_manifest = sb.work_file("openstrata.toml");
+    let project_source = std::fs::read_to_string(&project_manifest).unwrap();
+    std::fs::write(
+        &project_manifest,
+        format!("{project_source}\n[build.cache.REVIEW_INTENT]\ntype = \"BOOL\"\nvalue = true\n"),
+    )
+    .unwrap();
+    let stale_intent = sb.ost(&["--json", "plugin", "package", "toy"]);
+    assert_eq!(
+        stale_intent.status.code(),
+        Some(5),
+        "{}",
+        out_text(&stale_intent)
+    );
+    let stale_intent_text = out_text(&stale_intent);
+    assert!(
+        stale_intent_text.contains("PLUGIN_PACKAGE_OUTPUT_MISMATCH")
+            && stale_intent_text.contains("build intent"),
+        "{stale_intent_text}"
+    );
+    std::fs::write(&project_manifest, project_source).unwrap();
 
     std::fs::write(&library, b"plain CMake replacement").unwrap();
     let refused = sb.ost(&["--json", "plugin", "package", "toy"]);
@@ -3049,6 +3185,67 @@ fn workspace_graph_rejects_an_invalid_declared_tool_descriptor() {
 }
 
 #[test]
+fn workspace_graph_accepts_library_and_tool_members_without_bundles() {
+    let sb = Sandbox::new("ws-bundle-free");
+    init_and_pull(&sb);
+
+    let library = sb.work_file("libs/base/openstrata.library.yaml");
+    std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+    std::fs::write(
+        library,
+        "schema: openstrata.library/v1alpha1\nlibrary: { id: base, version: 1.0.0 }\ncmake: { package: base, target: 'base::base' }\n",
+    )
+    .unwrap();
+
+    let tool = sb.work_file("tools/check/openstrata.tool.yaml");
+    std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+    std::fs::write(
+        tool,
+        "schema: openstrata.tool/v1alpha1\ntool: { id: check, version: 1.0.0, license: Apache-2.0 }\nexecutables: [check]\n",
+    )
+    .unwrap();
+
+    let manifest = sb.work_file("openstrata.toml");
+    let source = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        manifest,
+        format!("{source}\n[workspace]\nmembers = [\".\", \"libs/*\", \"tools/*\"]\n"),
+    )
+    .unwrap();
+
+    let out = sb.ost(&["--json", "plugin", "test", "--workspace", "--graph-only"]);
+    assert!(out.status.success(), "{}", out_text(&out));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["data"]["total"], 0);
+    assert_eq!(value["data"]["member_total"], 3);
+    assert_eq!(value["data"]["bundles"], 0);
+    assert_eq!(value["data"]["libraries"], 2);
+    assert_eq!(value["data"]["tools"], 1);
+    assert_eq!(value["data"]["graph"]["passed"], true);
+
+    for args in [
+        vec!["--json", "plugin", "test", "--workspace"],
+        vec!["--json", "plugin", "test", "--workspace", "--from-package"],
+    ] {
+        let test = sb.ost(&args);
+        assert_eq!(test.status.code(), Some(4), "{}", out_text(&test));
+        let error: serde_json::Value = serde_json::from_slice(&test.stdout).unwrap();
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("at least one plugin bundle")),
+            "{error}"
+        );
+        assert!(
+            error["error"]["hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("--graph-only")),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn workspace_graph_fallback_discovers_nested_descriptors() {
     let sb = Sandbox::new("ws-recursive-fallback");
     init_and_pull(&sb);
@@ -3360,6 +3557,19 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
          include = ['*.json']\n",
     );
     std::fs::write(&project_path, project).unwrap();
+
+    let bundles_only = sb.ost(&["--json", "plugin", "package", "--workspace"]);
+    assert!(
+        bundles_only.status.success(),
+        "workspace package failed:\n{}",
+        out_text(&bundles_only)
+    );
+    let bundles_only: serde_json::Value = serde_json::from_slice(&bundles_only.stdout).unwrap();
+    assert_eq!(
+        bundles_only["data"]["product"],
+        serde_json::Value::Null,
+        "product is present but null unless --product is selected"
+    );
 
     let out = sb.ost(&["--json", "plugin", "package", "--workspace", "--product"]);
     assert!(
@@ -4162,6 +4372,34 @@ fn lock_pins_extensions_from_the_runtime_manifest() {
         lock_text.contains("99.99"),
         "lock records the runtime manifest's extension version:\n{lock_text}"
     );
+}
+
+#[test]
+fn lock_check_compares_the_normalized_contract() {
+    let sb = Sandbox::new("lock-semantic-check");
+    init_and_pull(&sb);
+
+    let lock = sb.ost(&["lock"]);
+    assert!(lock.status.success(), "lock failed:\n{}", out_text(&lock));
+    let path = sb.work_file("strata.lock");
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+    let check = sb.ost(&["--json", "lock", "--check"]);
+    assert!(
+        check.status.success(),
+        "format-only lock changes are not drift:\n{}",
+        out_text(&check)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_eq!(report["data"]["up_to_date"], true);
+
+    let mut changed = value;
+    changed["runtime"]["id"] = "different-runtime".into();
+    std::fs::write(&path, serde_json::to_string_pretty(&changed).unwrap()).unwrap();
+    let check = sb.ost(&["--json", "lock", "--check"]);
+    assert_eq!(check.status.code(), Some(5), "{}", out_text(&check));
 }
 
 /// Find the first file under `dir` whose name ends with `suffix`.

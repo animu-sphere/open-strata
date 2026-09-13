@@ -204,13 +204,32 @@ fn export_revalidates_stale_passed_manifest_before_packing() {
 fn export_handoff_and_pull_from_artifact_roundtrip() {
     let sb1 = Sandbox::new("export");
     stdout_json(&sb1.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
-    sb1.promote_mock_to_build();
+    let producer_prefix = sb1.promote_mock_to_build();
+    let cmake = producer_prefix.join("cmake");
+    std::fs::create_dir_all(&cmake).unwrap();
+    let producer_python = r"C:\producer\Python313\include";
+    std::fs::write(
+        cmake.join("pxrConfig.cmake"),
+        format!("set(Python3_INCLUDE_DIR [[{producer_python}]])\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        cmake.join("pxrTargets.cmake"),
+        "set_property(TARGET pxr::tf PROPERTY INTERFACE_INCLUDE_DIRECTORIES \"C:/producer/Python313/include\")\n",
+    )
+    .unwrap();
 
     // Export registers the runtime in sb1's registry, addressed by digest.
     let v = stdout_json(&sb1.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
     assert_eq!(v["data"]["exported"], true);
     let digest = v["data"]["digest"].as_str().unwrap().to_string();
     assert!(digest.starts_with("sha256:"));
+    assert!(
+        std::fs::read_to_string(cmake.join("pxrConfig.cmake"))
+            .unwrap()
+            .contains(producer_python),
+        "export must not mutate the producer runtime"
+    );
 
     // The registry record is a published runtime artifact.
     let v = stdout_json(&sb1.ost(&["--json", "artifact", "show", &digest]));
@@ -242,6 +261,11 @@ fn export_handoff_and_pull_from_artifact_roundtrip() {
     let prefix = sb2.runtime_prefix();
     assert!(prefix.join("plugin/usd/plugInfo.json").is_file());
     assert!(prefix.join("lib/python/pxr/__init__.py").is_file());
+    let config = std::fs::read_to_string(prefix.join("cmake/pxrConfig.cmake")).unwrap();
+    let targets = std::fs::read_to_string(prefix.join("cmake/pxrTargets.cmake")).unwrap();
+    assert!(!config.contains("C:\\producer"), "{config}");
+    assert!(!targets.contains("C:/producer"), "{targets}");
+    assert!(targets.contains("${Python3_INCLUDE_DIR}"), "{targets}");
     let v = stdout_json(&sb2.ost(&["--json", "runtime", "show", "cy2026", "--profile", "usd"]));
     assert_eq!(v["data"]["source"], "artifact");
     assert_eq!(v["data"]["artifact_digest"], digest.as_str());

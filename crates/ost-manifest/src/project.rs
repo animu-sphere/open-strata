@@ -74,6 +74,10 @@ pub struct BuildConfig {
     /// C++ compiler absolute path (required when `compiler = "explicit"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cxx: Option<String>,
+    /// Default typed CMake inputs applied to root builds, scoped workspace
+    /// builds, and generated CI. Named intents overlay this base map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cache: BTreeMap<String, BuildCacheEntry>,
     /// Project-owned, named build configurations selected with `ost build
     /// --intent <name>`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -218,6 +222,7 @@ impl Default for BuildConfig {
             compiler: default_compiler(),
             cc: None,
             cxx: None,
+            cache: BTreeMap::new(),
             intents: BTreeMap::new(),
         }
     }
@@ -326,6 +331,7 @@ impl Project {
         let Some(build) = &self.build else {
             return Ok(());
         };
+        validate_build_cache("build.cache", &build.cache)?;
         for (name, intent) in &build.intents {
             if name == "default" {
                 return Err(Error::InvalidManifest(
@@ -337,44 +343,7 @@ impl Project {
                     "build intent name '{name}' must match [A-Za-z0-9][A-Za-z0-9._-]*"
                 )));
             }
-            for (variable, entry) in &intent.cache {
-                if !safe_cache_variable(variable) {
-                    return Err(Error::InvalidManifest(format!(
-                        "build.intents.{name}.cache key '{variable}' is not a safe CMake cache variable"
-                    )));
-                }
-                if matches!(variable.as_str(), "CMAKE_BUILD_TYPE" | "CMAKE_MAKE_PROGRAM") {
-                    return Err(Error::InvalidManifest(format!(
-                        "build.intents.{name}.cache.{variable} is owned by ost; use --config or --ninja"
-                    )));
-                }
-                match (entry.kind, &entry.value) {
-                    (BuildCacheType::Bool, BuildCacheValue::Bool(_)) => {}
-                    (BuildCacheType::Bool, _) => {
-                        return Err(Error::InvalidManifest(format!(
-                            "build.intents.{name}.cache.{variable}.value must be a TOML boolean for type BOOL"
-                        )));
-                    }
-                    (_, BuildCacheValue::String(value))
-                        if !entry.kind.is_path() || !value.is_empty() => {}
-                    (_, _) => {
-                        return Err(Error::InvalidManifest(format!(
-                            "build.intents.{name}.cache.{variable}.value must be a non-empty TOML string for type {:?}",
-                            entry.kind
-                        )));
-                    }
-                }
-                if entry.kind.is_path() && entry.portability.is_none() {
-                    return Err(Error::InvalidManifest(format!(
-                        "build.intents.{name}.cache.{variable}.portability is required for PATH/FILEPATH inputs (portable or local-override)"
-                    )));
-                }
-                if !entry.kind.is_path() && entry.portability.is_some() {
-                    return Err(Error::InvalidManifest(format!(
-                        "build.intents.{name}.cache.{variable}.portability is only valid for PATH/FILEPATH inputs"
-                    )));
-                }
-            }
+            validate_build_cache(&format!("build.intents.{name}.cache"), &intent.cache)?;
         }
         Ok(())
     }
@@ -670,6 +639,57 @@ fn safe_intent_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+fn validate_build_cache(scope: &str, cache: &BTreeMap<String, BuildCacheEntry>) -> Result<()> {
+    for (variable, entry) in cache {
+        if !safe_cache_variable(variable) {
+            return Err(Error::InvalidManifest(format!(
+                "{scope} key '{variable}' is not a safe CMake cache variable"
+            )));
+        }
+        if matches!(variable.as_str(), "CMAKE_BUILD_TYPE" | "CMAKE_MAKE_PROGRAM") {
+            return Err(Error::InvalidManifest(format!(
+                "{scope}.{variable} is owned by ost; use --config or --ninja"
+            )));
+        }
+        if variable == "CMAKE_TOOLCHAIN_FILE" && entry.kind != BuildCacheType::Filepath {
+            return Err(Error::InvalidManifest(format!(
+                "{scope}.CMAKE_TOOLCHAIN_FILE must use type FILEPATH"
+            )));
+        }
+        if variable == "CMAKE_PREFIX_PATH" && entry.kind != BuildCacheType::Path {
+            return Err(Error::InvalidManifest(format!(
+                "{scope}.CMAKE_PREFIX_PATH must use type PATH"
+            )));
+        }
+        match (entry.kind, &entry.value) {
+            (BuildCacheType::Bool, BuildCacheValue::Bool(_)) => {}
+            (BuildCacheType::Bool, _) => {
+                return Err(Error::InvalidManifest(format!(
+                    "{scope}.{variable}.value must be a TOML boolean for type BOOL"
+                )));
+            }
+            (_, BuildCacheValue::String(value)) if !entry.kind.is_path() || !value.is_empty() => {}
+            (_, _) => {
+                return Err(Error::InvalidManifest(format!(
+                    "{scope}.{variable}.value must be a non-empty TOML string for type {:?}",
+                    entry.kind
+                )));
+            }
+        }
+        if entry.kind.is_path() && entry.portability.is_none() {
+            return Err(Error::InvalidManifest(format!(
+                "{scope}.{variable}.portability is required for PATH/FILEPATH inputs (portable or local-override)"
+            )));
+        }
+        if !entry.kind.is_path() && entry.portability.is_some() {
+            return Err(Error::InvalidManifest(format!(
+                "{scope}.{variable}.portability is only valid for PATH/FILEPATH inputs"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn safe_cache_variable(name: &str) -> bool {
     !name.is_empty()
         && name.as_bytes()[0].is_ascii_alphabetic()
@@ -832,6 +852,35 @@ portability = "local-override"
             intent.cache["MERLIN_MATERIALX_SOURCE_DIR"].portability,
             Some(BuildPathPortability::LocalOverride)
         );
+    }
+
+    #[test]
+    fn default_build_cache_parses_as_shared_external_inputs() {
+        let src = format!(
+            r#"{SAMPLE}
+[build.cache.CMAKE_PREFIX_PATH]
+type = "PATH"
+value = "third_party/prefix"
+portability = "portable"
+
+[build.cache.CMAKE_TOOLCHAIN_FILE]
+type = "FILEPATH"
+value = "cmake/vcpkg.cmake"
+portability = "portable"
+"#
+        );
+        let project = Project::from_toml(&src).unwrap();
+        let cache = &project.build.unwrap().cache;
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache["CMAKE_TOOLCHAIN_FILE"].kind, BuildCacheType::Filepath);
+
+        let wrong_toolchain = format!(
+            "{SAMPLE}\n[build.cache.CMAKE_TOOLCHAIN_FILE]\ntype = \"PATH\"\nvalue = \"cmake/vcpkg.cmake\"\nportability = \"portable\"\n"
+        );
+        assert!(Project::from_toml(&wrong_toolchain)
+            .unwrap_err()
+            .to_string()
+            .contains("must use type FILEPATH"));
     }
 
     #[test]

@@ -15,6 +15,7 @@
 //! different Python in `runtime.json` than the one USD was actually built
 //! against. The runtime declaration is only the fallback.
 
+use std::collections::BTreeMap;
 use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -315,6 +316,110 @@ fn is_absolute_path(s: &str) -> bool {
     let b = s.as_bytes();
     (b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/')
         || (b.len() > 1 && b[0] == b'/')
+}
+
+/// Build in-memory replacements for exported OpenUSD CMake metadata so an
+/// artifact never preserves the producer machine's absolute Python paths.
+///
+/// `pxrConfig.cmake` commonly assigns `Python3_EXECUTABLE`, `_LIBRARY`, and
+/// `_INCLUDE_DIR` to the build host inside `if(NOT DEFINED ...)` guards. Those
+/// assignments are removed so the importing host (or OpenStrata toolchain) can
+/// resolve Python. Exact copies of the same paths in exported target properties
+/// are replaced with the corresponding CMake variable. Source files are never
+/// mutated; callers pass the returned archive-relative byte overrides to the
+/// packer.
+pub fn relocatable_python_cmake_overrides(
+    prefix: &Utf8Path,
+    files: &[Utf8PathBuf],
+) -> std::io::Result<BTreeMap<String, Vec<u8>>> {
+    let cmake_files = files
+        .iter()
+        .filter(|path| path.extension() == Some("cmake"))
+        .collect::<Vec<_>>();
+    let mut producer_paths = BTreeMap::<String, String>::new();
+    for file in &cmake_files {
+        let source = std::fs::read_to_string(file.as_std_path())?;
+        for line in source.lines() {
+            if let Some((variable, value)) = producer_python_assignment(line) {
+                producer_paths.insert(value, variable);
+            }
+        }
+    }
+    if producer_paths.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let mut overrides = BTreeMap::new();
+    for file in cmake_files {
+        let source = std::fs::read_to_string(file.as_std_path())?;
+        let mut output = String::with_capacity(source.len());
+        for line in source.split_inclusive('\n') {
+            if let Some((variable, _)) = producer_python_assignment(line) {
+                let indent = &line[..line.len() - line.trim_start().len()];
+                let newline = if line.ends_with("\r\n") {
+                    "\r\n"
+                } else if line.ends_with('\n') {
+                    "\n"
+                } else {
+                    ""
+                };
+                output.push_str(&format!(
+                    "{indent}# OpenStrata export: producer {variable} removed; resolve it on the consumer.{newline}"
+                ));
+                continue;
+            }
+            let mut rewritten = line.to_string();
+            for (old, variable) in &producer_paths {
+                let replacement = format!("${{{variable}}}");
+                for spelling in [old.clone(), old.replace('\\', "/"), old.replace('/', "\\")] {
+                    if !spelling.is_empty() {
+                        rewritten = rewritten.replace(&spelling, &replacement);
+                    }
+                }
+            }
+            output.push_str(&rewritten);
+        }
+        if output != source {
+            let relative = file
+                .strip_prefix(prefix)
+                .map_err(|error| std::io::Error::other(error.to_string()))?
+                .as_str()
+                .replace('\\', "/");
+            overrides.insert(relative, output.into_bytes());
+        }
+    }
+    Ok(overrides)
+}
+
+fn producer_python_assignment(line: &str) -> Option<(String, String)> {
+    const VARIABLES: &[&str] = &[
+        "Python3_EXECUTABLE",
+        "Python3_LIBRARY",
+        "Python3_INCLUDE_DIR",
+        "Python3_INCLUDE_DIRS",
+        "Python_EXECUTABLE",
+        "Python_LIBRARY",
+        "Python_INCLUDE_DIR",
+        "Python_INCLUDE_DIRS",
+    ];
+    let body = line.trim().strip_prefix("set(")?;
+    let variable = VARIABLES
+        .iter()
+        .find(|variable| {
+            body.strip_prefix(**variable)
+                .is_some_and(|rest| rest.chars().next().is_some_and(char::is_whitespace))
+        })?
+        .to_string();
+    let rest = body[variable.len()..].trim_start();
+    let value = if let Some(rest) = rest.strip_prefix("[[") {
+        rest.split("]]").next()?
+    } else if let Some(rest) = rest.strip_prefix('"') {
+        rest.split('"').next()?
+    } else {
+        rest.split_whitespace().next()?
+    };
+    let normalized = value.replace('\\', "/");
+    is_absolute_path(&normalized).then(|| (variable, value.to_string()))
 }
 
 /// Reduce a declared runtime Python ("3.13.x", "3.13.0", "313") to
@@ -795,6 +900,52 @@ mod tests {
             Some("C:\\Users\\bob\\Python310\\Include".to_string())
         );
         assert_eq!(baked_python_include("find_package(pxr)"), None);
+    }
+
+    #[test]
+    fn export_overrides_remove_producer_python_paths_without_mutating_source() {
+        let dir = std::env::temp_dir().join(format!("ost-export-cmake-{}", std::process::id()));
+        let prefix = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let cmake = prefix.join("lib/cmake/pxr");
+        std::fs::create_dir_all(cmake.as_std_path()).unwrap();
+        let config = cmake.join("pxrConfig.cmake");
+        let targets = cmake.join("pxrTargets.cmake");
+        let producer = "C:\\producer\\Python313";
+        std::fs::write(
+            config.as_std_path(),
+            format!(
+                "if(NOT DEFINED Python3_EXECUTABLE)\n  set(Python3_EXECUTABLE [[{producer}\\python.exe]])\nendif()\n\
+                 set(Python3_LIBRARY [[{producer}\\libs\\python313.lib]] CACHE FILEPATH \"\")\n\
+                 set(Python3_INCLUDE_DIR [[{producer}\\include]] CACHE PATH \"\")\n\
+                 find_dependency(Python3 \"3.13\" EXACT COMPONENTS Development)\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            targets.as_std_path(),
+            format!(
+                "set_target_properties(pxr::tf PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \"${{_IMPORT_PREFIX}}/include;{}/include\")\n",
+                producer.replace('\\', "/")
+            ),
+        )
+        .unwrap();
+        let original = std::fs::read_to_string(config.as_std_path()).unwrap();
+        let files = vec![config.clone(), targets.clone()];
+        let overrides = relocatable_python_cmake_overrides(&prefix, &files).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(config.as_std_path()).unwrap(),
+            original,
+            "export sanitization must not mutate an adopted runtime"
+        );
+        let config = String::from_utf8(overrides["lib/cmake/pxr/pxrConfig.cmake"].clone()).unwrap();
+        let targets =
+            String::from_utf8(overrides["lib/cmake/pxr/pxrTargets.cmake"].clone()).unwrap();
+        assert!(!config.contains("C:\\producer"), "{config}");
+        assert!(config.contains("find_dependency(Python3"), "{config}");
+        assert!(targets.contains("${Python3_INCLUDE_DIR}"), "{targets}");
+        assert!(!targets.contains("C:/producer"), "{targets}");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

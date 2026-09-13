@@ -27,7 +27,12 @@
             "python": { "type": "string" }
           }
         },
-        "digest": { "type": "string" }
+        "digest": { "type": "string" },
+        "source": {
+          "type": "string",
+          "enum": ["mock", "local", "build", "artifact"],
+          "description": "Runtime acquisition source. Absent in locks written before v0.22.10."
+        }
       }
     },
     "python": {

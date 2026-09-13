@@ -47,6 +47,33 @@ pub struct Diagnostic {
     pub status: Status,
     pub observed: String,
     pub suggested_actions: Vec<String>,
+    /// Bounded process evidence for an executed probe failure.
+    pub probe: Option<ProbeDetail>,
+}
+
+/// Process evidence retained by a failed diagnostic. Streams are bounded so a
+/// noisy tool cannot make `report.json` unbounded while still preserving both
+/// channels when one of them is empty.
+#[derive(Debug, Clone)]
+pub struct ProbeDetail {
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub detail: String,
+    pub limit_chars: usize,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+}
+
+const PROBE_OUTPUT_LIMIT_CHARS: usize = 4096;
+
+fn bounded_tail(value: &str, limit: usize) -> (String, bool) {
+    let count = value.chars().count();
+    if count <= limit {
+        return (value.to_string(), false);
+    }
+    (value.chars().skip(count - limit).collect::<String>(), true)
 }
 
 impl Diagnostic {
@@ -57,6 +84,7 @@ impl Diagnostic {
             status: Status::Pass,
             observed: observed.into(),
             suggested_actions: Vec::new(),
+            probe: None,
         }
     }
 
@@ -72,6 +100,7 @@ impl Diagnostic {
             status: Status::Fail,
             observed: observed.into(),
             suggested_actions: actions,
+            probe: None,
         }
     }
 
@@ -82,6 +111,7 @@ impl Diagnostic {
             status: Status::Skip,
             observed: reason.into(),
             suggested_actions: Vec::new(),
+            probe: None,
         }
     }
 
@@ -97,7 +127,43 @@ impl Diagnostic {
             status: Status::Skip,
             observed: reason.into(),
             suggested_actions: actions,
+            probe: None,
         }
+    }
+
+    pub(crate) fn with_probe_output(
+        mut self,
+        exit_code: Option<i32>,
+        stdout: &str,
+        stderr: &str,
+    ) -> Diagnostic {
+        let (stdout, stdout_truncated) = bounded_tail(stdout, PROBE_OUTPUT_LIMIT_CHARS);
+        let (stderr, stderr_truncated) = bounded_tail(stderr, PROBE_OUTPUT_LIMIT_CHARS);
+        let detail = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            match exit_code {
+                Some(code) => format!("process exited with code {code} and produced no output"),
+                None => "process could not be launched and produced no output".into(),
+            }
+        };
+        self.probe = Some(ProbeDetail {
+            status: if exit_code.is_some() {
+                "exited".into()
+            } else {
+                "unspawned".into()
+            },
+            exit_code,
+            stdout,
+            stderr,
+            detail,
+            limit_chars: PROBE_OUTPUT_LIMIT_CHARS,
+            stdout_truncated,
+            stderr_truncated,
+        });
+        self
     }
 }
 

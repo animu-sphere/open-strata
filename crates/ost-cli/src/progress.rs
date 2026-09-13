@@ -78,6 +78,11 @@ const FILE_TAIL_BYTES: u64 = 4096;
 /// Lines of a watched diagnostic file reported on a stall or timeout.
 const FILE_TAIL_LINES: usize = 3;
 
+/// Maximum process records retained in a first-stall snapshot. A runaway build
+/// can have thousands of descendants; diagnostics must stay small enough to
+/// attach to an issue without becoming another failure mode.
+const PROCESS_SNAPSHOT_LIMIT: usize = 128;
+
 struct PhaseState {
     name: String,
     slug: String,
@@ -91,6 +96,12 @@ struct ChildRef<'a> {
     /// reproduced) without the caller having logged it.
     command: String,
     cwd: &'a Utf8Path,
+}
+
+struct DiagnosticTool {
+    name: String,
+    program: PathBuf,
+    args: Vec<String>,
 }
 
 /// How a phase ended, for its terminal transition line.
@@ -115,6 +126,11 @@ pub struct Reporter {
     /// has told us nothing on its pipe by definition, so the retained log of the
     /// tool that stalled is the only evidence left. Cleared on every phase.
     diagnostics: Vec<PathBuf>,
+    /// Safe, caller-selected build identity. This is deliberately explicit so
+    /// a snapshot never falls back to dumping the process environment.
+    diagnostic_context: serde_json::Value,
+    /// Tools whose identity/version should be sampled only if a stall occurs.
+    diagnostic_tools: Vec<DiagnosticTool>,
     current: Option<PhaseState>,
     /// Silence after which a running child is reported as stalled.
     stall_after: Duration,
@@ -148,6 +164,8 @@ impl Reporter {
             started: Instant::now(),
             log: None,
             diagnostics: Vec::new(),
+            diagnostic_context: serde_json::Value::Null,
+            diagnostic_tools: Vec::new(),
             current: None,
             stall_after: STALL,
             notify: false,
@@ -185,6 +203,21 @@ impl Reporter {
     /// Set per phase, and cleared by the next [`phase`](Self::phase).
     pub fn watch(&mut self, paths: Vec<PathBuf>) {
         self.diagnostics = paths;
+    }
+
+    /// Attach safe build/runtime identity to a possible stall snapshot. Callers
+    /// choose the fields; the reporter never serializes the inherited env.
+    pub fn set_diagnostic_context(&mut self, context: serde_json::Value) {
+        self.diagnostic_context = context;
+    }
+
+    /// Register a tool for a bounded version probe if the build stalls.
+    pub fn diagnostic_tool(&mut self, name: &str, program: PathBuf, args: Vec<String>) {
+        self.diagnostic_tools.push(DiagnosticTool {
+            name: name.to_string(),
+            program,
+            args,
+        });
     }
 
     /// Print an incidental human note (e.g. an env summary). Rendered for Human
@@ -406,12 +439,19 @@ impl Reporter {
         silent: Duration,
         child: &ChildRef<'_>,
         tail: &str,
+        timeout: Option<Duration>,
         remaining: Option<Duration>,
     ) {
         let Some(state) = &self.current else { return };
         let elapsed = state.started.elapsed();
         let log = self.log.as_ref().map(|path| path.display().to_string());
         let diagnostics = self.diagnostic_tails();
+        let snapshot = self.write_stall_snapshot(silent, child, tail, timeout, remaining);
+        let snapshot_path = snapshot
+            .as_ref()
+            .ok()
+            .map(|path| path.display().to_string());
+        let snapshot_error = snapshot.as_ref().err().map(ToString::to_string);
         let budget = remaining
             .map(|left| format!("{}s left of the timeout budget", left.as_secs()))
             .unwrap_or_else(|| "no timeout configured".into());
@@ -430,6 +470,11 @@ impl Reporter {
                 if let Some(log) = &log {
                     eprintln!("      log: {log}");
                 }
+                if let Some(path) = &snapshot_path {
+                    eprintln!("      diagnostic snapshot: {path}");
+                } else if let Some(error) = &snapshot_error {
+                    eprintln!("      diagnostic snapshot failed: {error}");
+                }
                 if !tail.is_empty() {
                     eprintln!("      last output: {}", one_line(tail));
                 }
@@ -440,7 +485,7 @@ impl Reporter {
             Style::Plain => {
                 eprintln!(
                     "timestamp={} phase={} status=stalled pid={} silent_ms={} elapsed_ms={} \
-                     timeout_remaining_seconds={} cwd={} log={} command={} tail={}",
+                     timeout_remaining_seconds={} cwd={} log={} snapshot={} command={} tail={}",
                     now_unix(),
                     state.slug,
                     child.pid,
@@ -451,9 +496,18 @@ impl Reporter {
                         .unwrap_or_else(|| "none".into()),
                     child.cwd,
                     log.as_deref().unwrap_or_default(),
+                    snapshot_path.as_deref().unwrap_or_default(),
                     serde_json::to_string(&child.command).unwrap_or_else(|_| "\"\"".into()),
                     serde_json::to_string(tail).unwrap_or_else(|_| "\"\"".into())
                 );
+                if let Some(error) = &snapshot_error {
+                    eprintln!(
+                        "timestamp={} phase={} status=stalled snapshot_error={}",
+                        now_unix(),
+                        state.slug,
+                        serde_json::to_string(error).unwrap_or_else(|_| "\"\"".into())
+                    );
+                }
                 for (path, text) in &diagnostics {
                     eprintln!(
                         "timestamp={} phase={} status=stalled diagnostic={path} tail={}",
@@ -473,6 +527,8 @@ impl Reporter {
                 "elapsed_ms": elapsed.as_millis() as u64,
                 "timeout_remaining_seconds": remaining.map(|left| left.as_secs()),
                 "log": log,
+                "diagnostic_snapshot": snapshot_path,
+                "snapshot_error": snapshot_error,
                 "last_output_tail": tail,
                 "diagnostics": diagnostics
                     .iter()
@@ -481,6 +537,83 @@ impl Reporter {
                 "timestamp": now_unix(),
             })),
         }
+    }
+
+    /// Persist one bounded diagnostic bundle when a child first crosses the
+    /// silence threshold. The snapshot intentionally records no environment:
+    /// build environments routinely contain credentials, while the process
+    /// tree, thresholds and file metadata are the evidence needed to diagnose
+    /// a stuck configure or compiler.
+    fn write_stall_snapshot(
+        &self,
+        silent: Duration,
+        child: &ChildRef<'_>,
+        tail: &str,
+        timeout: Option<Duration>,
+        remaining: Option<Duration>,
+    ) -> std::io::Result<PathBuf> {
+        let state = self.current.as_ref().ok_or_else(|| {
+            std::io::Error::other("cannot snapshot a stall without an active phase")
+        })?;
+        let directory = self
+            .log
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| child.cwd.as_std_path().join(".strata").join("diagnostics"));
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(format!(
+            "stall-{}-{}-{}.json",
+            state.slug,
+            now_unix(),
+            child.pid
+        ));
+        let watched = self
+            .diagnostics
+            .iter()
+            .map(|path| diagnostic_file(path))
+            .collect::<Vec<_>>();
+        let tools = self
+            .diagnostic_tools
+            .iter()
+            .map(diagnostic_tool)
+            .collect::<Vec<_>>();
+        let document = serde_json::json!({
+            "schema": "openstrata.stall-diagnostic.v1",
+            "timestamp": now_unix(),
+            "phase": {
+                "name": state.name,
+                "slug": state.slug,
+                "index": self.index,
+                "total": self.total,
+                "elapsed_ms": state.started.elapsed().as_millis() as u64,
+            },
+            "silence": {
+                "threshold_ms": self.stall_after.as_millis() as u64,
+                "observed_ms": silent.as_millis() as u64,
+            },
+            "timeout": {
+                "configured_ms": timeout.map(|value| value.as_millis() as u64),
+                "remaining_ms": remaining.map(|value| value.as_millis() as u64),
+            },
+            "supervisor": { "pid": std::process::id() },
+            "context": self.diagnostic_context,
+            "tools": tools,
+            "child": {
+                "pid": child.pid,
+                "command": child.command,
+                "cwd": child.cwd,
+            },
+            "last_output_tail": tail,
+            "logs": {
+                "build": self.log.as_ref().map(|path| diagnostic_file(path)),
+                "watched": watched,
+            },
+            "process_tree": collect_process_tree(child.pid),
+        });
+        let bytes = serde_json::to_vec_pretty(&document).map_err(std::io::Error::other)?;
+        std::fs::write(&path, bytes)?;
+        Ok(path)
     }
 
     /// The tail of every watched diagnostic file that exists and has content.
@@ -619,7 +752,7 @@ impl Reporter {
         // has produced no output for HEARTBEAT, and a louder stall notice once
         // the silence passes STALL.
         let mut last_beat = Instant::now();
-        let mut last_stall: Option<Instant> = None;
+        let mut stall_reported = false;
         let child_started = Instant::now();
         let child_ref = ChildRef {
             pid,
@@ -672,13 +805,11 @@ impl Reporter {
                     // A stall supersedes the heartbeat for this tick: they
                     // describe the same silence, and only one of them is worth
                     // interrupting a quiet run for.
-                    if idle >= self.stall_after
-                        && last_stall.is_none_or(|at| at.elapsed() >= self.stall_after)
-                    {
+                    if idle >= self.stall_after && !stall_reported {
                         let remaining =
                             timeout.map(|limit| limit.saturating_sub(child_started.elapsed()));
-                        self.stall(idle, &child_ref, &output_tail(&tail), remaining);
-                        last_stall = Some(Instant::now());
+                        self.stall(idle, &child_ref, &output_tail(&tail), timeout, remaining);
+                        stall_reported = true;
                         last_beat = Instant::now();
                     } else if idle >= HEARTBEAT && last_beat.elapsed() >= HEARTBEAT {
                         self.heartbeat(idle, pid, &output_tail(&tail));
@@ -1093,6 +1224,288 @@ fn emit_json(value: serde_json::Value) {
     }
 }
 
+/// Metadata and a bounded tail for a file relevant to a stalled child. Missing
+/// files remain in the document: knowing that CMake never created its error log
+/// is useful evidence too.
+fn diagnostic_file(path: &Path) -> serde_json::Value {
+    match std::fs::metadata(path) {
+        Ok(metadata) => serde_json::json!({
+            "path": path.display().to_string(),
+            "exists": true,
+            "size_bytes": metadata.len(),
+            "modified_unix": metadata.modified().ok().and_then(|time| {
+                time.duration_since(UNIX_EPOCH).ok().map(|duration| duration.as_secs())
+            }),
+            "tail": file_tail(path),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({
+            "path": path.display().to_string(),
+            "exists": false,
+            "size_bytes": null,
+            "modified_unix": null,
+            "tail": null,
+        }),
+        Err(error) => serde_json::json!({
+            "path": path.display().to_string(),
+            "exists": null,
+            "error": error.to_string(),
+        }),
+    }
+}
+
+fn diagnostic_tool(tool: &DiagnosticTool) -> serde_json::Value {
+    let metadata = diagnostic_file(&tool.program);
+    let mut command = Command::new(&tool.program);
+    command.args(&tool.args);
+    match bounded_output(command, Duration::from_secs(2), OUTPUT_TAIL_BYTES) {
+        Ok((status, stdout, stderr)) => {
+            let stdout = String::from_utf8_lossy(&stdout);
+            let stderr = String::from_utf8_lossy(&stderr);
+            let observed = if stdout.trim().is_empty() {
+                stderr.trim()
+            } else {
+                stdout.trim()
+            };
+            serde_json::json!({
+                "name": tool.name,
+                "program": tool.program.display().to_string(),
+                "args": tool.args,
+                "file": metadata,
+                "exit_code": status.code(),
+                "version": observed.lines().next(),
+            })
+        }
+        Err(error) => serde_json::json!({
+            "name": tool.name,
+            "program": tool.program.display().to_string(),
+            "args": tool.args,
+            "file": metadata,
+            "probe_error": error,
+        }),
+    }
+}
+
+/// Best-effort process-tree inventory for a first-stall snapshot. Collection is
+/// bounded by time, record count and output bytes; failure is data in the
+/// snapshot and never changes the build result.
+fn collect_process_tree(root_pid: u32) -> serde_json::Value {
+    match collect_process_tree_platform(root_pid) {
+        Ok(entries) => serde_json::json!({
+            "root_pid": root_pid,
+            "limit": PROCESS_SNAPSHOT_LIMIT,
+            "entries": entries,
+        }),
+        Err(error) => serde_json::json!({
+            "root_pid": root_pid,
+            "limit": PROCESS_SNAPSHOT_LIMIT,
+            "entries": [],
+            "collection_error": error,
+        }),
+    }
+}
+
+#[cfg(windows)]
+fn collect_process_tree_platform(root_pid: u32) -> std::result::Result<serde_json::Value, String> {
+    // Query once, then close over the descendant ids in memory. The command
+    // line is capped per process and no environment block is requested.
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+$rootPid = [uint32]__ROOT_PID__
+$all = @(Get-CimInstance Win32_Process)
+$ids = [System.Collections.Generic.HashSet[uint32]]::new()
+[void]$ids.Add($rootPid)
+do {
+  $added = 0
+  foreach ($process in $all) {
+    if ($ids.Contains([uint32]$process.ParentProcessId) -and $ids.Add([uint32]$process.ProcessId)) {
+      $added++
+    }
+  }
+} while ($added -gt 0)
+$entries = @($all | Where-Object { $ids.Contains([uint32]$_.ProcessId) } | Sort-Object ProcessId | Select-Object -First 128 | ForEach-Object {
+  $command = [string]$_.CommandLine
+  if ($command.Length -gt 1024) { $command = $command.Substring(0, 1024) + '…' }
+  $elapsed = $null
+  if ($_.CreationDate) { $elapsed = [uint64][Math]::Max(0, ((Get-Date) - $_.CreationDate).TotalMilliseconds) }
+  [pscustomobject]@{
+    pid = [uint32]$_.ProcessId
+    ppid = [uint32]$_.ParentProcessId
+    executable = [string]$_.ExecutablePath
+    name = [string]$_.Name
+    command = $command
+    elapsed_ms = $elapsed
+    cpu_ms = [uint64](($_.KernelModeTime + $_.UserModeTime) / 10000)
+  }
+})
+ConvertTo-Json -Compress -Depth 3 -InputObject @($entries)
+"#
+    .replace("__ROOT_PID__", &root_pid.to_string());
+    let mut command = Command::new("powershell.exe");
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &script,
+    ]);
+    let (status, stdout, stderr) = bounded_output(command, Duration::from_secs(5), 256 * 1024)?;
+    if !status.success() {
+        return Err(format!(
+            "Windows process inventory failed{}: {}",
+            status
+                .code()
+                .map(|code| format!(" (exit {code})"))
+                .unwrap_or_default(),
+            String::from_utf8_lossy(&stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&stdout)
+        .map_err(|error| format!("invalid Windows process inventory: {error}"))
+}
+
+#[cfg(unix)]
+fn collect_process_tree_platform(root_pid: u32) -> std::result::Result<serde_json::Value, String> {
+    let mut command = Command::new("ps");
+    command.args(["-axo", "pid=,ppid=,etime=,time=,comm=,args="]);
+    let (status, stdout, stderr) = bounded_output(command, Duration::from_secs(5), 1024 * 1024)?;
+    if !status.success() {
+        return Err(format!(
+            "process inventory failed{}: {}",
+            status
+                .code()
+                .map(|code| format!(" (exit {code})"))
+                .unwrap_or_default(),
+            String::from_utf8_lossy(&stderr).trim()
+        ));
+    }
+
+    struct Record {
+        pid: u32,
+        ppid: u32,
+        elapsed: String,
+        cpu: String,
+        executable: String,
+        command: String,
+    }
+    let records = String::from_utf8_lossy(&stdout)
+        .lines()
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 5 {
+                return None;
+            }
+            Some(Record {
+                pid: fields[0].parse().ok()?,
+                ppid: fields[1].parse().ok()?,
+                elapsed: fields[2].to_string(),
+                cpu: fields[3].to_string(),
+                executable: fields[4].to_string(),
+                command: fields[5..].join(" ").chars().take(1024).collect(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut ids = vec![root_pid];
+    let mut changed = true;
+    while changed && ids.len() < PROCESS_SNAPSHOT_LIMIT {
+        changed = false;
+        for record in &records {
+            if ids.contains(&record.ppid) && !ids.contains(&record.pid) {
+                ids.push(record.pid);
+                changed = true;
+                if ids.len() == PROCESS_SNAPSHOT_LIMIT {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(serde_json::Value::Array(
+        records
+            .into_iter()
+            .filter(|record| ids.contains(&record.pid))
+            .take(PROCESS_SNAPSHOT_LIMIT)
+            .map(|record| {
+                serde_json::json!({
+                    "pid": record.pid,
+                    "ppid": record.ppid,
+                    "executable": record.executable,
+                    "command": record.command,
+                    "elapsed": record.elapsed,
+                    "cpu": record.cpu,
+                })
+            })
+            .collect(),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn collect_process_tree_platform(_root_pid: u32) -> std::result::Result<serde_json::Value, String> {
+    Err("process inventory is unsupported on this operating system".into())
+}
+
+/// Run a small diagnostic command without allowing the diagnostic itself to
+/// hang the build. Reader threads drain both pipes while the process runs, and
+/// only the first `limit` bytes of each are retained.
+fn bounded_output(
+    mut command: Command,
+    timeout: Duration,
+    limit: usize,
+) -> std::result::Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("start process inventory: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .map(|mut pipe| thread::spawn(move || read_bounded(&mut pipe, limit)));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|mut pipe| thread::spawn(move || read_bounded(&mut pipe, limit)));
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "process inventory timed out after {}ms",
+                    timeout.as_millis()
+                ));
+            }
+            Err(error) => return Err(format!("wait for process inventory: {error}")),
+        }
+    };
+    let stdout = stdout
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    Ok((status, stdout, stderr))
+}
+
+/// Drain a child pipe completely so the producer cannot block, while retaining
+/// at most `limit` bytes for the diagnostic document.
+fn read_bounded(mut pipe: impl Read, limit: usize) -> Vec<u8> {
+    let mut retained = Vec::with_capacity(limit.min(8 * 1024));
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                let keep = limit.saturating_sub(retained.len()).min(read);
+                retained.extend_from_slice(&chunk[..keep]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    retained
+}
+
 /// Seconds since the Unix epoch, for plain-mode timestamps.
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -1144,6 +1557,17 @@ mod tests {
         assert_eq!(hms(Duration::from_secs(142)), "02:22");
         assert_eq!(hms(Duration::from_secs(5)), "00:05");
         assert_eq!(hms(Duration::from_secs(3661)), "1:01:01");
+    }
+
+    #[test]
+    fn bounded_reader_drains_the_source_without_retaining_past_the_limit() {
+        let source = vec![b'x'; 32 * 1024];
+        let mut reader = std::io::Cursor::new(source);
+
+        let retained = read_bounded(&mut reader, 127);
+
+        assert_eq!(retained, vec![b'x'; 127]);
+        assert_eq!(reader.position(), 32 * 1024);
     }
 
     #[test]
@@ -1267,8 +1691,11 @@ mod tests {
     fn a_stalled_child_is_reported_and_still_completes() {
         let cwd = camino::Utf8PathBuf::from_path_buf(std::env::current_dir().unwrap()).unwrap();
         let (program, args) = silent_child();
+        let snapshot_dir = temp_path("stall-snapshot");
+        let log = camino::Utf8PathBuf::from_path_buf(snapshot_dir.join("build.log")).unwrap();
         let mut reporter =
             Reporter::new(ProgressMode::Plain, 1, true).stall_after(Duration::from_millis(200));
+        reporter.set_log(&log);
         reporter.phase("Configuring CMake");
         let status = reporter
             .run_status(&program, &args, &cwd, &[], None)
@@ -1277,6 +1704,24 @@ mod tests {
             status.success(),
             "the child should exit cleanly: {status:?}"
         );
+        let snapshots = std::fs::read_dir(&snapshot_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("stall-"))
+            .collect::<Vec<_>>();
+        assert_eq!(snapshots.len(), 1, "only the first stall is snapshotted");
+        let document: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(snapshots[0].path()).expect("read stall diagnostic snapshot"),
+        )
+        .expect("stall diagnostic is JSON");
+        assert_eq!(
+            document["schema"], "openstrata.stall-diagnostic.v1",
+            "snapshot schema must be identifiable"
+        );
+        assert_eq!(document["child"]["cwd"], cwd.as_str());
+        assert_eq!(document["silence"]["threshold_ms"], 200);
+        assert!(document["process_tree"]["entries"].is_array());
+        let _ = std::fs::remove_dir_all(snapshot_dir);
     }
 
     #[test]

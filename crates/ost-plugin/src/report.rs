@@ -53,13 +53,26 @@ pub fn report_json(bundle: &Bundle, report: &DoctorReport) -> serde_json::Value 
         .diagnostics
         .iter()
         .map(|d| {
-            serde_json::json!({
+            let mut diagnostic = serde_json::json!({
                 "id": d.id,
                 "level": d.level,
                 "status": d.status.as_str(),
                 "observed": d.observed,
                 "suggested_actions": d.suggested_actions,
-            })
+            });
+            if let Some(probe) = &d.probe {
+                diagnostic["probe"] = serde_json::json!({
+                    "status": probe.status,
+                    "exit_code": probe.exit_code,
+                    "stdout": probe.stdout,
+                    "stderr": probe.stderr,
+                    "detail": probe.detail,
+                    "limit_chars": probe.limit_chars,
+                    "stdout_truncated": probe.stdout_truncated,
+                    "stderr_truncated": probe.stderr_truncated,
+                });
+            }
+            diagnostic
         })
         .collect();
 
@@ -216,6 +229,43 @@ mod tests {
             .map(|kind| kind.as_str())
             .collect::<Vec<_>>();
         assert_eq!(kinds, modeled);
+    }
+
+    #[test]
+    fn failed_probe_evidence_is_serialized_without_dropping_empty_stderr() {
+        let path = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir().join(format!("ost-report-probe-{}", std::process::id())),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(path.as_std_path());
+        std::fs::create_dir_all(path.join("plugin/resources/toy").as_std_path()).unwrap();
+        std::fs::write(
+            path.join("plugin/resources/toy/plugInfo.json")
+                .as_std_path(),
+            r#"{"Plugins": []}"#,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            root: path.clone(),
+            manifest: crate::PluginManifest::parse(
+                "plugin: { name: toy, version: 1.0.0, kind: usd-fileformat }\nruntime: { openusd: '>=25.05,<27.0' }\nprovides: [usd-fileformat:toy]\nusd: { plug_info: plugin/resources/toy/plugInfo.json }\n",
+            )
+            .unwrap(),
+        };
+        let diagnostic = crate::doctor::Diagnostic::fail("probe", 2, "failed", vec![])
+            .with_probe_output(Some(9), "stdout detail", "");
+        let body = report_json(
+            &bundle,
+            &DoctorReport {
+                diagnostics: vec![diagnostic],
+            },
+        );
+
+        assert_eq!(body["diagnostics"][0]["probe"]["exit_code"], 9);
+        assert_eq!(body["diagnostics"][0]["probe"]["stdout"], "stdout detail");
+        assert_eq!(body["diagnostics"][0]["probe"]["stderr"], "");
+        assert_eq!(body["diagnostics"][0]["probe"]["detail"], "stdout detail");
+        let _ = std::fs::remove_dir_all(path.as_std_path());
     }
 
     #[test]

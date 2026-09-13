@@ -48,24 +48,23 @@ deps), Jenkins (CI orchestration), OCI (transport), and Git (workspace history).
 
 ## Near-term product direction
 
-The runtime/artifact/Formation and consumer-package foundation is established
-through v0.22.9. The
-near-term work deliberately converges that foundation instead of widening the
-low-level feature set:
+The runtime/artifact/Formation, consumer-package, ordinary runtime UX and
+correctness-diagnostic foundation is established through v0.22.10. The
+near-term work deliberately carries that identity into release CI and hosts
+instead of widening the low-level feature set:
 
 ```text
-v0.22.10 make composition ordinary to use, explain and diagnose
 v0.23.0  expand release CI and bind the same runtime to DCC hosts
 v1.0.0   trust the complete produce -> CI -> Formation -> DCC execution arc
 ```
 
-The intended ordinary surface is a small task-oriented runtime workflow:
-compose, explain, doctor and exec. Details such as platform, profile, provider,
-artifact and lock remain inspectable and machine-readable, but users should not
-need to manipulate every internal concept for routine execution. Sessions,
-Kubernetes execution, broad GPU profiles and renderer-template expansion remain
-later work. The reusable gaps found by auditing all reference-repository OST
-reports are in the
+The ordinary surface is a small task-oriented runtime workflow: compose,
+explain, doctor and exec. Details such as platform, profile, provider, artifact
+and lock remain inspectable and machine-readable, but users do not need to
+manipulate every internal concept for routine execution. Sessions, Kubernetes
+execution, broad GPU profiles and renderer-template expansion remain later
+work. The remaining reusable gaps found by auditing all reference-repository
+OST reports are in the
 [downstream report intake](../roadmap/downstream-report-intake.md).
 
 ## Relationship to other projects

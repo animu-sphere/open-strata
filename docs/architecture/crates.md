@@ -1,6 +1,6 @@
 # Crates
 
-*Last verified against: v0.22.9 (workspace version 0.22.9).*
+*Last verified against: v0.22.10 (workspace version 0.22.10).*
 
 OpenStrata is a Rust workspace. The CLI is thin; domain logic lives in libraries
 so it can be reused by future surfaces (CI helpers, a daemon, tests). The

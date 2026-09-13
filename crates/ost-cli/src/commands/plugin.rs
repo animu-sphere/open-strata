@@ -829,6 +829,7 @@ pub(crate) fn build_library_one(
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
     let compiler = resolve_plugin_compiler(&library.root, &compiler_opts)?;
+    let (project_root, build_intent) = scoped_build_intent(&library.root)?;
     let target_dir = target_state_dir(&library.root, &id);
     let toolchain = target_dir.join("toolchain.cmake");
     let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &tgt.python_version);
@@ -852,6 +853,14 @@ pub(crate) fn build_library_one(
             ninja.display().to_string().replace('\\', "/")
         ));
     }
+    for (key, entry) in &build_intent.cache {
+        if key != "CMAKE_TOOLCHAIN_FILE" {
+            configure_args.push(
+                crate::commands::build::materialize_cache_entry(&project_root, entry)
+                    .cmake_arg(key),
+            );
+        }
+    }
     let build_args = vec!["--build".to_string(), cmake_path(&build_dir)];
     let install_args = vec![
         "--install".to_string(),
@@ -870,6 +879,11 @@ pub(crate) fn build_library_one(
             println!("cmake {}", configure_args.join(" "));
             println!("cmake {}", build_args.join(" "));
             println!("cmake {}", install_args.join(" "));
+            if let Some(external) =
+                crate::commands::build::external_toolchain(&project_root, &build_intent)
+            {
+                println!("# would chain-load external toolchain: {external}");
+            }
         }
         return Ok(());
     }
@@ -889,6 +903,10 @@ pub(crate) fn build_library_one(
     ));
     std::fs::write(toolchain.as_std_path(), format!("{toolchain_text}\n"))
         .map_err(|error| Error::io(toolchain.to_string(), error))?;
+    if let Some(external) = crate::commands::build::external_toolchain(&project_root, &build_intent)
+    {
+        crate::commands::build::chainload_external_toolchain(&toolchain, &external)?;
+    }
     if !r.pulled {
         return Err(Error::coded(
             "RUNTIME_NOT_FOUND",
@@ -951,6 +969,7 @@ fn build_one(
 
     // Compiler policy: CLI flags over the enclosing project's `[build]`, else host.
     let compiler = resolve_plugin_compiler(&bundle.root, &compiler_opts)?;
+    let (project_root, build_intent) = scoped_build_intent(&bundle.root)?;
 
     // Generate the toolchain that points CMake at the runtime (reusing ost-build).
     // Both the toolchain and the build tree are keyed by target id, so switching
@@ -995,6 +1014,10 @@ fn build_one(
     }
     std::fs::write(toolchain.as_std_path(), format!("{toolchain_text}\n"))
         .map_err(|e| Error::io(toolchain.to_string(), e))?;
+    if let Some(external) = crate::commands::build::external_toolchain(&project_root, &build_intent)
+    {
+        crate::commands::build::chainload_external_toolchain(&toolchain, &external)?;
+    }
 
     let build_dir = target_build_dir(&bundle.root, &id);
     let cmake = tools::which("cmake");
@@ -1045,6 +1068,14 @@ fn build_one(
             n.display().to_string().replace('\\', "/")
         ));
     }
+    for (key, entry) in &build_intent.cache {
+        if key != "CMAKE_TOOLCHAIN_FILE" {
+            configure_args.push(
+                crate::commands::build::materialize_cache_entry(&project_root, entry)
+                    .cmake_arg(key),
+            );
+        }
+    }
     let build_args = vec![
         "--build".to_string(),
         build_dir.to_string().replace('\\', "/"),
@@ -1069,6 +1100,11 @@ fn build_one(
         println!("cmake {}", build_args.join(" "));
         if let Some(args) = &install_args {
             println!("cmake {}", args.join(" "));
+        }
+        if let Some(external) =
+            crate::commands::build::external_toolchain(&project_root, &build_intent)
+        {
+            println!("# would chain-load external toolchain: {external}");
         }
         lease.release();
         return Ok(());
@@ -1177,6 +1213,7 @@ fn build_one(
         &lock_compiler,
         &toolchain,
         &build_dir,
+        build_intent,
         lease.invocation(),
     )?;
     lease.release();
@@ -1225,6 +1262,7 @@ fn write_plugin_build_completion(
     compiler: &ost_build::LockCompiler,
     toolchain: &Utf8Path,
     build_dir: &Utf8Path,
+    mut intent: BuildIntent,
     invocation: Option<&str>,
 ) -> Result<BuildCompletion> {
     let completed_unix = SystemTime::now()
@@ -1249,7 +1287,6 @@ fn write_plugin_build_completion(
         &portable(toolchain_rel),
         completed_unix,
     );
-    let mut intent = BuildIntent::default();
     intent.cache.insert(
         "CMAKE_BUILD_TYPE".into(),
         CMakeCacheEntry::string("Release"),
@@ -1590,6 +1627,7 @@ fn assess_bundle_local_build_provenance(
         Ok(completion) => completion,
         Err(detail) => return Ok(evidence_error(detail)),
     };
+    let (_, declared_intent) = scoped_build_intent(&bundle.root)?;
     let build_fingerprint = completion.fingerprint();
     let build_identity = || {
         (
@@ -1620,6 +1658,13 @@ fn assess_bundle_local_build_provenance(
                 &build_rel,
             )
             .err()
+            .or_else(|| {
+                crate::commands::build::validate_completed_intent(
+                    &completion.intent,
+                    &declared_intent,
+                )
+                .err()
+            })
             .map(|detail| format!("last managed build completion is incompatible: {detail}"))
     };
     if let Some(detail) = identity_error {
@@ -1754,7 +1799,10 @@ fn assess_root_bundle_build_provenance(
     let id = target.id();
     let project = load_project(&project_root)?;
     let project_version = project.effective_version(&project_root)?;
-    let mut declared_intents = vec![BuildIntent::default()];
+    let mut declared_intents = vec![crate::commands::build::resolve_declared_intent(
+        &project_root,
+        None,
+    )?];
     if let Some(build) = &project.build {
         for name in build.intents.keys() {
             declared_intents.push(crate::commands::build::resolve_declared_intent(
@@ -2163,6 +2211,19 @@ fn package_bundle(
         ));
     }
 
+    let runtime_manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
+        .ok()
+        .and_then(|source| RuntimeManifest::from_json(&source).ok());
+    let runtime_source = runtime_manifest
+        .as_ref()
+        .map(|runtime| runtime.source.as_str());
+    validate_runtime_against_project_lock(
+        &bundle.root,
+        Some(&tgt.runtime_id),
+        Some(&tgt.runtime_digest),
+        runtime_source,
+    )?;
+
     let ctx = runtime_context(&r);
     // Validate the plugin *as authored* against the resolved runtime, so a
     // hand-authored ABI that conflicts with the target is reported rather than
@@ -2367,9 +2428,6 @@ fn package_bundle(
         DebugPackageStatus::NotProduced
     };
 
-    let runtime_manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
-        .ok()
-        .and_then(|s| RuntimeManifest::from_json(&s).ok());
     let runtime_source = runtime_manifest
         .as_ref()
         .map(|m| m.source.as_str().to_string())
@@ -4093,8 +4151,14 @@ fn verify_plugin_product(
         .map_err(|error| Error::parse(contract_path.to_string(), anyhow::Error::new(error)))?;
     validate_product_contract(&contract)?;
 
+    let input = Utf8PathBuf::from(product);
+    let project_hint = if input.as_std_path().is_dir() {
+        input.as_path()
+    } else {
+        input.parent().unwrap_or_else(|| Utf8Path::new("."))
+    };
     for member in &contract.members {
-        verify_product_member(&tree.path, &contract.target, member)?;
+        verify_product_member(&tree.path, &contract.target, member, project_hint)?;
     }
     verify_product_data(&tree.path, &contract.data)?;
 
@@ -4485,6 +4549,7 @@ fn verify_product_member(
     root: &Utf8Path,
     product_target: &str,
     member: &PluginProductMember,
+    project_hint: &Utf8Path,
 ) -> Result<()> {
     let member_prefix = format!("members/{}/", member.id);
     for (field, relative) in [
@@ -4518,6 +4583,18 @@ fn verify_product_member(
     let manifest: serde_json::Value = serde_json::from_str(&manifest_source)
         .map_err(|error| Error::parse(member_manifest.to_string(), anyhow::Error::new(error)))?;
     verify_product_member_manifest(product_target, member, &manifest)?;
+    validate_runtime_against_project_lock(
+        project_hint,
+        manifest
+            .pointer("/provenance/runtime/id")
+            .and_then(|value| value.as_str()),
+        manifest
+            .pointer("/provenance/runtime/digest")
+            .and_then(|value| value.as_str()),
+        manifest
+            .pointer("/provenance/runtime/source")
+            .and_then(|value| value.as_str()),
+    )?;
 
     let checksums = safe_product_join(root, &member.checksums, "product member checksums")?;
     verify_member_checksums(
@@ -5641,7 +5718,7 @@ fn test_workspace_from_package(
     up_to: u8,
     fmt: Format,
 ) -> Result<()> {
-    let (bundles, _libraries, graph) = load_workspace_graph()?;
+    let (bundles, _libraries, tool_count, graph) = load_workspace_graph()?;
     if !graph.passed {
         if fmt.is_json() {
             output::report(
@@ -5649,13 +5726,14 @@ fn test_workspace_from_package(
                 &serde_json::json!({ "workspace": true, "from_package": true, "graph": graph }),
             );
         } else {
-            print_graph_summary(&graph);
+            print_graph_summary(&graph, tool_count);
             for issue in &graph.issues {
                 println!("  FAIL [{}] {}", issue.code, issue.message);
             }
         }
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
+    require_workspace_bundles(&bundles)?;
 
     let (platform, profile) = selection(target, profile).ok_or_else(|| {
         Error::usage(
@@ -5907,7 +5985,8 @@ fn test_bundle(
 /// `--json` (report 32 §4). This is the direct form: no build, no runtime, no
 /// packaged artifact.
 fn validate_workspace_graph(fmt: Format) -> Result<()> {
-    let (bundles, _libraries, graph) = load_workspace_graph()?;
+    let (bundles, libraries, tool_count, graph) = load_workspace_graph()?;
+    let member_total = bundles.len() + libraries.len() + tool_count;
     if fmt.is_json() {
         output::report(
             graph.passed,
@@ -5915,11 +5994,17 @@ fn validate_workspace_graph(fmt: Format) -> Result<()> {
                 "workspace": true,
                 "graph_only": true,
                 "graph": graph,
+                // Retain the historical bundle total; member_total makes the
+                // bundle-free graph shape explicit without breaking clients.
                 "total": bundles.len(),
+                "member_total": member_total,
+                "bundles": bundles.len(),
+                "libraries": libraries.len(),
+                "tools": tool_count,
             }),
         );
     } else {
-        print_graph_summary(&graph);
+        print_graph_summary(&graph, tool_count);
         for issue in &graph.issues {
             println!("  FAIL [{}] {}", issue.code, issue.message);
         }
@@ -5933,14 +6018,20 @@ fn validate_workspace_graph(fmt: Format) -> Result<()> {
 /// Discover and load every workspace member, then validate the bundle/library
 /// dependency graph. Shared by every `--workspace` entry point so one discovery
 /// rule and one graph computation serve them all.
-fn load_workspace_graph() -> Result<(Vec<Bundle>, Vec<Library>, ost_plugin::WorkspaceValidation)> {
+fn load_workspace_graph() -> Result<(
+    Vec<Bundle>,
+    Vec<Library>,
+    usize,
+    ost_plugin::WorkspaceValidation,
+)> {
     let members = discover_workspace_members(Utf8Path::new("."))?;
-    if members.bundles.is_empty() {
-        return Err(
-            Error::precondition("no plugin bundles found in the workspace member set").with_hint(
-                "run from the workspace root, or pass a bundle path instead of --workspace",
-            ),
-        );
+    if members.bundles.is_empty() && members.libraries.is_empty() && members.tools.is_empty() {
+        return Err(Error::precondition(
+            "no bundles, libraries, or tools found in the workspace member set",
+        )
+        .with_hint(
+            "run from the workspace root or declare member descriptors under [workspace].members",
+        ));
     }
     let bundles = members
         .bundles
@@ -5958,12 +6049,25 @@ fn load_workspace_graph() -> Result<(Vec<Bundle>, Vec<Library>, ost_plugin::Work
     for root in &members.tools {
         ost_plugin::Tool::load(root)?;
     }
+    let tool_count = members.tools.len();
     let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
-    Ok((bundles, libraries, graph))
+    Ok((bundles, libraries, tool_count, graph))
+}
+
+fn require_workspace_bundles(bundles: &[Bundle]) -> Result<()> {
+    if bundles.is_empty() {
+        return Err(Error::precondition(
+            "workspace bundle testing requires at least one plugin bundle",
+        )
+        .with_hint(
+            "use `ost plugin test --workspace --graph-only` to validate a library/tool-only workspace",
+        ));
+    }
+    Ok(())
 }
 
 /// The one-line graph shape, in the same wording whether it passed or failed.
-fn print_graph_summary(graph: &ost_plugin::WorkspaceValidation) {
+fn print_graph_summary(graph: &ost_plugin::WorkspaceValidation, tool_count: usize) {
     let plural = if graph.libraries.len() == 1 {
         "y"
     } else {
@@ -5976,7 +6080,7 @@ fn print_graph_summary(graph: &ost_plugin::WorkspaceValidation) {
     };
     println!(
         "Workspace dependency graph: {} bundle(s), {} bundle edge(s), {} librar{plural}, \
-         {} library edge(s), {verdict}",
+         {} library edge(s), {tool_count} tool(s), {verdict}",
         graph.nodes.len(),
         graph.edges.len(),
         graph.libraries.len(),
@@ -5991,7 +6095,7 @@ fn test_workspace(
     up_to: u8,
     fmt: Format,
 ) -> Result<()> {
-    let (bundles, libraries, graph) = load_workspace_graph()?;
+    let (bundles, libraries, tool_count, graph) = load_workspace_graph()?;
     if !graph.passed {
         if fmt.is_json() {
             output::report(
@@ -6004,7 +6108,7 @@ fn test_workspace(
                 }),
             );
         } else {
-            print_graph_summary(&graph);
+            print_graph_summary(&graph, tool_count);
             for issue in &graph.issues {
                 println!("  FAIL [{}] {}", issue.code, issue.message);
             }
@@ -6015,8 +6119,9 @@ fn test_workspace(
         }
         std::process::exit(ost_core::Category::Validation.exit_code() as i32);
     }
+    require_workspace_bundles(&bundles)?;
     if !fmt.is_json() {
-        print_graph_summary(&graph);
+        print_graph_summary(&graph, tool_count);
         println!();
     }
 
@@ -8997,6 +9102,80 @@ pub(crate) fn selection(
     ))
 }
 
+/// When a project lock exists, prevent package/validation from blessing bytes
+/// produced against another runtime. Older projects without a lock retain their
+/// existing workflow; malformed locks and identity drift fail closed.
+fn validate_runtime_against_project_lock(
+    hint: &Utf8Path,
+    runtime_id: Option<&str>,
+    runtime_digest: Option<&str>,
+    runtime_source: Option<&str>,
+) -> Result<()> {
+    let absolute = if hint.is_absolute() {
+        hint.to_path_buf()
+    } else {
+        Utf8PathBuf::from_path_buf(
+            std::env::current_dir()
+                .map_err(|error| Error::io("current directory", error))?
+                .join(hint.as_std_path()),
+        )
+        .map_err(|path| Error::config(format!("project path is not UTF-8: {}", path.display())))?
+    };
+    let Some(root) = find_project_root(absolute.as_std_path())
+        .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+    else {
+        return Ok(());
+    };
+    let path = root.join(crate::commands::lock::LOCK_FILE);
+    if !path.as_std_path().is_file() {
+        return Ok(());
+    }
+    let source = std::fs::read_to_string(path.as_std_path())
+        .map_err(|error| Error::io(path.to_string(), error))?;
+    let locked = ost_manifest::Lock::from_json(&source)
+        .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
+    let (Some(runtime_id), Some(runtime_digest)) = (runtime_id, runtime_digest) else {
+        return Err(Error::coded(
+            "PACKAGE_RUNTIME_LOCK_MISMATCH",
+            Category::Validation,
+            format!(
+                "packaged runtime identity is incomplete and cannot be matched to strata.lock runtime '{}@{}'",
+                locked.runtime.id, locked.runtime.digest,
+            ),
+        )
+        .with_hint(
+            "repackage every product member so its manifest records provenance.runtime.id and provenance.runtime.digest",
+        ));
+    };
+    let source_mismatch = locked
+        .runtime
+        .source
+        .as_deref()
+        .zip(runtime_source)
+        .is_some_and(|(expected, observed)| expected != observed);
+    if locked.runtime.id == runtime_id
+        && locked.runtime.digest == runtime_digest
+        && !source_mismatch
+    {
+        return Ok(());
+    }
+
+    Err(Error::coded(
+        "PACKAGE_RUNTIME_LOCK_MISMATCH",
+        Category::Validation,
+        format!(
+            "selected or packaged runtime '{runtime_id}@{runtime_digest}' (source {}) does not match strata.lock runtime '{}@{}' (source {})",
+            runtime_source.unwrap_or("unknown"),
+            locked.runtime.id,
+            locked.runtime.digest,
+            locked.runtime.source.as_deref().unwrap_or("unknown"),
+        ),
+    )
+    .with_hint(
+        "restore/pull the runtime pinned by strata.lock; run `ost lock` only after deliberately changing the project runtime identity",
+    ))
+}
+
 /// Select the narrowest profile that satisfies a packaged component when the
 /// caller names a target but no project/profile. This keeps the historical
 /// explicit/project selection rules, while avoiding a misleading default to
@@ -9392,6 +9571,20 @@ fn resolve_plugin_compiler(
         .and_then(|root| load_project(&root).ok())
         .and_then(|p| p.build);
     compiler::resolve(opts, build.as_ref())
+}
+
+/// Default build inputs belong to the enclosing project and are shared by root
+/// CMake, direct plugin/library builds, and the CI generated for that project.
+/// Keep the owner root beside the normalized intent so portable relative paths
+/// have one meaning regardless of the caller's current directory.
+fn scoped_build_intent(member_root: &Utf8Path) -> Result<(Utf8PathBuf, BuildIntent)> {
+    let Some(project_root) = find_project_root(member_root.as_std_path())
+        .and_then(|root| Utf8PathBuf::from_path_buf(root).ok())
+    else {
+        return Ok((member_root.to_path_buf(), BuildIntent::default()));
+    };
+    let intent = crate::commands::build::resolve_declared_intent(&project_root, None)?;
+    Ok((project_root, intent))
 }
 
 /// Remove the bundle's `build/<id>` when the compiler differs from the last
@@ -9936,6 +10129,64 @@ mod tests {
     }
 
     #[test]
+    fn project_lock_rejects_incomplete_packaged_runtime_identity() {
+        let root = unique_tmp("product-runtime-identity");
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        write_test_file(
+            &root.join(PROJECT_MANIFEST),
+            "[project]\nname = 'runtime-identity'\nversion = '0.1.0'\n",
+        );
+        let os = if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::Linux
+        };
+        let host = ost_core::host::Host {
+            os,
+            arch: Arch::X86_64,
+        };
+        let locked = ost_manifest::Lock {
+            lock_version: 1,
+            runtime: ost_manifest::LockRuntime {
+                id: "openstrata-test-runtime".into(),
+                platform: "test".into(),
+                profile: "usd".into(),
+                variant: ost_core::variant::Variant::new(
+                    &host,
+                    ost_core::variant::Abi::default_for(os),
+                    "313",
+                ),
+                digest: format!("sha256:{}", "ab".repeat(32)),
+                source: Some("artifact".into()),
+            },
+            python: ost_manifest::LockPython {
+                version: "3.13.0".into(),
+                abi: "cpython-313".into(),
+                manager: "uv".into(),
+                uv_lock_hash: None,
+            },
+            extensions: Vec::new(),
+            validation: ost_manifest::Validation::Passed,
+        };
+        write_test_file(
+            &root.join(crate::commands::lock::LOCK_FILE),
+            &locked.to_json().unwrap(),
+        );
+
+        let error = validate_runtime_against_project_lock(
+            &root,
+            None,
+            Some(&locked.runtime.digest),
+            Some("artifact"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), "PACKAGE_RUNTIME_LOCK_MISMATCH");
+        assert!(error.to_string().contains("identity is incomplete"));
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
     fn legacy_product_install_fields_remain_optional_in_v1alpha1() {
         let schema: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../schemas/plugin-product.schema.json"
@@ -10334,6 +10585,7 @@ schema: { codeless: true, contract: 1 }
             &ost_build::LockCompiler::default(),
             &toolchain,
             &build_dir,
+            BuildIntent::default(),
             Some("test-plugin-build"),
         )
         .unwrap();
@@ -10376,6 +10628,7 @@ schema: { codeless: true, contract: 1 }
             &ost_build::LockCompiler::default(),
             &toolchain,
             &build_dir,
+            BuildIntent::default(),
             Some("test-plugin-build"),
         )
         .unwrap();

@@ -9,30 +9,19 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-v0.22.10 runtime correctness, UX and diagnostics is active in
+v0.23.0 release CI, host adapters and matrix is active in
 [current.md](current.md). Detailed acceptance is in
 [runtime-composition.md](runtime-composition.md) and the
 [downstream report intake](downstream-report-intake.md).
 
-- ⬜ **v0.23.0 - release CI, host adapters and matrix.** Add runtime-free and
-  intent-aware workspace cells, pyramid/package release verification,
-  generated/hand-authored lane reconciliation, orphan detection and per-member
-  test evidence. Run minimal headless
-  load/open/validate probes with preserved output and explained SKIPs; generate
-  Maya `.mod` and Houdini package JSON; publish matrix cells with pinned host
-  records, DCC/OS/OpenUSD/Python identities, runtime and plugin artifact digests,
-  validation tiers and execution evidence; and complete
-  Linux/macOS discovery acceptance. OpenStrata does not install, license or
-  mutate hosts, and adapters do not abstract DCC APIs. Direction:
-  [dcc-hosts.md](../design/proposed/dcc-hosts.md).
 - ⬜ **v1.0.0.** Cut after the produce → trust → trusted CI → Formation →
   DCC-host execution arc is supported, digest-addressed and dogfooded.
 
 ## Future phases
 
-These remain outside the v0.22.10 -> v0.23.0 mainline. Device
-diagnostics in v0.22.10 may prepare later GPU work, and `runtime exec` may prepare
-later sessions, but neither expands the active milestone into those systems.
+These remain outside the v0.23.0 mainline. Device diagnostics may prepare later
+GPU work, and `runtime exec` may prepare later sessions, but neither expands the
+active milestone into those systems.
 
 - ⬜ **OpenUSD template catalog maturity.** Automate clean-install consumer
   gates, prove compiled schemas on a second platform/OpenUSD line, harden the

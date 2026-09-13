@@ -3,7 +3,7 @@
 
 > **OpenStrata** は、VFX Reference Platform の年次互換性を、実行・検証・配布可能な不変ランタイムレイヤーへ変換するための、VFX / OpenUSD 向け runtime・build・extension・validation プラットフォームである。
 > CLI 名は **`ost`** とする。
-> 直近方針の基準日: **2026-09-12**。
+> 直近方針の基準日: **2026-09-13**。
 
 ---
 
@@ -24,18 +24,17 @@
 7. host OS / GPU driver / accelerator capability を検出・検証・記録できる。
 8. runtime・extension・session を lockfile と digest で再現可能にする。
 
-v0.22.9 までに runtime / artifact / Formation composition と consumer
-packaging の基盤が成立したため、直近は新しい低レベル機能を広げるよりも、
-次の順に収束させる。
+v0.22.10 までに runtime / artifact / Formation composition、consumer
+packaging、通常利用の runtime UX と correctness diagnostics の基盤が成立した。
+直近は新しい低レベル機能を広げるよりも、次の順に収束させる。
 
 ```text
-v0.22.10 runtime UX and diagnostics
 v0.23.0  release CI, DCC host adapters and matrix
 v1.0.0   trusted production arc
 ```
 
-この順序では「配る」「普通に使い説明・診断する」「実 DCC host へ接続する」
-を一つずつ閉じる。Sessions / sandbox、Kubernetes backend、広範な AI/GPU
+この順序では、同じ canonical runtime identity を完全な release CI と実 DCC
+host へ接続する。Sessions / sandbox、Kubernetes backend、広範な AI/GPU
 profile、renderer template 拡張は主線へ混ぜない。
 
 ---
@@ -1824,8 +1823,7 @@ provenance metadata
 The phases below are the original architectural decomposition, not the current
 release order. The active milestone ladder in [roadmap](../roadmap/README.md)
 supersedes their sequencing; in particular, sessions and AI/GPU profiles remain
-future work while runtime UX, release CI and DCC adapters form the
-v0.22.10-v0.23.0 mainline.
+future work while release CI and DCC adapters form the v0.23.0 mainline.
 
 ## Phase 0 — Foundation
 
@@ -2081,28 +2079,17 @@ Success means:
 
 # 22. Immediate Implementation Tasks
 
-The original bootstrap and v0.22.9 consumer-package lists have shipped and are
-retained in release history. From 2026-09-12, implement in this order:
+The bootstrap, consumer-package, runtime-UX and correctness-diagnostic lists have
+shipped through v0.22.10 and are retained in release history. From 2026-09-13,
+implement in this order:
 
-1. Converge routine runtime work on compose / explain / doctor / exec, with
-   stable JSON schemas, diagnostic codes and remediation for humans, CI and
-   agents.
-2. Make runtime exports relocatable and enforce package/runtime identity against
-   the semantic project lock.
-3. Close the resolver, bundle-free workspace, external CMake input and managed
-   stall-diagnostic gaps from the
-   [downstream report intake](../roadmap/downstream-report-intake.md).
-4. Keep component verification, composition verification, execution, plugin
-   load, render and physical-device claims separate; retain explained SKIPs.
-5. Complete registry-facing and geospatial clean-consumer acceptance, then
-   decide whether the runtime-composition proposal can move to accepted.
-6. Only then complete v0.23.0 release-lane expansion, DCC headless adapters,
+1. Complete v0.23.0 release-lane expansion, DCC headless adapters,
    Maya `.mod`, Houdini package JSON and matrix cells pinned to host records,
    artifact digests, tiers and execution evidence on Windows/Linux/macOS.
-7. Complete component package contracts on top of the existing workspace graph:
+2. Complete component package contracts on top of the existing workspace graph:
    workspace-wide consumers, PUBLIC/package dependency consistency, standalone
    closure, declarative boundary lint, and per-artifact evidence.
-8. Integrate those contracts into plain-library, USD plugin, adapter, and
+3. Integrate those contracts into plain-library, USD plugin, adapter, and
    OpenExec scaffolds only after dogfood proves reusable policy; keep domain
    semantics and source moves project-owned.
 

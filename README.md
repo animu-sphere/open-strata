@@ -31,23 +31,21 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.22.9** — registry-neutral consumer packaging and
-downstream report intake. Deterministic native, wheel and npm distributions
-retain the exact OST runtime identity and are exercised through relocated or
-isolated clean consumers. Installed ordinary-library packages also have a
-descriptor-scoped consumer verification path. v0.22.8 runtime, lock, aggregate
-product and geospatial dogfood contracts remain valid.
-Per-release detail (objective, shipped capabilities, compatibility, known
-limitations) lives in [docs/releases/](docs/releases/); active, incomplete work is
-in the [roadmap](docs/roadmap/README.md).
+The current release is **v0.22.10** — runtime correctness, UX and diagnostics.
+Runtime exports remove producer-absolute Python metadata, packaging enforces the
+semantic project lock, resolver and managed-build failures retain bounded
+evidence, and bundle-free workspaces plus declarative external CMake inputs are
+first-class. Deterministic native, wheel and npm consumers continue to retain the
+exact OST runtime identity. Per-release detail (objective, shipped capabilities,
+compatibility, known limitations) lives in [docs/releases/](docs/releases/);
+active, incomplete work is in the [roadmap](docs/roadmap/README.md).
 
-The active **v0.22.10** milestone makes composition ordinary to use, explain and
-diagnose, and closes the reusable correctness gaps found across all 71
-downstream OST reports. Registry-facing consumer acceptance, relocatable runtime
-metadata, package/lock identity enforcement and bounded probe diagnostics are
-part of that work. CI/release expansion and DCC host adapters remain v0.23.0.
+The next **v0.23.0** milestone expands release CI and binds the same canonical
+runtime identity to DCC host adapters. Runtime-free and intent-aware workspace
+cells, release-lane reconciliation, per-member test evidence and the first-class
+host-add-on model remain in that milestone.
 See the [composition guide](docs/guides/compose-a-runtime.md),
-[v0.22.9 record](docs/releases/v0.22.9.md),
+[v0.22.10 record](docs/releases/v0.22.10.md),
 [current roadmap](docs/roadmap/current.md) and
 [downstream report intake](docs/roadmap/downstream-report-intake.md).
 

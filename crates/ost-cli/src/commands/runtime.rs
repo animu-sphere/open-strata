@@ -3836,6 +3836,8 @@ fn export(
         };
         return Err(Error::validation(message));
     }
+    let cmake_overrides = ost_build::relocatable_python_cmake_overrides(&effective, &files)
+        .map_err(|error| Error::io(effective.to_string(), error))?;
     if slim && !fmt.is_json() {
         println!(
             "Slim export: keeping {} files (SDK layout); dropping top-level: {}",
@@ -3913,6 +3915,13 @@ fn export(
             workers,
             if workers == 1 { "" } else { "s" },
         );
+        if !cmake_overrides.is_empty() {
+            println!(
+                "Relocating producer Python paths in {} exported CMake file{}",
+                cmake_overrides.len(),
+                if cmake_overrides.len() == 1 { "" } else { "s" }
+            );
+        }
     }
     let start = std::time::Instant::now();
     let mut last = start;
@@ -3936,8 +3945,15 @@ fn export(
             let _ = std::io::Write::flush(&mut std::io::stderr());
         }
     };
-    let packed = ost_build::pack_dir_with(&effective, &archive_path, &files, opts, &mut progress)
-        .map_err(|e| Error::io(archive_path.to_string(), e))?;
+    let packed = ost_build::pack_dir_with_overrides(
+        &effective,
+        &archive_path,
+        &files,
+        opts,
+        &cmake_overrides,
+        &mut progress,
+    )
+    .map_err(|e| Error::io(archive_path.to_string(), e))?;
     if show_progress {
         eprintln!(); // terminate the in-place progress line
     }
@@ -3951,6 +3967,11 @@ fn export(
             .unwrap_or(0)
     });
     let mut producer = runtime_artifact_manifest(&manifest, &archive_name, &packed, created);
+    producer["cmake_relocation"] = serde_json::json!({
+        "schema": "openstrata.cmake-relocation/v1",
+        "python_paths_removed": true,
+        "files_rewritten": cmake_overrides.keys().collect::<Vec<_>>(),
+    });
     producer[ost_artifact::OPENUSD_SELECTOR_SCHEMA_FIELD] =
         serde_json::json!(ost_artifact::OPENUSD_SELECTOR_SCHEMA);
 

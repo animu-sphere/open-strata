@@ -136,6 +136,22 @@
           "suggested_actions": {
             "type": "array",
             "items": { "type": "string" }
+          },
+          "probe": {
+            "type": "object",
+            "description": "Bounded process evidence retained when an executed diagnostic fails.",
+            "required": ["status", "exit_code", "stdout", "stderr", "detail", "limit_chars", "stdout_truncated", "stderr_truncated"],
+            "additionalProperties": false,
+            "properties": {
+              "status": { "type": "string", "enum": ["exited", "unspawned"] },
+              "exit_code": { "type": ["integer", "null"] },
+              "stdout": { "type": "string" },
+              "stderr": { "type": "string" },
+              "detail": { "type": "string", "minLength": 1 },
+              "limit_chars": { "type": "integer", "minimum": 1 },
+              "stdout_truncated": { "type": "boolean" },
+              "stderr_truncated": { "type": "boolean" }
+            }
           }
         }
       }
