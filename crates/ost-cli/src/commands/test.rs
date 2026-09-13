@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `ost test` — run a managed target's tests under the runtime that built it.
+//! `ost test` — run a managed target's tests under the contract that built it.
 //!
 //! This is a deliberate command rather than a mode of `ost build`: plain build
 //! semantics do not change under anyone's feet, and a caller that wants tests
@@ -17,7 +17,8 @@
 //! `ost test` propagates the build's own truth instead of re-deriving it:
 //!
 //! * the **runtime** and its environment, layered exactly as `ost build` layers
-//!   it over the MSVC developer environment;
+//!   it over the MSVC developer environment, or their explicit absence for a
+//!   matching `--without-runtime` build;
 //! * the **configuration** and **generator**, read from the build completion
 //!   record rather than accepted again from the caller — testing `Debug`
 //!   binaries against a `Release` build is precisely the mismatch that record
@@ -52,7 +53,9 @@ use ost_core::host::Os;
 use ost_core::paths::STATE_DIR;
 use ost_core::{tools, Error, Result};
 
-use crate::commands::configure::{build_target, load_project, resolve_selection};
+use crate::commands::configure::{
+    build_target, build_target_without_runtime, load_project, resolve_selection,
+};
 use crate::output::{self, Format};
 use crate::progress::{ProgressMode, Reporter};
 
@@ -76,6 +79,11 @@ pub struct TestArgs {
     /// Test the build produced for this project-declared intent.
     #[arg(long)]
     intent: Option<String>,
+
+    /// Test a build produced with `ost build --without-runtime`, without adding
+    /// an OpenStrata runtime to the test process environment.
+    #[arg(long)]
+    without_runtime: bool,
 
     /// Only run tests whose name matches this regular expression (CTest `-R`).
     #[arg(long)]
@@ -132,9 +140,15 @@ pub struct TestArgs {
 
 pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     let (root, platform, profile) = resolve_selection(args.target.clone(), args.profile.clone())?;
-    let (target, resolved) = build_target(&platform, &profile)?;
+    let (target, resolved) = if args.without_runtime {
+        build_target_without_runtime(&platform, &profile)?
+    } else {
+        build_target(&platform, &profile)?
+    };
     let id = target.id();
     let intent = crate::commands::build::resolve_declared_intent(&root, args.intent.as_deref())?;
+    let rebuild_command = matching_build_command(&args);
+    let rebuild_hint = format!("run `{rebuild_command}` before `ost test`");
 
     // 1. A test run is only meaningful against a completed build, and the build
     //    record is also where the configuration and generator come from. Read it
@@ -143,8 +157,9 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     let build_dir = root.join(&relative_build_dir);
     let project = load_project(&root)?;
     let project_version = project.effective_version(&root)?;
-    let lock = read_lock(&root, &id)?;
-    let build = read_build_completion(&build_dir)?;
+    let lock = read_lock(&root, &id).map_err(|error| error.with_hint(rebuild_hint.clone()))?;
+    let build =
+        read_build_completion(&build_dir).map_err(|error| error.with_hint(rebuild_hint.clone()))?;
     build
         .validate_against(
             &lock,
@@ -154,10 +169,14 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         )
         .map_err(|detail| {
             Error::precondition(format!("target '{id}' is not built: {detail}"))
-                .with_hint("run `ost build` before `ost test`")
+                .with_hint(rebuild_hint.clone())
         })?;
-    crate::commands::build::validate_completed_intent(&build.intent, &intent)
-        .map_err(Error::precondition)?;
+    crate::commands::build::validate_completed_intent_for_command(
+        &build.intent,
+        &intent,
+        &rebuild_command,
+    )
+    .map_err(Error::precondition)?;
 
     // The configuration is propagated, not re-chosen: CMAKE_BUILD_TYPE as the
     // build actually used it. A multi-config generator needs it at test time
@@ -169,7 +188,7 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         .map(|entry| entry.value.clone())
         .unwrap_or_else(|| "Release".to_string());
 
-    if !resolved.pulled {
+    if !args.without_runtime && !resolved.pulled {
         return Err(
             Error::precondition(format!("runtime '{}' not pulled", target.runtime_id)).with_hint(
                 format!(
@@ -240,12 +259,17 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
             Err(error) => eprintln!("warning: failed to load the MSVC environment: {error}"),
         }
     }
-    let extra_env = crate::commands::build::layer_runtime_env(&resolved.env, &msvc_env);
-    rep.note(&format!(
-        "runtime env {} ({} vars)",
-        target.runtime_id,
-        resolved.env.vars.len()
-    ));
+    let extra_env = if args.without_runtime {
+        rep.note("runtime intentionally omitted");
+        msvc_env
+    } else {
+        rep.note(&format!(
+            "runtime env {} ({} vars)",
+            target.runtime_id,
+            resolved.env.vars.len()
+        ));
+        crate::commands::build::layer_runtime_env(&resolved.env, &msvc_env)
+    };
     if let Some(invocation) = lease.invocation() {
         rep.note(&format!("target lease {invocation}"));
     }
@@ -432,6 +456,23 @@ fn read_build_completion(build_dir: &Utf8Path) -> Result<BuildCompletion> {
         .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))
 }
 
+fn matching_build_command(args: &TestArgs) -> String {
+    let mut command = String::from("ost build");
+    if args.without_runtime {
+        command.push_str(" --without-runtime");
+    }
+    if let Some(target) = &args.target {
+        command.push_str(&format!(" --target {target}"));
+    }
+    if let Some(profile) = &args.profile {
+        command.push_str(&format!(" --profile {profile}"));
+    }
+    if let Some(intent) = &args.intent {
+        command.push_str(&format!(" --intent {intent}"));
+    }
+    command
+}
+
 fn locate_ctest(override_path: Option<&str>) -> Result<PathBuf> {
     if let Some(path) = override_path {
         let candidate = PathBuf::from(path);
@@ -546,6 +587,7 @@ mod tests {
             target: None,
             profile: None,
             intent: None,
+            without_runtime: false,
             filter: None,
             test_timeout: 300,
             timeout: 3600,
@@ -595,6 +637,19 @@ mod tests {
         assert!(!joined.contains("--timeout"), "0 disables it: {joined}");
         assert!(joined.contains("-R ^renderer"));
         assert!(joined.contains("-j 4"));
+    }
+
+    #[test]
+    fn runtime_free_recovery_command_preserves_the_target_selection() {
+        let mut a = args();
+        a.without_runtime = true;
+        a.target = Some("cy2027".into());
+        a.profile = Some("minimal".into());
+        a.intent = Some("core-asan".into());
+        assert_eq!(
+            matching_build_command(&a),
+            "ost build --without-runtime --target cy2027 --profile minimal --intent core-asan"
+        );
     }
 
     /// Paths handed to CTest are forward-slashed, so a Windows build directory

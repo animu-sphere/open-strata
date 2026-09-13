@@ -171,6 +171,29 @@ pub(crate) fn build_target_with_generator(
     Ok((target, r))
 }
 
+/// Resolve the platform/variant metadata for a build that intentionally does
+/// not consume the selected profile's runtime. Resolution remains useful for
+/// the target ABI and C++ standard, but the returned target carries a distinct
+/// runtime identity so its lock/build tree cannot collide with a runtime-backed
+/// build.
+pub(crate) fn build_target_without_runtime_with_generator(
+    platform: &str,
+    profile: &str,
+    generator: &str,
+) -> Result<(Target, Resolved)> {
+    let (mut target, resolved) = build_target_with_generator(platform, profile, generator)?;
+    target.runtime_id = ost_build::NO_RUNTIME_ID.to_string();
+    target.runtime_digest.clear();
+    Ok((target, resolved))
+}
+
+pub(crate) fn build_target_without_runtime(
+    platform: &str,
+    profile: &str,
+) -> Result<(Target, Resolved)> {
+    build_target_without_runtime_with_generator(platform, profile, "Ninja")
+}
+
 /// Resolve the runtime and write all of a target's CMake files. Returns the
 /// generated target so callers (e.g. `ost build`) can act on it.
 pub(crate) fn generate(
@@ -189,7 +212,37 @@ pub(crate) fn generate_with_generator(
     compiler: &Compiler,
     generator: &str,
 ) -> Result<Generated> {
-    let (target, r) = build_target_with_generator(platform, profile, generator)?;
+    generate_with_generator_mode(root, platform, profile, compiler, generator, false)
+}
+
+pub(crate) fn generate_without_runtime_with_generator(
+    root: &Utf8Path,
+    platform: &str,
+    profile: &str,
+    compiler: &Compiler,
+    generator: &str,
+) -> Result<Generated> {
+    generate_with_generator_mode(root, platform, profile, compiler, generator, true)
+}
+
+fn generate_with_generator_mode(
+    root: &Utf8Path,
+    platform: &str,
+    profile: &str,
+    compiler: &Compiler,
+    generator: &str,
+    without_runtime: bool,
+) -> Result<Generated> {
+    if without_runtime && *compiler == Compiler::Runtime {
+        return Err(Error::usage(
+            "a runtime-free target cannot use compiler policy 'runtime'",
+        ));
+    }
+    let (target, r) = if without_runtime {
+        build_target_without_runtime_with_generator(platform, profile, generator)?
+    } else {
+        build_target_with_generator(platform, profile, generator)?
+    };
     let id = target.id();
 
     let target_dir = root.join(STATE_DIR).join("targets").join(&id);
@@ -207,23 +260,31 @@ pub(crate) fn generate_with_generator(
     // 1. toolchain.cmake — pin a host interpreter's Development artifacts so
     // an adopted runtime's pxrConfig (which bakes the export machine's Python
     // paths) configures on this host; `None` falls back to the runtime prefix.
-    let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &target.python_version);
-    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
+    let python = target
+        .uses_runtime()
+        .then(|| ost_build::resolve_for_runtime(&r.artifact_prefix, &target.python_version))
+        .flatten();
+    if target.uses_runtime() {
+        crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
+    }
     write(
         &target_dir.join("toolchain.cmake"),
         &render_toolchain(&target, &r.artifact_prefix, compiler, python.as_ref()),
     )?;
 
     // 2. env.json (resolved env for build steps to reuse)
-    let env_vars: Vec<_> = r
-        .env
-        .pairs()
-        .into_iter()
-        .map(|(k, v)| serde_json::json!({ "name": k, "value": v }))
-        .collect();
+    let env_vars: Vec<_> = if target.uses_runtime() {
+        r.env
+            .pairs()
+            .into_iter()
+            .map(|(k, v)| serde_json::json!({ "name": k, "value": v }))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let env_json = serde_json::json!({
-        "runtime": target.runtime_id,
-        "prefix": r.prefix.to_string(),
+        "runtime": target.uses_runtime().then_some(target.runtime_id.as_str()),
+        "prefix": target.uses_runtime().then(|| r.prefix.to_string()),
         "vars": env_vars,
     });
     write(&target_dir.join("env.json"), &pretty(&env_json)?)?;
@@ -252,8 +313,10 @@ pub(crate) fn generate_with_generator(
     let presets = refresh_user_presets(root, &id)?;
 
     // 6. Refresh the project lockfile so it tracks the configured runtime.
-    let lock = crate::commands::lock::build_lock(root, platform, profile)?;
-    crate::commands::lock::write_lock(root, &lock)?;
+    if target.uses_runtime() {
+        let lock = crate::commands::lock::build_lock(root, platform, profile)?;
+        crate::commands::lock::write_lock(root, &lock)?;
+    }
 
     Ok(Generated {
         id,

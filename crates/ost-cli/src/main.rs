@@ -68,7 +68,7 @@ enum Command {
     /// Configure and build a target with CMake + Ninja.
     Build(build::BuildArgs),
 
-    /// Run a built target's tests under the runtime that built it.
+    /// Run a built target's tests under the same runtime contract (or explicit absence).
     Test(test::TestArgs),
 
     /// Install and pack a built target into a tar.zst artifact.

@@ -7,10 +7,12 @@
 //! passed to CMake as `CMAKE_MAKE_PROGRAM` so it works even off PATH.
 //!
 //! OpenStrata decides *what* to build; CMake/Ninja remain the build truth.
+//! `--without-runtime` preserves the same managed target, intent, lock and
+//! completion lifecycle while deliberately omitting runtime paths and env.
 //!
 //! Order of operations (P0 "no side effects before checks"):
-//!   1. resolve project root + manifest, then platform/profile/runtime
-//!   2. preflight: CMakeLists.txt, runtime, CMake, Ninja, compiler
+//!   1. resolve project root + manifest, then platform/profile/runtime metadata
+//!   2. preflight: CMakeLists.txt, optional runtime, CMake, Ninja, compiler
 //!   3. `--check`  → report checks and stop (no writes)
 //!   4. `--dry-run`→ show planned commands + files and stop (no writes)
 //!   5. generate the target's `.strata/` files
@@ -35,8 +37,9 @@ use ost_runtime::EnvSet;
 
 use crate::commands::compiler::CompilerOpts;
 use crate::commands::configure::{
-    build_target_with_generator, generate_with_generator, load_project, resolve_compiler,
-    resolve_selection, target_output_paths,
+    build_target_with_generator, build_target_without_runtime_with_generator,
+    generate_with_generator, generate_without_runtime_with_generator, load_project,
+    resolve_compiler, resolve_selection, target_output_paths,
 };
 use crate::output::{self, Format};
 use crate::progress::{ProgressMode, Reporter};
@@ -66,6 +69,11 @@ pub struct BuildArgs {
     /// Project-declared build intent from [build.intents.<name>].
     #[arg(long)]
     intent: Option<String>,
+
+    /// Build with the host toolchain and no OpenStrata runtime materialized or
+    /// added to the CMake/environment contract.
+    #[arg(long)]
+    without_runtime: bool,
 
     /// Run preflight checks only, without generating files or building.
     #[arg(long)]
@@ -141,6 +149,7 @@ impl BuildArgs {
             generator: generator.unwrap_or_else(|| "Ninja".into()),
             config,
             intent: None,
+            without_runtime: false,
             check: false,
             dry_run: false,
             jobs: None,
@@ -201,14 +210,29 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     if args.generator.trim().is_empty() {
         return Err(Error::usage("--generator must not be empty"));
     }
-    let (target, resolved) = build_target_with_generator(&platform, &profile, &args.generator)?;
+    let (target, resolved) = if args.without_runtime {
+        build_target_without_runtime_with_generator(&platform, &profile, &args.generator)?
+    } else {
+        build_target_with_generator(&platform, &profile, &args.generator)?
+    };
     let id = target.id();
 
     // Resolve the compiler policy early so an invalid one fails before any work.
     let compiler = resolve_compiler(&root, &args.compiler)?;
+    if args.without_runtime && compiler == ost_build::Compiler::Runtime {
+        return Err(Error::usage(
+            "--without-runtime cannot use compiler policy 'runtime'; select 'host' or 'explicit'",
+        ));
+    }
 
     // 2. Preflight: gather every check without touching the work tree.
-    let pre = preflight(&root, &target, resolved.pulled, &args);
+    let pre = preflight(
+        &root,
+        &target,
+        resolved.pulled,
+        !args.without_runtime,
+        &args,
+    );
 
     // 3. `--check`: report and stop. Non-zero exit if any required check failed.
     if args.check {
@@ -278,11 +302,18 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         let configure_cmd = render_cmd(&cmake_prog, &configure_args);
         let build_cmd = render_cmd(&cmake_prog, &build_args);
         let mut files = target_output_paths(&id);
+        if args.without_runtime {
+            files.retain(|path| path != "strata.lock");
+        }
         files.push(format!("{relative_build}/{BUILD_COMPLETION_FILE}"));
 
         // Surface the runtime env additions (the OpenStrata-managed prepends,
         // not the inherited environment) so they can be inspected without a run.
-        let runtime_env = resolved.env.pairs();
+        let runtime_env = if args.without_runtime {
+            Vec::new()
+        } else {
+            resolved.env.pairs()
+        };
 
         if fmt.is_json() {
             // Emit ordered [key, value] pairs, not an object: a single `EnvSet`
@@ -349,13 +380,13 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
             "generator": args.generator,
             "configuration": args.config,
         },
-        "runtime": {
+        "runtime": target.uses_runtime().then(|| serde_json::json!({
             "id": target.runtime_id,
             "digest": target.runtime_digest,
             "prefix": resolved.artifact_prefix,
             "python_version": target.python_version,
             "cxx_standard": target.cxx_standard,
-        },
+        })),
         "compiler": {
             "policy": compiler.policy(),
             "detected": compiler_detection,
@@ -437,7 +468,17 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         .then(|| lease.invocation().map(str::to_owned))
         .flatten();
     invalidate_completion(&build_dir)?;
-    let g = generate_with_generator(&root, &platform, &profile, &compiler, &args.generator)?;
+    let g = if args.without_runtime {
+        generate_without_runtime_with_generator(
+            &root,
+            &platform,
+            &profile,
+            &compiler,
+            &args.generator,
+        )?
+    } else {
+        generate_with_generator(&root, &platform, &profile, &compiler, &args.generator)?
+    };
     debug_assert_eq!(g.id, id);
     if let Some(external) = external_toolchain(&root, &intent) {
         let toolchain = root
@@ -489,12 +530,17 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     //    PYTHONPATH, loader path and CMAKE_PREFIX_PATH than execution does.
     //    Layer it over the MSVC delta so USD's bin/lib prepend in front of the
     //    compiler's PATH rather than clobbering it.
-    let extra_env = layer_runtime_env(&resolved.env, &msvc_env);
-    rep.note(&format!(
-        "runtime env {} ({} vars)",
-        target.runtime_id,
-        resolved.env.vars.len()
-    ));
+    let extra_env = if args.without_runtime {
+        rep.note("runtime intentionally omitted");
+        msvc_env.clone()
+    } else {
+        rep.note(&format!(
+            "runtime env {} ({} vars)",
+            target.runtime_id,
+            resolved.env.vars.len()
+        ));
+        layer_runtime_env(&resolved.env, &msvc_env)
+    };
 
     // 9. Configure, then build — each a phase whose subprocess streams through
     //    the reporter (heartbeat while quiet, log capture, failure reporting).
@@ -958,6 +1004,19 @@ pub(crate) fn validate_completed_intent(
     completed: &BuildIntent,
     declared: &BuildIntent,
 ) -> std::result::Result<(), String> {
+    let command = if declared.name == "default" {
+        "ost build".to_string()
+    } else {
+        format!("ost build --intent {}", declared.name)
+    };
+    validate_completed_intent_for_command(completed, declared, &command)
+}
+
+pub(crate) fn validate_completed_intent_for_command(
+    completed: &BuildIntent,
+    declared: &BuildIntent,
+    command: &str,
+) -> std::result::Result<(), String> {
     let mut completed_cache = completed.cache.clone();
     completed_cache.remove("CMAKE_BUILD_TYPE");
     // Domain workflows may add reserved OpenStrata cache entries around a
@@ -967,11 +1026,6 @@ pub(crate) fn validate_completed_intent(
     // completion look stale.
     completed_cache.remove("OST_RENDERER_ADAPTERS");
     if completed.name != declared.name || completed_cache != declared.cache {
-        let command = if declared.name == "default" {
-            "ost build".to_string()
-        } else {
-            format!("ost build --intent {}", declared.name)
-        };
         return Err(format!(
             "completion build intent '{}' no longer matches the declared '{}' intent; rerun `{command}`",
             completed.name, declared.name,
@@ -1120,7 +1174,13 @@ impl Preflight {
 }
 
 /// Run every preflight check without writing to the work tree.
-fn preflight(root: &Utf8Path, target: &Target, pulled: bool, args: &BuildArgs) -> Preflight {
+fn preflight(
+    root: &Utf8Path,
+    target: &Target,
+    pulled: bool,
+    requires_runtime: bool,
+    args: &BuildArgs,
+) -> Preflight {
     let mut checks = Vec::new();
 
     // CMakeLists.txt in the project root — without it CMake fails with a raw,
@@ -1136,8 +1196,11 @@ fn preflight(root: &Utf8Path, target: &Target, pulled: bool, args: &BuildArgs) -
         ));
     }
 
-    // The runtime must be pulled before a real build.
-    if pulled {
+    // Runtime-free builds make absence part of the contract. Ordinary builds
+    // still fail closed until the selected runtime has been materialized.
+    if !requires_runtime {
+        checks.push(Check::info("runtime", "intentionally omitted"));
+    } else if pulled {
         checks.push(Check::ok("runtime", target.runtime_id.clone()));
     } else {
         checks.push(Check::failed(

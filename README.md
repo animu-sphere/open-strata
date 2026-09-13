@@ -42,8 +42,9 @@ active, incomplete work is in the [roadmap](docs/roadmap/README.md).
 
 The next **v0.23.0** milestone expands release CI and binds the same canonical
 runtime identity to DCC host adapters. Runtime-free and intent-aware workspace
-cells, release-lane reconciliation, per-member test evidence and the first-class
-host-add-on model remain in that milestone.
+cells are implemented during v0.23.0 development; release-lane reconciliation,
+per-member test evidence and the first-class host-add-on model remain in that
+milestone.
 See the [composition guide](docs/guides/compose-a-runtime.md),
 [v0.22.10 record](docs/releases/v0.22.10.md),
 [current roadmap](docs/roadmap/current.md) and

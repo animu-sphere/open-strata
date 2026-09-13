@@ -139,7 +139,8 @@ ost ci validate                 # check the openstrata.ci.yaml matrix
 ost ci generate github          # render the runtime × bundle workflow
 ```
 
-Pinning a `runtime_artifact` by digest keeps every cell reproducible. If a cell
+Pinning a `runtime_artifact` by digest keeps every runtime-consuming cell
+reproducible. If a cell
 pins a runtime that lacks the evidence a generated gate demands, `ost ci
 generate` warns and `ost ci validate` fails fast (v0.18.0).
 
@@ -190,6 +191,30 @@ cells:
 It validates the dependency graph, runs `ost build`, then runs the workspace's
 own CTest suite — the members the bundle verbs never reach. Source lanes only; a
 workspace cell names no bundle and publishes nothing.
+
+A workspace lane whose contract is that it needs no OpenUSD runtime omits
+`runtime_artifact` and the other runtime-only fields. It may select a named
+`[build.intents.*]` declaration so cache variables such as a core-only switch or
+sanitizer policy remain typed project inputs:
+
+```yaml
+cells:
+  - name: core-asan-linux
+    kind: workspace
+    lane: pull_request
+    runner: linux-hosted
+    platform: cy2026
+    profile: usd
+    intent: core-asan
+    verify: test
+```
+
+The generated job invokes `ost build --without-runtime --intent core-asan` and
+`ost test --without-runtime --intent core-asan`. It has no runtime cache, pull,
+verification, validation, prefix, or runtime evidence variable. The distinct
+`*-runtime-free` target id also keeps its build tree and completion records from
+colliding with a runtime-backed build. For the same local contract, use the two
+commands directly and pass `--without-runtime` to both build and test.
 
 When one plain-library member must ship independently (for example, an optional
 input adapter), use its descriptor-scoped lifecycle instead of packaging the

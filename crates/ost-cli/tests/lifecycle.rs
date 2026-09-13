@@ -537,6 +537,60 @@ portability = "local-override"
 }
 
 #[test]
+fn runtime_free_named_intent_dry_run_needs_no_pulled_runtime() {
+    let sb = Sandbox::new("runtime-free-intent-dryrun");
+    let init = sb.ost(&["init", "--platform", "cy2026"]);
+    assert!(init.status.success(), "init failed:\n{}", out_text(&init));
+
+    let manifest = sb.work_file("openstrata.toml");
+    let mut source = std::fs::read_to_string(&manifest).unwrap();
+    source.push_str(
+        r#"
+[build.intents.core-asan.cache.BUILD_PLUGIN]
+type = "BOOL"
+value = false
+
+[build.intents.core-asan.cache.SANITIZER]
+type = "STRING"
+value = "address,undefined"
+"#,
+    );
+    std::fs::write(&manifest, source).unwrap();
+
+    let before_work = snapshot(&sb.work);
+    let before_home = snapshot(&sb.home);
+    let output = sb.ost(&[
+        "build",
+        "--without-runtime",
+        "--intent",
+        "core-asan",
+        "--dry-run",
+        "--json",
+    ]);
+    assert!(
+        output.status.success(),
+        "runtime-free dry-run failed:\n{}",
+        out_text(&output)
+    );
+    assert_eq!(before_work, snapshot(&sb.work), "dry-run modified project");
+    assert_eq!(before_home, snapshot(&sb.home), "dry-run modified store");
+
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let data = &document["data"];
+    assert!(data["target"]
+        .as_str()
+        .is_some_and(|target| target.ends_with("-runtime-free")));
+    assert_eq!(data["build_intent"]["name"], "core-asan");
+    assert_eq!(data["runtime_env"], serde_json::json!([]));
+    assert!(data["commands"].to_string().contains("SANITIZER:STRING"));
+    assert!(data["would_generate"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|path| path != "strata.lock"));
+}
+
+#[test]
 fn default_build_cache_flows_to_root_and_scoped_plugin_builds() {
     let sb = Sandbox::new("default-build-cache");
     init_and_pull(&sb);
@@ -1194,6 +1248,59 @@ fn full_lifecycle_init_build_package() {
         manifest.is_some(),
         "a manifest.json should accompany the archive"
     );
+}
+
+#[test]
+fn runtime_free_build_and_test_complete_without_materializing_a_runtime() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping runtime_free_lifecycle: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("runtime-free-lifecycle");
+    let init = sb.ost(&["init", "--platform", "cy2026"]);
+    assert!(init.status.success(), "init failed:\n{}", out_text(&init));
+    let cmake_path = sb.work_file("CMakeLists.txt");
+    let mut cmake = std::fs::read_to_string(&cmake_path).unwrap();
+    cmake.push_str(
+        "\nenable_testing()\nadd_test(NAME runtime-free-smoke COMMAND ${CMAKE_COMMAND} -E true)\n",
+    );
+    std::fs::write(&cmake_path, cmake).unwrap();
+
+    let build = sb.ost(&["build", "--without-runtime", "--progress", "plain"]);
+    assert!(
+        build.status.success(),
+        "build failed:\n{}",
+        out_text(&build)
+    );
+    let target = single_target_dir(&sb.work);
+    assert!(target
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .ends_with("-runtime-free"));
+    let lock: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(target.join("target.lock.json")).unwrap())
+            .unwrap();
+    assert_eq!(lock["runtime"]["id"], "none");
+    assert_eq!(lock["runtime"]["digest"], "");
+    let toolchain = std::fs::read_to_string(target.join("toolchain.cmake")).unwrap();
+    assert!(toolchain.contains("Runtime: intentionally omitted"));
+    assert!(!toolchain.contains("CMAKE_PREFIX_PATH"));
+    assert!(!sb.work_file("strata.lock").exists());
+    assert!(
+        !sb.home.join("runtimes").exists(),
+        "runtime-free build materialized a runtime"
+    );
+
+    let test = sb.ost(&["test", "--without-runtime", "--progress", "plain"]);
+    assert!(test.status.success(), "test failed:\n{}", out_text(&test));
+    let target_id = target.file_name().unwrap();
+    assert!(sb
+        .work
+        .join("build")
+        .join(target_id)
+        .join(ost_build::TEST_COMPLETION_FILE)
+        .is_file());
 }
 
 #[test]

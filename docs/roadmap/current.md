@@ -14,8 +14,6 @@ host-owned APIs.
 
 ### Workstreams
 
-- **Truthful CI cells:** support runtime-free workspace build/test cells and
-  per-cell project build intents.
 - **Release-lane completeness:** add pyramid/package verification, reconcile
   generated and externally managed lanes, and detect stale generated workflows.
 - **Attributable evidence:** report workspace test results per discovered member
@@ -33,8 +31,6 @@ remains ordered in the [backlog](backlog.md).
 
 ### Acceptance
 
-- A runtime-free repository can use generated CI without inventing a runtime
-  solely to satisfy the matrix contract.
 - Generated and hand-authored release lanes are checked against the same OST
   version, runtime identity and support declaration.
 - Graph, build, test, pyramid and package claims are attributable to the member

@@ -119,6 +119,13 @@ pub fn render_toolchain(
     out.push_str("set(CMAKE_CXX_STANDARD_REQUIRED ON)\n");
     out.push_str("set(CMAKE_CXX_EXTENSIONS OFF)\n\n");
 
+    if !target.uses_runtime() {
+        out.push_str(
+            "# Runtime: intentionally omitted; this target uses only the host toolchain.\n",
+        );
+        return out;
+    }
+
     // Runtime roots. Prepend rather than overwrite so a consuming project's own
     // CMAKE_PREFIX_PATH entries are preserved.
     out.push_str(&format!("list(PREPEND CMAKE_PREFIX_PATH \"{root}\")\n"));
@@ -229,6 +236,32 @@ mod tests {
         assert!(!out.contains("set(CMAKE_C_COMPILER"));
         assert!(!out.contains("set(CMAKE_CXX_COMPILER"));
         assert!(out.contains("# compiler: host"));
+    }
+
+    #[test]
+    fn runtime_free_target_emits_no_runtime_paths_or_python_hints() {
+        let mut t = target(Os::Linux);
+        t.runtime_id = crate::NO_RUNTIME_ID.into();
+        let out = render_toolchain(
+            &t,
+            Utf8Path::new("/store/must-not-appear"),
+            &Compiler::Host,
+            None,
+        );
+        assert!(t.id().ends_with("-usd-runtime-free"));
+        let mut other_profile = t.clone();
+        other_profile.profile = "minimal".into();
+        assert_ne!(
+            t.id(),
+            other_profile.id(),
+            "runtime-free targets with different profiles need isolated locks and build trees"
+        );
+        assert!(out.contains("# runtime:  none"));
+        assert!(out.contains("Runtime: intentionally omitted"));
+        assert!(!out.contains("/store/must-not-appear"));
+        assert!(!out.contains("CMAKE_PREFIX_PATH"));
+        assert!(!out.contains("Python_ROOT_DIR"));
+        assert!(!out.contains("OpenUSD_ROOT"));
     }
 
     #[test]

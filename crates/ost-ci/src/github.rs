@@ -171,17 +171,31 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
                 });
             format!("--require-openusd {selector}{version}")
         });
+    let runtime_keys = cell
+        .runtime_artifact
+        .as_ref()
+        .map_or_else(String::new, |runtime| {
+            format!(
+                "            runtime_artifact: {runtime}\n\
+             \x20           require_openusd: \"{require_openusd}\"\n\
+             \x20           require_openusd_version: \"{require_openusd_version}\"\n\
+             \x20           openusd_flags: \"{openusd_flags}\"\n\
+             \x20           target_trust: {target_trust}\n\
+             \x20           minimum_trust: {minimum_trust}\n\
+             \x20           require_evidence: {require_evidence}\n\
+             \x20           evidence_flags: \"{evidence_flags}\"\n",
+                require_openusd = cell.require_openusd.as_deref().unwrap_or(""),
+                require_openusd_version = cell.require_openusd_version.as_deref().unwrap_or(""),
+                target_trust = cell.trust,
+                minimum_trust = matrix.minimum_trust(cell),
+                require_evidence = matrix.require_evidence(cell).as_str(),
+                evidence_flags = matrix.require_evidence(cell).verify_flags(),
+            )
+        });
     format!(
         "          - name: {name}\n\
          \x20           lane: {lane}\n\
-         \x20           runtime_artifact: {runtime}\n\
-         \x20           require_openusd: \"{require_openusd}\"\n\
-         \x20           require_openusd_version: \"{require_openusd_version}\"\n\
-         \x20           openusd_flags: \"{openusd_flags}\"\n\
-         \x20           target_trust: {target_trust}\n\
-         \x20           minimum_trust: {minimum_trust}\n\
-         \x20           require_evidence: {require_evidence}\n\
-         \x20           evidence_flags: \"{evidence_flags}\"\n\
+         {runtime_keys}\
          \x20           platform: {platform}\n\
          \x20           profile: {profile}\n\
          {up_to}\
@@ -191,14 +205,6 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
          {extra}",
         name = cell.name,
         lane = cell.lane.as_str(),
-        runtime = cell.runtime_artifact,
-        require_openusd = cell.require_openusd.as_deref().unwrap_or(""),
-        require_openusd_version = cell.require_openusd_version.as_deref().unwrap_or(""),
-        openusd_flags = openusd_flags,
-        target_trust = cell.trust,
-        minimum_trust = matrix.minimum_trust(cell),
-        require_evidence = matrix.require_evidence(cell).as_str(),
-        evidence_flags = matrix.require_evidence(cell).verify_flags(),
         platform = cell.platform,
         profile = cell.profile,
         // The bundle verification pyramid, and only for a cell that runs one: a
@@ -219,16 +225,20 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
 /// claim it proves (cell, lane, runner profile, resolved runs-on, pinned
 /// digests). `matrix.runner_profile` resolves to an empty string for
 /// label-based cells, which the report reader treats as absent.
-fn ci_env(with_plugin_artifact: bool) -> String {
+fn ci_env(with_plugin_artifact: bool, with_runtime_artifact: bool) -> String {
     let mut env = String::from(
         "    env:\n\
          \x20     OST_CI_CELL: ${{ matrix.name }}\n\
          \x20     OST_CI_LANE: ${{ matrix.lane }}\n\
          \x20     OST_CI_RUNNER_PROFILE: ${{ matrix.runner_profile }}\n\
-         \x20     OST_CI_RUNS_ON: ${{ join(matrix.runs_on, ',') }}\n\
-         \x20     OST_CI_RUNTIME_ARTIFACT: ${{ matrix.runtime_artifact }}\n\
-         \x20     OST_CI_MINIMUM_TRUST: ${{ matrix.minimum_trust }}",
+         \x20     OST_CI_RUNS_ON: ${{ join(matrix.runs_on, ',') }}",
     );
+    if with_runtime_artifact {
+        env.push_str(
+            "\n      OST_CI_RUNTIME_ARTIFACT: ${{ matrix.runtime_artifact }}\n\
+             \x20     OST_CI_MINIMUM_TRUST: ${{ matrix.minimum_trust }}",
+        );
+    }
     if with_plugin_artifact {
         env.push_str("\n      OST_CI_PLUGIN_ARTIFACT: ${{ matrix.plugin_artifact }}");
     }
@@ -368,7 +378,7 @@ fn support_job(matrix: &SupportMatrix, id: &str, event: &str, cells: &[&SupportC
           name: report-${{{{ matrix.name }}}}
           path: plugin-under-test/.strata/reports/
 ",
-        env = ci_env(true),
+        env = ci_env(true, true),
     )
 }
 
@@ -785,11 +795,11 @@ fn workspace_steps(matrix: &SupportMatrix) -> String {
         run: ost plugin test --workspace --graph-only --json
       - name: Build the workspace from source
         shell: bash
-        run: ost build --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
+        run: ost build --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} ${{{{ matrix.intent_flags }}}}
       - name: Run the workspace test suite
         if: ${{{{ matrix.verify == 'test' }}}}
         shell: bash
-        run: ost test --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}
+        run: ost test --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} ${{{{ matrix.intent_flags }}}}
       - name: Upload the build logs and CI evidence
         if: always()
         uses: {UPLOAD_ARTIFACT}
@@ -800,6 +810,44 @@ fn workspace_steps(matrix: &SupportMatrix) -> String {
             .ost-ci/
 ",
         preamble = source_preamble(matrix),
+    )
+}
+
+/// The step list of a runtime-independent workspace job. It still uses OST's
+/// typed build intent and completion/test evidence, but no runtime artifact is
+/// fetched, verified, materialized, exported, or added to the process
+/// environment. The explicit CLI flag makes that absence auditable rather than
+/// relying on a missing runtime to fail open.
+fn runtime_free_workspace_steps(matrix: &SupportMatrix) -> String {
+    let host_packages = if matrix.needs_host_packages() {
+        HOST_PACKAGES_STEP
+    } else {
+        ""
+    };
+    format!(
+        "\
+{preamble}\
+{host_packages}\
+\x20     - name: Validate the workspace dependency graph
+        shell: bash
+        run: ost plugin test --workspace --graph-only --json
+      - name: Build the runtime-free workspace from source
+        shell: bash
+        run: ost build --without-runtime --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} ${{{{ matrix.intent_flags }}}}
+      - name: Run the runtime-free workspace test suite
+        if: ${{{{ matrix.verify == 'test' }}}}
+        shell: bash
+        run: ost test --without-runtime --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} ${{{{ matrix.intent_flags }}}}
+      - name: Upload the build logs and CI evidence
+        if: always()
+        uses: {UPLOAD_ARTIFACT}
+        with:
+          name: report-${{{{ matrix.name }}}}
+          path: |
+            .strata/targets/
+            .ost-ci/
+",
+        preamble = checkout_preamble(matrix),
     )
 }
 
@@ -858,10 +906,36 @@ fn source_build_include_keys(cell: &SupportCell) -> String {
 /// key — nothing in a workspace job addresses one, and a key that no step reads
 /// is how a stale contract hides.
 fn workspace_include_keys(cell: &SupportCell) -> String {
+    let intent_flags = cell
+        .intent
+        .as_ref()
+        .map_or_else(String::new, |intent| format!("--intent {intent}"));
     format!(
-        "            verify: {}\n{}",
+        "            verify: {}\n            intent_flags: \"{}\"\n{}",
         cell.verify().as_str(),
+        intent_flags,
         prerequisite_include_keys(cell)
+    )
+}
+
+fn runtime_free_workspace_include_keys(cell: &SupportCell) -> String {
+    let intent_flags = cell
+        .intent
+        .as_ref()
+        .map_or_else(String::new, |intent| format!("--intent {intent}"));
+    let (apt, brew) = match &cell.host_packages {
+        Some(packages) => (packages.apt.join(" "), packages.brew.join(" ")),
+        None => (String::new(), String::new()),
+    };
+    format!(
+        "            verify: {}\n\
+         \x20           intent_flags: \"{}\"\n\
+         \x20           host_packages_apt: \"{}\"\n\
+         \x20           host_packages_brew: \"{}\"\n",
+        cell.verify().as_str(),
+        intent_flags,
+        apt,
+        brew,
     )
 }
 
@@ -910,16 +984,18 @@ fn prerequisite_include_keys(cell: &SupportCell) -> String {
 enum JobShape {
     Bundle,
     Workspace,
+    WorkspaceRuntimeFree,
     WorkspaceGraph,
 }
 
 /// The job a cell belongs in: its kind, and — for a workspace cell — whether its
 /// rung needs a runtime at all.
 fn job_shape(cell: &SupportCell) -> JobShape {
-    match (cell.is_workspace(), cell.verify()) {
-        (false, _) => JobShape::Bundle,
-        (true, WorkspaceVerify::Graph) => JobShape::WorkspaceGraph,
-        (true, _) => JobShape::Workspace,
+    match (cell.is_workspace(), cell.is_runtime_free(), cell.verify()) {
+        (false, _, _) => JobShape::Bundle,
+        (true, _, WorkspaceVerify::Graph) => JobShape::WorkspaceGraph,
+        (true, true, _) => JobShape::WorkspaceRuntimeFree,
+        (true, false, _) => JobShape::Workspace,
     }
 }
 
@@ -931,11 +1007,13 @@ fn source_job(
     shape: JobShape,
     cells: &[&SupportCell],
 ) -> String {
+    let with_runtime_artifact = cells.iter().any(|cell| !cell.is_runtime_free());
     let mut include = String::new();
     for cell in cells {
         let keys = match shape {
             JobShape::Bundle => source_build_include_keys(cell),
             JobShape::Workspace => workspace_include_keys(cell),
+            JobShape::WorkspaceRuntimeFree => runtime_free_workspace_include_keys(cell),
             JobShape::WorkspaceGraph => workspace_graph_include_keys(cell),
         };
         include.push_str(&include_entry(matrix, cell, &keys));
@@ -962,10 +1040,11 @@ fn source_job(
         include:
 {include}\
 {steps}",
-        env = ci_env(false),
+        env = ci_env(false, with_runtime_artifact),
         steps = match shape {
             JobShape::Bundle => source_steps(matrix),
             JobShape::Workspace => workspace_steps(matrix),
+            JobShape::WorkspaceRuntimeFree => runtime_free_workspace_steps(matrix),
             JobShape::WorkspaceGraph => workspace_graph_steps(matrix),
         },
     )
@@ -989,6 +1068,7 @@ pub fn generate_source(matrix: &SupportMatrix) -> Option<String> {
     let shapes = [
         ("", JobShape::Bundle),
         ("-workspace-graph", JobShape::WorkspaceGraph),
+        ("-workspace-runtime-free", JobShape::WorkspaceRuntimeFree),
         ("-workspace", JobShape::Workspace),
     ];
     let lanes = [
@@ -1197,7 +1277,7 @@ fn release_candidate_job(matrix: &SupportMatrix, cells: &[&SupportCell]) -> Stri
         include:
 {include}\
 {steps}",
-        env = ci_env(false),
+        env = ci_env(false, true),
         steps = release_candidate_steps(matrix),
     )
 }
@@ -1368,7 +1448,7 @@ mod tests {
             runner: None,
             support: None,
             require_evidence: None,
-            runtime_artifact: format!("sha256:{}", "ab".repeat(32)),
+            runtime_artifact: Some(format!("sha256:{}", "ab".repeat(32))),
             require_openusd: None,
             require_openusd_version: None,
             runtime_remote: None,
@@ -1376,6 +1456,7 @@ mod tests {
             kind: CellKind::default(),
             bundle: None,
             verify: None,
+            intent: None,
             platform: "cy2026".into(),
             profile: "usd".into(),
             up_to: Some(5),
@@ -1679,6 +1760,70 @@ mod tests {
             .any(|r| r.contains("ost plugin test --workspace --graph-only")));
         assert!(runs.iter().any(|r| r.starts_with("ost build --target")));
         assert!(runs.iter().any(|r| r.starts_with("ost test --target")));
+    }
+
+    #[test]
+    fn a_runtime_free_workspace_job_carries_intent_without_runtime_contract_keys() {
+        let mut matrix = lanes_matrix();
+        matrix.cells.push(SupportCell {
+            kind: CellKind::Workspace,
+            lane: Lane::PullRequest,
+            runner: Some("windows-hosted".into()),
+            runtime_artifact: None,
+            plugin_artifact: None,
+            up_to: None,
+            verify: Some(WorkspaceVerify::Test),
+            intent: Some("core-msvc".into()),
+            ..cell("runtime-free-core")
+        });
+        matrix.validate().unwrap();
+
+        let yaml = generate_source(&matrix).unwrap();
+        let document: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let job = &document["jobs"]["pr-workspace-runtime-free"];
+        let entry = &job["strategy"]["matrix"]["include"][0];
+        assert_eq!(entry["intent_flags"], "--intent core-msvc");
+        for absent in [
+            "runtime_artifact",
+            "runtime_remote",
+            "minimum_trust",
+            "evidence_flags",
+            "host_python",
+        ] {
+            assert!(
+                entry.get(absent).is_none(),
+                "unexpected {absent}: {entry:?}"
+            );
+        }
+        let env = job["env"].as_mapping().unwrap();
+        assert!(
+            !env.contains_key(serde_yaml::Value::from("OST_CI_RUNTIME_ARTIFACT")),
+            "runtime-free evidence must not claim a runtime: {env:?}"
+        );
+
+        let steps = job["steps"].as_sequence().unwrap();
+        let names = steps
+            .iter()
+            .filter_map(|step| step["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(!names.iter().any(|name| name.contains("runtime SDK")));
+        assert!(!names
+            .iter()
+            .any(|name| name.contains("materialized runtime")));
+        let runs = steps
+            .iter()
+            .filter_map(|step| step["run"].as_str())
+            .collect::<Vec<_>>();
+        assert!(runs.iter().any(|run| {
+            run.starts_with("ost build --without-runtime")
+                && run.contains("${{ matrix.intent_flags }}")
+        }));
+        assert!(runs.iter().any(|run| {
+            run.starts_with("ost test --without-runtime")
+                && run.contains("${{ matrix.intent_flags }}")
+        }));
+        assert!(runs.iter().all(|run| !run.contains("ost runtime pull")));
+        assert!(runs.iter().all(|run| !run.contains("ost artifact verify")));
     }
 
     /// `verify: graph` is the cheap early PR gate, so it renders as a job that

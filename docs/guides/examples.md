@@ -898,21 +898,23 @@ independently check the installed packages and fail with
 `ARTIFACT_HOST_REQUIREMENT_MISSING` before the runtime is used, including the
 selected artifact digest and an install command in the diagnostic.
 
-### Reading the matrix from a lane `ci generate` cannot express
+### Reading the matrix from an externally managed lane
 
-Some workspace members have no bundle cell — a plain library with no bundle
-consumer, or a CLI executable. A repository covering those writes its own
-workflow, and it must not re-pin the runtime digests by hand: two places that
-have to be updated together on every republish will drift, and a lane silently
-left on an older OpenUSD looks like coverage while proving nothing.
+Generated source CI covers bundle jobs plus runtime-backed and runtime-free
+workspace build intents. A repository may still retain a specialized
+hand-authored lane for behavior outside that typed contract. Such a lane must
+not re-pin runtime digests by hand: two places that need updating on every
+republish will drift, and a lane silently left on an older OpenUSD looks like
+coverage while proving nothing.
 
 ```bash
 ost ci matrix --json --lane pull_request   # resolved cells + the bootstrap pin
 ```
 
 Each cell carries its name, lane, resolved `runs_on`, hosted flag, platform,
-profile, bundle, `up_to`, `runtime_artifact`, `runtime_remote`, host Python and
-host packages — so a hand-written lane consumes the matrix instead of copying it.
+profile, kind, optional intent, bundle/up-to or workspace verification rung,
+optional `runtime_artifact`/`runtime_remote`, host Python and host packages — so
+a hand-written lane consumes the matrix instead of copying it.
 
 ## lock — reproducibility
 

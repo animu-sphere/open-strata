@@ -50,8 +50,7 @@ pub enum CiCmd {
         #[arg(long)]
         matrix: Option<String>,
     },
-    /// Emit the resolved cells so a workflow `ost ci generate` cannot express
-    /// can consume the same pins instead of copying them.
+    /// Emit resolved cells for an externally managed workflow without copying pins.
     Matrix {
         /// Path to the matrix file. Defaults to ./openstrata.ci.yaml.
         #[arg(long)]
@@ -222,7 +221,10 @@ fn evidence_gate_gaps(matrix: &SupportMatrix) -> Vec<String> {
         if demand == RequireEvidence::None {
             continue;
         }
-        let mut refs = vec![("runtime_artifact", &cell.runtime_artifact)];
+        let mut refs: Vec<(&str, &str)> = Vec::new();
+        if let Some(runtime) = &cell.runtime_artifact {
+            refs.push(("runtime_artifact", runtime));
+        }
         if let Some(plugin) = &cell.plugin_artifact {
             refs.push(("plugin_artifact", plugin));
         }
@@ -253,7 +255,7 @@ fn evidence_gate_gaps(matrix: &SupportMatrix) -> Vec<String> {
                             format!(
                                 "; recover without changing the pinned artifact identity: \
                              `ost artifact pull {} --expect-artifact {} --require-kind runtime{openusd}{version}`",
-                                remote.uri, cell.runtime_artifact,
+                                remote.uri, digest,
                             )
                         })
                 } else {
@@ -285,7 +287,10 @@ fn host_requirement_gaps(matrix: &SupportMatrix) -> Vec<String> {
     let store = ArtifactStore::discover();
     let mut gaps = Vec::new();
     for cell in matrix.cells.iter().filter(|cell| cell.lane.is_source()) {
-        let Ok(record) = store.resolve(&cell.runtime_artifact) else {
+        let Some(runtime) = cell.runtime_artifact.as_deref() else {
+            continue;
+        };
+        let Ok(record) = store.resolve(runtime) else {
             continue;
         };
         let requirements =
@@ -354,7 +359,10 @@ fn validate(
     if resolve {
         let store = ArtifactStore::discover();
         for cell in &matrix.cells {
-            let mut refs = vec![("runtime", &cell.runtime_artifact, ArtifactKind::Runtime)];
+            let mut refs: Vec<(&str, &str, ArtifactKind)> = Vec::new();
+            if let Some(runtime) = &cell.runtime_artifact {
+                refs.push(("runtime", runtime, ArtifactKind::Runtime));
+            }
             if let Some(plugin) = &cell.plugin_artifact {
                 refs.push(("plugin", plugin, ArtifactKind::Plugin));
             }
@@ -782,13 +790,12 @@ fn parse_lane(value: &str) -> Result<Lane> {
 
 /// `ost ci matrix` — emit the resolved cells as data.
 ///
-/// `ci generate` cannot express every lane a repository needs: a workspace with
-/// plain libraries and CLI executables has members no bundle cell reaches, so
-/// the repo hand-writes a workflow. Today that workflow has to *copy* the
-/// runtime digest pins out of `openstrata.ci.yaml`, which means two places must
-/// be re-pinned together on every runtime republish — and a hand-written lane
-/// silently left on an older OpenUSD looks like coverage while proving nothing
-/// (report 32 §2).
+/// Generated CI now covers bundle jobs and runtime-backed/runtime-free workspace
+/// build intents. Repositories may still own specialized lanes outside that
+/// typed contract. Such a lane must not copy runtime digest pins out of
+/// `openstrata.ci.yaml`: two places that need re-pinning on every runtime
+/// republish will drift, and a lane silently left on an older OpenUSD looks like
+/// coverage while proving nothing (report 32 §2).
 ///
 /// This is read-only projection: the matrix stays the single source of truth and
 /// a hand-written lane consumes it instead of duplicating it.
@@ -821,6 +828,7 @@ fn resolved_matrix(matrix_flag: Option<&str>, lane_flag: Option<&str>, fmt: Form
                         .then(|| cell.bundle.as_deref().unwrap_or(".")),
                     "up_to": (!cell.is_workspace()).then(|| cell.up_to()),
                     "verify": cell.is_workspace().then(|| cell.verify().as_str()),
+                    "intent": cell.intent,
                     "runtime_artifact": cell.runtime_artifact,
                     "require_openusd": cell.require_openusd,
                     "require_openusd_version": cell.require_openusd_version,
@@ -883,7 +891,7 @@ fn resolved_matrix(matrix_flag: Option<&str>, lane_flag: Option<&str>, fmt: Form
             cell.platform,
             cell.profile,
             matrix.runs_on(cell).join(", "),
-            cell.runtime_artifact
+            cell.runtime_artifact.as_deref().unwrap_or("none")
         );
         if let Some(remote) = &cell.runtime_remote {
             println!("      remote: {}", remote.uri);
