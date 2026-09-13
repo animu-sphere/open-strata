@@ -466,6 +466,68 @@ fn plan_reports_execution_facts() {
     assert_eq!(v["data"]["workflows"].as_array().unwrap().len(), 1);
 }
 
+/// A generated lane file must not keep firing silently after the matrix drops
+/// its last matching cell. The CLI warns in every read/regenerate path while
+/// leaving deletion to the repository owner.
+#[test]
+fn orphaned_generated_workflows_are_reported_and_preserved() {
+    let sb = Sandbox::new("stale-generated-workflow");
+    let matrix = lanes_yaml();
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), &matrix).unwrap();
+
+    let generated = stdout_json(&sb.ost(&["--json", "ci", "generate", "github"]));
+    assert_eq!(generated["data"]["workflows"].as_array().unwrap().len(), 2);
+    let stale_path = sb.base.join(".github/workflows/ost-support-matrix.yml");
+    assert!(stale_path.is_file());
+
+    // Removing the only support-lane cell makes its already-rendered workflow
+    // an orphan. It remains on disk (and therefore may retain its schedule).
+    let support_cell = format!(
+        "  - name: linux-usd-support\n    runner: usd-linux-real\n    runtime_artifact: sha256:{}\n    plugin_artifact: sha256:{}\n    platform: cy2026\n    profile: usd\n",
+        "ab".repeat(32),
+        "cd".repeat(32),
+    );
+    let source_only = matrix.replace(&support_cell, "");
+    assert_ne!(source_only, matrix, "fixture must remove the support cell");
+    std::fs::write(sb.base.join("openstrata.ci.yaml"), source_only).unwrap();
+
+    for command in [
+        vec!["--json", "ci", "validate"],
+        vec!["--json", "ci", "plan"],
+        vec!["--json", "ci", "generate", "github", "--force"],
+    ] {
+        let report = stdout_json(&sb.ost(&command));
+        assert_eq!(
+            report["data"]["stale_workflows"],
+            serde_json::json!([".github/workflows/ost-support-matrix.yml"]),
+            "command {command:?}"
+        );
+        assert!(report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| {
+                warning["code"] == "CI_STALE_GENERATED_WORKFLOW"
+                    && warning["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("may still have an on: trigger")
+            }));
+        assert!(stale_path.is_file(), "diagnosis must not delete user files");
+    }
+
+    // A hand-authored workflow that happens to use the historical default path
+    // is not owned by OST and must not be called stale.
+    std::fs::write(&stale_path, "name: hand-authored support checks\n").unwrap();
+    let report = stdout_json(&sb.ost(&["--json", "ci", "validate"]));
+    assert_eq!(report["data"]["stale_workflows"], serde_json::json!([]));
+    assert!(!report["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| { warning["code"] == "CI_STALE_GENERATED_WORKFLOW" }));
+}
+
 #[test]
 fn trust_aware_matrix_plans_and_generates_evidence_gates() {
     let sb = Sandbox::new("trusted-ci");

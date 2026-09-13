@@ -659,6 +659,14 @@ ost ci generate github --stdout   # print instead (inspect / pipe)
 ost ci generate github --force    # regenerate over the existing workflow
 ```
 
+All three commands account for OST-owned workflows that the current matrix no
+longer emits. If, for example, the last scheduled cell is removed while
+`.github/workflows/ost-support-matrix.yml` remains, `validate`, `plan`, and
+`generate` warn with `CI_STALE_GENERATED_WORKFLOW`; JSON output also lists the
+path under `data.stale_workflows`. The file is not deleted automatically because
+repository file removal stays an explicit maintainer decision. A hand-authored
+file at the same path has no generated banner and is left unreported.
+
 The generated workflow is scheduled/dispatch CI (PR CI should keep its cheap
 static checks): one job per cell (`fail-fast: false`), which re-verifies both
 artifacts, materializes the runtime (`runtime pull --from-artifact`), extracts
