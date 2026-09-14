@@ -44,9 +44,9 @@ superseded failures are not carried forward.
 
 - `external_workflows` binds each declared hand-authored workflow to named
   matrix cells. `ost ci validate` checks its `OST_VERSION` against
-  `bootstrap.ost.version` and requires either an `ost ci matrix` projection or
-  the exact runtime/plugin pins; `--support` applies the same public declaration
-  to those cells. Local/CI CLI skew is reported as
+  `bootstrap.ost.version` and requires each projected or exact-literal
+  `OST_CI_*` binding to be consumed by a workflow step; `--support` applies the
+  same public declaration to those cells. Local/CI CLI skew is reported as
   `CI_BOOTSTRAP_VERSION_SKEW`. This merges HTTP report 03 with VRM reports 36
   and 39.
 - Workspace source cells accept cumulative `verify: pyramid` and

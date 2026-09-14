@@ -332,6 +332,8 @@ Emit resolved cells for an externally managed workflow without copying pins
 
 | Option | Description |
 | --- | --- |
+| `--cell <CELL>` | Select one cell by its exact matrix name |
+| `--github-output` | Emit the selected cell as GitHub Actions step outputs. Requires --cell; append the output to $GITHUB_OUTPUT in the workflow step |
 | `--lane <LANE>` | Only cells in this lane (pull_request \| main \| scheduled \| workflow_dispatch). All lanes when omitted |
 | `--matrix <MATRIX>` | Path to the matrix file. Defaults to ./openstrata.ci.yaml |
 

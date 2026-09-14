@@ -59,6 +59,13 @@ pub enum CiCmd {
         /// workflow_dispatch). All lanes when omitted.
         #[arg(long)]
         lane: Option<String>,
+        /// Select one cell by its exact matrix name.
+        #[arg(long)]
+        cell: Option<String>,
+        /// Emit the selected cell as GitHub Actions step outputs. Requires
+        /// --cell; append the output to $GITHUB_OUTPUT in the workflow step.
+        #[arg(long, requires = "cell")]
+        github_output: bool,
     },
     /// Generate CI configuration from the support matrix.
     #[command(subcommand)]
@@ -100,7 +107,18 @@ pub fn run(cmd: CiCmd, fmt: Format) -> Result<()> {
             support,
         } => validate(matrix.as_deref(), resolve, support.as_deref(), fmt),
         CiCmd::Plan { matrix } => plan(matrix.as_deref(), fmt),
-        CiCmd::Matrix { matrix, lane } => resolved_matrix(matrix.as_deref(), lane.as_deref(), fmt),
+        CiCmd::Matrix {
+            matrix,
+            lane,
+            cell,
+            github_output,
+        } => resolved_matrix(
+            matrix.as_deref(),
+            lane.as_deref(),
+            cell.as_deref(),
+            github_output,
+            fmt,
+        ),
         CiCmd::Generate(GenerateCmd::Github {
             matrix,
             out,
@@ -361,11 +379,157 @@ fn yaml_strings_for_key(value: &serde_yaml::Value, key: &str) -> Vec<String> {
     found
 }
 
+fn mapping_value<'a>(mapping: &'a serde_yaml::Mapping, key: &str) -> Option<&'a serde_yaml::Value> {
+    mapping
+        .iter()
+        .find_map(|(name, value)| (name.as_str() == Some(key)).then_some(value))
+}
+
+fn mapping_string<'a>(mapping: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
+    mapping_value(mapping, key).and_then(serde_yaml::Value::as_str)
+}
+
+#[derive(Clone, Copy)]
+struct ExternalBindingField<'a> {
+    env: &'static str,
+    output: &'static str,
+    expected: &'a str,
+}
+
+fn external_binding_fields<'a>(cell: &'a ost_ci::SupportCell) -> Vec<ExternalBindingField<'a>> {
+    let mut fields = vec![ExternalBindingField {
+        env: "OST_CI_CELL",
+        output: "name",
+        expected: &cell.name,
+    }];
+    if let Some(runtime) = cell.runtime_artifact.as_deref() {
+        fields.push(ExternalBindingField {
+            env: "OST_CI_RUNTIME_ARTIFACT",
+            output: "runtime_artifact",
+            expected: runtime,
+        });
+    }
+    if let Some(remote) = &cell.runtime_remote {
+        fields.push(ExternalBindingField {
+            env: "OST_CI_RUNTIME_REMOTE",
+            output: "runtime_remote",
+            expected: &remote.uri,
+        });
+    }
+    if let Some(plugin) = cell.plugin_artifact.as_deref() {
+        fields.push(ExternalBindingField {
+            env: "OST_CI_PLUGIN_ARTIFACT",
+            output: "plugin_artifact",
+            expected: plugin,
+        });
+    }
+    fields
+}
+
+fn run_uses_env(run: &str, name: &str) -> bool {
+    [
+        format!("${name}"),
+        format!("${{{name}}}"),
+        format!("$env:{name}"),
+        format!("%{name}%"),
+    ]
+    .iter()
+    .any(|reference| run.contains(reference))
+}
+
+fn step_consumes_field(
+    step: &serde_yaml::Value,
+    field: ExternalBindingField<'_>,
+    value: &str,
+) -> bool {
+    let Some(step) = step.as_mapping() else {
+        return false;
+    };
+    let Some(env) = mapping_value(step, "env").and_then(serde_yaml::Value::as_mapping) else {
+        return false;
+    };
+    mapping_string(env, field.env) == Some(value)
+        && mapping_string(step, "run").is_some_and(|run| run_uses_env(run, field.env))
+}
+
+fn projected_cell_is_consumed(
+    document: &serde_yaml::Value,
+    name: &str,
+    fields: &[ExternalBindingField<'_>],
+) -> bool {
+    let Some(jobs) = document
+        .as_mapping()
+        .and_then(|document| mapping_value(document, "jobs"))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return false;
+    };
+    let bash = format!("ost ci matrix --cell {name} --github-output >> \"$GITHUB_OUTPUT\"");
+    let bash_unquoted = format!("ost ci matrix --cell {name} --github-output >> $GITHUB_OUTPUT");
+    let pwsh = format!("ost ci matrix --cell {name} --github-output >> $env:GITHUB_OUTPUT");
+
+    for job in jobs.values().filter_map(serde_yaml::Value::as_mapping) {
+        let Some(steps) = mapping_value(job, "steps").and_then(serde_yaml::Value::as_sequence)
+        else {
+            continue;
+        };
+        for (index, step) in steps.iter().enumerate() {
+            let Some(step) = step.as_mapping() else {
+                continue;
+            };
+            let Some(id) = mapping_string(step, "id") else {
+                continue;
+            };
+            let Some(run) = mapping_string(step, "run").map(str::trim) else {
+                continue;
+            };
+            if run != bash && run != bash_unquoted && run != pwsh {
+                continue;
+            }
+            let consumers = &steps[index + 1..];
+            if fields.iter().all(|field| {
+                let reference = format!("${{{{ steps.{id}.outputs.{} }}}}", field.output);
+                consumers
+                    .iter()
+                    .any(|step| step_consumes_field(step, *field, &reference))
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn literal_cell_is_consumed(
+    document: &serde_yaml::Value,
+    fields: &[ExternalBindingField<'_>],
+) -> bool {
+    let Some(jobs) = document
+        .as_mapping()
+        .and_then(|document| mapping_value(document, "jobs"))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return false;
+    };
+    jobs.values()
+        .filter_map(serde_yaml::Value::as_mapping)
+        .filter_map(|job| mapping_value(job, "steps"))
+        .filter_map(serde_yaml::Value::as_sequence)
+        .any(|steps| {
+            fields.iter().all(|field| {
+                steps
+                    .iter()
+                    .any(|step| step_consumes_field(step, *field, field.expected))
+            })
+        })
+}
+
 /// Check each declared hand-authored workflow against the matrix contract it
-/// mirrors. A workflow can consume runtime pins through `ost ci matrix` (the
-/// preferred path), or carry the exact literals itself. Either way the cell
-/// names make the scope explicit and the bootstrap version stays checkable
-/// before the workflow has installed `ost`.
+/// mirrors. A workflow can consume step outputs from `ost ci matrix --cell
+/// <name> --github-output` (the preferred path), or bind exact literals to the
+/// same canonical `OST_CI_*` environment variables. In both modes a later
+/// script must actually reference every bound variable; mere YAML-wide string
+/// presence is not evidence that the job exercises the declared cell.
 fn external_workflow_issues(matrix: &SupportMatrix) -> Vec<String> {
     let mut issues = Vec::new();
     for workflow in &matrix.external_workflows {
@@ -389,11 +553,6 @@ fn external_workflow_issues(matrix: &SupportMatrix) -> Vec<String> {
                 continue;
             }
         };
-        // Re-rendering the parsed tree removes comments. Literal pin checks
-        // must be satisfied by workflow data or scripts, not by an explanatory
-        // comment that happens to mention the current digest.
-        let effective_source = serde_yaml::to_string(&document).unwrap_or_default();
-
         match &matrix.bootstrap {
             Some(bootstrap) => {
                 let versions = yaml_strings_for_key(&document, "OST_VERSION");
@@ -419,7 +578,6 @@ fn external_workflow_issues(matrix: &SupportMatrix) -> Vec<String> {
             )),
         }
 
-        let run_scripts = yaml_strings_for_key(&document, "run");
         for name in &workflow.cells {
             let Some(cell) = matrix.cells.iter().find(|cell| cell.name == *name) else {
                 // Structural validation reports this first. Keep this function
@@ -427,37 +585,20 @@ fn external_workflow_issues(matrix: &SupportMatrix) -> Vec<String> {
                 // matrix that has not yet been validated.
                 continue;
             };
-            if run_scripts
-                .iter()
-                .any(|run| run.contains("ci matrix") && run.contains(name))
+            let fields = external_binding_fields(cell);
+            if !projected_cell_is_consumed(&document, name, &fields)
+                && !literal_cell_is_consumed(&document, &fields)
             {
-                continue;
-            }
-
-            let mut missing = Vec::new();
-            if let Some(runtime) = &cell.runtime_artifact {
-                if !effective_source.contains(runtime) {
-                    missing.push("runtime_artifact");
-                }
-            }
-            if let Some(remote) = &cell.runtime_remote {
-                if let Some(digest) = remote.pinned_oci_digest() {
-                    if !effective_source.contains(&digest) {
-                        missing.push("runtime_remote digest");
-                    }
-                }
-            }
-            if let Some(plugin) = &cell.plugin_artifact {
-                if !effective_source.contains(plugin) {
-                    missing.push("plugin_artifact");
-                }
-            }
-            if !missing.is_empty() {
                 issues.push(format!(
-                    "{}: cell '{}' neither consumes it by name through `ost ci matrix` nor contains its exact {} pin(s)",
+                    "{}: cell '{}' has no consumed canonical binding; use `ost ci matrix --cell {} --github-output >> \"$GITHUB_OUTPUT\"` and consume its step outputs through {}, or bind and consume those variables as exact literals",
                     workflow.path,
                     name,
-                    missing.join(", ")
+                    name,
+                    fields
+                        .iter()
+                        .map(|field| field.env)
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 ));
             }
         }
@@ -979,14 +1120,77 @@ fn parse_lane(value: &str) -> Result<Lane> {
 ///
 /// This is read-only projection: the matrix stays the single source of truth and
 /// a hand-written lane consumes it instead of duplicating it.
-fn resolved_matrix(matrix_flag: Option<&str>, lane_flag: Option<&str>, fmt: Format) -> Result<()> {
+fn resolved_matrix(
+    matrix_flag: Option<&str>,
+    lane_flag: Option<&str>,
+    cell_flag: Option<&str>,
+    github_output: bool,
+    fmt: Format,
+) -> Result<()> {
     let (path, matrix) = load_matrix(matrix_flag)?;
     let lane = lane_flag.map(parse_lane).transpose()?;
     let cells: Vec<&ost_ci::SupportCell> = matrix
         .cells
         .iter()
         .filter(|c| lane.is_none_or(|l| c.lane == l))
+        .filter(|c| cell_flag.is_none_or(|name| c.name == name))
         .collect();
+
+    if let Some(name) = cell_flag {
+        if cells.is_empty() {
+            return Err(Error::usage(format!(
+                "no matrix cell named '{name}'{}",
+                lane.map(|lane| format!(" in lane {}", lane.as_str()))
+                    .unwrap_or_default()
+            )));
+        }
+    }
+    if github_output {
+        if fmt.is_json() {
+            return Err(Error::usage(
+                "--github-output cannot be combined with the global --json format",
+            ));
+        }
+        let cell = cells
+            .first()
+            .copied()
+            .ok_or_else(|| Error::usage("--github-output requires one selected cell"))?;
+        println!("name={}", cell.name);
+        println!("lane={}", cell.lane.as_str());
+        println!("platform={}", cell.platform);
+        println!("profile={}", cell.profile);
+        println!("kind={}", cell.kind.as_str());
+        if let Some(bundle) = &cell.bundle {
+            println!("bundle={bundle}");
+        }
+        if !cell.is_workspace()
+            || matches!(
+                cell.verify(),
+                ost_ci::WorkspaceVerify::Pyramid | ost_ci::WorkspaceVerify::Package
+            )
+        {
+            println!("up_to={}", cell.up_to());
+        }
+        if cell.is_workspace() {
+            println!("verify={}", cell.verify().as_str());
+        }
+        if let Some(intent) = &cell.intent {
+            println!("intent={intent}");
+        }
+        if let Some(runtime) = &cell.runtime_artifact {
+            println!("runtime_artifact={runtime}");
+        }
+        if let Some(remote) = &cell.runtime_remote {
+            println!("runtime_remote={}", remote.uri);
+            if let Some(digest) = remote.pinned_oci_digest() {
+                println!("expected_oci_digest={digest}");
+            }
+        }
+        if let Some(plugin) = &cell.plugin_artifact {
+            println!("plugin_artifact={plugin}");
+        }
+        return Ok(());
+    }
 
     if fmt.is_json() {
         let rendered: Vec<serde_json::Value> = cells

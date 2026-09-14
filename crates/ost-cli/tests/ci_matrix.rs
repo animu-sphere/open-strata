@@ -1152,6 +1152,30 @@ fn matrix_projection_is_a_stable_contract_for_hand_written_lanes() {
         .as_str()
         .unwrap()
         .contains("pull_request, main, scheduled, workflow_dispatch"));
+
+    let github = sb.ost(&[
+        "ci",
+        "matrix",
+        "--cell",
+        "plugin-pr-linux",
+        "--github-output",
+    ]);
+    assert!(
+        github.status.success(),
+        "{}",
+        String::from_utf8_lossy(&github.stderr)
+    );
+    let github = String::from_utf8(github.stdout).unwrap();
+    let github = github.lines().collect::<Vec<_>>();
+    assert!(github.contains(&"name=plugin-pr-linux"));
+    assert!(github.contains(&format!("runtime_artifact=sha256:{}", "ab".repeat(32)).as_str()));
+    assert!(github.contains(
+        &format!(
+            "runtime_remote=oci://ghcr.io/owner/openstrata-runtime@sha256:{}",
+            "ee".repeat(32)
+        )
+        .as_str()
+    ));
 }
 
 /// Hand-authored lanes are part of the validated CI contract once declared:
@@ -1169,7 +1193,21 @@ fn declared_external_workflow_is_checked_for_pin_drift() {
     std::fs::create_dir_all(workflow.parent().unwrap()).unwrap();
     std::fs::write(
         &workflow,
-        "env:\n  OST_VERSION: 0.9.0\njobs:\n  extra:\n    steps:\n      - run: ost ci matrix --lane pull_request --json | jq '.data.cells[] | select(.name == \"plugin-pr-linux\")'\n",
+        r#"env:
+  OST_VERSION: 0.9.0
+jobs:
+  extra:
+    steps:
+      - id: ost_cell
+        run: ost ci matrix --cell plugin-pr-linux --github-output >> "$GITHUB_OUTPUT"
+      - env:
+          OST_CI_CELL: ${{ steps.ost_cell.outputs.name }}
+          OST_CI_RUNTIME_ARTIFACT: ${{ steps.ost_cell.outputs.runtime_artifact }}
+          OST_CI_RUNTIME_REMOTE: ${{ steps.ost_cell.outputs.runtime_remote }}
+        run: |
+          test -n "$OST_CI_CELL"
+          ost artifact pull "$OST_CI_RUNTIME_REMOTE" --expect-artifact "$OST_CI_RUNTIME_ARTIFACT"
+"#,
     )
     .unwrap();
 
@@ -1200,6 +1238,26 @@ fn declared_external_workflow_is_checked_for_pin_drift() {
             && warning["message"].as_str().unwrap().contains("0.9.0")
     }));
 
+    // Merely mentioning the command or running the projection without wiring
+    // its outputs into a consumer step proves no pin consumption.
+    for unconsumed in [
+        "env:\n  OST_VERSION: 0.9.0\njobs:\n  extra:\n    steps:\n      - run: echo 'ci matrix plugin-pr-linux'\n",
+        "env:\n  OST_VERSION: 0.9.0\njobs:\n  extra:\n    steps:\n      - id: ost_cell\n        run: ost ci matrix --cell plugin-pr-linux --github-output >> \"$GITHUB_OUTPUT\"\n",
+    ] {
+        std::fs::write(&workflow, unconsumed).unwrap();
+        let out = sb.ost(&["--json", "ci", "validate"]);
+        assert_eq!(out.status.code(), Some(5));
+        let invalid: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(invalid["data"]["external_workflow_issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue
+                .as_str()
+                .unwrap()
+                .contains("no consumed canonical binding")));
+    }
+
     // A copied old CLI pin plus a cell name without the matrix projection is
     // not accepted as evidence that the runtime digest is still canonical.
     std::fs::write(
@@ -1219,14 +1277,15 @@ fn declared_external_workflow_is_checked_for_pin_drift() {
         .contains("bootstrap.ost.version '0.9.0'")));
     assert!(issues
         .iter()
-        .any(|issue| issue.as_str().unwrap().contains("runtime_artifact")));
+        .any(|issue| issue.as_str().unwrap().contains("OST_CI_RUNTIME_ARTIFACT")));
 
     // A specialized workflow may still carry literal pins. They are accepted
-    // only when every declared cell pin exactly matches the matrix.
+    // only when every declared cell pin is bound to and consumed through the
+    // canonical environment contract.
     std::fs::write(
         &workflow,
         format!(
-            "env:\n  OST_VERSION: 0.9.0\n  RUNTIME_ARTIFACT: sha256:{}\n  RUNTIME_OCI_DIGEST: sha256:{}\njobs: {{}}\n",
+            "env:\n  OST_VERSION: 0.9.0\njobs:\n  extra:\n    steps:\n      - env:\n          OST_CI_CELL: plugin-pr-linux\n          OST_CI_RUNTIME_ARTIFACT: sha256:{}\n          OST_CI_RUNTIME_REMOTE: oci://ghcr.io/owner/openstrata-runtime@sha256:{}\n        run: |\n          test -n \"$OST_CI_CELL\"\n          ost artifact pull \"$OST_CI_RUNTIME_REMOTE\" --expect-artifact \"$OST_CI_RUNTIME_ARTIFACT\"\n",
             "ab".repeat(32),
             "ee".repeat(32)
         ),
@@ -1234,6 +1293,31 @@ fn declared_external_workflow_is_checked_for_pin_drift() {
     .unwrap();
     let literal = stdout_json(&sb.ost(&["--json", "ci", "validate"]));
     assert_eq!(literal["ok"], true, "exact literal pins should validate");
+
+    // Correct digests parked in unused YAML cannot hide stale values in the
+    // step that actually consumes the canonical contract.
+    std::fs::write(
+        &workflow,
+        format!(
+            "env:\n  OST_VERSION: 0.9.0\n  UNUSED_CURRENT_RUNTIME: sha256:{}\n  UNUSED_CURRENT_REMOTE: sha256:{}\njobs:\n  extra:\n    steps:\n      - env:\n          OST_CI_CELL: plugin-pr-linux\n          OST_CI_RUNTIME_ARTIFACT: sha256:{}\n          OST_CI_RUNTIME_REMOTE: oci://ghcr.io/owner/openstrata-runtime@sha256:{}\n        run: |\n          test -n \"$OST_CI_CELL\"\n          ost artifact pull \"$OST_CI_RUNTIME_REMOTE\" --expect-artifact \"$OST_CI_RUNTIME_ARTIFACT\"\n",
+            "ab".repeat(32),
+            "ee".repeat(32),
+            "ba".repeat(32),
+            "ff".repeat(32),
+        ),
+    )
+    .unwrap();
+    let decoy = sb.ost(&["--json", "ci", "validate"]);
+    assert_eq!(decoy.status.code(), Some(5));
+    let invalid: serde_json::Value = serde_json::from_slice(&decoy.stdout).unwrap();
+    assert!(invalid["data"]["external_workflow_issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|issue| issue
+            .as_str()
+            .unwrap()
+            .contains("no consumed canonical binding")));
 }
 
 /// A workspace cell is the shape a plain library or a workspace-built

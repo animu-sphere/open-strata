@@ -1987,9 +1987,10 @@ pub fn starter_matrix() -> String {
 # A repository-specific workflow that cannot yet be generated can still join
 # the same contract. Declare its path and the cells it mirrors. `ost ci
 # validate` checks that the file declares `OST_VERSION` equal to
-# `bootstrap.ost.version` and either consumes each named cell through `ost ci
-# matrix` or contains that cell's exact artifact pins. The generator never
-# overwrites these files:
+# `bootstrap.ost.version`, then requires each cell's projected or exact-literal
+# `OST_CI_*` bindings to be consumed by a workflow step. Use `ost ci matrix
+# --cell <name> --github-output >> \"$GITHUB_OUTPUT\"` for the preferred
+# projection form. The generator never overwrites these files:
 #
 #   external_workflows:
 #     - path: .github/workflows/plugin-windows-ci.yml
