@@ -34,7 +34,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use camino::Utf8Path;
 use clap::ValueEnum;
 
-use ost_core::{Error, Result};
+use ost_core::{Category, Error, Result};
 
 use crate::notify;
 
@@ -71,6 +71,9 @@ const HEARTBEAT: Duration = Duration::from_secs(15);
 const STALL: Duration = Duration::from_secs(120);
 
 const OUTPUT_TAIL_BYTES: usize = 4096;
+
+/// Maximum retained bytes per stream for a supervised machine-output child.
+const CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Bytes read from the end of a watched diagnostic file for its tail.
 const FILE_TAIL_BYTES: u64 = 4096;
@@ -139,6 +142,19 @@ pub struct Reporter {
     notify: bool,
     /// Short command label for the notification, e.g. `ost build`.
     label: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct CapturedOutput {
+    pub(crate) status: std::process::ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+}
+
+#[derive(Default)]
+struct BoundedCapture {
+    bytes: Vec<u8>,
+    overflowed: bool,
 }
 
 impl Reporter {
@@ -697,6 +713,34 @@ impl Reporter {
         env: &[(String, String)],
         timeout: Option<Duration>,
     ) -> Result<std::process::ExitStatus> {
+        self.run_child(program, args, cwd, env, timeout, false)
+            .map(|output| output.status)
+    }
+
+    /// Run a supervised child and retain bounded stdout/stderr for a caller
+    /// consuming a machine-readable response. The child gets the same timeout,
+    /// process-tree cleanup, interrupt handling, logging and stall diagnostics
+    /// as ordinary managed build/test commands.
+    pub(crate) fn run_capture(
+        &mut self,
+        program: &Path,
+        args: &[String],
+        cwd: &Utf8Path,
+        env: &[(String, String)],
+        timeout: Option<Duration>,
+    ) -> Result<CapturedOutput> {
+        self.run_child(program, args, cwd, env, timeout, true)
+    }
+
+    fn run_child(
+        &mut self,
+        program: &Path,
+        args: &[String],
+        cwd: &Utf8Path,
+        env: &[(String, String)],
+        timeout: Option<Duration>,
+        capture_output: bool,
+    ) -> Result<CapturedOutput> {
         let mut cmd = Command::new(program);
         cmd.args(args)
             .current_dir(cwd.as_std_path())
@@ -729,7 +773,11 @@ impl Reporter {
         // Pass child output through to our stdout/stderr, except when stdout is a
         // machine stream (Json) or silenced (--quiet) — then it goes to the log
         // only, keeping the event stream clean.
-        let forward = !self.quiet && !matches!(self.style, Style::Json);
+        let forward = !capture_output && !self.quiet && !matches!(self.style, Style::Json);
+        let captured_stdout =
+            capture_output.then(|| Arc::new(Mutex::new(BoundedCapture::default())));
+        let captured_stderr =
+            capture_output.then(|| Arc::new(Mutex::new(BoundedCapture::default())));
 
         let out = spawn_reader(
             child.stdout.take(),
@@ -738,6 +786,7 @@ impl Reporter {
             tail.clone(),
             log.clone(),
             forward,
+            captured_stdout.clone(),
         );
         let err = spawn_reader(
             child.stderr.take(),
@@ -746,6 +795,7 @@ impl Reporter {
             tail.clone(),
             log.clone(),
             forward,
+            captured_stderr.clone(),
         );
 
         // Poll for completion; while the child runs, emit a heartbeat whenever it
@@ -829,7 +879,13 @@ impl Reporter {
         let _ = out.join();
         let _ = err.join();
 
-        Ok(status)
+        let stdout = take_capture(captured_stdout)?;
+        let stderr = take_capture(captured_stderr)?;
+        Ok(CapturedOutput {
+            status,
+            stdout,
+            stderr,
+        })
     }
 
     /// Open (append) the log file once per `run`, best-effort.
@@ -999,6 +1055,7 @@ fn spawn_reader<R: Read + Send + 'static>(
     tail: Arc<Mutex<VecDeque<u8>>>,
     log: Option<Arc<Mutex<std::fs::File>>>,
     forward: bool,
+    capture: Option<Arc<Mutex<BoundedCapture>>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let Some(mut src) = src else { return };
@@ -1017,6 +1074,15 @@ fn spawn_reader<R: Read + Send + 'static>(
                                 tail.pop_front();
                             }
                             tail.push_back(*byte);
+                        }
+                    }
+                    if let Some(capture) = &capture {
+                        if let Ok(mut capture) = capture.lock() {
+                            let keep = CAPTURE_BYTES
+                                .saturating_sub(capture.bytes.len())
+                                .min(chunk.len());
+                            capture.bytes.extend_from_slice(&chunk[..keep]);
+                            capture.overflowed |= keep < chunk.len();
                         }
                     }
                     if forward {
@@ -1043,6 +1109,26 @@ fn spawn_reader<R: Read + Send + 'static>(
             }
         }
     })
+}
+
+fn take_capture(capture: Option<Arc<Mutex<BoundedCapture>>>) -> Result<Vec<u8>> {
+    let Some(capture) = capture else {
+        return Ok(Vec::new());
+    };
+    let capture = capture.lock().map_err(|_| {
+        Error::coded(
+            "INTERNAL_ERROR",
+            Category::Internal,
+            "captured child output lock was poisoned",
+        )
+    })?;
+    if capture.overflowed {
+        return Err(Error::external_tool(format!(
+            "captured child output exceeded the {} byte per-stream limit",
+            CAPTURE_BYTES
+        )));
+    }
+    Ok(capture.bytes.clone())
 }
 
 /// The last few non-empty lines of a file, read from its end.
@@ -1764,5 +1850,50 @@ mod tests {
         assert!(message.contains("last output:"), "{message}");
         assert!(started.elapsed() < Duration::from_secs(5));
         let _ = std::fs::remove_file(log);
+    }
+
+    #[test]
+    fn supervised_capture_retains_both_streams() {
+        let cwd = camino::Utf8PathBuf::from_path_buf(std::env::current_dir().unwrap()).unwrap();
+        let (program, args): (PathBuf, Vec<String>) = if cfg!(windows) {
+            (
+                PathBuf::from("cmd"),
+                vec![
+                    "/c".into(),
+                    "echo captured-out & echo captured-err 1>&2".into(),
+                ],
+            )
+        } else {
+            (
+                PathBuf::from("/bin/sh"),
+                vec![
+                    "-c".into(),
+                    "printf captured-out; printf captured-err >&2".into(),
+                ],
+            )
+        };
+        let mut reporter = Reporter::new(ProgressMode::Plain, 1, true);
+        reporter.phase("Capture fixture");
+        let output = reporter
+            .run_capture(&program, &args, &cwd, &[], Some(Duration::from_secs(5)))
+            .expect("capture should complete");
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("captured-out"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("captured-err"));
+    }
+
+    #[test]
+    fn supervised_capture_obeys_the_managed_timeout() {
+        let cwd = camino::Utf8PathBuf::from_path_buf(std::env::current_dir().unwrap()).unwrap();
+        let (program, args) = silent_child();
+        let mut reporter = Reporter::new(ProgressMode::Plain, 1, true);
+        reporter.phase("Capture timeout fixture");
+        let started = Instant::now();
+        let error = reporter
+            .run_capture(&program, &args, &cwd, &[], Some(Duration::from_millis(100)))
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert_eq!(error.phase(), Some("capture-timeout-fixture"));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

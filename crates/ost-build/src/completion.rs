@@ -364,6 +364,12 @@ pub struct TestCompletion {
     /// binaries that have since been replaced.
     pub build_fingerprint: String,
     pub totals: TestTotals,
+    /// Selected CTest cases attributed to each testable workspace member.
+    ///
+    /// Keys are project-relative, forward-slashed member roots (`.` for the
+    /// project root). Older single-project records omit this additive field.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub members: BTreeMap<String, u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation: Option<String>,
     /// Renderer reports atomically attributed to this managed test run.
@@ -400,6 +406,7 @@ impl TestCompletion {
             configuration: configuration.into(),
             build_fingerprint: build.fingerprint(),
             totals,
+            members: BTreeMap::new(),
             invocation: None,
             renderer_reports: Vec::new(),
             completed_unix,
@@ -408,6 +415,11 @@ impl TestCompletion {
 
     pub fn with_invocation(mut self, invocation: impl Into<String>) -> Self {
         self.invocation = Some(invocation.into());
+        self
+    }
+
+    pub fn with_members(mut self, members: BTreeMap<String, u32>) -> Self {
+        self.members = members;
         self
     }
 
@@ -441,6 +453,7 @@ impl TestCompletion {
                     .into(),
             );
         }
+        validate_member_test_counts(&self.members, self.totals.total)?;
         if self.totals.failed > 0 {
             return Err(format!(
                 "{} of {} tests failed",
@@ -456,6 +469,35 @@ impl TestCompletion {
         validate_renderer_bindings(&self.renderer_reports)?;
         Ok(())
     }
+}
+
+fn validate_member_test_counts(members: &BTreeMap<String, u32>, total: u32) -> Result<(), String> {
+    let attributed = members.values().try_fold(0u32, |sum, count| {
+        sum.checked_add(*count)
+            .ok_or_else(|| "workspace member test count overflow".to_string())
+    })?;
+    if attributed > total {
+        return Err(format!(
+            "workspace members attribute {attributed} tests, more than the run total {total}"
+        ));
+    }
+    for member in members.keys() {
+        let bytes = member.as_bytes();
+        let has_windows_drive_prefix =
+            bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+        if member.is_empty()
+            || member.starts_with('/')
+            || member.starts_with('\\')
+            || has_windows_drive_prefix
+            || member.contains('\\')
+            || member.split('/').any(|segment| segment == "..")
+        {
+            return Err(format!(
+                "workspace member test key '{member}' is not project-relative"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_renderer_bindings(bindings: &[RendererEvidenceBinding]) -> Result<(), String> {
@@ -656,6 +698,36 @@ mod tests {
             .validate_against(&rebuilt)
             .expect_err("stale test evidence is refused");
         assert!(error.contains("earlier build"), "{error}");
+    }
+
+    #[test]
+    fn workspace_test_attribution_is_bounded_and_portable() {
+        let build = build_completion();
+        let totals = TestTotals {
+            total: 3,
+            passed: 3,
+            failed: 0,
+        };
+        let tested =
+            TestCompletion::new(&build, "Release", totals, 10).with_members(BTreeMap::from([
+                ("plugins/schema".into(), 2),
+                ("plugins/empty".into(), 0),
+            ]));
+        assert!(tested.validate_against(&build).is_ok());
+
+        let too_many = TestCompletion::new(&build, "Release", totals, 10)
+            .with_members(BTreeMap::from([("plugins/schema".into(), 4)]));
+        assert!(too_many
+            .validate_against(&build)
+            .unwrap_err()
+            .contains("more than the run total"));
+
+        let escaped = TestCompletion::new(&build, "Release", totals, 10)
+            .with_members(BTreeMap::from([("../other".into(), 1)]));
+        assert!(escaped
+            .validate_against(&build)
+            .unwrap_err()
+            .contains("not project-relative"));
     }
 
     /// A completed run with failing tests is still a completed run — but it

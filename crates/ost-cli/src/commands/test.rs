@@ -38,11 +38,13 @@
 //! its own claim — not implied by `built`, not implied by `packaged`, and not
 //! the same as a host-side plugin or renderer check.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 use clap::Args;
+use serde::Deserialize;
 
 use ost_build::{
     BuildCompletion, LeaseMode, TargetLease, TargetLock, TestCompletion, TestTotals,
@@ -236,7 +238,12 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     let managed_started_unix = crate::commands::renderer::unix_now();
     let lease = TargetLease::acquire(&lease_path, &id, "ost test", mode)?;
 
-    let mut rep = Reporter::new(args.progress, 1, args.quiet).with_notify(args.notify, "ost test");
+    // The global JSON contract is one document on stdout. In particular,
+    // CTest writes ordinary progress to stdout on Unix, so the reporter must
+    // keep child output in the managed log even when --progress was left at
+    // its auto default.
+    let mut rep = Reporter::new(args.progress, 2, args.quiet || fmt.is_json())
+        .with_notify(args.notify, "ost test");
     if let Some(takeover) = lease.takeover() {
         rep.note(&takeover.describe());
     }
@@ -274,6 +281,49 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         rep.note(&format!("target lease {invocation}"));
     }
 
+    // Enumerate the exact selected CTest set before running it. CTest's stable
+    // JSON object model carries the add_test() backtrace for every case; the
+    // deepest discovered workspace member in that backtrace owns the case.
+    // This makes an otherwise invisible member with no registered tests
+    // observable without imposing labels or naming conventions on projects.
+    let overall_started = Instant::now();
+    let overall_timeout = (args.timeout > 0).then(|| Duration::from_secs(args.timeout));
+    rep.phase("Enumerating tests");
+    let member_tests = workspace_member_test_counts(
+        &root,
+        &mut rep,
+        WorkspaceTestEnumeration {
+            ctest: &ctest_prog,
+            build_dir: &relative_build_dir,
+            configuration: &configuration,
+            filter: args.filter.as_deref(),
+            env: &extra_env,
+            timeout: overall_timeout,
+        },
+    )?;
+    let zero_test_members = if args.filter.is_none() {
+        member_tests
+            .iter()
+            .filter(|(_, count)| **count == 0)
+            .map(|(member, _)| member.clone())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    for member in &zero_test_members {
+        eprintln!("warning: workspace member '{member}' contributed 0 tests");
+    }
+    let workspace_warnings = zero_test_members
+        .iter()
+        .map(|member| {
+            serde_json::json!({
+                "code": "WORKSPACE_MEMBER_NO_TESTS",
+                "message": format!("workspace member '{member}' contributed 0 tests"),
+                "member": member,
+            })
+        })
+        .collect::<Vec<_>>();
+
     // A stale JUnit file from a previous run must not be counted as this one's.
     // Renderer reports are snapshotted instead: only files CTest creates or
     // rewrites below receive this invocation's producer session.
@@ -291,13 +341,23 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     // 5. Run CTest. Its exit status comes back rather than ending the process,
     //    because a failing run still has evidence to publish.
     rep.phase("Running tests");
-    let status = match rep.run_status(
-        &ctest_prog,
-        &ctest_args,
-        &root,
-        &extra_env,
-        (args.timeout > 0).then(|| Duration::from_secs(args.timeout)),
-    ) {
+    let run_timeout = match overall_timeout {
+        None => None,
+        Some(limit) => Some(
+            limit
+                .checked_sub(overall_started.elapsed())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| {
+                    Error::external_tool(format!(
+                        "test run timed out after {}s while enumerating workspace tests",
+                        limit.as_secs()
+                    ))
+                    .with_phase("running-tests")
+                    .with_warnings(workspace_warnings.clone())
+                })?,
+        ),
+    };
+    let status = match rep.run_status(&ctest_prog, &ctest_args, &root, &extra_env, run_timeout) {
         Ok(status) => status,
         Err(error) => {
             let producer = crate::commands::renderer::managed_producer_session(
@@ -315,7 +375,7 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
                 producer,
                 false,
             )?;
-            return Err(error);
+            return Err(error.with_warnings(workspace_warnings));
         }
     };
 
@@ -345,9 +405,17 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         lease.release();
         rep.done();
         return Err(
-            Error::external_tool(format!("no tests ran for target '{id}'")).with_hint(format!(
-                "register tests with add_test() in CMake, or relax --filter; see {log}"
-            )),
+            Error::external_tool(format!("no tests ran for target '{id}'"))
+                .with_hint(format!(
+                    "register tests with add_test() in CMake, or relax --filter; see {log}"
+                ))
+                .with_data(serde_json::json!({
+                    "target": id,
+                    "configuration": configuration,
+                    "build_fingerprint": build.fingerprint(),
+                    "members": member_tests,
+                }))
+                .with_warnings(workspace_warnings),
         );
     };
     let producer_outcome = if status.success() || totals.failed > 0 {
@@ -371,6 +439,7 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         producer_outcome == ost_manifest::SessionOutcome::Success,
     )?;
     let mut completion = TestCompletion::new(&build, &configuration, totals, completed_unix)
+        .with_members(member_tests.clone())
         .with_renderer_reports(renderer_reports);
     if let Some(invocation) = lease.invocation() {
         completion = completion.with_invocation(invocation);
@@ -409,20 +478,33 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
                 totals.total
             )
         };
-        return Err(
-            Error::external_tool(detail).with_hint(format!("see {log} for the failing output"))
-        );
+        return Err(Error::external_tool(detail)
+            .with_hint(format!("see {log} for the failing output"))
+            .with_data(serde_json::json!({
+                "target": id,
+                "configuration": configuration,
+                "build_fingerprint": completion.build_fingerprint,
+                "invocation": completion.invocation,
+                "totals": completion.totals,
+                "members": completion.members,
+            }))
+            .with_warnings(workspace_warnings));
     }
 
     rep.done();
     if fmt.is_json() {
-        output::success(&serde_json::json!({
-            "target": id,
-            "configuration": configuration,
-            "build_fingerprint": completion.build_fingerprint,
-            "invocation": completion.invocation,
-            "totals": completion.totals,
-        }));
+        output::report_with_warnings(
+            true,
+            &serde_json::json!({
+                "target": id,
+                "configuration": configuration,
+                "build_fingerprint": completion.build_fingerprint,
+                "invocation": completion.invocation,
+                "totals": completion.totals,
+                "members": completion.members,
+            }),
+            &workspace_warnings,
+        );
     } else {
         rep.note(&format!(
             "Tested target {id}: {} of {} passed ({configuration})",
@@ -430,6 +512,159 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct CtestInfo {
+    #[serde(rename = "backtraceGraph")]
+    backtrace_graph: CtestBacktraceGraph,
+    tests: Vec<CtestCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CtestBacktraceGraph {
+    files: Vec<String>,
+    nodes: Vec<CtestBacktraceNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CtestBacktraceNode {
+    file: usize,
+    #[serde(default)]
+    parent: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CtestCase {
+    backtrace: usize,
+}
+
+struct WorkspaceTestEnumeration<'a> {
+    ctest: &'a std::path::Path,
+    build_dir: &'a Utf8Path,
+    configuration: &'a str,
+    filter: Option<&'a str>,
+    env: &'a [(String, String)],
+    timeout: Option<Duration>,
+}
+
+fn workspace_member_test_counts(
+    root: &Utf8Path,
+    reporter: &mut Reporter,
+    enumeration: WorkspaceTestEnumeration<'_>,
+) -> Result<BTreeMap<String, u32>> {
+    let canonical_root = super::plugin::canonical_root(root);
+    let discovered = super::plugin::discover_workspace_members(&canonical_root)?;
+    let mut members = discovered
+        .bundles
+        .into_iter()
+        .chain(discovered.libraries)
+        .chain(discovered.tools)
+        // A descriptor without a CMake entry point does not participate in the
+        // root CTest suite and is not a testable member for this contract.
+        .filter(|member| member.join("CMakeLists.txt").is_file())
+        .map(|member| {
+            let relative = member.strip_prefix(&canonical_root).unwrap_or(&member);
+            let key = if relative.as_str().is_empty() {
+                ".".to_string()
+            } else {
+                relative.as_str().replace('\\', "/")
+            };
+            (member, key)
+        })
+        .collect::<Vec<_>>();
+    members.sort_by(|(left, _), (right, _)| {
+        right
+            .components()
+            .count()
+            .cmp(&left.components().count())
+            .then_with(|| left.cmp(right))
+    });
+    let mut counts = members
+        .iter()
+        .map(|(_, key)| (key.clone(), 0))
+        .collect::<BTreeMap<_, _>>();
+    if members.is_empty() {
+        return Ok(counts);
+    }
+
+    let mut args = vec![
+        "--test-dir".to_string(),
+        enumeration.build_dir.as_str().replace('\\', "/"),
+        "--build-config".to_string(),
+        enumeration.configuration.to_string(),
+        "--show-only=json-v1".to_string(),
+    ];
+    if let Some(filter) = enumeration.filter {
+        args.extend(["-R".to_string(), filter.to_string()]);
+    }
+    let output = reporter.run_capture(
+        enumeration.ctest,
+        &args,
+        &canonical_root,
+        enumeration.env,
+        enumeration.timeout,
+    )?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(Error::external_tool(format!(
+            "could not enumerate workspace tests with CTest{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        )));
+    }
+    let info: CtestInfo = serde_json::from_slice(&output.stdout).map_err(|error| {
+        Error::parse(
+            "CTest --show-only=json-v1 output",
+            anyhow::Error::new(error),
+        )
+    })?;
+
+    for test in &info.tests {
+        if let Some(member) = member_for_backtrace(
+            &canonical_root,
+            &members,
+            &info.backtrace_graph,
+            test.backtrace,
+        ) {
+            *counts.entry(member.to_string()).or_default() += 1;
+        }
+    }
+    Ok(counts)
+}
+
+fn member_for_backtrace<'a>(
+    root: &Utf8Path,
+    members: &'a [(camino::Utf8PathBuf, String)],
+    graph: &CtestBacktraceGraph,
+    start: usize,
+) -> Option<&'a str> {
+    let mut current = Some(start);
+    let mut visited = BTreeSet::new();
+    let mut files = Vec::new();
+    while let Some(index) = current {
+        if !visited.insert(index) {
+            break;
+        }
+        let node = graph.nodes.get(index)?;
+        let file = graph.files.get(node.file)?;
+        let file = Utf8Path::new(file);
+        let absolute = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            root.join(file)
+        };
+        let absolute = super::plugin::canonical_root(&absolute);
+        files.push(absolute);
+        current = node.parent;
+    }
+    members
+        .iter()
+        .find(|(member_root, _)| files.iter().any(|file| file.starts_with(member_root)))
+        .map(|(_, key)| key.as_str())
 }
 
 fn read_lock(root: &Utf8Path, id: &str) -> Result<TargetLock> {
@@ -712,5 +947,52 @@ mod tests {
     fn a_missing_report_yields_no_totals() {
         assert!(read_totals(Utf8Path::new("does/not/exist.xml")).is_none());
         assert_eq!(TestTotals::default().total, 0);
+    }
+
+    #[test]
+    fn ctest_backtrace_uses_the_deepest_workspace_member() {
+        let dir = std::env::temp_dir().join(format!(
+            "ost-ctest-attribution-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = Utf8PathBuf::from_path_buf(dir).unwrap();
+        let member = root.join("plugins/example");
+        let tests = member.join("tests");
+        std::fs::create_dir_all(&tests).unwrap();
+        std::fs::write(root.join("CMakeLists.txt"), "# root\n").unwrap();
+        std::fs::write(tests.join("CMakeLists.txt"), "# member tests\n").unwrap();
+
+        let members = vec![
+            (
+                super::super::plugin::canonical_root(&member),
+                "plugins/example".to_string(),
+            ),
+            (super::super::plugin::canonical_root(&root), ".".to_string()),
+        ];
+        let graph = CtestBacktraceGraph {
+            files: vec![
+                root.join("cmake/AddSmoke.cmake").to_string(),
+                tests.join("CMakeLists.txt").to_string(),
+            ],
+            nodes: vec![
+                CtestBacktraceNode {
+                    file: 0,
+                    parent: Some(1),
+                },
+                CtestBacktraceNode {
+                    file: 1,
+                    parent: None,
+                },
+            ],
+        };
+        assert_eq!(
+            member_for_backtrace(&root, &members, &graph, 0),
+            Some("plugins/example")
+        );
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 }
