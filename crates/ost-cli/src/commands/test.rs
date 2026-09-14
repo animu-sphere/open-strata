@@ -238,7 +238,12 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     let managed_started_unix = crate::commands::renderer::unix_now();
     let lease = TargetLease::acquire(&lease_path, &id, "ost test", mode)?;
 
-    let mut rep = Reporter::new(args.progress, 2, args.quiet).with_notify(args.notify, "ost test");
+    // The global JSON contract is one document on stdout. In particular,
+    // CTest writes ordinary progress to stdout on Unix, so the reporter must
+    // keep child output in the managed log even when --progress was left at
+    // its auto default.
+    let mut rep = Reporter::new(args.progress, 2, args.quiet || fmt.is_json())
+        .with_notify(args.notify, "ost test");
     if let Some(takeover) = lease.takeover() {
         rep.note(&takeover.describe());
     }
