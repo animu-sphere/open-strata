@@ -4,7 +4,7 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-08-24
-updated: 2026-09-13
+updated: 2026-09-14
 applies_to: v0.23.0
 ---
 
@@ -25,7 +25,6 @@ release lanes and truthful DCC-host entry points.
 
 - Reconcile generated and externally managed workflow lanes against the same
   release pins and support declaration.
-- Attribute test evidence to each discovered workspace member.
 - Model `usdview` and DCC adapters as first-class components rather than
   codeless schema bundles or alternate dependency stores.
 - Preserve distinct component, composition, execution, plugin-load, render and

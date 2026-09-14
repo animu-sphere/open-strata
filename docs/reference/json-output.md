@@ -97,6 +97,42 @@ single JSON document on stdout — and exits non-zero:
 `error.hint` is present only when an actionable hint exists. Branch on
 `error.code` and `error.category`, never on `error.message`.
 
+### Workspace test attribution
+
+For a composed workspace, successful `ost test --json` output includes a
+`data.members` map beside the flat `data.totals`. Keys are project-relative,
+forward-slashed member roots (`.` names the project root); values are the number
+of selected CTest cases attributed to that member through CTest's `add_test()`
+backtrace. Only discovered members with a `CMakeLists.txt` participate.
+
+An unfiltered run reports `WORKSPACE_MEMBER_NO_TESTS` in the envelope's
+`warnings` array for every testable member with a zero count. Filtered runs keep
+the selected counts in `data.members` but suppress that warning because zero
+selected cases can be intentional. The same map is retained in the managed test
+completion record, including when CTest reports a test failure.
+
+```json
+{
+  "ok": true,
+  "schema": 1,
+  "data": {
+    "totals": { "total": 3, "passed": 3, "failed": 0 },
+    "members": {
+      ".": 1,
+      "plugins/schema": 2,
+      "plugins/empty": 0
+    }
+  },
+  "warnings": [
+    {
+      "code": "WORKSPACE_MEMBER_NO_TESTS",
+      "message": "workspace member 'plugins/empty' contributed 0 tests",
+      "member": "plugins/empty"
+    }
+  ]
+}
+```
+
 ## Errors
 
 ### Categories and exit codes

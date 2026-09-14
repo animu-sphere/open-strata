@@ -1304,6 +1304,81 @@ fn runtime_free_build_and_test_complete_without_materializing_a_runtime() {
 }
 
 #[test]
+fn workspace_test_json_attributes_cases_and_warns_on_an_empty_member() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping workspace_test_attribution: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("workspace-test-attribution");
+    let init = sb.ost(&["init", "--platform", "cy2026"]);
+    assert!(init.status.success(), "init failed:\n{}", out_text(&init));
+
+    let manifest = sb.work_file("openstrata.toml");
+    let mut project = std::fs::read_to_string(&manifest).unwrap();
+    project.push_str("\n[workspace]\nmembers = ['.', 'libs/*']\n");
+    std::fs::write(&manifest, project).unwrap();
+
+    let root_cmake = sb.work_file("CMakeLists.txt");
+    let mut root_source = std::fs::read_to_string(&root_cmake).unwrap();
+    root_source.push_str(
+        "\nenable_testing()\nadd_test(NAME root-smoke COMMAND ${CMAKE_COMMAND} -E true)\nadd_subdirectory(libs/tested)\nadd_subdirectory(libs/empty)\n",
+    );
+    std::fs::write(&root_cmake, root_source).unwrap();
+
+    for id in ["tested", "empty"] {
+        let member = sb.work_file(&format!("libs/{id}"));
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(
+            member.join("openstrata.library.yaml"),
+            format!(
+                "schema: openstrata.library/v1alpha1\nlibrary: {{ id: {id}, version: 1.0.0 }}\ncmake: {{ package: {id}, target: '{id}::{id}' }}\n"
+            ),
+        )
+        .unwrap();
+        let test = if id == "tested" {
+            "add_test(NAME member-smoke COMMAND ${CMAKE_COMMAND} -E true)\n"
+        } else {
+            ""
+        };
+        std::fs::write(
+            member.join("CMakeLists.txt"),
+            format!("cmake_minimum_required(VERSION 3.23)\nproject({id} NONE)\n{test}"),
+        )
+        .unwrap();
+    }
+
+    let build = sb.ost(&["build", "--without-runtime", "--progress", "plain"]);
+    assert!(
+        build.status.success(),
+        "build failed:\n{}",
+        out_text(&build)
+    );
+    let test = sb.ost(&["--json", "test", "--without-runtime"]);
+    assert!(test.status.success(), "test failed:\n{}", out_text(&test));
+    let value: serde_json::Value = serde_json::from_slice(&test.stdout).unwrap();
+    assert_eq!(value["data"]["totals"]["total"], 2);
+    assert_eq!(value["data"]["members"]["."], 1);
+    assert_eq!(value["data"]["members"]["libs/tested"], 1);
+    assert_eq!(value["data"]["members"]["libs/empty"], 0);
+    assert_eq!(value["warnings"].as_array().unwrap().len(), 1);
+    assert_eq!(value["warnings"][0]["code"], "WORKSPACE_MEMBER_NO_TESTS");
+
+    let target = single_target_dir(&sb.work);
+    let target_id = target.file_name().unwrap();
+    let completion: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            sb.work
+                .join("build")
+                .join(target_id)
+                .join(ost_build::TEST_COMPLETION_FILE),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(completion["members"], value["data"]["members"]);
+}
+
+#[test]
 fn library_scoped_build_test_package_uses_only_its_install_tree() {
     if let Err(reason) = native_lifecycle_ready() {
         eprintln!("skipping library_scoped_lifecycle: {reason}");

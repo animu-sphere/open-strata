@@ -6252,10 +6252,10 @@ enum WorkspaceMemberKind {
 }
 
 #[derive(Debug, Default)]
-struct WorkspaceMembers {
-    bundles: Vec<Utf8PathBuf>,
-    libraries: Vec<Utf8PathBuf>,
-    tools: Vec<Utf8PathBuf>,
+pub(crate) struct WorkspaceMembers {
+    pub(crate) bundles: Vec<Utf8PathBuf>,
+    pub(crate) libraries: Vec<Utf8PathBuf>,
+    pub(crate) tools: Vec<Utf8PathBuf>,
 }
 
 /// Directory names that are build residue in every layout, skipped both when
@@ -6278,7 +6278,7 @@ const WORKSPACE_SCAN_EXCLUDED: &[&str] = &[
 /// recursive scan preserves legacy manifests while allowing nested layouts.
 /// In both modes descriptor roots are compared as one set, so a descriptor can
 /// never silently disappear from a green graph result.
-fn discover_workspace_members(root: &Utf8Path) -> Result<WorkspaceMembers> {
+pub(crate) fn discover_workspace_members(root: &Utf8Path) -> Result<WorkspaceMembers> {
     // `read_dir(".")` may return child paths without the leading `.` while
     // explicit expansion starts from `./...`. Normalize once so set comparison
     // cannot classify the same descriptor as undeclared by spelling alone.
@@ -7121,7 +7121,7 @@ pub(crate) fn workspace_tool_outputs(root: &Utf8Path, os: Os) -> (Vec<BuildOutpu
 /// `path` canonicalized and stripped of a Windows `\\?\` verbatim prefix, so it
 /// compares with the canonical member roots `ost-plugin` records. Falls back to
 /// the path as given when it cannot be canonicalized.
-fn canonical_root(path: &Utf8Path) -> Utf8PathBuf {
+pub(crate) fn canonical_root(path: &Utf8Path) -> Utf8PathBuf {
     let Ok(canon) = std::fs::canonicalize(path.as_std_path()) else {
         return path.to_path_buf();
     };

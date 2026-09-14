@@ -4,7 +4,7 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-09-12
-updated: 2026-09-13
+updated: 2026-09-14
 applies_to: v0.23.0
 ---
 
@@ -37,11 +37,13 @@ superseded failures are not carried forward.
   in workspace build, package, product composition and capability-aware
   `plugin view` selection. Do not disguise Python/native host integration as a
   codeless schema bundle. Source: [Stage Runner report 03](https://github.com/animu-sphere/usd-stage-runner/blob/main/docs/reports/ost/03-2026-09-02-v0.22.8-usdview-host-plugin-composition.md).
-- Attribute `ost test --json` results to each discovered workspace member and
-  warn when a testable member contributes zero tests, also from VRM report 38.
 
 ### Completed during v0.23.0 development
 
+- `ost test --json` attributes selected CTest case counts to each discovered,
+  testable workspace member by project-relative root. Unfiltered runs emit
+  `WORKSPACE_MEMBER_NO_TESTS` for zero-count members, and the managed completion
+  record retains the same attribution. Source: VRM report 38.
 - `external_workflows` binds each declared hand-authored workflow to named
   matrix cells. `ost ci validate` checks its `OST_VERSION` against
   `bootstrap.ost.version` and requires each projected or exact-literal
