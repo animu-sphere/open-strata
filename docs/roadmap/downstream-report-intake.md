@@ -26,7 +26,7 @@ superseded failures are not carried forward.
 | [hdMerlin](https://github.com/animu-sphere/hydra-merlin/tree/main/docs/reports/ost) | 12 | No open carryover: managed renderer diagnostics and resilient OCI transfer shipped in v0.22.0, with idle-timeout semantics hardened again in v0.22.9. |
 | [USD Point Cloud Plugins](https://github.com/animu-sphere/usd-pointcloud-plugins/tree/main/docs/reports/ost) | 4 | No open carryover: structured file-format arguments and managed-output provenance are implemented; the preimplementation report requested no change. |
 | [USD 3DGS Plugins](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost) | 3 | No open carryover: package provenance and capability-based profile selection are implemented; the golden-output report requested no roadmap item. |
-| [USD HTTP Resolver](https://github.com/animu-sphere/usd-http-resolver/tree/main/docs/reports/ost) | 3 | Offline resolver probing and shared external inputs shipped in v0.22.10; runtime-free CI is complete during v0.23.0 development and lane alignment remains. |
+| [USD HTTP Resolver](https://github.com/animu-sphere/usd-http-resolver/tree/main/docs/reports/ost) | 3 | Offline resolver probing and shared external inputs shipped in v0.22.10; runtime-free CI and externally managed lane alignment are complete during v0.23.0 development. |
 | [USD Stage Runner](https://github.com/animu-sphere/usd-stage-runner/tree/main/docs/reports/ost) | 3 | Stall diagnostics and relocatable Python metadata shipped in v0.22.10; a first-class host add-on remains. |
 | [USD Vector Plugins](https://github.com/animu-sphere/usd-vector-plugins/tree/main/docs/reports/ost) | 2 | Package/runtime provenance and semantic lock/lifecycle correctness shipped in v0.22.10. |
 | [USD Raster Plugins](https://github.com/animu-sphere/usd-raster-plugins/tree/main/docs/reports/ost) | 1 | Bundle-free workspace graph validation shipped in v0.22.10. |
@@ -37,16 +37,18 @@ superseded failures are not carried forward.
   in workspace build, package, product composition and capability-aware
   `plugin view` selection. Do not disguise Python/native host integration as a
   codeless schema bundle. Source: [Stage Runner report 03](https://github.com/animu-sphere/usd-stage-runner/blob/main/docs/reports/ost/03-2026-09-02-v0.22.8-usdview-host-plugin-composition.md).
-- Add an externally managed (`generate = false` or equivalent) cell/mirror
-  declaration so hand-authored workflow CLI pins and runtime digests are checked
-  against `bootstrap.ost.version` and the support contract. Warn when the local
-  developer CLI and CI pin exercise meaningfully different behavior. This
-  merges HTTP report 03 with VRM reports 36 and 39.
 - Attribute `ost test --json` results to each discovered workspace member and
   warn when a testable member contributes zero tests, also from VRM report 38.
 
 ### Completed during v0.23.0 development
 
+- `external_workflows` binds each declared hand-authored workflow to named
+  matrix cells. `ost ci validate` checks its `OST_VERSION` against
+  `bootstrap.ost.version` and requires each projected or exact-literal
+  `OST_CI_*` binding to be consumed by a workflow step; `--support` applies the
+  same public declaration to those cells. Local/CI CLI skew is reported as
+  `CI_BOOTSTRAP_VERSION_SKEW`. This merges HTTP report 03 with VRM reports 36
+  and 39.
 - Workspace source cells accept cumulative `verify: pyramid` and
   `verify: package` rungs. They run the whole-workspace plugin pyramid at the
   declared `up_to` level, then package every member and the aggregate product,

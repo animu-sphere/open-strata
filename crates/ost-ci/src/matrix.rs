@@ -658,6 +658,21 @@ pub struct SourceCheck {
     pub run: String,
 }
 
+/// A hand-authored workflow that consumes cells from this matrix.
+///
+/// Some repository-specific lanes need setup that the generated workflow does
+/// not model yet. Declaring the file and the cells it mirrors lets `ost ci
+/// validate` keep its bootstrap and runtime pins tied to the same source of
+/// truth instead of leaving the workflow as an invisible second contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalWorkflow {
+    /// Safe repository-relative path to the hand-authored workflow.
+    pub path: String,
+    /// Matrix cells whose resolved pins the workflow consumes.
+    pub cells: Vec<String>,
+}
+
 fn is_kebab(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -725,6 +740,10 @@ pub struct SupportMatrix {
     /// source/support-only behavior from earlier schema-1 documents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseLane>,
+    /// Hand-authored workflows that consume this matrix's bootstrap and cell
+    /// pins. These files are validated but never overwritten by a generator.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_workflows: Vec<ExternalWorkflow>,
     pub cells: Vec<SupportCell>,
 }
 
@@ -1269,6 +1288,39 @@ impl SupportMatrix {
                     "GitHub-hosted release candidates require exact bootstrap.ost.sha256 pins"
                         .to_string(),
                 ));
+            }
+        }
+        let mut external_paths: Vec<&str> = Vec::new();
+        for workflow in &self.external_workflows {
+            validate_repo_path("external_workflows.path", &workflow.path)?;
+            if external_paths.contains(&workflow.path.as_str()) {
+                return Err(Error::InvalidManifest(format!(
+                    "duplicate external workflow path '{}'",
+                    workflow.path
+                )));
+            }
+            external_paths.push(&workflow.path);
+            if workflow.cells.is_empty() {
+                return Err(Error::InvalidManifest(format!(
+                    "external workflow '{}': cells must name at least one matrix cell",
+                    workflow.path
+                )));
+            }
+            let mut external_cells: Vec<&str> = Vec::new();
+            for name in &workflow.cells {
+                if external_cells.contains(&name.as_str()) {
+                    return Err(Error::InvalidManifest(format!(
+                        "external workflow '{}': duplicate cell '{}'",
+                        workflow.path, name
+                    )));
+                }
+                external_cells.push(name);
+                if !self.cells.iter().any(|cell| cell.name == *name) {
+                    return Err(Error::InvalidManifest(format!(
+                        "external workflow '{}': unknown matrix cell '{}'",
+                        workflow.path, name
+                    )));
+                }
             }
         }
         Ok(())
@@ -1932,6 +1984,18 @@ pub fn starter_matrix() -> String {
 # The candidate jobs stay read-only. Only the final publisher receives
 # `id-token: write` + `packages: write`, after candidate evidence is rechecked.
 #
+# A repository-specific workflow that cannot yet be generated can still join
+# the same contract. Declare its path and the cells it mirrors. `ost ci
+# validate` checks that the file declares `OST_VERSION` equal to
+# `bootstrap.ost.version`, then requires each cell's projected or exact-literal
+# `OST_CI_*` bindings to be consumed by a workflow step. Use `ost ci matrix
+# --cell <name> --github-output >> \"$GITHUB_OUTPUT\"` for the preferred
+# projection form. The generator never overwrites these files:
+#
+#   external_workflows:
+#     - path: .github/workflows/plugin-windows-ci.yml
+#       cells: [workspace-graph-pr-windows]
+#
 # Generate GitHub Actions workflows from this file:
 #   ost ci generate github
 schema: {MATRIX_SCHEMA}
@@ -1994,6 +2058,41 @@ cells:
             vec!["self-hosted".to_string(), "linux".to_string()]
         );
         assert!(!m.is_hosted(&m.cells[0]));
+    }
+
+    #[test]
+    fn external_workflows_reference_existing_cells_by_safe_unique_path() {
+        let valid = valid_yaml().replace(
+            "schema: 1\n",
+            "schema: 1\nexternal_workflows:\n  - path: .github/workflows/windows-extra.yml\n    cells: [windows-usd-toy]\n",
+        );
+        let matrix = SupportMatrix::from_yaml(&valid).unwrap();
+        assert_eq!(matrix.external_workflows.len(), 1);
+        assert_eq!(matrix.external_workflows[0].cells, ["windows-usd-toy"]);
+
+        for (source, expected) in [
+            (
+                valid.replace("windows-usd-toy]", "missing-cell]"),
+                "unknown matrix cell 'missing-cell'",
+            ),
+            (
+                valid.replace(
+                    "cells: [windows-usd-toy]",
+                    "cells: [windows-usd-toy, windows-usd-toy]",
+                ),
+                "duplicate cell 'windows-usd-toy'",
+            ),
+            (
+                valid.replace(".github/workflows/windows-extra.yml", "../outside.yml"),
+                "safe repository-relative path",
+            ),
+        ] {
+            let error = SupportMatrix::from_yaml(&source).unwrap_err().to_string();
+            assert!(
+                error.contains(expected),
+                "expected {expected:?}, got {error}"
+            );
+        }
     }
 
     #[test]

@@ -659,6 +659,45 @@ ost ci generate github --stdout   # print instead (inspect / pipe)
 ost ci generate github --force    # regenerate over the existing workflow
 ```
 
+Repository-specific lanes that the generator cannot express can be declared
+without copying the matrix into a second contract:
+
+```yaml
+external_workflows:
+  - path: .github/workflows/plugin-windows-ci.yml
+    cells: [plugin-pr-windows]
+```
+
+The external workflow should expose its CLI pin as `OST_VERSION` (equal to
+`bootstrap.ost.version`), then project the declared cell into a step's outputs
+and consume the canonical environment bindings in a later step:
+
+```yaml
+- id: ost_cell
+  run: ost ci matrix --cell plugin-pr-windows --github-output >> "$GITHUB_OUTPUT"
+- env:
+    OST_CI_CELL: ${{ steps.ost_cell.outputs.name }}
+    OST_CI_RUNTIME_ARTIFACT: ${{ steps.ost_cell.outputs.runtime_artifact }}
+    OST_CI_RUNTIME_REMOTE: ${{ steps.ost_cell.outputs.runtime_remote }}
+  run: |
+    test -n "$OST_CI_CELL"
+    ost artifact pull "$OST_CI_RUNTIME_REMOTE" \
+      --expect-artifact "$OST_CI_RUNTIME_ARTIFACT"
+```
+
+The projection command is deliberately a complete one-line step. Each projected
+`OST_CI_*` value must be passed into and referenced by a later `run` step in the
+same job. A specialized lane may instead bind exact literals to those canonical
+variables, but it must likewise reference them from its script.
+`ost ci validate` reads the workflow and fails if the bootstrap version drifts,
+the file disappears, or the workflow does not consume the named cell through
+this contract. Merely mentioning `ci matrix`, discarding its output, or parking
+a current digest in unused YAML does not satisfy validation. With `--support`,
+the same declared cell is also checked against the public support contract. A
+local CLI version that differs from the bootstrap pin produces
+`CI_BOOTSTRAP_VERSION_SKEW`, so behavior introduced after the CI version is not
+silently assumed.
+
 When they select the canonical `openstrata.ci.yaml`, all three commands account
 for OST-owned workflows that the current matrix no longer emits. If, for
 example, the last scheduled cell is removed while
