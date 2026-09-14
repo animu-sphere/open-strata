@@ -40,8 +40,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 use clap::Args;
@@ -239,7 +238,7 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     let managed_started_unix = crate::commands::renderer::unix_now();
     let lease = TargetLease::acquire(&lease_path, &id, "ost test", mode)?;
 
-    let mut rep = Reporter::new(args.progress, 1, args.quiet).with_notify(args.notify, "ost test");
+    let mut rep = Reporter::new(args.progress, 2, args.quiet).with_notify(args.notify, "ost test");
     if let Some(takeover) = lease.takeover() {
         rep.note(&takeover.describe());
     }
@@ -282,13 +281,20 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     // deepest discovered workspace member in that backtrace owns the case.
     // This makes an otherwise invisible member with no registered tests
     // observable without imposing labels or naming conventions on projects.
+    let overall_started = Instant::now();
+    let overall_timeout = (args.timeout > 0).then(|| Duration::from_secs(args.timeout));
+    rep.phase("Enumerating tests");
     let member_tests = workspace_member_test_counts(
         &root,
-        &ctest_prog,
-        &relative_build_dir,
-        &configuration,
-        args.filter.as_deref(),
-        &extra_env,
+        &mut rep,
+        WorkspaceTestEnumeration {
+            ctest: &ctest_prog,
+            build_dir: &relative_build_dir,
+            configuration: &configuration,
+            filter: args.filter.as_deref(),
+            env: &extra_env,
+            timeout: overall_timeout,
+        },
     )?;
     let zero_test_members = if args.filter.is_none() {
         member_tests
@@ -302,6 +308,16 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     for member in &zero_test_members {
         eprintln!("warning: workspace member '{member}' contributed 0 tests");
     }
+    let workspace_warnings = zero_test_members
+        .iter()
+        .map(|member| {
+            serde_json::json!({
+                "code": "WORKSPACE_MEMBER_NO_TESTS",
+                "message": format!("workspace member '{member}' contributed 0 tests"),
+                "member": member,
+            })
+        })
+        .collect::<Vec<_>>();
 
     // A stale JUnit file from a previous run must not be counted as this one's.
     // Renderer reports are snapshotted instead: only files CTest creates or
@@ -320,13 +336,23 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
     // 5. Run CTest. Its exit status comes back rather than ending the process,
     //    because a failing run still has evidence to publish.
     rep.phase("Running tests");
-    let status = match rep.run_status(
-        &ctest_prog,
-        &ctest_args,
-        &root,
-        &extra_env,
-        (args.timeout > 0).then(|| Duration::from_secs(args.timeout)),
-    ) {
+    let run_timeout = match overall_timeout {
+        None => None,
+        Some(limit) => Some(
+            limit
+                .checked_sub(overall_started.elapsed())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| {
+                    Error::external_tool(format!(
+                        "test run timed out after {}s while enumerating workspace tests",
+                        limit.as_secs()
+                    ))
+                    .with_phase("running-tests")
+                    .with_warnings(workspace_warnings.clone())
+                })?,
+        ),
+    };
+    let status = match rep.run_status(&ctest_prog, &ctest_args, &root, &extra_env, run_timeout) {
         Ok(status) => status,
         Err(error) => {
             let producer = crate::commands::renderer::managed_producer_session(
@@ -344,7 +370,7 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
                 producer,
                 false,
             )?;
-            return Err(error);
+            return Err(error.with_warnings(workspace_warnings));
         }
     };
 
@@ -374,9 +400,17 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
         lease.release();
         rep.done();
         return Err(
-            Error::external_tool(format!("no tests ran for target '{id}'")).with_hint(format!(
-                "register tests with add_test() in CMake, or relax --filter; see {log}"
-            )),
+            Error::external_tool(format!("no tests ran for target '{id}'"))
+                .with_hint(format!(
+                    "register tests with add_test() in CMake, or relax --filter; see {log}"
+                ))
+                .with_data(serde_json::json!({
+                    "target": id,
+                    "configuration": configuration,
+                    "build_fingerprint": build.fingerprint(),
+                    "members": member_tests,
+                }))
+                .with_warnings(workspace_warnings),
         );
     };
     let producer_outcome = if status.success() || totals.failed > 0 {
@@ -448,21 +482,12 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
                 "invocation": completion.invocation,
                 "totals": completion.totals,
                 "members": completion.members,
-            })));
+            }))
+            .with_warnings(workspace_warnings));
     }
 
     rep.done();
     if fmt.is_json() {
-        let warnings = zero_test_members
-            .iter()
-            .map(|member| {
-                serde_json::json!({
-                    "code": "WORKSPACE_MEMBER_NO_TESTS",
-                    "message": format!("workspace member '{member}' contributed 0 tests"),
-                    "member": member,
-                })
-            })
-            .collect::<Vec<_>>();
         output::report_with_warnings(
             true,
             &serde_json::json!({
@@ -473,7 +498,7 @@ pub fn run(args: TestArgs, fmt: Format) -> Result<()> {
                 "totals": completion.totals,
                 "members": completion.members,
             }),
-            &warnings,
+            &workspace_warnings,
         );
     } else {
         rep.note(&format!(
@@ -509,13 +534,19 @@ struct CtestCase {
     backtrace: usize,
 }
 
+struct WorkspaceTestEnumeration<'a> {
+    ctest: &'a std::path::Path,
+    build_dir: &'a Utf8Path,
+    configuration: &'a str,
+    filter: Option<&'a str>,
+    env: &'a [(String, String)],
+    timeout: Option<Duration>,
+}
+
 fn workspace_member_test_counts(
     root: &Utf8Path,
-    ctest: &std::path::Path,
-    build_dir: &Utf8Path,
-    configuration: &str,
-    filter: Option<&str>,
-    env: &[(String, String)],
+    reporter: &mut Reporter,
+    enumeration: WorkspaceTestEnumeration<'_>,
 ) -> Result<BTreeMap<String, u32>> {
     let canonical_root = super::plugin::canonical_root(root);
     let discovered = super::plugin::discover_workspace_members(&canonical_root)?;
@@ -552,23 +583,23 @@ fn workspace_member_test_counts(
         return Ok(counts);
     }
 
-    let mut command = Command::new(ctest);
-    command
-        .args([
-            "--test-dir",
-            &build_dir.as_str().replace('\\', "/"),
-            "--build-config",
-            configuration,
-            "--show-only=json-v1",
-        ])
-        .current_dir(canonical_root.as_std_path())
-        .envs(env.iter().cloned());
-    if let Some(filter) = filter {
-        command.args(["-R", filter]);
+    let mut args = vec![
+        "--test-dir".to_string(),
+        enumeration.build_dir.as_str().replace('\\', "/"),
+        "--build-config".to_string(),
+        enumeration.configuration.to_string(),
+        "--show-only=json-v1".to_string(),
+    ];
+    if let Some(filter) = enumeration.filter {
+        args.extend(["-R".to_string(), filter.to_string()]);
     }
-    let output = command
-        .output()
-        .map_err(|error| Error::io(format!("enumerate tests with {}", ctest.display()), error))?;
+    let output = reporter.run_capture(
+        enumeration.ctest,
+        &args,
+        &canonical_root,
+        enumeration.env,
+        enumeration.timeout,
+    )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(Error::external_tool(format!(

@@ -60,7 +60,7 @@ pub fn error(err: &ost_core::Error, fmt: Format) {
                 "ok": false,
                 "schema": SCHEMA_VERSION,
                 "error": error,
-                "warnings": [],
+                "warnings": err.warnings(),
             });
             if let Some(data) = err.data() {
                 envelope["data"] = data.clone();

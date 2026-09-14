@@ -121,6 +121,9 @@ pub enum Error {
         /// Keeping that record on the error lets JSON mode return the same
         /// machine-readable data shape on every terminal path.
         data: Option<Box<serde_json::Value>>,
+        /// Non-fatal machine-readable findings that remain relevant even when
+        /// the operation ultimately fails.
+        warnings: Option<Box<Vec<serde_json::Value>>>,
     },
 
     #[error("a project already exists here: {0}")]
@@ -170,6 +173,7 @@ impl Error {
             hint: None,
             phase: None,
             data: None,
+            warnings: None,
         }
     }
 
@@ -224,6 +228,14 @@ impl Error {
         self
     }
 
+    /// Attach non-fatal findings to a categorized error's JSON envelope.
+    pub fn with_warnings(mut self, warnings: Vec<serde_json::Value>) -> Self {
+        if let Error::Coded { warnings: slot, .. } = &mut self {
+            *slot = (!warnings.is_empty()).then(|| Box::new(warnings));
+        }
+        self
+    }
+
     /// The work phase this failure is attributed to, if any.
     pub fn phase(&self) -> Option<&str> {
         match self {
@@ -237,6 +249,16 @@ impl Error {
         match self {
             Error::Coded { data, .. } => data.as_deref(),
             _ => None,
+        }
+    }
+
+    /// Non-fatal findings retained alongside a failed operation.
+    pub fn warnings(&self) -> &[serde_json::Value] {
+        match self {
+            Error::Coded { warnings, .. } => {
+                warnings.as_deref().map(Vec::as_slice).unwrap_or_default()
+            }
+            _ => &[],
         }
     }
 

@@ -1376,6 +1376,27 @@ fn workspace_test_json_attributes_cases_and_warns_on_an_empty_member() {
     )
     .unwrap();
     assert_eq!(completion["members"], value["data"]["members"]);
+
+    let tested_cmake = sb.work_file("libs/tested/CMakeLists.txt");
+    let failing_source = std::fs::read_to_string(&tested_cmake)
+        .unwrap()
+        .replace("${CMAKE_COMMAND} -E true", "${CMAKE_COMMAND} -E false");
+    std::fs::write(&tested_cmake, failing_source).unwrap();
+    let rebuild = sb.ost(&["build", "--without-runtime", "--progress", "plain"]);
+    assert!(
+        rebuild.status.success(),
+        "rebuild failed:\n{}",
+        out_text(&rebuild)
+    );
+    let failed = sb.ost(&["--json", "test", "--without-runtime"]);
+    assert!(!failed.status.success(), "failing test unexpectedly passed");
+    let failed_value: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(failed_value["error"]["category"], "external_tool");
+    assert_eq!(failed_value["data"]["members"]["libs/empty"], 0);
+    assert_eq!(
+        failed_value["warnings"][0]["code"],
+        "WORKSPACE_MEMBER_NO_TESTS"
+    );
 }
 
 #[test]
