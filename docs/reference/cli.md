@@ -1618,6 +1618,13 @@ Show the manifest of a pulled runtime
 
 Validate a pulled runtime and record the outcome in its manifest
 
+For a real runtime with `pxrConfig.cmake`, the report separates
+`consumer-configure` from `consumer-link`. The first configures a fresh CMake
+project; the second builds a C++ program against the exported OpenUSD target and
+runs it through CTest. Missing CMake, CTest, or a usable host compiler produces
+an explained skip rather than a link claim. Generated source CI retains this
+report in `.ost-ci/runtime-validate.json`.
+
 **Usage:** `ost runtime validate [OPTIONS] [<PLATFORM>]`
 
 **Arguments:**

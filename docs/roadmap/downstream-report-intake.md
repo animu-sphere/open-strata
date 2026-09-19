@@ -92,6 +92,11 @@ superseded failures are not carried forward.
 
 ### Completed during v0.23.0 development
 
+- Runtime validation now records a separate `consumer-link` result after
+  `consumer-configure`: a scratch C++ consumer builds against the selected
+  OpenUSD CMake export and runs under the runtime loader environment. Generated
+  source CI invokes the same validation and retains its JSON report. A hosted
+  clean-host run against a republished, digest-pinned artifact remains open.
 - Generated source and release lanes now pass optional OpenUSD selectors through
   Bash positional parameters, which work when the selectors are empty under
   `set -u`. The source cache verification, remote pull and release candidate
