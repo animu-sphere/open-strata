@@ -2663,7 +2663,18 @@ fn current_validation_report(
         });
     }
     if let Some(check) = consumer_configure_check(artifact_prefix, manifest) {
+        let configured = check.passed && !check.skipped;
         report.checks.push(check);
+        if configured {
+            report
+                .checks
+                .push(consumer_link_check(artifact_prefix, manifest, env));
+        } else {
+            report.checks.push(ost_runtime::Check::skip(
+                "consumer-link",
+                "consumer configure did not pass on this host",
+            ));
+        }
     }
     let loader_status = append_graphics_loader_checks(&mut report, manifest);
     let (device_status, render_backend_ready) =
@@ -3283,21 +3294,7 @@ fn consumer_configure_check(
     // adopted runtime bakes the export machine's interpreter paths into
     // `pxrConfig.cmake`, so without these the check would report a Python that
     // exists on no consumer's machine instead of the runtime's real state.
-    let mut args = vec![
-        format!("-Dpxr_ROOT={prefix}"),
-        // The consumer contract `ost plugin build` pins for the caller. Without
-        // it an adopted runtime's baked Python paths decide the outcome, and the
-        // check would report the host's interpreter rather than the runtime.
-        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5".to_string(),
-    ];
-    if let Some(python) = ost_build::resolve_for_runtime(prefix, &manifest.python) {
-        for name in ["Python3", "Python"] {
-            args.push(format!("-D{name}_EXECUTABLE={}", python.executable));
-            args.push(format!("-D{name}_LIBRARY={}", python.library));
-            args.push(format!("-D{name}_INCLUDE_DIR={}", python.include_dir));
-        }
-    }
-
+    let args = consumer_cmake_args(prefix, manifest);
     match scratch_configure(
         &cmake,
         &scratch.path,
@@ -3314,12 +3311,7 @@ fn consumer_configure_check(
         ConfigureOutcome::NoAnswer(detail) => Some(ost_runtime::Check::skip(NAME, detail)),
         ConfigureOutcome::Failed(tail) => {
             // A failed configure is only evidence about the *runtime* if this
-            // host can configure at all. `project(LANGUAGES CXX)` compiles a
-            // probe, so no compiler — or one that cannot link — fails the same
-            // check for a reason the artifact has nothing to do with. Ask the
-            // toolchain the question on its own before blaming the runtime;
-            // paid only on the failure path, so a passing host runs one
-            // configure as before.
+            // host can configure at all.
             match scratch_configure(&cmake, &scratch.path, "toolchain", "", &[]) {
                 ConfigureOutcome::Passed => Some(ost_runtime::Check {
                     name: NAME,
@@ -3338,6 +3330,128 @@ fn consumer_configure_check(
                 }
             }
         }
+    }
+}
+
+fn consumer_cmake_args(prefix: &Utf8Path, manifest: &RuntimeManifest) -> Vec<String> {
+    let mut args = vec![
+        format!("-Dpxr_ROOT={prefix}"),
+        // Match the interpreter pins used by a plugin consumer. Without these,
+        // an adopted runtime can select the producer's Python installation.
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5".to_string(),
+    ];
+    if let Some(python) = ost_build::resolve_for_runtime(prefix, &manifest.python) {
+        for name in ["Python3", "Python"] {
+            args.push(format!("-D{name}_EXECUTABLE={}", python.executable));
+            args.push(format!("-D{name}_LIBRARY={}", python.library));
+            args.push(format!("-D{name}_INCLUDE_DIR={}", python.include_dir));
+        }
+    }
+    args
+}
+
+/// Configure, link, and execute a fresh C++ consumer against the selected
+/// runtime. This is separate from `consumer-configure`: imported CMake targets
+/// can configure successfully while still naming absent libraries or producer
+/// paths when the linker resolves them.
+fn consumer_link_check(
+    prefix: &Utf8Path,
+    manifest: &RuntimeManifest,
+    env: &EnvSet,
+) -> ost_runtime::Check {
+    const NAME: &str = "consumer-link";
+    let Some(cmake) = ost_core::tools::which("cmake") else {
+        return ost_runtime::Check::skip(NAME, "cmake is not on PATH");
+    };
+    let Some(ctest) = ost_core::tools::which("ctest") else {
+        return ost_runtime::Check::skip(NAME, "ctest is not on PATH");
+    };
+    let scratch = match scratch_dir("consumer-link") {
+        Ok(scratch) => scratch,
+        Err(error) => return ost_runtime::Check::skip(NAME, error.to_string()),
+    };
+    let root = scratch.path.join("consumer");
+    let source = root.join("main.cpp");
+    if let Err(error) = std::fs::create_dir_all(root.as_std_path()).and_then(|()| {
+        std::fs::write(
+            source.as_std_path(),
+            "#include <pxr/base/tf/token.h>\nint main() { pxr::TfToken token(\"ost-consumer\"); return token.GetString() == \"ost-consumer\" ? 0 : 1; }\n",
+        )
+    }) {
+        return ost_runtime::Check::skip(NAME, format!("{source}: {error}"));
+    }
+    let body = "set(CMAKE_CXX_STANDARD 17)\nfind_package(pxr REQUIRED CONFIG)\n\
+        add_executable(ost_consumer main.cpp)\n\
+        if(TARGET pxr::tf)\n  target_link_libraries(ost_consumer PRIVATE pxr::tf)\n\
+        elseif(TARGET tf)\n  target_link_libraries(ost_consumer PRIVATE tf)\n\
+        elseif(TARGET pxr::usd_ms)\n  target_link_libraries(ost_consumer PRIVATE pxr::usd_ms)\n\
+        elseif(TARGET usd_ms)\n  target_link_libraries(ost_consumer PRIVATE usd_ms)\n\
+        elseif(PXR_LIBRARIES)\n  target_link_libraries(ost_consumer PRIVATE ${PXR_LIBRARIES})\n\
+        else()\n  message(FATAL_ERROR \"pxr exports no linkable CMake target or PXR_LIBRARIES\")\nendif()\n\
+        enable_testing()\nadd_test(NAME ost_consumer COMMAND ost_consumer)\n";
+    let mut args = consumer_cmake_args(prefix, manifest);
+    args.push("-DCMAKE_BUILD_TYPE=Release".to_string());
+    match scratch_configure(&cmake, &scratch.path, "consumer", body, &args) {
+        ConfigureOutcome::Passed => {}
+        ConfigureOutcome::Failed(detail) => {
+            return ost_runtime::Check {
+                name: NAME,
+                passed: false,
+                skipped: false,
+                detail: Some(format!("linkable consumer configure failed: {detail}")),
+            }
+        }
+        ConfigureOutcome::NoAnswer(detail) => return ost_runtime::Check::skip(NAME, detail),
+    }
+    let build_dir = root.join("build");
+    for (step, program, args) in [
+        (
+            "build",
+            cmake.as_path(),
+            vec![
+                "--build".to_string(),
+                build_dir.to_string(),
+                "--config".into(),
+                "Release".into(),
+            ],
+        ),
+        (
+            "test",
+            ctest.as_path(),
+            vec![
+                "--test-dir".into(),
+                build_dir.to_string(),
+                "--output-on-failure".into(),
+                "-C".into(),
+                "Release".into(),
+            ],
+        ),
+    ] {
+        match scratch_command(
+            program,
+            &args,
+            env,
+            &scratch.path.join(format!("{step}.log")),
+        ) {
+            ConfigureOutcome::Passed => {}
+            ConfigureOutcome::Failed(detail) => {
+                return ost_runtime::Check {
+                    name: NAME,
+                    passed: false,
+                    skipped: false,
+                    detail: Some(format!("consumer {step} failed: {detail}")),
+                }
+            }
+            ConfigureOutcome::NoAnswer(detail) => return ost_runtime::Check::skip(NAME, detail),
+        }
+    }
+    ost_runtime::Check {
+        name: NAME,
+        passed: true,
+        skipped: false,
+        detail: Some(format!(
+            "C++ consumer linked and passed CTest against {prefix}"
+        )),
     }
 }
 
@@ -3431,6 +3545,63 @@ fn scratch_configure(
         ConfigureOutcome::Passed
     } else {
         ConfigureOutcome::Failed(configure_failure_tail(&read_lossy(&log_path)))
+    }
+}
+
+/// Run a bounded build or CTest step with the runtime's loader environment.
+fn scratch_command(
+    program: &std::path::Path,
+    args: &[String],
+    env: &EnvSet,
+    log_path: &Utf8Path,
+) -> ConfigureOutcome {
+    let log = match std::fs::File::create(log_path.as_std_path()) {
+        Ok(log) => log,
+        Err(error) => return ConfigureOutcome::NoAnswer(format!("{log_path}: {error}")),
+    };
+    let stderr_log = match log.try_clone() {
+        Ok(clone) => clone,
+        Err(error) => return ConfigureOutcome::NoAnswer(format!("{log_path}: {error}")),
+    };
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(stderr_log));
+    env.apply(&mut command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return ConfigureOutcome::NoAnswer(format!(
+                "could not run {}: {error}",
+                program.display()
+            ))
+        }
+    };
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    ConfigureOutcome::Passed
+                } else {
+                    ConfigureOutcome::Failed(configure_failure_tail(&read_lossy(log_path)))
+                }
+            }
+            Ok(None) if started.elapsed() >= CONSUMER_CONFIGURE_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return ConfigureOutcome::NoAnswer(format!(
+                    "command did not finish within {}s: {}",
+                    CONSUMER_CONFIGURE_TIMEOUT.as_secs(),
+                    configure_failure_tail(&read_lossy(log_path))
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => {
+                return ConfigureOutcome::NoAnswer(format!("wait {}: {error}", program.display()))
+            }
+        }
     }
 }
 
@@ -5509,6 +5680,56 @@ mod tests {
     use super::*;
     use ost_core::host::{Arch, Os};
     use ost_runtime::Runtime;
+
+    #[test]
+    fn consumer_link_check_rejects_a_configure_only_cmake_package() {
+        let Some(cmake) = ost_core::tools::which("cmake") else {
+            return;
+        };
+        if ost_core::tools::which("ctest").is_none() {
+            return;
+        }
+        let prerequisite = scratch_dir("consumer-link-toolchain").unwrap();
+        if !matches!(
+            scratch_configure(&cmake, &prerequisite.path, "toolchain", "", &[]),
+            ConfigureOutcome::Passed
+        ) {
+            return;
+        }
+        let prefix = temp_dir("consumer-link-missing-symbol");
+        let config = prefix.join("lib/cmake/pxr/pxrConfig.cmake");
+        let header = prefix.join("include/pxr/base/tf/token.h");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(header.parent().unwrap()).unwrap();
+        std::fs::write(
+            config.as_std_path(),
+            format!(
+                "add_library(pxr::tf INTERFACE IMPORTED)\nset_target_properties(pxr::tf PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \"{}\")\n",
+                prefix.join("include").as_str().replace('\\', "/")
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            header.as_std_path(),
+            "#include <string>\nnamespace pxr { class TfToken { public: TfToken(const char*); std::string GetString() const; }; }\n",
+        )
+        .unwrap();
+        let manifest = exportable_manifest();
+        let configure = consumer_configure_check(&prefix, &manifest).unwrap();
+        assert!(configure.passed && !configure.skipped, "{configure:?}");
+        let env = EnvSet::for_runtime(&prefix, ost_core::Host::detect().os, "3.13", false);
+        let linked = consumer_link_check(&prefix, &manifest, &env);
+        assert!(!linked.passed && !linked.skipped, "{linked:?}");
+        assert!(
+            linked
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("consumer build failed"),
+            "{linked:?}"
+        );
+        std::fs::remove_dir_all(prefix.as_std_path()).unwrap();
+    }
 
     /// A unique scratch directory for tests that need real files on disk.
     fn temp_dir(tag: &str) -> Utf8PathBuf {
