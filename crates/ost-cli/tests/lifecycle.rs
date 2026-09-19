@@ -4538,6 +4538,18 @@ fn plain_library_dependencies_validate_inspect_and_render_build_order() {
             path.contains("unrelated-library-marker") || path.contains("unrecorded-marker")
         })
     }));
+    let source_test = sb.ost(&["--json", "plugin", "test", "consumer", "--up-to", "1"]);
+    assert!(source_test.status.success(), "{}", out_text(&source_test));
+    let source_evidence: serde_json::Value = serde_json::from_slice(&source_test.stdout).unwrap();
+    assert!(
+        source_evidence["data"]["libraries"][0]["runtime_directories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path
+                .as_str()
+                .is_some_and(|path| path.contains("workspace-library-prefix/bin")))
+    );
     std::fs::remove_file(installed_bin.join(format!("container{}", std::env::consts::DLL_SUFFIX)))
         .unwrap();
     let missing = sb.ost(&["plugin", "package", "consumer"]);
@@ -4546,6 +4558,18 @@ fn plain_library_dependencies_validate_inspect_and_render_build_order() {
         out_text(&missing).contains("WORKSPACE_LIBRARY_RUNTIME_MISSING"),
         "{}",
         out_text(&missing)
+    );
+    let missing_test = sb.ost(&["--json", "plugin", "test", "consumer", "--up-to", "2"]);
+    assert!(
+        !missing_test.status.success(),
+        "{}",
+        out_text(&missing_test)
+    );
+    let missing_test_error: serde_json::Value =
+        serde_json::from_slice(&missing_test.stdout).unwrap();
+    assert_eq!(
+        missing_test_error["error"]["code"],
+        "WORKSPACE_LIBRARY_RUNTIME_MISSING"
     );
     let packaged_test = sb.ost(&[
         "--json",
