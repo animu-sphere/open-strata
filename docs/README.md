@@ -26,7 +26,8 @@ actually implemented; the spec is the source of truth when they disagree.
 ## Near-term direction
 
 With the v0.22.10 runtime-correctness and diagnostics release shipped,
-development is moving to CI/release expansion and DCC host adapters in v0.23.0.
+v0.23.0 covers CI/release expansion, component package closure,
+cross-repository library dependencies and DCC host adapters.
 Ecosystem packages and DCC adapters remain derived entry points to the same
 digest-pinned composed runtime; they do not become parallel dependency stores.
 All unimplemented reusable asks

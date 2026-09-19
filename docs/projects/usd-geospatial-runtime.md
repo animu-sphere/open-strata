@@ -85,6 +85,13 @@ runtime from immutable artifacts and demonstrates:
 - normal CMake consumption of at least one exported runtime library; and
 - a composition report binding every result to component and runtime digests.
 
+The [first hosted OpenUSD SDK report](https://github.com/animu-sphere/usd-geospatial-runtime/blob/main/docs/reports/ost/01-2026-09-18-v0.22.10-openusd-runtime-python-paths.md)
+found producer-local Python paths in the *existing pinned* runtime's exported
+CMake package. Its Windows `sdk-usd` job is disabled pending a clean-host
+consumer pass with a republished or fully repaired artifact. This is separate
+from v0.22.10's relocation policy for newly exported runtime SDKs and is
+tracked in the [v0.23.0 intake](../roadmap/downstream-report-intake.md).
+
 ## Related documentation
 
 - Proposed contract:

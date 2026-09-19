@@ -4,7 +4,7 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-08-24
-updated: 2026-09-14
+updated: 2026-09-19
 applies_to: v0.23.0
 ---
 
@@ -25,6 +25,10 @@ release lanes and truthful DCC-host entry points.
 
 - Reconcile generated and externally managed workflow lanes against the same
   release pins and support declaration.
+- Preserve each component's own package closure and admit digest-pinned
+  libraries from another repository without an ambient dependency edge.
+- Prove the pinned OpenUSD runtime's exported CMake package on a clean host;
+  generated optional OpenUSD flags must also work on macOS when absent.
 - Model `usdview` and DCC adapters as first-class components rather than
   codeless schema bundles or alternate dependency stores.
 - Preserve distinct component, composition, execution, plugin-load, render and

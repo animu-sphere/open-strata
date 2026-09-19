@@ -1,10 +1,11 @@
 # Reference Projects
 
-**Reference projects** are real downstream repositories that actively exercise
-OpenStrata's contracts. OpenStrata is developed against them rather than against
-isolated examples: they prove the runtime, artifact, plugin, library, host,
-renderer, CI, and validation contracts work on substantially different,
-independently released project types.
+**Reference projects** are real downstream repositories that exercise, or are
+being prepared to exercise, OpenStrata's contracts. OpenStrata is developed
+against them rather than against isolated examples: active projects prove the
+runtime, artifact, plugin, library, host, renderer, CI, and validation contracts
+on substantially different, independently released project types. The status
+of a new scaffold is stated on its own page.
 
 They are **not** samples, demos, toy projects, or bundled examples. Each is its
 own repository with its own architecture, release policy, and authoritative
@@ -42,8 +43,17 @@ OpenStrata ecosystem
 ├── usd-stage-runner
 │   └── reference interactive Stage runtime and host workspace
 │
-└── hydra-merlin
-    └── reference renderer project
+├── hydra-merlin
+│   └── reference renderer project
+│
+├── usd-motion-plugins
+│   └── shared motion values, sampling, recording and USD bridge
+│
+├── usd-mmd-plugins
+│   └── PMX/VMD format workspace and MMD-specific motion semantics
+│
+└── motion-connectors
+    └── planned live device and protocol connector workspace
 ```
 
 `open-strata` owns the generic orchestration and compatibility model. Each
@@ -66,6 +76,9 @@ every build unit into an artificial package abstraction.
 | [USD VRM Plugins](usd-vrm-plugins.md) | Plugin workspace | Typed schemas, file formats, resolver, bundle graph | `plugin build` / `test` / `run` / `view` / `package` |
 | [USD Stage Runner](usd-stage-runner.md) | Application workspace | Mixed library/schema/tool graph, named build intent, standalone and usdview host integration | `build` / `test`, `library build` / `test`, `plugin build` / `test` / `view` |
 | [hdMerlin](hydra-merlin.md) | Renderer project | Managed renderer build, evidence, Hydra discovery | `build`, `validate`, `renderer view` |
+| [USD Motion Plugins](usd-motion-plugins.md) | Motion workspace | Shared motion libraries and tools, installed OpenUSD consumer, cross-repository library dependency need | `build` / `test`, `library build` / `test` / `verify-consumer` |
+| [USD MMD Plugins](usd-mmd-plugins.md) | Plugin workspace | PMX/VMD format and motion boundaries, mixed library/tool/bundle graph | `build` / `test`, `plugin build` / `test` |
+| [Motion Connectors](motion-connectors.md) | Connector workspace | Empty-workspace CI boundary today; future optional device/protocol members | `ci generate` after first member; connector lifecycle planned |
 
 - **[USD Geospatial Runtime](usd-geospatial-runtime.md)** —
   [`animu-sphere/usd-geospatial-runtime`](https://github.com/animu-sphere/usd-geospatial-runtime):
@@ -121,6 +134,20 @@ every build unit into an artificial package abstraction.
   renderer projects that are *not* plugin workspaces — managed CMake execution,
   renderer evidence, capability-aware validation, runtime artifact adoption, and
   the managed `usdview` workflow.
+- **[USD Motion Plugins](usd-motion-plugins.md)** —
+  [`animu-sphere/usd-motion-plugins`](https://github.com/animu-sphere/usd-motion-plugins):
+  the shared motion layer extracted from the VRM workspace. Read it for
+  ordinary-library composition, installed OpenUSD consumers and the need for
+  declared artifact-backed library dependencies between repositories.
+- **[USD MMD Plugins](usd-mmd-plugins.md)** —
+  [`animu-sphere/usd-mmd-plugins`](https://github.com/animu-sphere/usd-mmd-plugins):
+  PMX stage import and VMD reading/binding through a mixed workspace. Read it
+  for the boundary between format-owned semantics and shared motion values.
+- **[Motion Connectors](motion-connectors.md)** —
+  [`animu-sphere/motion-connectors`](https://github.com/animu-sphere/motion-connectors):
+  a documented but currently empty build scaffold for device and protocol
+  inputs. Read it for the planned connector boundary and the empty-workspace
+  CI gap found during its adoption.
 
 ## Cross-project story
 
@@ -129,8 +156,10 @@ The strongest narrative is not that downstream projects independently use
 validated, and composed into one reproducible execution environment**. The
 plugin workspaces exercise format, schema and ordinary-library boundaries; the
 HTTP resolver owns transport; the raster, vector and point-cloud projects keep
-format behavior independent of transport; USD Stage Runner exercises the
-application-host and interactive runtime boundary; hdMerlin exercises the
+format behavior independent of transport; USD Motion Plugins owns reusable
+motion values while USD VRM and USD MMD Plugins own avatar-format semantics;
+Motion Connectors is the future live-input boundary; USD Stage Runner exercises
+the application-host and interactive runtime boundary; hdMerlin exercises the
 renderer boundary; and USD Geospatial Runtime binds selected geospatial
 artifacts into one locked, distributable runtime/SDK. A separate Formation case
 opens VRM through the VRM bundles and renders it with hdMerlin; other stage

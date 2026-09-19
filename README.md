@@ -34,17 +34,18 @@ a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 The current release is **v0.22.10** — runtime correctness, UX and diagnostics.
 Runtime exports remove producer-absolute Python metadata, packaging enforces the
 semantic project lock, resolver and managed-build failures retain bounded
-evidence, and bundle-free workspaces plus declarative external CMake inputs are
-first-class. Deterministic native, wheel and npm consumers continue to retain the
+evidence, and workspaces containing libraries/tools without bundles plus
+declarative external CMake inputs are first-class. Deterministic native, wheel
+and npm consumers continue to retain the
 exact OST runtime identity. Per-release detail (objective, shipped capabilities,
 compatibility, known limitations) lives in [docs/releases/](docs/releases/);
 active, incomplete work is in the [roadmap](docs/roadmap/README.md).
 
-The next **v0.23.0** milestone expands release CI and binds the same canonical
-runtime identity to DCC host adapters. Runtime-free and intent-aware workspace
-cells and workspace pyramid/package claims are implemented during v0.23.0
-development; release-lane reconciliation, per-member test evidence and the
-first-class host-add-on model remain in that milestone.
+The next **v0.23.0** milestone expands release CI, closes per-bundle package
+and cross-repository library dependency gaps found by v0.22.10 dogfooding,
+and binds the same canonical runtime identity to DCC host adapters. The
+[current roadmap](docs/roadmap/current.md) distinguishes completed development
+work from remaining acceptance.
 See the [composition guide](docs/guides/compose-a-runtime.md),
 [v0.22.10 record](docs/releases/v0.22.10.md),
 [current roadmap](docs/roadmap/current.md) and
@@ -53,9 +54,9 @@ See the [composition guide](docs/guides/compose-a-runtime.md),
 ## Reference projects
 
 OpenStrata is developed against real OpenUSD projects rather than isolated
-examples. Its **reference projects** validate the plugin-workspace, renderer,
-plain-library, artifact, CI, and execution contracts across repository
-boundaries:
+examples. Its **reference projects** validate or prepare to validate the
+plugin-workspace, renderer, plain-library, artifact, CI, and execution contracts
+across repository boundaries:
 
 - [**USD 3DGS Plugins**](https://github.com/animu-sphere/usd-3dgs-plugins) — a
   read-only Gaussian PLY `SdfFileFormat` bundle plus a format-independent
@@ -87,10 +88,19 @@ boundaries:
   projects that are not plugin workspaces, managed CMake execution, renderer
   evidence, capability-aware validation, runtime artifact adoption, and the
   managed `usdview` workflow.
+- [**USD Motion Plugins**](https://github.com/animu-sphere/usd-motion-plugins) —
+  shared motion values, sampling, recording and USD authoring libraries; its
+  installed consumer and VRM migration expose cross-repository package needs.
+- [**USD MMD Plugins**](https://github.com/animu-sphere/usd-mmd-plugins) — a
+  PMX/VMD workspace that separates MMD format semantics from shared motion.
+- [**Motion Connectors**](https://github.com/animu-sphere/motion-connectors) —
+  a documented, currently empty scaffold for live device/protocol inputs and
+  a test of the empty-workspace CI boundary.
 
 Together they exercise plugin, ordinary-library, resolver, transport, raster,
-point-cloud and renderer boundaries, including cross-repository **Formation**
-composition and the planned distributable geospatial runtime. See
+point-cloud, motion and renderer boundaries, with connector adoption planned.
+They also exercise cross-repository **Formation** composition and the planned
+distributable geospatial runtime. See
 [docs/projects/](docs/projects/README.md).
 
 ## Install

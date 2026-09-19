@@ -4,7 +4,7 @@ status: candidate
 owners:
   - openstrata-maintainers
 created: 2026-08-29
-updated: 2026-09-12
+updated: 2026-09-19
 applies_to: post-v0.22.9
 ---
 
@@ -20,6 +20,12 @@ The descriptor-scoped ordinary-library consumer lifecycle, package/target
 metadata and declared-closure isolation shipped in
 [v0.22.9](../releases/v0.22.9.md). This plan now contains only the remaining
 workspace-wide, dependency and architecture work.
+
+The v0.22.10 VRM dogfooding found immediate release correctness gaps in
+per-bundle packaged file closure and external library artifact edges. Those
+are v0.23.0 acceptance in the
+[downstream report intake](downstream-report-intake.md); the phases below cover
+the broader installed-package and architecture work after that gate.
 
 Legend: ⬜ not started
 

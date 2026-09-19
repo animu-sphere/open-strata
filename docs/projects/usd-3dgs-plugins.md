@@ -118,6 +118,12 @@ MSVC compile, archive, and link steps use `/Brepro`. That project-side fix leave
 an OpenStrata opportunity for an explicit across-build reproducibility check;
 the existing package-twice gate only compares one build.
 
+[Report #4](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/04-2026-09-15-v0.22.10-macos-empty-openusd-args.md)
+found that v0.22.10 generated an empty Bash optional-flag array under `set -u`:
+all three macOS source jobs stopped before runtime pull. The repository added
+explicit OpenUSD selectors and regenerated CI. The generator's empty-selector
+case remains [v0.23.0 intake](../roadmap/downstream-report-intake.md).
+
 ## Current limitations
 
 - The importer is read-only and fully materialized; SPZ, glTF/GLB Gaussian
