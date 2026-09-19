@@ -2658,6 +2658,104 @@ fn generated_plugin_scaffolds_and_inspects() {
 }
 
 #[test]
+fn generated_usdview_addon_inspects_without_a_shared_library() {
+    let sb = Sandbox::new("usdview-scaffold");
+    let new = sb.ost(&[
+        "--json",
+        "plugin",
+        "new",
+        "usdview-plugin",
+        "stage-runner",
+        "--dir",
+        "stage-runner",
+    ]);
+    assert!(
+        new.status.success(),
+        "plugin new failed:\n{}",
+        out_text(&new)
+    );
+
+    let bundle = sb.work.join("stage-runner");
+    assert!(bundle.join("python/stageRunner/__init__.py").is_file());
+    let plug_info: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("plugin/plugInfo.json")).unwrap())
+            .unwrap();
+    assert_eq!(plug_info["Plugins"][0]["Name"], "stageRunner");
+    assert!(plug_info["Plugins"][0]["Info"]["Types"]
+        .get("stageRunner.StageRunnerPluginContainer")
+        .is_some());
+
+    let inspect = sb.ost(&["--json", "plugin", "inspect", "stage-runner"]);
+    assert!(
+        inspect.status.success(),
+        "plugin inspect failed:\n{}",
+        out_text(&inspect)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    let diagnostics = report["data"]["diagnostics"].as_array().unwrap();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["id"] == "host.usdview.registration" && diagnostic["status"] == "pass"
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["id"] == "plugin.shared_library" && diagnostic["status"] == "skip"
+    }));
+
+    let view = sb.ost(&[
+        "--json",
+        "plugin",
+        "view",
+        "stage-runner",
+        "tests/fixtures/basic.usda",
+        "--target",
+        "cy2026",
+        "--profile",
+        "usd",
+    ]);
+    assert!(
+        !view.status.success(),
+        "usd profile unexpectedly supplied usdview"
+    );
+    assert!(
+        out_text(&view).contains("PROFILE_CAPABILITY_UNSATISFIED"),
+        "explicit usd profile should be rejected:\n{}",
+        out_text(&view)
+    );
+
+    // The host add-on also constrains the session when a schema is primary.
+    let schema = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-schema",
+        "runner-schema",
+        "--dir",
+        "runner-schema",
+    ]);
+    assert!(
+        schema.status.success(),
+        "schema scaffold failed:\n{}",
+        out_text(&schema)
+    );
+    let composed_view = sb.ost(&[
+        "--json",
+        "plugin",
+        "view",
+        "runner-schema",
+        "tests/fixtures/basic.usda",
+        "--with",
+        "stage-runner",
+        "--target",
+        "cy2026",
+        "--profile",
+        "usd",
+    ]);
+    assert!(
+        out_text(&composed_view).contains("PROFILE_CAPABILITY_UNSATISFIED"),
+        "composed add-on should also require usdview:\n{}",
+        out_text(&composed_view)
+    );
+}
+
+#[test]
 fn plugin_package_rejects_a_runtime_that_differs_from_strata_lock() {
     let sb = Sandbox::new("package-runtime-lock");
     init_and_pull(&sb);

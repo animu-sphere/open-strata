@@ -11,3 +11,4 @@ requires:
     - usd-materialx
     - ocio-display
     - hydra-preview
+    - usdview

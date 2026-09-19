@@ -1323,7 +1323,7 @@ Used by:
 - pkg-config 0.3.33 — https://github.com/rust-lang/pkg-config-rs
 - ring 0.17.14 — https://github.com/briansmith/ring
 - rustix 1.1.4 — https://github.com/bytecodealliance/rustix
-- rustls 0.23.41 — https://github.com/rustls/rustls
+- rustls 0.23.45 — https://github.com/rustls/rustls
 - tar 0.4.46 — https://github.com/composefs/tar-rs
 - xattr 1.6.1 — https://github.com/Stebalien/xattr
 
@@ -2440,7 +2440,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## ISC License
 
 Used by:
-- rustls-webpki 0.103.13 — https://github.com/rustls/webpki
+- rustls-webpki 0.103.15 — https://github.com/rustls/webpki
 
 ```
 Except as otherwise noted, this project is licensed under the following

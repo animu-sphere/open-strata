@@ -28,6 +28,7 @@ backwards-compatible default for `usd-schema`.
 | `usd-asset-resolver-cpp` | skeleton | `usd-asset-resolver` | `--scheme <scheme>` |
 | `usd-package-resolver-cpp` | skeleton | `usd-package-resolver` | `--extension <ext>` |
 | `usd-exec-cpp` | skeleton | `usd-exec` | `--schema-bundle <id> --schema-type <CppType>` |
+| `usdview-plugin-python` | skeleton | `usdview-plugin` | none |
 
 Skeletons have stable generation and lifecycle seams, but their domain
 architecture has not met the promotion evidence required of a template.
@@ -69,6 +70,13 @@ contract. It emits `Info.Exec.Schemas` discovery metadata,
 versioned dependency on the public schema bundle contract. It deliberately does
 not standardize graph construction, scheduling, invalidation, solvers, stage
 mutation, or CPU/GPU execution.
+
+The usdview skeleton emits a Python `PluginContainer`, its `plugInfo.json`, and
+a smoke stage. It declares `requires.capabilities: [usdview]`; packages retain
+the plugin-bundle lifecycle and provenance while advertising
+`component.kind: host-addon`. Projects may place an ABI-matched native Python
+extension below the generated `python/<module>/` package without hiding the
+host integration inside a schema kind.
 
 ## Copied CMake helper
 

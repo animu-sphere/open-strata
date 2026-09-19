@@ -128,6 +128,9 @@ pub struct Session<'a> {
 /// place of the file-format discovery/read levels; both share the upper
 /// (format-agnostic) golden and usdview levels.
 pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnostic> {
+    if bundle.manifest.kind() == PluginKind::UsdviewPlugin {
+        return run_usdview_plugin_levels(bundle, session, up_to);
+    }
     if bundle.manifest.kind() == PluginKind::UsdSchema {
         return run_schema_levels(bundle, session, up_to);
     }
@@ -169,6 +172,104 @@ pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnost
         diags.push(level6_usdview(bundle, session, None));
     }
     diags
+}
+
+/// A usdview add-on has no file-format/read/round-trip claim. L2 proves that
+/// the Python plugin registers and imports; L6 proves the real host can open a
+/// stage with the add-on activated.
+fn run_usdview_plugin_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    if up_to >= 2 {
+        diags.push(level2_usdview_plugin_registration(bundle, session));
+    }
+    if up_to >= 6 {
+        diags.push(level6_usdview(bundle, session, None));
+    }
+    diags
+}
+
+fn level2_usdview_plugin_registration(bundle: &Bundle, session: &Session) -> Diagnostic {
+    const ID: &str = "host.usdview.plugin_load";
+    let Some(python) = &session.python else {
+        return Diagnostic::skip(ID, 2, "no Python interpreter on the session PATH");
+    };
+    let Ok(source) = std::fs::read_to_string(bundle.plug_info().as_std_path()) else {
+        return Diagnostic::fail(ID, 2, "cannot read usdview plugInfo.json", vec![]);
+    };
+    let Ok(json) = crate::plug_info::parse_plug_info(&source) else {
+        return Diagnostic::fail(ID, 2, "usdview plugInfo.json is invalid", vec![]);
+    };
+    let registration = json
+        .get("Plugins")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|plugin| plugin.get("Type").and_then(serde_json::Value::as_str) == Some("python"))
+        .find_map(|plugin| {
+            let name = plugin.get("Name")?.as_str()?;
+            let types = plugin.get("Info")?.get("Types")?.as_object()?;
+            types.iter().find_map(|(type_name, details)| {
+                details
+                    .get("bases")?
+                    .as_array()?
+                    .iter()
+                    .any(|base| base.as_str() == Some("pxr.Usdviewq.plugin.PluginContainer"))
+                    .then(|| {
+                        type_name.rsplit_once('.').map(|(module, _)| {
+                            (name.to_string(), module.to_string(), type_name.to_string())
+                        })
+                    })
+                    .flatten()
+            })
+        });
+    let Some((name, module, type_name)) = registration else {
+        return Diagnostic::fail(
+            ID,
+            2,
+            "no usdview Python PluginContainer registration",
+            vec![],
+        );
+    };
+    if name != module || !crate::model::is_python_module_name(&type_name) {
+        return Diagnostic::fail(
+            ID,
+            2,
+            format!("usdview plugin registration '{type_name}' has an unsafe or mismatched Name '{name}'"),
+            vec!["set plugInfo.json Name to its safe Python module name".into()],
+        );
+    }
+    let root = serde_json::to_string(bundle.plug_info_root().as_str()).unwrap_or_default();
+    let name_literal = serde_json::to_string(&name).unwrap_or_default();
+    let module_literal = serde_json::to_string(&module).unwrap_or_default();
+    let class_literal = serde_json::to_string(
+        type_name
+            .rsplit_once('.')
+            .map(|(_, class)| class)
+            .unwrap_or_default(),
+    )
+    .unwrap_or_default();
+    let script = format!(
+        "import importlib,sys\nfrom pxr import Plug\nfrom pxr.Usdviewq.plugin import PluginContainer\nr=Plug.Registry()\nr.RegisterPlugins({root})\nm=importlib.import_module({module_literal})\nc=getattr(m,{class_literal},None)\nsys.exit(0 if r.GetPluginWithName({name_literal}) and isinstance(c,type) and issubclass(c,PluginContainer) else 7)"
+    );
+    let out = session
+        .probe
+        .run(python, &["-c", &with_dll_preamble(&script)]);
+    if out.unspawned() {
+        return Diagnostic::fail(ID, 2, format!("could not run Python ({python})"), vec![]);
+    }
+    if out.ok() {
+        Diagnostic::pass(ID, 2, format!("loaded usdview add-on '{name}' ({module})"))
+    } else {
+        Diagnostic::fail(
+            ID,
+            2,
+            format!(
+                "usdview add-on '{name}' failed to load: {}",
+                tail(&out.stderr)
+            ),
+            vec!["check the packaged Python ABI, PYTHONPATH, and native extension closure".into()],
+        )
+    }
 }
 
 fn run_asset_resolver_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnostic> {
@@ -1495,6 +1596,42 @@ tests: { smoke: ["tests/fixtures/basic.usda"] }
         (dir, bundle)
     }
 
+    fn usdview_bundle(module: &str) -> (tempdir_like::Dir, Bundle) {
+        let dir = tempdir_like::Dir::new("levels-usdview");
+        std::fs::create_dir_all(dir.path.join("plugin").as_std_path()).unwrap();
+        std::fs::write(
+            dir.path.join("plugin/plugInfo.json").as_std_path(),
+            format!(
+                r#"{{
+  "Plugins": [{{
+    "Type": "python",
+    "Name": "stageRunner",
+    "Info": {{"Types": {{
+      "{module}.StageRunnerPluginContainer": {{
+        "bases": ["pxr.Usdviewq.plugin.PluginContainer"]
+      }}
+    }}}}
+  }}]
+}}"#
+            ),
+        )
+        .unwrap();
+        let manifest = PluginManifest::parse(
+            r#"
+plugin: { name: stageRunner, version: 0.1.0, kind: usdview-plugin }
+runtime: { openusd: ">=25.05,<27.0" }
+requires: { capabilities: [usdview] }
+usd: { plug_info: plugin/plugInfo.json }
+"#,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            root: dir.path.clone(),
+            manifest,
+        };
+        (dir, bundle)
+    }
+
     fn resolver_bundle_with_fixture() -> (tempdir_like::Dir, Bundle) {
         let dir = tempdir_like::Dir::new("levels-resolver");
         std::fs::create_dir_all(dir.path.join("tests/fixtures").as_std_path()).unwrap();
@@ -1902,6 +2039,47 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         assert_eq!(by_id("plugin.discovery"), Status::Pass);
         assert_eq!(by_id("usdcat.read"), Status::Pass);
         assert_eq!(by_id("python.stage_open"), Status::Pass);
+    }
+
+    #[test]
+    fn usdview_addon_level_two_imports_its_registered_module() {
+        let (_dir, bundle) = usdview_bundle("stageRunner");
+        let probe = FakeProbe::new().on("python", Some(0), "", "");
+        let session = Session {
+            probe: &probe,
+            usdcat: None,
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+
+        let diagnostics = run_levels(&bundle, &session, 2);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].id, "host.usdview.plugin_load");
+        assert_eq!(diagnostics[0].status, Status::Pass);
+        let calls = probe.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].contains("importlib.import_module(\"stageRunner\")"));
+        assert!(calls[0].contains("GetPluginWithName(\"stageRunner\")"));
+        assert!(calls[0].contains("issubclass(c,PluginContainer)"));
+    }
+
+    #[test]
+    fn usdview_addon_level_two_rejects_a_module_path() {
+        let (_dir, bundle) = usdview_bundle("../outside");
+        let probe = FakeProbe::new();
+        let session = Session {
+            probe: &probe,
+            usdcat: None,
+            python: Some("python".into()),
+            usdview: None,
+            has_display: false,
+        };
+
+        let diagnostic = &run_levels(&bundle, &session, 2)[0];
+        assert_eq!(diagnostic.status, Status::Fail);
+        assert!(diagnostic.observed.contains("unsafe or mismatched Name"));
+        assert!(probe.calls.borrow().is_empty());
     }
 
     #[test]

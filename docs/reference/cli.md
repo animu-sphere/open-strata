@@ -967,7 +967,7 @@ Scaffold a new plugin bundle from a template
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `<KIND>` | yes | Plugin kind: usd-fileformat \| usd-asset-resolver \| usd-package-resolver \| usd-exec \| usd-schema |
+| `<KIND>` | yes | Plugin kind: usd-fileformat \| usd-asset-resolver \| usd-package-resolver \| usd-exec \| usd-schema \| usdview-plugin |
 | `<NAME>` | yes | Plugin name (becomes the bundle directory), e.g. `toy` |
 
 **Options:**

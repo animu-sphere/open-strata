@@ -433,6 +433,9 @@ the diagnostic report.
 ost plugin new usd-fileformat toy --extension toy
 ost plugin new usd-fileformat toy --extension toy --dir ./plugins/toy
 
+# scaffold a usdview Python PluginContainer (packages as component kind host-addon)
+ost plugin new usdview-plugin stage-runner --dir ./plugins/stage-runner
+
 # scaffold OpenExec computations against an independently versioned schema contract
 ost plugin new usd-exec pose-eval \
   --schema-bundle rig-schema --schema-type RigContractAPI
@@ -463,9 +466,9 @@ ost plugin run toy --target cy2026 --profile usd -- usdcat tests/fixtures/basic.
 ost plugin run toy --with ./plugins/other --target cy2026 --profile usd -- usdcat tests/fixtures/basic.toy
 
 # Level 6: open a fixture in usdview, or verify it launches (needs usdview + display)
-ost plugin view      toy tests/fixtures/basic.toy --target cy2026 --profile usd
-ost plugin test-view toy tests/fixtures/basic.toy --target cy2026 --profile usd
-ost plugin test toy --up-to 6 --target cy2026 --profile usd   # full pyramid incl. L6
+ost plugin view      toy tests/fixtures/basic.toy --target cy2026 --profile lookdev
+ost plugin test-view toy tests/fixtures/basic.toy --target cy2026 --profile lookdev
+ost plugin test toy --up-to 6 --target cy2026 --profile lookdev # full pyramid incl. L6
 
 # co-locate a USD schema in the existing bundle: scaffolds schema/schema.usda
 # and wires the manifest (provides: usd-schema:ToyAPI + schema.source); the next

@@ -21,7 +21,7 @@ Runtime = platform + OpenUSD + components + environment + compatibility evidence
 
 Every distributable input to that composition should be an OST artifact. The
 initial component kinds are OpenUSD runtimes, plugin bundles and products,
-ordinary libraries, tools, renderers, and data-only runtime layers. Each keeps
+ordinary libraries, tools, renderers, host add-ons, and data-only runtime layers. Each keeps
 its own identity, dependency metadata, provenance, attribution, and validation
 evidence; composition does not flatten those facts into an opaque archive.
 

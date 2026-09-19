@@ -70,6 +70,8 @@ pub struct RuntimeRef {
 pub enum ComponentKind {
     Plugin,
     Renderer,
+    #[serde(rename = "host-addon")]
+    HostAddon,
 }
 
 impl ComponentKind {
@@ -77,6 +79,7 @@ impl ComponentKind {
         match self {
             ComponentKind::Plugin => "plugin",
             ComponentKind::Renderer => "renderer",
+            ComponentKind::HostAddon => "host-addon",
         }
     }
 }
@@ -538,6 +541,13 @@ fn validate_component_kind(component: &ComponentRef, record: &ArtifactRecord) ->
             record.kind,
             ArtifactKind::Plugin | ArtifactKind::Product | ArtifactKind::Package
         ),
+        ComponentKind::HostAddon => {
+            record.kind == ArtifactKind::Plugin
+                && record
+                    .component
+                    .as_ref()
+                    .is_some_and(|contract| contract.kind == ost_artifact::ComponentKind::HostAddon)
+        }
     };
     if !accepted {
         return Err(Error::coded(
@@ -776,6 +786,75 @@ args = ["avatar.vrm"]
         assert_eq!(parsed.formation.name, "vrm-merlin");
         assert_eq!(parsed.components[0].kind, ComponentKind::Plugin);
         assert!(parsed.digest().unwrap().starts_with("sha256:"));
+    }
+
+    #[test]
+    fn parses_a_first_class_host_addon_component() {
+        let source = manifest().replace("kind = \"plugin\"", "kind = \"host-addon\"");
+        let parsed = FormationManifest::parse(&source).unwrap();
+        assert_eq!(parsed.components[0].kind, ComponentKind::HostAddon);
+        assert_eq!(parsed.components[0].kind.as_str(), "host-addon");
+    }
+
+    #[test]
+    fn host_addon_requires_a_matching_plugin_component_contract() {
+        let source = manifest().replace("kind = \"plugin\"", "kind = \"host-addon\"");
+        let parsed = FormationManifest::parse(&source).unwrap();
+        let declared = &parsed.components[0];
+        let mut record: ArtifactRecord = serde_json::from_value(serde_json::json!({
+            "schema": 1,
+            "kind": "plugin",
+            "name": "stageRunner",
+            "version": "0.1.0",
+            "target": "windows-x86_64-msvc143-py313",
+            "digest": format!("sha256:{}", "b2".repeat(32)),
+            "archive": "stageRunner.tar.zst",
+            "archive_size": 1,
+            "total_size": 1,
+            "file_count": 1,
+            "created_unix": 1,
+            "source": "published",
+            "validation": "passed",
+            "component": {
+                "schema": "openstrata.component/v1alpha1",
+                "id": "stageRunner",
+                "kind": "host-addon",
+                "version": "0.1.0"
+            }
+        }))
+        .unwrap();
+        assert!(validate_component_kind(declared, &record).is_ok());
+
+        record.component.as_mut().unwrap().kind = ost_artifact::ComponentKind::Plugin;
+        assert_eq!(
+            validate_component_kind(declared, &record)
+                .unwrap_err()
+                .code(),
+            "FORMATION_ARTIFACT_KIND_MISMATCH"
+        );
+        record.component = None;
+        assert_eq!(
+            validate_component_kind(declared, &record)
+                .unwrap_err()
+                .code(),
+            "FORMATION_ARTIFACT_KIND_MISMATCH"
+        );
+        record.kind = ArtifactKind::Product;
+        record.component = Some(
+            serde_json::from_value(serde_json::json!({
+                "schema": "openstrata.component/v1alpha1",
+                "id": "stageRunner",
+                "kind": "host-addon",
+                "version": "0.1.0"
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            validate_component_kind(declared, &record)
+                .unwrap_err()
+                .code(),
+            "FORMATION_ARTIFACT_KIND_MISMATCH"
+        );
     }
 
     #[test]

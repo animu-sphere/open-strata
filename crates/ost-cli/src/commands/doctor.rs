@@ -599,6 +599,7 @@ mod tests {
         assert!(wants_openusd(&[], &["hydra-preview".to_string()]));
         // The predicate is shared with `uv`, which must not answer differently.
         assert!(crate::commands::needs_openusd("hydra-preview"));
+        assert!(crate::commands::needs_openusd("usdview"));
         assert!(!crate::commands::needs_openusd("qt-ui"));
     }
 

@@ -4323,7 +4323,7 @@ fn referenced_excluded_dirs(files: &[Utf8PathBuf], excluded: &[String]) -> Vec<(
 fn build_dep_requirements(capabilities: &[String]) -> Vec<(&'static str, &'static str)> {
     let has = |c: &str| capabilities.iter().any(|x| x == c);
     let wants_usd = capabilities.iter().any(|c| c.starts_with("usd-"));
-    let wants_view = has("hydra-preview");
+    let wants_view = has("hydra-preview") || has("usdview");
     let wants_qt = has("qt-ui") || wants_view;
 
     let mut needed: Vec<(&str, &str)> = Vec::new();
@@ -6737,6 +6737,13 @@ except Exception:
                 ("PySide6", "PySide6"),
                 ("OpenGL", "PyOpenGL")
             ]
+        );
+
+        // A purpose-built host profile can request usdview without naming the
+        // broader Hydra preview capability and still receives both UI deps.
+        assert_eq!(
+            build_dep_requirements(&["usdview".into()]),
+            vec![("PySide6", "PySide6"), ("OpenGL", "PyOpenGL")]
         );
     }
 

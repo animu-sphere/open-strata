@@ -89,6 +89,43 @@ bundles is not an error when at least one declared library or tool member was
 loaded. JSON keeps the historical bundle `total` and additionally reports
 `member_total`, `bundles`, `libraries`, and `tools`.
 
+## usdview host add-ons
+
+A usdview extension is a first-class plugin-lifecycle member rather than a
+codeless schema workaround:
+
+```yaml
+manifest:
+  schema: openstrata.plugin/v1alpha1
+plugin:
+  name: stageRunner
+  version: 0.1.0
+  kind: usdview-plugin
+runtime:
+  openusd: ">=25.05,<27.0"
+requires:
+  capabilities: [usdview]
+provides: [usdview-plugin:stageRunner]
+usd:
+  plug_info: plugin/plugInfo.json
+```
+
+`ost plugin new usdview-plugin stage-runner` generates the Python registration,
+payload and smoke fixture. Level 0 checks that `plugInfo.json` registers a safe
+dotted Python type derived from `pxr.Usdviewq.plugin.PluginContainer`; Level 2
+registers and imports that module in the selected runtime; Level 6 launches
+usdview. Packaging records the component as `host-addon`, retains Python/C++
+ABI and managed-output provenance, and emits ordinary plugin activation paths.
+The `plugInfo.json` `Name` must match the Python module name (for example,
+`stageRunner` for a bundle named `stage-runner`), as required by the
+[OpenUSD usdview plugin tutorial](https://openusd.org/dev/tut_usdview_plugin.html).
+
+Runtime selection considers the complete composed bundle closure. A target-only
+`plugin view`/`test-view` therefore selects the narrowest profile promising
+`usdview` (the built-in `lookdev` profile); an explicit incompatible profile
+fails with `PROFILE_CAPABILITY_UNSATISFIED` instead of producing a late missing
+host error.
+
 ## Versioned manifest extension
 
 Legacy manifests without composition fields remain valid. A manifest that

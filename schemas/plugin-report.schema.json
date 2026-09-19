@@ -17,7 +17,8 @@
         "usd-asset-resolver",
         "usd-package-resolver",
         "usd-exec",
-        "usd-schema"
+        "usd-schema",
+        "usdview-plugin"
       ]
     },
     "license": {

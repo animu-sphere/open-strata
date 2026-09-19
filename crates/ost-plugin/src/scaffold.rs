@@ -6,7 +6,7 @@
 //! substituted per invocation. The catalog currently ships
 //! `usd-fileformat-cpp`, `usd-schema-codeless`, `usd-schema-cpp`, and the
 //! experimental `usd-asset-resolver-cpp`, `usd-package-resolver-cpp`, and
-//! `usd-exec-cpp` skeletons.
+//! `usd-exec-cpp` and `usdview-plugin-python` skeletons.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -387,6 +387,42 @@ const USD_EXEC_CPP: &[TemplateFile] = &[
 
 const USD_EXEC_CPP_DESCRIPTOR: &str = include_str!("../../../templates/usd-exec-cpp/template.yaml");
 
+/// A truthful usdview host add-on: Python registration and payload, optionally
+/// extended by a project with a native Python module.
+const USDVIEW_PLUGIN_PYTHON: &[TemplateFile] = &[
+    tf(
+        "openstrata.plugin.yaml",
+        include_str!("../../../templates/usdview-plugin-python/openstrata.plugin.yaml"),
+    ),
+    tf(
+        "CMakeLists.txt",
+        include_str!("../../../templates/usdview-plugin-python/CMakeLists.txt"),
+    ),
+    tf(
+        "README.md",
+        include_str!("../../../templates/usdview-plugin-python/README.md"),
+    ),
+    tf(
+        ".gitignore",
+        include_str!("../../../templates/_shared/.gitignore"),
+    ),
+    tf(
+        "plugin/plugInfo.json",
+        include_str!("../../../templates/usdview-plugin-python/plugin/plugInfo.json"),
+    ),
+    tf(
+        "python/{{identCamel}}/__init__.py",
+        include_str!("../../../templates/usdview-plugin-python/python/{{identCamel}}/__init__.py"),
+    ),
+    tf(
+        "tests/fixtures/basic.usda",
+        include_str!("../../../templates/usdview-plugin-python/tests/fixtures/basic.usda"),
+    ),
+];
+
+const USDVIEW_PLUGIN_PYTHON_DESCRIPTOR: &str =
+    include_str!("../../../templates/usdview-plugin-python/template.yaml");
+
 const fn tf(path: &'static str, contents: &'static str) -> TemplateFile {
     TemplateFile { path, contents }
 }
@@ -616,6 +652,10 @@ pub fn scaffold_with_template_inputs(
             descriptor: USD_EXEC_CPP_DESCRIPTOR,
             files: USD_EXEC_CPP,
         },
+        (PluginKind::UsdviewPlugin, "usdview-plugin-python") => EmbeddedTemplate {
+            descriptor: USDVIEW_PLUGIN_PYTHON_DESCRIPTOR,
+            files: USDVIEW_PLUGIN_PYTHON,
+        },
         _ => {
             return Err(Error::Operation(format!(
             "template '{requested}' is not available for plugin kind '{}' (expected one of: {})",
@@ -679,6 +719,12 @@ pub fn scaffold_with_template_inputs(
             ))
         }
         (PluginKind::UsdSchema, None, None, None) => (
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
+        (PluginKind::UsdviewPlugin, None, None, None) => (
             String::new(),
             String::new(),
             String::new(),
@@ -792,6 +838,7 @@ pub const fn default_template_id(kind: PluginKind) -> &'static str {
         PluginKind::UsdAssetResolver => "usd-asset-resolver-cpp",
         PluginKind::UsdPackageResolver => "usd-package-resolver-cpp",
         PluginKind::UsdExec => "usd-exec-cpp",
+        PluginKind::UsdviewPlugin => "usdview-plugin-python",
     }
 }
 
@@ -803,6 +850,7 @@ pub const fn template_ids(kind: PluginKind) -> &'static [&'static str] {
         PluginKind::UsdAssetResolver => &["usd-asset-resolver-cpp"],
         PluginKind::UsdPackageResolver => &["usd-package-resolver-cpp"],
         PluginKind::UsdExec => &["usd-exec-cpp"],
+        PluginKind::UsdviewPlugin => &["usdview-plugin-python"],
     }
 }
 
@@ -1168,6 +1216,7 @@ mod tests {
             ("usd-asset-resolver-cpp", USD_ASSET_RESOLVER_CPP, true),
             ("usd-package-resolver-cpp", USD_PACKAGE_RESOLVER_CPP, true),
             ("usd-exec-cpp", USD_EXEC_CPP, true),
+            ("usdview-plugin-python", USDVIEW_PLUGIN_PYTHON, false),
         ] {
             let actual_ignore = files
                 .iter()
@@ -1214,6 +1263,27 @@ mod tests {
         assert!(validate_name("9bad").is_err());
         assert!(validate_name("has space").is_err());
         assert!(validate_name("ok-name_2").is_ok());
+    }
+
+    #[test]
+    fn scaffolds_a_usdview_host_addon() {
+        let dir = unique_tmp("scaffold-usdview-plugin");
+        let files = scaffold(PluginKind::UsdviewPlugin, "stage-runner", None, None, &dir)
+            .expect("usdview add-on scaffold");
+        assert!(files
+            .iter()
+            .any(|path| path == Utf8Path::new("python/stageRunner/__init__.py")));
+        let bundle = crate::Bundle::load(&dir).expect("scaffold is a valid bundle");
+        assert!(bundle.manifest.is_usdview_plugin());
+        assert_eq!(
+            bundle.manifest.requires.capabilities,
+            vec!["usdview".to_string()]
+        );
+        assert_eq!(
+            default_template_id(PluginKind::UsdviewPlugin),
+            "usdview-plugin-python"
+        );
+        std::fs::remove_dir_all(dir.as_std_path()).ok();
     }
 
     #[test]

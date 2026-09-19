@@ -1,0 +1,16 @@
+{
+  "Plugins": [
+    {
+      "Type": "python",
+      "Name": "{{identCamel}}",
+      "Info": {
+        "Types": {
+          "{{identCamel}}.{{Name}}PluginContainer": {
+            "bases": ["pxr.Usdviewq.plugin.PluginContainer"],
+            "displayName": "{{Name}}"
+          }
+        }
+      }
+    }
+  ]
+}

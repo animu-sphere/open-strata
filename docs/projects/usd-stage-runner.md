@@ -38,8 +38,8 @@ file-format-only plugin tree:
 - both project-wide and descriptor-scoped build/test lifecycles.
 
 This makes it a useful consumer for the boundaries between libraries, plugins,
-tools and host-specific deployment, including shapes OpenStrata does not yet
-model directly.
+tools and host-specific deployment. The v0.23.0 development line now models
+its usdview adapter directly as a `usdview-plugin` / `host-addon`.
 
 ## Workspace architecture
 
@@ -110,14 +110,16 @@ The downstream report series records three OpenStrata integration boundaries:
 3. `ost plugin view --with` could not truthfully represent the usdview Python
    `PluginContainer` as one of the existing OpenUSD bundle kinds.
 
-For the third case, the repository stages the host add-on into
+For the third case, the repository currently stages the host add-on into
 `runnerSchema`'s conventional `python/` root through the `plugin-view` intent.
 The root test suite, schema packaging and package-origin Level 0–5 verification
 passed with that workaround. A full Level 6 interactive launch remained a SKIP
 because the selected runtime did not contain usdview; the report asks for a
 first-class host-add-on component shape and capability-aware view selection.
-That work, the shared runtime-Python relocation issue and the first-stall
-snapshot are scheduled in the
+OpenStrata's v0.23.0 development line now supplies that shape, leaving the
+downstream repository to migrate from the workaround. The shared
+runtime-Python relocation issue and first-stall snapshot shipped earlier; the
+status is recorded in the
 [downstream report intake](../roadmap/downstream-report-intake.md).
 
 ## Current boundaries
@@ -130,8 +132,9 @@ snapshot are scheduled in the
 - Current authored physics supports box colliders and constrained transform
   shapes; exact behavior and restrictions are maintained downstream.
 - OpenExec, behavior and vehicle targets are not implemented.
-- The usdview add-on is currently delivered inside the schema bundle because
-  OpenStrata has no independent host-add-on member kind.
+- The downstream usdview add-on is still delivered inside the schema bundle;
+  it can migrate to the v0.23.0 `usdview-plugin` source kind and `host-addon`
+  packaged component contract.
 
 ## Related documentation
 

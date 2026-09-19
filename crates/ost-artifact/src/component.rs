@@ -22,6 +22,8 @@ pub enum ComponentKind {
     Tool,
     Renderer,
     Data,
+    #[serde(rename = "host-addon")]
+    HostAddon,
 }
 
 impl ComponentKind {
@@ -33,6 +35,7 @@ impl ComponentKind {
             Self::Tool => "tool",
             Self::Renderer => "renderer",
             Self::Data => "data",
+            Self::HostAddon => "host-addon",
         }
     }
 }
@@ -328,5 +331,18 @@ mod tests {
         contract.validate().unwrap();
         contract.install[0].destination = "./".into();
         assert!(contract.validate().is_err());
+    }
+
+    #[test]
+    fn host_addon_kind_has_a_portable_hyphenated_identity() {
+        assert_eq!(ComponentKind::HostAddon.as_str(), "host-addon");
+        assert_eq!(
+            serde_json::to_string(&ComponentKind::HostAddon).unwrap(),
+            "\"host-addon\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ComponentKind>("\"host-addon\"").unwrap(),
+            ComponentKind::HostAddon
+        );
     }
 }

@@ -1,0 +1,20 @@
+# OpenStrata usdview host add-on manifest.
+manifest:
+  schema: openstrata.plugin/v1alpha1
+plugin:
+  name: {{name}}
+  version: 0.1.0
+  kind: usdview-plugin
+license: Apache-2.0
+runtime:
+  openusd: ">=25.05,<27.0"
+requires:
+  # Makes runtime/profile selection explicit: OpenUSD Python alone is not a
+  # promise that the usdview host, Qt, and its plugin API are present.
+  capabilities: [usdview]
+provides:
+  - usdview-plugin:{{name}}
+usd:
+  plug_info: plugin/plugInfo.json
+tests:
+  smoke: [tests/fixtures/basic.usda]

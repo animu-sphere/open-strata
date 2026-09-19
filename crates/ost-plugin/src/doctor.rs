@@ -238,7 +238,12 @@ pub fn diagnose(bundle: &Bundle, ctx: &RuntimeContext, up_to_level: u8) -> Docto
         // Mirror the ids `run_levels` would emit so doctor's SKIP placeholders and
         // an executed `ost plugin test` agree per kind. A schema bundle has no
         // file extension to discover or read, so it gets the schema contract ids.
-        if bundle.manifest.kind() == crate::model::PluginKind::UsdSchema {
+        if bundle.manifest.kind() == crate::model::PluginKind::UsdviewPlugin {
+            diags.push(Diagnostic::skip("host.usdview.plugin_load", 2, reason));
+            if up_to_level >= 6 {
+                diags.push(Diagnostic::skip("usdview.launch", 6, reason));
+            }
+        } else if bundle.manifest.kind() == crate::model::PluginKind::UsdSchema {
             diags.push(Diagnostic::skip("schema.registration", 2, reason));
             diags.push(Diagnostic::skip("schema.apply_roundtrip", 4, reason));
             diags.push(Diagnostic::skip("golden.roundtrip", 5, reason));
@@ -300,7 +305,9 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
                     // `Types` and ships no shared library, so the library-path
                     // checks would hard-fail a perfectly valid bundle. Validate
                     // the `Types` block instead.
-                    if m.is_codeless_schema() {
+                    if m.is_usdview_plugin() {
+                        diags.push(check_usdview_plugin_registration(bundle, &json));
+                    } else if m.is_codeless_schema() {
                         diags.push(check_plug_info_schema_types(&json));
                     } else {
                         diags.push(check_plug_info_library_paths(bundle, &json, target_os));
@@ -324,7 +331,13 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
 
     // plugin.shared_library — a built artifact in lib/. A codeless schema ships
     // no library at all, so this check does not apply to it.
-    if m.is_codeless_schema() {
+    if m.is_usdview_plugin() {
+        diags.push(Diagnostic::skip(
+            "plugin.shared_library",
+            0,
+            "usdview host add-on: Python payload may be pure Python or carry a native extension below python/",
+        ));
+    } else if m.is_codeless_schema() {
         diags.push(Diagnostic::skip(
             "plugin.shared_library",
             0,
@@ -400,6 +413,118 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
     ));
 
     diags
+}
+
+/// Validate the usdview-specific Python plugin shape without importing it.
+/// Import and host launch are execution evidence (L2/L6); L0 proves only that
+/// the registration is truthful and its Python module is packaged in-bundle.
+fn check_usdview_plugin_registration(bundle: &Bundle, json: &serde_json::Value) -> Diagnostic {
+    const ID: &str = "host.usdview.registration";
+    let Some(plugins) = json.get("Plugins").and_then(serde_json::Value::as_array) else {
+        return Diagnostic::fail(
+            ID,
+            0,
+            "plugInfo.json has no `Plugins` array",
+            vec!["register a Type=python usdview PluginContainer".into()],
+        );
+    };
+
+    for plugin in plugins {
+        if plugin.get("Type").and_then(serde_json::Value::as_str) != Some("python") {
+            continue;
+        }
+        let Some(name) = plugin.get("Name").and_then(serde_json::Value::as_str) else {
+            return Diagnostic::fail(
+                ID,
+                0,
+                "usdview Python plugin has no Name",
+                vec!["set plugInfo.json Name to the Python module name".into()],
+            );
+        };
+        if plugin.get("LibraryPath").is_some() {
+            return Diagnostic::fail(
+                ID,
+                0,
+                "usdview Python plugin declares LibraryPath",
+                vec![
+                    "put native Python extensions below python/<module> and remove LibraryPath"
+                        .into(),
+                ],
+            );
+        }
+        let Some(types) = plugin
+            .get("Info")
+            .and_then(|info| info.get("Types"))
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        for (type_name, details) in types {
+            let is_container = details
+                .get("bases")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|bases| {
+                    bases
+                        .iter()
+                        .any(|base| base.as_str() == Some("pxr.Usdviewq.plugin.PluginContainer"))
+                });
+            if !is_container {
+                continue;
+            }
+            if !crate::model::is_python_module_name(type_name) {
+                return Diagnostic::fail(
+                    ID,
+                    0,
+                    format!("usdview PluginContainer type '{type_name}' is not a safe dotted Python name"),
+                    vec!["use Python identifiers separated by dots (for example stageRunner.StageRunnerPluginContainer)".into()],
+                );
+            }
+            let Some((module, _)) = type_name.rsplit_once('.') else {
+                return Diagnostic::fail(
+                    ID,
+                    0,
+                    format!("usdview PluginContainer type '{type_name}' has no Python module"),
+                    vec!["name the type as <python.module>.<PluginContainerClass>".into()],
+                );
+            };
+            if name != module {
+                return Diagnostic::fail(
+                    ID,
+                    0,
+                    format!("usdview plugInfo.json Name '{name}' does not match Python module '{module}'"),
+                    vec!["set Name to the module before the PluginContainer class name".into()],
+                );
+            }
+            let module_path = module.replace('.', "/");
+            let package = bundle.python_dir().join(&module_path).join("__init__.py");
+            let module_file = bundle.python_dir().join(format!("{module_path}.py"));
+            if !package.as_std_path().is_file() && !module_file.as_std_path().is_file() {
+                return Diagnostic::fail(
+                    ID,
+                    0,
+                    format!("registered usdview module '{module}' is absent below python/"),
+                    vec![format!(
+                        "add python/{module_path}/__init__.py or python/{module_path}.py"
+                    )],
+                );
+            }
+            return Diagnostic::pass(
+                ID,
+                0,
+                format!("registers usdview PluginContainer '{type_name}' from python/"),
+            );
+        }
+    }
+
+    Diagnostic::fail(
+        ID,
+        0,
+        "no Python type derives from pxr.Usdviewq.plugin.PluginContainer",
+        vec![
+            "add a Type=python entry whose Info.Types base is pxr.Usdviewq.plugin.PluginContainer"
+                .into(),
+        ],
+    )
 }
 
 fn level1(bundle: &Bundle, ctx: &RuntimeContext) -> Vec<Diagnostic> {
@@ -1441,6 +1566,73 @@ usd: { plug_info: plugin/resources/vrm/plugInfo.json }
         let types = diag(&report, "bundle.plug_info.schema_types");
         assert_eq!(types.status, Status::Fail);
         assert!(types.observed.contains("LibraryPath"));
+    }
+
+    #[test]
+    fn usdview_host_addon_validates_python_registration_without_a_fake_library() {
+        let dir = TempDir::new("doctor-usdview-addon");
+        std::fs::create_dir_all(dir.path.join("plugin").as_std_path()).unwrap();
+        std::fs::create_dir_all(dir.path.join("python/stageRunner").as_std_path()).unwrap();
+        std::fs::write(
+            dir.path
+                .join("python/stageRunner/__init__.py")
+                .as_std_path(),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path.join("plugin/plugInfo.json").as_std_path(),
+            r#"{
+              "Plugins": [{
+                "Type": "python",
+                "Name": "stageRunner",
+                "Info": {"Types": {
+                  "stageRunner.StageRunnerPluginContainer": {
+                    "bases": ["pxr.Usdviewq.plugin.PluginContainer"]
+                  }
+                }}
+              }]
+            }"#,
+        )
+        .unwrap();
+        let manifest = PluginManifest::parse(
+            r#"
+plugin: { name: stageRunner, version: 0.1.0, kind: usdview-plugin }
+runtime: { openusd: ">=25.05,<27.0" }
+requires: { capabilities: [usdview] }
+usd: { plug_info: plugin/plugInfo.json }
+"#,
+        )
+        .unwrap();
+        let bundle = Bundle {
+            root: dir.path.clone(),
+            manifest,
+        };
+
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+        assert_eq!(
+            diag(&report, "host.usdview.registration").status,
+            Status::Pass
+        );
+        assert_eq!(diag(&report, "plugin.shared_library").status, Status::Skip);
+        assert!(report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.id != "bundle.plug_info.library_path"));
+
+        let plug_info = dir.path.join("plugin/plugInfo.json");
+        let source = std::fs::read_to_string(plug_info.as_std_path()).unwrap();
+        std::fs::write(
+            plug_info.as_std_path(),
+            source.replace("\"Name\": \"stageRunner\"", "\"Name\": \"otherModule\""),
+        )
+        .unwrap();
+        let report = diagnose(&bundle, &RuntimeContext::default(), 0);
+        let registration = diag(&report, "host.usdview.registration");
+        assert_eq!(registration.status, Status::Fail);
+        assert!(registration
+            .observed
+            .contains("does not match Python module"));
     }
 
     #[test]
