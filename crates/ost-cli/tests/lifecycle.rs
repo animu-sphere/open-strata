@@ -4481,20 +4481,44 @@ fn plain_library_dependencies_validate_inspect_and_render_build_order() {
         "consumer"
     );
 
-    // Model the install result of the dry-run plan and prove packaging carries
-    // the declared runtime closure instead of relying on a mutable sibling.
+    // Model the per-library install snapshot and leave a different file in the
+    // mutable workspace prefix. Packaging must use only the library's own bytes.
     let consumer_target = single_target_dir(&sb.work_file("consumer"));
     let target_id = consumer_target.file_name().unwrap();
-    let installed_bin = sb
-        .work_file(".strata/targets")
+    let installed_bin = library_root
+        .join(".strata/targets")
         .join(target_id)
-        .join("workspace-prefix/bin");
+        .join("workspace-library-prefix/bin");
     std::fs::create_dir_all(&installed_bin).unwrap();
     std::fs::write(
         installed_bin.join(format!("container{}", std::env::consts::DLL_SUFFIX)),
         b"plain library runtime marker",
     )
     .unwrap();
+    let installed_config = installed_bin
+        .parent()
+        .unwrap()
+        .join("lib/cmake/container/containerConfig.cmake");
+    std::fs::create_dir_all(installed_config.parent().unwrap()).unwrap();
+    std::fs::write(&installed_config, b"# installed CMake package").unwrap();
+    std::fs::write(
+        installed_bin
+            .parent()
+            .unwrap()
+            .join(".openstrata-installed-files"),
+        format!(
+            "bin/container{}\nlib/cmake/container/containerConfig.cmake\n",
+            std::env::consts::DLL_SUFFIX
+        ),
+    )
+    .unwrap();
+    std::fs::write(installed_bin.join("unrecorded-marker"), b"unrecorded").unwrap();
+    let shared_bin = sb
+        .work_file(".strata/targets")
+        .join(target_id)
+        .join("workspace-prefix/bin");
+    std::fs::create_dir_all(&shared_bin).unwrap();
+    std::fs::write(shared_bin.join("unrelated-library-marker"), b"unrelated").unwrap();
     let package = sb.ost(&["plugin", "package", "consumer"]);
     assert!(package.status.success(), "{}", out_text(&package));
     let package_manifest = find_first(&sb.work_file("consumer/dist"), "manifest.json").unwrap();
@@ -4504,8 +4528,25 @@ fn plain_library_dependencies_validate_inspect_and_render_build_order() {
     assert!(value["files"].as_array().unwrap().iter().any(|file| {
         file["path"]
             .as_str()
-            .is_some_and(|path| path.contains("runtime/libraries/bin/container"))
+            .is_some_and(|path| path.contains("runtime/libraries/container/bin/container"))
     }));
+    assert!(value["files"].as_array().unwrap().iter().any(|file| {
+        file["path"] == "runtime/libraries/container/lib/cmake/container/containerConfig.cmake"
+    }));
+    assert!(!value["files"].as_array().unwrap().iter().any(|file| {
+        file["path"].as_str().is_some_and(|path| {
+            path.contains("unrelated-library-marker") || path.contains("unrecorded-marker")
+        })
+    }));
+    std::fs::remove_file(installed_bin.join(format!("container{}", std::env::consts::DLL_SUFFIX)))
+        .unwrap();
+    let missing = sb.ost(&["plugin", "package", "consumer"]);
+    assert!(!missing.status.success(), "{}", out_text(&missing));
+    assert!(
+        out_text(&missing).contains("WORKSPACE_LIBRARY_RUNTIME_MISSING"),
+        "{}",
+        out_text(&missing)
+    );
     let packaged_test = sb.ost(&[
         "--json",
         "plugin",
