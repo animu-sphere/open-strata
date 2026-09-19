@@ -1,0 +1,36 @@
+name: Bug report
+description: Tell us what went wrong so we can investigate.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Short reports are welcome;
+        add only the detail you have.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Share commands, a small example, or the steps you took.
+      placeholder: |
+        1. Run ...
+        2. Observe ...
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, OpenStrata version or commit, and relevant tool versions if known.
+  - type: checkboxes
+    id: conduct
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I agree to follow this project's Code of Conduct.
+          required: true
