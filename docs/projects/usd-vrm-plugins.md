@@ -115,6 +115,12 @@ generate` emitted an evidence gate no existing artifact could satisfy while
 `ArtifactStore::import` silently dropped the evidence that would satisfy it — the
 core of the [v0.18.0 evidence-integrity release](../releases/v0.18.0.md).
 
+The [v0.22.10 packaged-product report](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/40-2026-09-13-v0.22.10-one-workspace-prefix-for-every-bundle.md)
+found that workspace packaging can record a shared library absent from the
+bundle's package after a later bundle build replaces the shared prefix. The
+[motionCore migration report](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md)
+found that `requires.libraries` cannot name a library artifact from another
+repository. Both feed the [v0.23.0 intake](../roadmap/downstream-report-intake.md).
 These reports are linked as evidence, not copied. The downstream passes that
 drove v0.18.0 are indexed in the [delivery reports](../reports/README.md).
 

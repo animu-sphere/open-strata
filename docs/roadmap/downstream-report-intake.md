@@ -4,15 +4,19 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-09-12
-updated: 2026-09-15
+updated: 2026-09-19
 applies_to: v0.23.0
 ---
 
 # Downstream OST report intake
 
-This plan records the reusable OpenStrata work that remains after auditing every
-OST report in the reference repositories. The 2026-09-12 audit covered 71
-reports, excluding each repository's report index. A request was treated as
+This plan records the reusable OpenStrata work that remains after auditing the
+OST reports in the reference repositories. The 2026-09-12 baseline covered 71
+reports. The 2026-09-19 refresh covers 75 reports in nine repositories,
+excluding each repository's report index; the four additions exercise
+v0.22.10. The three new motion/MMD repositories have no OST report series yet.
+MMD's dated model and motion reports test its own format behavior and are not
+counted as OST reports. A request was treated as
 closed only when the current source, tests or a release record supplied the
 contract; repeated observations were merged into one item. Repository-only
 fixes, observations that explicitly requested no OpenStrata change, and
@@ -22,16 +26,71 @@ superseded failures are not carried forward.
 
 | Repository | Reports | Result |
 | --- | ---: | --- |
-| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 43 | Runtime-export correctness shipped in v0.22.10; CI/release and test-attribution work remains below. |
+| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 45 | New reports 40–41 expose per-bundle packaging from a shared prefix and missing cross-repository library dependencies; details below. |
 | [hdMerlin](https://github.com/animu-sphere/hydra-merlin/tree/main/docs/reports/ost) | 12 | No open carryover: managed renderer diagnostics and resilient OCI transfer shipped in v0.22.0, with idle-timeout semantics hardened again in v0.22.9. |
 | [USD Point Cloud Plugins](https://github.com/animu-sphere/usd-pointcloud-plugins/tree/main/docs/reports/ost) | 4 | No open carryover: structured file-format arguments and managed-output provenance are implemented; the preimplementation report requested no change. |
-| [USD 3DGS Plugins](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost) | 3 | No open carryover: package provenance and capability-based profile selection are implemented; the golden-output report requested no roadmap item. |
+| [USD 3DGS Plugins](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost) | 4 | New report 04 finds a generated Bash empty-array failure on macOS when optional OpenUSD selectors are absent. |
 | [USD HTTP Resolver](https://github.com/animu-sphere/usd-http-resolver/tree/main/docs/reports/ost) | 3 | Offline resolver probing and shared external inputs shipped in v0.22.10; runtime-free CI and externally managed lane alignment are complete during v0.23.0 development. |
 | [USD Stage Runner](https://github.com/animu-sphere/usd-stage-runner/tree/main/docs/reports/ost) | 3 | Stall diagnostics and relocatable Python metadata shipped in v0.22.10; the first-class usdview host add-on is complete during v0.23.0 development. |
 | [USD Vector Plugins](https://github.com/animu-sphere/usd-vector-plugins/tree/main/docs/reports/ost) | 2 | Package/runtime provenance and semantic lock/lifecycle correctness shipped in v0.22.10. |
 | [USD Raster Plugins](https://github.com/animu-sphere/usd-raster-plugins/tree/main/docs/reports/ost) | 1 | Bundle-free workspace graph validation shipped in v0.22.10. |
+| [USD Geospatial Runtime](https://github.com/animu-sphere/usd-geospatial-runtime/tree/main/docs/reports/ost) | 1 | Its first hosted SDK lane cannot consume the existing pinned OpenUSD runtime's producer-local Python paths. |
+| [USD Motion Plugins](https://github.com/animu-sphere/usd-motion-plugins) | 0 | No OST report series; VRM report 41 covers its installed-consumer result and dependency need. |
+| [USD MMD Plugins](https://github.com/animu-sphere/usd-mmd-plugins) | 0 | Local PMX/VMD reports are domain evidence; cross-repository motion dependency awaits a dedicated OST pass. |
+| [Motion Connectors](https://github.com/animu-sphere/motion-connectors) | 0 | Empty scaffold; VRM report 41 records the generated-CI blockage. |
 
 ## v0.23.0 - CI, release and host integration
+
+### New v0.22.10 dogfooding acceptance
+
+- **P1 — compose and verify each bundle's own library closure.** Workspace
+  package and test must not read a shared prefix left by the last individual
+  bundle build. Package only the selected library's installed files, verify
+  each recorded runtime file exists before writing `dependencies.json`, and
+  make package and product verification fail when a declared shared library is
+  absent. The same workspace must produce identical valid packages regardless
+  of bundle build order; run the packaged consumer and a negative missing-file
+  case. [VRM report 40](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/40-2026-09-13-v0.22.10-one-workspace-prefix-for-every-bundle.md)
+  measured a product with no `vrmContainer` binary even though packaging
+  exited successfully. Its release lane has an ordering workaround and a
+  three-OS installed-product check, which do not close the OST defect.
+- **P1 — declare external library artifacts in the workspace graph.** Extend
+  `requires.libraries` with a versioned, digest-pinned provider from another
+  repository. Materialize its declared closure for builds and installed
+  consumers; validate version and runtime identity; record its digest in
+  dependency/product provenance; and render the pull in CI. A missing or wrong
+  artifact must fail the graph or materialization, without relying on ambient
+  `CMAKE_PREFIX_PATH`. Prove the `usd-motion-plugins` `motionCore` →
+  `usd-vrm-plugins` migration and one independent consumer.
+  [VRM report 41](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md)
+  records nine blocked VRM members; MMD and connectors have the same future
+  boundary.
+- **P1 — prove relocatable OpenUSD CMake consumption for the actual pinned
+  artifact.** v0.22.10 added relocation to newly exported SDK artifacts; it
+  cannot rewrite already published, digest-pinned runtime bytes. A hosted
+  external consumer must configure, link and test against a republished
+  artifact with both `pxrConfig.cmake` and `pxrTargets.cmake` free of
+  producer-local Python paths. Runtime validation must distinguish a
+  configure-only check from this linkable consumer claim. The geospatial
+  `sdk-usd` lane remains disabled until that artifact or a fully validated
+  materialized-prefix repair passes.
+  [Geospatial report 01](https://github.com/animu-sphere/usd-geospatial-runtime/blob/main/docs/reports/ost/01-2026-09-18-v0.22.10-openusd-runtime-python-paths.md),
+  [VRM report 37](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/37-2026-08-30-v0.22.6-runtime-python-paths-from-the-producer.md),
+  and [VRM report 41](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md)
+  establish the two exported-CMake layers and the new consumer failures.
+- **P2 — render optional OpenUSD flags portably.** An omitted
+  `require_openusd`/`require_openusd_version` must produce a valid generated
+  workflow under the default Bash on hosted macOS, including cache-verify and
+  remote-pull paths. Exercise both empty and populated selectors; explicit
+  selectors in the 3DGS matrix are a repository workaround.
+  [3DGS report 04](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/04-2026-09-15-v0.22.10-macos-empty-openusd-args.md).
+- **P3 — handle empty scaffold CI and product path identity.** Let a declared
+  workspace with zero members render a meaningful graph/CI step, without
+  claiming build or test coverage. In a product activation, emit each bundle
+  identity once after checking identity/version/contract agreement; a package
+  must not gain another bundle's runtime files through a shared directory.
+  Sources: [VRM report 41](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md)
+  and [report 40](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/40-2026-09-13-v0.22.10-one-workspace-prefix-for-every-bundle.md).
 
 ### Completed during v0.23.0 development
 
@@ -73,8 +132,10 @@ superseded failures are not carried forward.
 
 ## Closed through v0.22.10
 
-v0.22.10 closed relocatable exported OpenUSD CMake metadata; package/runtime
-lock enforcement; semantic lock checking; mixed root/scoped provenance;
+v0.22.10 closed relocatable OpenUSD CMake metadata for newly exported SDK
+artifacts; previously published pinned artifacts still require separate
+consumer evidence as above. The release also closed package/runtime lock
+enforcement; semantic lock checking; mixed root/scoped provenance;
 bundle-free graphs; offline bounded resolver evidence; shared declarative CMake
 inputs; first-stall snapshots; and the documented nullable product field. These
 are release facts in [v0.22.10](../releases/v0.22.10.md).
