@@ -18,9 +18,9 @@ host-owned APIs.
   lanes against the same pins and support declaration.
 - **Attributable evidence:** report workspace test results per discovered member
   and warn when a testable member contributes no tests.
-- **Host add-ons:** model `usdview` and later DCC bindings as first-class
-  components that participate in build, package, product composition and
-  capability-aware selection.
+- **Host add-ons:** the first `usdview-plugin` / `host-addon` vertical slice is
+  implemented during v0.23.0 development; extend the same component contract
+  to later DCC bindings without inventing host-specific stores.
 - **Host matrix:** generate and exercise headless adapter cells with pinned
   host, OS, OpenUSD, Python, runtime/plugin digest, validation-tier and execution
   evidence across supported platforms.

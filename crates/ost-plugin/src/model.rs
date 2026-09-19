@@ -17,6 +17,22 @@ pub const PLUGIN_MANIFEST: &str = "openstrata.plugin.yaml";
 /// Schema identifier required by manifests that opt into bundle composition.
 pub const PLUGIN_SCHEMA: &str = "openstrata.plugin/v1alpha1";
 
+/// Whether a dotted name is safe to resolve below a bundle's `python/` root.
+///
+/// Besides matching Python's ordinary identifier shape, this prevents a
+/// registration such as `../outside.Plugin` from becoming a filesystem
+/// traversal during static validation.
+pub(crate) fn is_python_module_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|segment| {
+            let mut chars = segment.chars();
+            chars
+                .next()
+                .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+                && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+        })
+}
+
 /// Version header for additive plugin-manifest extensions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +49,12 @@ pub enum PluginKind {
     UsdPackageResolver,
     UsdExec,
     UsdSchema,
+    /// A Python (optionally native-backed) extension loaded by usdview.
+    ///
+    /// This is a host add-on, not an Sdf/Tf plugin implementation. It retains
+    /// the plugin-bundle lifecycle because usdview discovers it through
+    /// `plugInfo.json`, while its packaged component identity is `host-addon`.
+    UsdviewPlugin,
 }
 
 impl PluginKind {
@@ -43,6 +65,7 @@ impl PluginKind {
             PluginKind::UsdPackageResolver => "usd-package-resolver",
             PluginKind::UsdExec => "usd-exec",
             PluginKind::UsdSchema => "usd-schema",
+            PluginKind::UsdviewPlugin => "usdview-plugin",
         }
     }
 
@@ -53,17 +76,19 @@ impl PluginKind {
             "usd-package-resolver" => Some(PluginKind::UsdPackageResolver),
             "usd-exec" => Some(PluginKind::UsdExec),
             "usd-schema" => Some(PluginKind::UsdSchema),
+            "usdview-plugin" => Some(PluginKind::UsdviewPlugin),
             _ => None,
         }
     }
 
     /// Every kind, for help text and validation messages.
-    pub const ALL: [PluginKind; 5] = [
+    pub const ALL: [PluginKind; 6] = [
         PluginKind::UsdFileformat,
         PluginKind::UsdAssetResolver,
         PluginKind::UsdPackageResolver,
         PluginKind::UsdExec,
         PluginKind::UsdSchema,
+        PluginKind::UsdviewPlugin,
     ];
 }
 
@@ -362,6 +387,12 @@ impl PluginManifest {
             && self.schema.as_ref().map(|s| s.codeless).unwrap_or(false)
     }
 
+    /// Whether this bundle extends the usdview host rather than implementing
+    /// an OpenUSD file format, resolver, schema, or computation plugin.
+    pub fn is_usdview_plugin(&self) -> bool {
+        self.kind() == PluginKind::UsdviewPlugin
+    }
+
     /// All fixtures referenced across every test level, deduplicated in order.
     pub fn all_fixtures(&self) -> Vec<&str> {
         let mut seen = Vec::new();
@@ -544,6 +575,16 @@ tests:
             assert_eq!(PluginKind::from_tag(k.as_str()), Some(k));
         }
         assert_eq!(PluginKind::from_tag("bogus"), None);
+    }
+
+    #[test]
+    fn python_module_names_are_identifiers_not_paths() {
+        assert!(is_python_module_name("stageRunner.native_bridge"));
+        assert!(is_python_module_name("_private"));
+        assert!(!is_python_module_name("../outside"));
+        assert!(!is_python_module_name("stage-runner"));
+        assert!(!is_python_module_name("stageRunner..bridge"));
+        assert!(!is_python_module_name("9runner"));
     }
 
     #[test]

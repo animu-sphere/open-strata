@@ -65,8 +65,8 @@ package surface of each component inside that runtime or product.
 The following terms have separate meanings:
 
 - **component kind** describes build and packaging semantics, such as ordinary
-  library, USD schema bundle, USD file-format bundle, OpenExec plugin, tool, or
-  aggregate product;
+  library, USD schema bundle, USD file-format bundle, OpenExec plugin, host
+  add-on, tool, or aggregate product;
 - **role** describes an architecture position, such as adapter, shared leaf,
   motion core, or computation layer;
 - **package contract** describes the installed surface promised to an external

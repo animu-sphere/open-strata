@@ -321,6 +321,7 @@ requires:
     - usd-materialx
     - ocio-display
     - hydra-preview
+    - usdview
 ```
 
 ## 4.4 Extension
@@ -371,6 +372,7 @@ usd-stage-write
 usd-shading
 usd-materialx
 hydra-preview
+usdview
 usd-fileformat:<extension>
 usd-schema:<schema>
 usd-asset-resolver
@@ -553,6 +555,7 @@ requires:
     - usd-materialx
     - ocio-display
     - hydra-preview
+    - usdview
 ```
 
 ---
@@ -580,6 +583,7 @@ usd.hydra.delegate
 usd.shader.discovery
 usd.validation
 usd.python
+usdview-plugin
 ```
 
 最初の優先順位:

@@ -10,7 +10,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use ost_core::{Error, Result};
 
-use crate::model::{PluginManifest, SmokeFixture, PLUGIN_MANIFEST, PLUGIN_SCHEMA};
+use crate::model::{PluginKind, PluginManifest, SmokeFixture, PLUGIN_MANIFEST, PLUGIN_SCHEMA};
 
 /// A loaded plugin bundle: its manifest plus the root it was loaded from.
 #[derive(Debug, Clone)]
@@ -79,6 +79,17 @@ impl Bundle {
                 );
                 return Err(Error::config(message));
             }
+        }
+        if manifest.kind() == PluginKind::UsdviewPlugin
+            && !manifest
+                .requires
+                .capabilities
+                .iter()
+                .any(|capability| capability == "usdview")
+        {
+            return Err(Error::config(
+                "usdview-plugin bundles must declare `requires.capabilities: [usdview]`",
+            ));
         }
 
         // Every filesystem path a manifest can name must stay inside the bundle.
@@ -579,6 +590,31 @@ mod tests {
         .unwrap();
         let err = Bundle::load(&root).expect_err("versioned unknown keys must fail closed");
         assert!(err.to_string().contains("requires.typo"), "{err}");
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn usdview_plugin_requires_an_explicit_host_capability() {
+        let root = write_bundle("resources/plugInfo.json");
+        std::fs::create_dir_all(root.join("resources").as_std_path()).unwrap();
+        std::fs::write(root.join("resources/plugInfo.json").as_std_path(), "{}").unwrap();
+        let path = root.join(PLUGIN_MANIFEST);
+        let manifest = std::fs::read_to_string(path.as_std_path())
+            .unwrap()
+            .replace("kind: usd-fileformat", "kind: usdview-plugin");
+        std::fs::write(path.as_std_path(), &manifest).unwrap();
+        let error = Bundle::load(&root).expect_err("capability omission must fail closed");
+        assert!(
+            error.to_string().contains("requires.capabilities"),
+            "{error}"
+        );
+
+        std::fs::write(
+            path.as_std_path(),
+            format!("{manifest}requires:\n  capabilities: [usdview]\n"),
+        )
+        .unwrap();
+        assert!(Bundle::load(&root).is_ok());
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

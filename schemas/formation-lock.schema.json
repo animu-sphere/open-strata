@@ -35,7 +35,7 @@
             "required": ["id", "declared_kind", "kind", "name", "version", "digest", "target", "bundles"],
             "properties": {
               "id": { "$ref": "#/$defs/id" },
-              "declared_kind": { "enum": ["plugin", "renderer"] },
+              "declared_kind": { "enum": ["plugin", "renderer", "host-addon"] },
               "kind": { "enum": ["plugin", "product", "package"] },
               "name": { "type": "string", "minLength": 1 },
               "version": { "type": "string", "minLength": 1 },

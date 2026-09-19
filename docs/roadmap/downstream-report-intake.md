@@ -4,7 +4,7 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-09-12
-updated: 2026-09-14
+updated: 2026-09-15
 applies_to: v0.23.0
 ---
 
@@ -27,18 +27,23 @@ superseded failures are not carried forward.
 | [USD Point Cloud Plugins](https://github.com/animu-sphere/usd-pointcloud-plugins/tree/main/docs/reports/ost) | 4 | No open carryover: structured file-format arguments and managed-output provenance are implemented; the preimplementation report requested no change. |
 | [USD 3DGS Plugins](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost) | 3 | No open carryover: package provenance and capability-based profile selection are implemented; the golden-output report requested no roadmap item. |
 | [USD HTTP Resolver](https://github.com/animu-sphere/usd-http-resolver/tree/main/docs/reports/ost) | 3 | Offline resolver probing and shared external inputs shipped in v0.22.10; runtime-free CI and externally managed lane alignment are complete during v0.23.0 development. |
-| [USD Stage Runner](https://github.com/animu-sphere/usd-stage-runner/tree/main/docs/reports/ost) | 3 | Stall diagnostics and relocatable Python metadata shipped in v0.22.10; a first-class host add-on remains. |
+| [USD Stage Runner](https://github.com/animu-sphere/usd-stage-runner/tree/main/docs/reports/ost) | 3 | Stall diagnostics and relocatable Python metadata shipped in v0.22.10; the first-class usdview host add-on is complete during v0.23.0 development. |
 | [USD Vector Plugins](https://github.com/animu-sphere/usd-vector-plugins/tree/main/docs/reports/ost) | 2 | Package/runtime provenance and semantic lock/lifecycle correctness shipped in v0.22.10. |
 | [USD Raster Plugins](https://github.com/animu-sphere/usd-raster-plugins/tree/main/docs/reports/ost) | 1 | Bundle-free workspace graph validation shipped in v0.22.10. |
 
 ## v0.23.0 - CI, release and host integration
 
-- Model a truthful first-class `usdview` host add-on component that participates
-  in workspace build, package, product composition and capability-aware
-  `plugin view` selection. Do not disguise Python/native host integration as a
-  codeless schema bundle. Source: [Stage Runner report 03](https://github.com/animu-sphere/usd-stage-runner/blob/main/docs/reports/ost/03-2026-09-02-v0.22.8-usdview-host-plugin-composition.md).
-
 ### Completed during v0.23.0 development
+
+- `usdview-plugin` is a truthful source bundle kind and packages as the
+  first-class `host-addon` component kind. It participates in workspace build,
+  package/product composition, activation, managed-output provenance and
+  Formation resolution. The `usdview` capability drives `lookdev` selection;
+  `plugin view`, `test-view`, and Level 6 include the full composed bundle
+  closure. Static validation checks the Python `PluginContainer` registration,
+  L2 imports it through the real OpenUSD registry, and L6 launches the host.
+  The embedded `usdview-plugin-python` scaffold replaces the codeless-schema
+  workaround. Source: [Stage Runner report 03](https://github.com/animu-sphere/usd-stage-runner/blob/main/docs/reports/ost/03-2026-09-02-v0.22.8-usdview-host-plugin-composition.md).
 
 - `ost test --json` attributes selected CTest case counts to each discovered,
   testable workspace member by project-relative root. Unfiltered runs emit

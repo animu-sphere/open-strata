@@ -32,7 +32,7 @@
         "required": ["id", "kind", "artifact"],
         "properties": {
           "id": { "$ref": "#/$defs/id" },
-          "kind": { "enum": ["plugin", "renderer"] },
+          "kind": { "enum": ["plugin", "renderer", "host-addon"] },
           "artifact": { "$ref": "#/$defs/digest" }
         }
       }

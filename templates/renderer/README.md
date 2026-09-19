@@ -89,7 +89,7 @@ the renderer display name and discovery directory from the installed
 `plugInfo.json`, composes the selected real OpenUSD runtime environment, and
 launches that runtime's usdview. The renderer project itself can keep the
 host-neutral `core` profile; the command auto-selects a unique pulled real
-runtime that provides usdview. Pass `--profile lookdev` or `--profile usd` when
+runtime that provides usdview. Pass `--profile lookdev` when
 more than one eligible runtime is installed.
 
 Open another scene, configuration, generator, or camera explicitly when needed:

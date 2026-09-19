@@ -35,7 +35,7 @@ Pull the runtime profile the renderer needs (its host-neutral core may need only
 
 ```sh
 ost runtime pull cy2026 --profile core     # host-neutral core build
-ost runtime pull cy2026 --profile usd      # Hydra / usdview paths
+ost runtime pull cy2026 --profile lookdev  # Hydra / usdview paths
 ```
 
 In CI, adopt the runtime by digest so every cell is reproducible.
@@ -72,7 +72,7 @@ Open a scene in the matching `usdview` session with your Hydra renderer selected
 or launch the standalone native viewport:
 
 ```sh
-ost renderer view scene.usda --profile usd     # managed usdview session
+ost renderer view scene.usda --profile lookdev # managed usdview session
 ost renderer viewport -- --frames 8 --hidden   # standalone native viewport
 ```
 

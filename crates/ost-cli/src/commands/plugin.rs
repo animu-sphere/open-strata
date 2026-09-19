@@ -56,7 +56,7 @@ pub enum PluginCmd {
     /// Scaffold a new plugin bundle from a template.
     New {
         /// Plugin kind: usd-fileformat | usd-asset-resolver |
-        /// usd-package-resolver | usd-exec | usd-schema.
+        /// usd-package-resolver | usd-exec | usd-schema | usdview-plugin.
         kind: String,
         /// Plugin name (becomes the bundle directory), e.g. `toy`.
         name: String,
@@ -644,7 +644,8 @@ fn doctor(
 
     // Resolve the runtime if we can (enclosing project or explicit flags). When
     // we can't, Level 1 honestly SKIPs rather than guessing.
-    let resolved = resolve_runtime(target, profile)?;
+    let required = session_capabilities(&bundle, &with_bundles, false);
+    let resolved = resolve_runtime_for_capabilities(target, profile, &required)?;
     let ctx = resolved.as_ref().map(runtime_context).unwrap_or_default();
 
     // Compose the session env we *would* set (runtime env + bundle roots).
@@ -727,12 +728,9 @@ fn build(
         );
     }
 
+    let required = session_capabilities(&primary, &dependencies, false);
     let (platform, selected_profile) =
-        selection(target.clone(), profile.clone()).ok_or_else(|| {
-            Error::usage(
-                "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
-            )
-        })?;
+        selection_for_capabilities(target.clone(), profile.clone(), &required)?;
     let (tgt, _) = build_target(&platform, &selected_profile)?;
     let prefix = workspace
         .root
@@ -959,11 +957,8 @@ fn build_one(
     let bundle = load_bundle(bundle_path)?;
 
     // A build needs a concrete runtime to compile against.
-    let (platform, profile) = selection(target, profile).ok_or_else(|| {
-        Error::usage(
-            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
-        )
-    })?;
+    let (platform, profile) =
+        selection_for_capabilities(target, profile, &bundle.manifest.requires.capabilities)?;
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
 
@@ -2182,6 +2177,14 @@ fn component_requirements(manifest: &ost_plugin::PluginManifest) -> Vec<serde_js
     requirements
 }
 
+fn packaged_component_kind(manifest: &ost_plugin::PluginManifest) -> ost_artifact::ComponentKind {
+    if manifest.is_usdview_plugin() {
+        ost_artifact::ComponentKind::HostAddon
+    } else {
+        ost_artifact::ComponentKind::Plugin
+    }
+}
+
 fn package_bundle(
     bundle: &Bundle,
     target: Option<String>,
@@ -2193,11 +2196,10 @@ fn package_bundle(
     let bundle = bundle.clone();
     let host = Host::detect();
 
-    let (platform, profile) = selection(target, profile).ok_or_else(|| {
-        Error::usage(
-            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
-        )
-    })?;
+    let bundle_dependencies = selected_workspace_dependencies(&bundle)?;
+    let required = session_capabilities(&bundle, &bundle_dependencies, false);
+
+    let (platform, profile) = selection_for_capabilities(target, profile, &required)?;
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
     if !r.pulled {
@@ -2276,7 +2278,6 @@ fn package_bundle(
     // The bundle half of the closure travels with the artifact too. Without it a
     // consumer installing this package alone has no way to know a provider is
     // missing until USD fails to apply a schema it cannot find.
-    let bundle_dependencies = selected_workspace_dependencies(&bundle)?;
     let packaged_bundle_evidence = bundle_dependencies
         .iter()
         .map(|dependency| {
@@ -2554,7 +2555,7 @@ fn package_bundle(
         "component": {
             "schema": ost_artifact::COMPONENT_SCHEMA,
             "id": name,
-            "kind": "plugin",
+            "kind": packaged_component_kind(&packaged_manifest),
             "version": version,
             "provides": component_provides,
             "requires": component_requires,
@@ -5166,11 +5167,8 @@ fn publish(
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
-    let (platform, profile) = selection(target, profile).ok_or_else(|| {
-        Error::usage(
-            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
-        )
-    })?;
+    let (platform, profile) =
+        selection_for_capabilities(target, profile, &bundle.manifest.requires.capabilities)?;
     let (tgt, _r) = build_target(&platform, &profile)?;
     let id = tgt.id();
 
@@ -5384,8 +5382,10 @@ fn run_session(
         );
     }
     let host = Host::detect();
-    let (platform, profile) =
-        selection_for_capabilities(target, profile, &bundle.manifest.requires.capabilities)?;
+    let mut capability_bundles = with_bundles.clone();
+    capability_bundles.extend(plugin_path_bundles.iter().cloned());
+    let required = session_capabilities(&bundle, &capability_bundles, false);
+    let (platform, profile) = selection_for_capabilities(target, profile, &required)?;
     let r = require_real_runtime(Some(platform.clone()), Some(profile.clone()))?;
     let library_dirs = if no_inject {
         Vec::new()
@@ -5602,7 +5602,8 @@ fn test(
     let explicit = load_with_bundles(with_paths)?;
     let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     let host = Host::detect();
-    let resolved = resolve_runtime(target, profile)?;
+    let required = session_capabilities(&bundle, &with_bundles, up_to >= 6);
+    let resolved = resolve_runtime_for_capabilities(target, profile, &required)?;
     let library_dirs = match resolved.as_ref() {
         Some(resolved) => selected_workspace_library_runtime_dirs(&bundle, resolved, up_to >= 2)?,
         None => Vec::new(),
@@ -5735,15 +5736,19 @@ fn test_workspace_from_package(
     }
     require_workspace_bundles(&bundles)?;
 
-    let (platform, profile) = selection(target, profile).ok_or_else(|| {
-        Error::usage(
-            "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
-        )
-    })?;
+    let explicit_bundles = load_with_bundles(with_paths)?;
+    let mut required_capabilities = BTreeSet::new();
+    if up_to >= 6 {
+        required_capabilities.insert("usdview".to_string());
+    }
+    for bundle in bundles.iter().chain(explicit_bundles.iter()) {
+        required_capabilities.extend(bundle.manifest.requires.capabilities.iter().cloned());
+    }
+    let required_capabilities = required_capabilities.into_iter().collect::<Vec<_>>();
+    let (platform, profile) = selection_for_capabilities(target, profile, &required_capabilities)?;
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
     let host = Host::detect();
-    let explicit_bundles = load_with_bundles(with_paths)?;
 
     let source_by_id: BTreeMap<String, Bundle> = bundles
         .iter()
@@ -5859,8 +5864,8 @@ fn test_from_package(
     let with_bundles = load_with_bundles(with_paths)?;
     let host = Host::detect();
 
-    let (platform, profile) =
-        selection_for_capabilities(target, profile, &source.manifest.requires.capabilities)?;
+    let required = session_capabilities(&source, &with_bundles, up_to >= 6);
+    let (platform, profile) = selection_for_capabilities(target, profile, &required)?;
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
 
@@ -6129,7 +6134,15 @@ fn test_workspace(
     let host = Host::detect();
     // One resolution for the whole workspace: every bundle tests against the
     // same runtime session base.
-    let resolved = resolve_runtime(target, profile)?;
+    let mut required = BTreeSet::new();
+    if up_to >= 6 {
+        required.insert("usdview".to_string());
+    }
+    for bundle in bundles.iter().chain(explicit_bundles.iter()) {
+        required.extend(bundle.manifest.requires.capabilities.iter().cloned());
+    }
+    let required = required.into_iter().collect::<Vec<_>>();
+    let resolved = resolve_runtime_for_capabilities(target, profile, &required)?;
 
     let by_id: BTreeMap<String, Bundle> = bundles
         .iter()
@@ -7817,9 +7830,13 @@ fn view(
     profile: Option<String>,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
-    let with_bundles = load_with_bundles(with_paths)?;
+    let dependencies = selected_workspace_dependencies(&bundle)?;
+    let explicit = load_with_bundles(with_paths)?;
+    let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     let host = Host::detect();
-    let r = require_real_runtime(target, profile)?;
+    let capabilities = session_capabilities(&bundle, &with_bundles, true);
+    let (platform, profile) = selection_for_capabilities(target, profile, &capabilities)?;
+    let r = require_real_runtime(Some(platform), Some(profile))?;
     let library_dirs = selected_workspace_library_runtime_dirs(&bundle, &r, true)?;
 
     let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"])
@@ -7867,9 +7884,13 @@ fn test_view(
     fmt: Format,
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
-    let with_bundles = load_with_bundles(with_paths)?;
+    let dependencies = selected_workspace_dependencies(&bundle)?;
+    let explicit = load_with_bundles(with_paths)?;
+    let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     let host = Host::detect();
-    let r = require_real_runtime(target, profile)?;
+    let capabilities = session_capabilities(&bundle, &with_bundles, true);
+    let (platform, profile) = selection_for_capabilities(target, profile, &capabilities)?;
+    let r = require_real_runtime(Some(platform), Some(profile))?;
     let library_dirs = selected_workspace_library_runtime_dirs(&bundle, &r, true)?;
 
     let mut contributing = Vec::with_capacity(with_bundles.len() + 1);
@@ -8015,6 +8036,19 @@ fn load_bundle(path: &str) -> Result<Bundle> {
 
 fn load_with_bundles(paths: &[String]) -> Result<Vec<Bundle>> {
     paths.iter().map(|path| load_bundle(path)).collect()
+}
+
+/// Capabilities required by every component entering one host session. usdview
+/// itself is an execution capability, separate from OpenUSD Python/stage APIs.
+fn session_capabilities(primary: &Bundle, with: &[Bundle], needs_usdview: bool) -> Vec<String> {
+    let mut required = BTreeSet::new();
+    if needs_usdview {
+        required.insert("usdview".to_string());
+    }
+    for bundle in std::iter::once(primary).chain(with.iter()) {
+        required.extend(bundle.manifest.requires.capabilities.iter().cloned());
+    }
+    required.into_iter().collect()
 }
 
 fn standalone_session_env(bundle: &Bundle, with: &[Bundle], os: Os) -> EnvSet {
@@ -9186,11 +9220,31 @@ fn selection_for_capabilities(
     required: &[String],
 ) -> Result<(String, String)> {
     if profile.is_some() || target.is_none() {
-        return selection(target, profile).ok_or_else(|| {
+        let selected = selection(target, profile).ok_or_else(|| {
             Error::usage(
                 "no platform/profile: run inside an OpenStrata project or pass --target/--profile",
             )
-        });
+        })?;
+        let catalog = ProfileCatalog::load()?;
+        let selected_profile = catalog.get(&selected.1)?;
+        let missing = required
+            .iter()
+            .filter(|capability| !selected_profile.capabilities().contains(capability))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(Error::coded(
+                "PROFILE_CAPABILITY_UNSATISFIED",
+                Category::Precondition,
+                format!(
+                    "profile '{}' does not promise required capabilities [{}]",
+                    selected.1,
+                    missing.join(", ")
+                ),
+            )
+            .with_hint("select a profile that declares every required capability (usdview host add-ons normally use `--profile lookdev`)"));
+        }
+        return Ok(selected);
     }
 
     let platform = target.expect("checked above");
@@ -9234,14 +9288,19 @@ fn selection_for_capabilities(
 }
 
 /// Resolve the runtime for L1/session preview, if a selection is available.
-fn resolve_runtime(
+fn resolve_runtime_for_capabilities(
     target: Option<String>,
     profile: Option<String>,
+    required: &[String],
 ) -> Result<Option<crate::commands::Resolved>> {
-    match selection(target, profile) {
-        Some((platform, profile)) => Ok(Some(resolve(&platform, &profile)?)),
-        None => Ok(None),
+    // Static inspection outside a project deliberately works without a
+    // runtime. Once any project or CLI selection exists, however, validate it
+    // against the complete session instead of silently accepting `core`.
+    if target.is_none() && profile.is_none() && selection(None, None).is_none() {
+        return Ok(None);
     }
+    let (platform, profile) = selection_for_capabilities(target, profile, required)?;
+    Ok(Some(resolve(&platform, &profile)?))
 }
 
 /// Resolve a runtime that must be pulled and carry real OpenUSD artifacts.
@@ -11011,6 +11070,43 @@ usd: { plug_info: plugin/resources/demo/plugInfo.json }
             requirement["capability"] == "component:materialx"
                 && requirement["version"] == ">=1.39,<1.40"
         }));
+    }
+
+    #[test]
+    fn usdview_bundles_package_as_host_addon_components() {
+        let manifest = ost_plugin::PluginManifest::parse(
+            r#"plugin: { name: stageRunner, version: 1.0.0, kind: usdview-plugin }
+runtime: { openusd: '>=26.05,<27.0' }
+requires: { capabilities: [usdview] }
+usd: { plug_info: plugin/plugInfo.json }
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            packaged_component_kind(&manifest),
+            ost_artifact::ComponentKind::HostAddon
+        );
+    }
+
+    #[test]
+    fn capability_selection_chooses_lookdev_for_usdview() {
+        let selected = selection_for_capabilities(Some("cy2026".into()), None, &["usdview".into()])
+            .expect("lookdev is the unique narrowest usdview profile");
+        assert_eq!(selected, ("cy2026".into(), "lookdev".into()));
+    }
+
+    #[test]
+    fn explicit_profile_must_promise_the_component_capabilities() {
+        let error = selection_for_capabilities(
+            Some("cy2026".into()),
+            Some("usd".into()),
+            &["usdview".into()],
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "PROFILE_CAPABILITY_UNSATISFIED");
+        let message = error.to_string();
+        assert!(message.contains("profile 'usd'"), "{message}");
+        assert!(message.contains("usdview"), "{message}");
     }
 
     /// A compiler upgraded in place leaves every per-member build tree naming a

@@ -252,10 +252,15 @@ mod tests {
     #[test]
     fn lookdev_pulls_materialx_via_openusd_feature() {
         let catalog = load_all().expect("built-in extensions load");
-        let caps: Vec<String> = ["usd-stage-read", "usd-materialx", "hydra-preview"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let caps: Vec<String> = [
+            "usd-stage-read",
+            "usd-materialx",
+            "hydra-preview",
+            "usdview",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let res = resolve(&catalog, &caps);
 
         let openusd = res
@@ -263,7 +268,7 @@ mod tests {
             .iter()
             .find(|e| e.id == "openusd")
             .expect("openusd resolved");
-        // usd-materialx enables the materialx feature, hydra-preview enables imaging.
+        // usd-materialx enables materialx; hydra-preview and usdview share imaging.
         assert!(openusd.features.contains("materialx"));
         assert!(openusd.features.contains("imaging"));
         // imaging pulls in its packages.
