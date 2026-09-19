@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/animu-sphere/open-strata/security/advisories/new
+    about: Please report security vulnerabilities privately.
+  - name: Community conduct report
+    url: mailto:piggypenguin583@gmail.com
+    about: Report Code of Conduct concerns privately to repository administrators.
