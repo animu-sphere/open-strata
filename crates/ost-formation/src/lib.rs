@@ -542,7 +542,7 @@ fn validate_component_kind(component: &ComponentRef, record: &ArtifactRecord) ->
             ArtifactKind::Plugin | ArtifactKind::Product | ArtifactKind::Package
         ),
         ComponentKind::HostAddon => {
-            matches!(record.kind, ArtifactKind::Plugin | ArtifactKind::Product)
+            record.kind == ArtifactKind::Plugin
                 && record
                     .component
                     .as_ref()
@@ -833,6 +833,22 @@ args = ["avatar.vrm"]
             "FORMATION_ARTIFACT_KIND_MISMATCH"
         );
         record.component = None;
+        assert_eq!(
+            validate_component_kind(declared, &record)
+                .unwrap_err()
+                .code(),
+            "FORMATION_ARTIFACT_KIND_MISMATCH"
+        );
+        record.kind = ArtifactKind::Product;
+        record.component = Some(
+            serde_json::from_value(serde_json::json!({
+                "schema": "openstrata.component/v1alpha1",
+                "id": "stageRunner",
+                "kind": "host-addon",
+                "version": "0.1.0"
+            }))
+            .unwrap(),
+        );
         assert_eq!(
             validate_component_kind(declared, &record)
                 .unwrap_err()
