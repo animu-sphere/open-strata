@@ -922,6 +922,13 @@ pub(crate) fn build_library_one(
             "`cmake` not found on PATH",
         )
     })?;
+    if install_prefix.file_name() == Some("workspace-prefix") {
+        let snapshot = workspace_library_snapshot(library, &id);
+        if snapshot.as_std_path().exists() {
+            std::fs::remove_dir_all(snapshot.as_std_path())
+                .map_err(|error| Error::io(snapshot.to_string(), error))?;
+        }
+    }
     let lock_compiler = compiler::to_lock(&compiler, &r.artifact_prefix, tgt.os());
     invalidate_plugin_build_tree_if_toolchain_moved(&library.root, &id, &lock_compiler);
     let build_env = maybe_bootstrap_msvc(tgt.os(), quiet);
@@ -934,11 +941,104 @@ pub(crate) fn build_library_one(
         &build_env,
         quiet,
     )?;
+    if install_prefix.file_name() == Some("workspace-prefix") {
+        snapshot_workspace_library_install(library, &id, install_prefix, &build_dir)?;
+    }
     let record = target_dir.join("compiler.lock.json");
     if let Ok(json) = serde_json::to_string_pretty(&lock_compiler) {
         let _ = std::fs::write(record.as_std_path(), json);
     }
     Ok(())
+}
+
+/// Capture only the files installed by this CMake member. The workspace prefix
+/// is shared for source builds, so reading it later would attribute another
+/// member's files (or the last build's files) to this library.
+fn snapshot_workspace_library_install(
+    library: &Library,
+    target_id: &str,
+    prefix: &Utf8Path,
+    build_dir: &Utf8Path,
+) -> Result<()> {
+    let manifest = build_dir.join("install_manifest.txt");
+    let installed = std::fs::read_to_string(manifest.as_std_path())
+        .map_err(|error| Error::io(manifest.to_string(), error))?;
+    let snapshot = workspace_library_snapshot(library, target_id);
+    if snapshot.as_std_path().exists() {
+        std::fs::remove_dir_all(snapshot.as_std_path())
+            .map_err(|error| Error::io(snapshot.to_string(), error))?;
+    }
+    let mut files = Vec::new();
+    for path in installed.lines().filter(|line| !line.trim().is_empty()) {
+        let source = Utf8Path::new(path);
+        let relative = source.strip_prefix(prefix).map_err(|_| {
+            Error::validation(format!(
+                "library '{}' installed a file outside its workspace prefix: {source}",
+                library.id()
+            ))
+        })?;
+        if relative
+            .as_std_path()
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(Error::validation(format!(
+                "library '{}' installed an unsafe path: {source}",
+                library.id()
+            )));
+        }
+        copy_workspace_install_file(source, relative, &snapshot, prefix)?;
+        files.push(portable(relative));
+    }
+    if files.is_empty() {
+        return Err(Error::validation(format!(
+            "library '{}' installed no files into '{prefix}'",
+            library.id()
+        )));
+    }
+    files.sort();
+    files.dedup();
+    let inventory = snapshot.join(".openstrata-installed-files");
+    std::fs::write(inventory.as_std_path(), files.join("\n"))
+        .map_err(|error| Error::io(inventory.to_string(), error))?;
+    Ok(())
+}
+
+fn workspace_library_snapshot(library: &Library, target_id: &str) -> Utf8PathBuf {
+    target_state_dir(&library.root, target_id).join("workspace-library-prefix")
+}
+
+fn copy_workspace_install_file(
+    source: &Utf8Path,
+    relative: &Utf8Path,
+    snapshot: &Utf8Path,
+    prefix: &Utf8Path,
+) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(source.as_std_path())
+        .map_err(|error| Error::io(source.to_string(), error))?;
+    if !metadata.file_type().is_symlink() {
+        return copy_file_required(source, relative, snapshot);
+    }
+    // CMake installs versioned shared libraries with symlink aliases on Unix.
+    // Flatten an alias only when its resolved file stays inside this install;
+    // the package stage then contains regular files with the same loader names.
+    let resolved = std::fs::canonicalize(source.as_std_path())
+        .map_err(|error| Error::io(source.to_string(), error))?;
+    let resolved_prefix = std::fs::canonicalize(prefix.as_std_path())
+        .map_err(|error| Error::io(prefix.to_string(), error))?;
+    if !resolved.starts_with(&resolved_prefix) || !resolved.is_file() {
+        return Err(Error::validation(format!(
+            "library install symlink escapes its workspace prefix: {source}"
+        )));
+    }
+    let destination = snapshot.join(relative);
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent.as_std_path())
+            .map_err(|error| Error::io(parent.to_string(), error))?;
+    }
+    std::fs::copy(source.as_std_path(), destination.as_std_path())
+        .map(|_| ())
+        .map_err(|error| Error::io(format!("{source} -> {destination}"), error))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2244,25 +2344,26 @@ fn package_bundle(
     // a scalar (collapsing any per-OS/`inherit` source declaration).
     packaged_manifest.runtime.cxx_abi = ctx.cxx_abi.clone().map(CxxAbi::Scalar);
     packaged_manifest.runtime.python_abi = ctx.python_abi.clone();
-    let library_runtime = selected_library_package_runtime(&bundle, &id)?;
-    for (_, relative) in &library_runtime {
-        // `portable`, not `to_string`: this path is *joined* on the producing
-        // host, so a Windows producer would otherwise bake `runtime/libraries\bin`
-        // into a portable, digest-addressed manifest that a Linux consumer reads
-        // back — and that a consumer must split on `/` to build a loader path.
-        let relative = portable(relative);
-        if !packaged_manifest.requires.runtime_libs.contains(&relative) {
-            packaged_manifest.requires.runtime_libs.push(relative);
+    let library_closure = selected_library_package_closure(&bundle, &id)?;
+    for relative in library_closure.runtime_dirs.values().flatten() {
+        // The directory values are portable artifact paths, including on a
+        // Windows producer where native paths use backslashes.
+        if !packaged_manifest.requires.runtime_libs.contains(relative) {
+            packaged_manifest
+                .requires
+                .runtime_libs
+                .push(relative.clone());
         }
     }
     let library_evidence = selected_workspace_library_evidence(&bundle, Some(&r))?;
-    let packaged_library_dirs = library_runtime
-        .iter()
-        .map(|(_, relative)| portable(relative))
-        .collect::<Vec<_>>();
     let packaged_library_evidence = library_evidence
         .iter()
         .map(|library| {
+            let runtime_directories = library["id"]
+                .as_str()
+                .and_then(|id| library_closure.runtime_dirs.get(id))
+                .cloned()
+                .unwrap_or_default();
             serde_json::json!({
                 "id": library["id"],
                 "version": library["version"],
@@ -2270,7 +2371,7 @@ fn package_bundle(
                 "cmake_package": library["cmake_package"],
                 "cmake_target": library["cmake_target"],
                 "prefix": serde_json::Value::Null,
-                "runtime_directories": packaged_library_dirs,
+                "runtime_directories": runtime_directories,
                 "provenance": "source-workspace",
             })
         })
@@ -2316,8 +2417,8 @@ fn package_bundle(
     let preferred_stage = target_state_dir(&bundle.root, &id).join("package-stage");
     let (stage, mut stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
     stage_plugin_bundle(&bundle, &stage)?;
-    for (source, relative) in &library_runtime {
-        copy_tree_required(source, relative, &stage)?;
+    for (source, relative) in &library_closure.files {
+        copy_file_required(source, relative, &stage)?;
     }
     for (source, relative) in &bundle_libraries {
         copy_tree_required(source, relative, &stage)?;
@@ -7472,34 +7573,18 @@ fn library_runtime_dirs_from_workspace(
     require_materialized: bool,
 ) -> Result<Vec<Utf8PathBuf>> {
     let libraries = libraries_from_workspace(primary, workspace)?;
-    let prefix = workspace
-        .root
-        .join(STATE_DIR)
-        .join("targets")
-        .join(target_id_from_resolved(resolved))
-        .join("workspace-prefix");
+    let target_id = target_id_from_resolved(resolved);
     let mut directories = Vec::new();
     for library in libraries {
-        let materialized = library.installed_runtime_dirs(&prefix);
-        if require_materialized
-            && !library.manifest.runtime.directories.is_empty()
-            && materialized.is_empty()
-        {
-            return Err(Error::coded(
-                "WORKSPACE_LIBRARY_RUNTIME_MISSING",
-                Category::Precondition,
-                format!(
-                    "library '{}' {} has no installed runtime directory under '{}'",
-                    library.id(),
-                    library.version(),
-                    prefix
-                ),
-            )
-            .with_hint(format!(
-                "run `ost plugin build {}` so the validated library closure is installed before test/run",
-                primary.root
-            )));
-        }
+        let prefix = workspace_library_snapshot(&library, &target_id);
+        let installed = if require_materialized {
+            verified_workspace_library_files(&library, &target_id, &primary.root)?
+        } else {
+            verified_workspace_library_files(&library, &target_id, &primary.root)
+                .unwrap_or_default()
+        };
+        let materialized =
+            materialized_workspace_library_runtime_dirs(&library, &prefix, &installed);
         directories.extend(materialized);
     }
     directories.sort();
@@ -7536,25 +7621,27 @@ fn selected_workspace_library_evidence(
         return Ok(libraries);
     };
     let libraries = libraries_from_workspace(primary, &workspace)?;
-    let prefix = resolved.map(|resolved| {
-        workspace
-            .root
-            .join(STATE_DIR)
-            .join("targets")
-            .join(target_id_from_resolved(resolved))
-            .join("workspace-prefix")
-    });
+    let target_id = resolved.map(target_id_from_resolved);
     Ok(libraries
         .into_iter()
         .map(|library| {
+            let prefix = target_id
+                .as_deref()
+                .map(|target_id| workspace_library_snapshot(&library, target_id));
             // Every path in the record is forward-slashed: this document ships
             // inside a portable artifact and is read on hosts that never saw the
             // producer's separators.
             let runtime_directories = prefix
                 .as_ref()
                 .map(|prefix| {
-                    library
-                        .installed_runtime_dirs(prefix)
+                    let installed = target_id
+                        .as_deref()
+                        .and_then(|target_id| {
+                            verified_workspace_library_files(&library, target_id, &primary.root)
+                                .ok()
+                        })
+                        .unwrap_or_default();
+                    materialized_workspace_library_runtime_dirs(&library, prefix, &installed)
                         .into_iter()
                         .map(|directory| portable(&directory))
                         .collect::<Vec<_>>()
@@ -7574,58 +7661,134 @@ fn selected_workspace_library_evidence(
         .collect())
 }
 
-fn selected_library_package_runtime(
-    primary: &Bundle,
+/// Return exact installed files for the bundle's library closure, plus the
+/// declared runtime directories to expose through activation and provenance.
+struct LibraryPackageClosure {
+    files: Vec<(Utf8PathBuf, Utf8PathBuf)>,
+    runtime_dirs: BTreeMap<String, Vec<String>>,
+}
+
+fn verified_workspace_library_files(
+    library: &Library,
     target_id: &str,
-) -> Result<Vec<(Utf8PathBuf, Utf8PathBuf)>> {
-    let Some(workspace) = source_workspace_for(primary)? else {
-        return Ok(Vec::new());
-    };
-    let libraries = libraries_from_workspace(primary, &workspace)?;
-    let prefix = workspace
-        .root
-        .join(STATE_DIR)
-        .join("targets")
-        .join(target_id)
-        .join("workspace-prefix");
-    let mut mappings = BTreeMap::<Utf8PathBuf, Utf8PathBuf>::new();
-    for library in libraries {
-        let mut materialized = 0usize;
-        for directory in &library.manifest.runtime.directories {
-            let source = prefix.join(directory);
-            if source.as_std_path().is_dir() {
-                let relative = Utf8Path::new("runtime/libraries").join(directory);
-                mappings.entry(relative).or_insert(source);
-                materialized += 1;
-            }
-        }
-        if !library.manifest.runtime.directories.is_empty() && materialized == 0 {
-            return Err(Error::coded(
-                "WORKSPACE_LIBRARY_RUNTIME_MISSING",
-                Category::Precondition,
-                format!(
-                    "library '{}' {} has no packageable runtime directory under '{}'",
-                    library.id(),
-                    library.version(),
-                    prefix
-                ),
-            )
-            .with_hint(format!(
-                "run `ost plugin build {}` before packaging so the library closure is installed",
-                primary.root
+    primary_root: &Utf8Path,
+) -> Result<Vec<Utf8PathBuf>> {
+    let prefix = workspace_library_snapshot(library, target_id);
+    let inventory = prefix.join(".openstrata-installed-files");
+    let recorded = std::fs::read_to_string(inventory.as_std_path()).map_err(|_| {
+        Error::coded(
+            "WORKSPACE_LIBRARY_RUNTIME_MISSING",
+            Category::Precondition,
+            format!(
+                "library '{}' has no completed install snapshot at '{prefix}'",
+                library.id()
+            ),
+        )
+        .with_hint(format!(
+            "run `ost plugin build {primary_root}` before packaging or testing"
+        ))
+    })?;
+    if recorded.trim().is_empty() {
+        return Err(Error::validation(format!(
+            "library '{}' install snapshot recorded no files",
+            library.id()
+        )));
+    }
+    let mut files = Vec::new();
+    for relative in recorded.lines() {
+        let path = Utf8Path::new(relative);
+        if !path.is_relative()
+            || path
+                .as_std_path()
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(Error::validation(format!(
+                "library '{}' install inventory contains an unsafe path: {relative}",
+                library.id()
             )));
         }
+        if !prefix.join(path).as_std_path().is_file() {
+            return Err(Error::coded(
+                "WORKSPACE_LIBRARY_RUNTIME_MISSING",
+                Category::Validation,
+                format!(
+                    "library '{}' install snapshot is missing recorded file '{relative}'",
+                    library.id()
+                ),
+            ));
+        }
+        files.push(path.to_path_buf());
     }
-    Ok(mappings
+    Ok(files)
+}
+
+fn materialized_workspace_library_runtime_dirs(
+    library: &Library,
+    prefix: &Utf8Path,
+    files: &[Utf8PathBuf],
+) -> Vec<Utf8PathBuf> {
+    library
+        .installed_runtime_dirs(prefix)
         .into_iter()
-        .map(|(relative, source)| (source, relative))
-        .collect())
+        .filter(|directory| {
+            files
+                .iter()
+                .any(|path| prefix.join(path).starts_with(directory))
+        })
+        .collect()
+}
+
+fn selected_library_package_closure(
+    primary: &Bundle,
+    target_id: &str,
+) -> Result<LibraryPackageClosure> {
+    let Some(workspace) = source_workspace_for(primary)? else {
+        return Ok(LibraryPackageClosure {
+            files: Vec::new(),
+            runtime_dirs: BTreeMap::new(),
+        });
+    };
+    let libraries = libraries_from_workspace(primary, &workspace)?;
+    let mut mappings = BTreeMap::<Utf8PathBuf, Utf8PathBuf>::new();
+    let mut directories_by_library = BTreeMap::new();
+    for library in libraries {
+        let prefix = workspace_library_snapshot(&library, target_id);
+        let installed = verified_workspace_library_files(&library, target_id, &primary.root)?;
+        for relative in &installed {
+            let destination = Utf8Path::new("runtime/libraries")
+                .join(library.id())
+                .join(relative);
+            mappings.insert(destination, prefix.join(relative));
+        }
+        let directories =
+            materialized_workspace_library_runtime_dirs(&library, &prefix, &installed)
+                .into_iter()
+                .filter_map(|directory| {
+                    directory.strip_prefix(&prefix).ok().map(|relative| {
+                        portable(
+                            &Utf8Path::new("runtime/libraries")
+                                .join(library.id())
+                                .join(relative),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+        directories_by_library.insert(library.id().to_string(), directories);
+    }
+    Ok(LibraryPackageClosure {
+        files: mappings
+            .into_iter()
+            .map(|(destination, source)| (source, destination))
+            .collect(),
+        runtime_dirs: directories_by_library,
+    })
 }
 
 /// The USD *registration* half of a `requires.bundles` closure, as staged paths.
 ///
 /// Returns `(source plugInfo root, package-relative destination)` per resolved
-/// dependency bundle. `selected_library_package_runtime` above carries the link
+/// dependency bundle. `selected_library_package_closure` above carries the link
 /// half — a provider's shared libraries — and that half alone is what made
 /// v0.18.0 packages assert a closure they did not have: the libraries shipped,
 /// `dependencies.json` recorded the bundle as resolved, and USD still could not
@@ -9721,6 +9884,52 @@ pub(crate) fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
 mod tests {
     use super::*;
     use ost_core::host::Arch;
+
+    #[test]
+    fn workspace_library_snapshots_keep_overlapping_installs_separate() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = Utf8PathBuf::from_path_buf(std::env::temp_dir().join(format!(
+            "ost-library-snapshots-{}-{nonce}",
+            std::process::id()
+        )))
+        .unwrap();
+        let prefix = root.join("workspace-prefix");
+        let installed = prefix.join("bin/shared.dll");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        for (id, bytes) in [
+            ("first", b"first".as_slice()),
+            ("second", b"second".as_slice()),
+        ] {
+            let member = root.join(id);
+            let build_dir = member.join("build/test");
+            std::fs::create_dir_all(&build_dir).unwrap();
+            std::fs::write(
+                member.join(ost_plugin::LIBRARY_MANIFEST),
+                format!("schema: openstrata.library/v1alpha1\nlibrary: {{ id: {id}, version: 1.0.0 }}\ncmake: {{ package: {id}, target: '{id}::{id}' }}\nruntime: {{ directories: [bin] }}\n"),
+            )
+            .unwrap();
+            std::fs::write(&installed, bytes).unwrap();
+            std::fs::write(
+                build_dir.join("install_manifest.txt"),
+                format!("{installed}\n"),
+            )
+            .unwrap();
+            let library = Library::load(&member).unwrap();
+            snapshot_workspace_library_install(&library, "test", &prefix, &build_dir).unwrap();
+        }
+        for (id, bytes) in [
+            ("first", b"first".as_slice()),
+            ("second", b"second".as_slice()),
+        ] {
+            let library = Library::load(&root.join(id)).unwrap();
+            let snapshot = workspace_library_snapshot(&library, "test").join("bin/shared.dll");
+            assert_eq!(std::fs::read(snapshot).unwrap(), bytes);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn root_build_stages_declared_tool_executables_into_the_member() {
