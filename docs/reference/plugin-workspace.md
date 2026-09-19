@@ -59,6 +59,11 @@ Patterns are portable project-relative paths, use `/`, and may contain `*` and
 directories, and nesting deeper than eight components are rejected. Every
 pattern must match at least one directory.
 
+An initial scaffold may declare `members = []`. Its `--graph-only` result is a
+valid zero-member graph with `member_total: 0`; it supplies no build, test, or
+package evidence. Add member patterns as descriptors are introduced. The
+bounded scan still rejects any descriptor left outside the declaration.
+
 The declaration is fail-closed where it counts. A bounded scan of the project
 (at most eight levels, without following symlinks or entering hidden, `.git`,
 `.strata`, `target`, `build`, `out`, `node_modules`, or `__pycache__`
@@ -84,9 +89,8 @@ lane rather than behind everything the per-bundle pyramid requires. Without it
 the two were welded together: on a fresh checkout the verb validated the graph,
 reported it valid, and then failed because nothing had been built yet, leaving a
 repository to either build every bundle or parse the graph out of `--json`.
-Library-only and tool-only workspaces are valid graph inputs: zero plugin
-bundles is not an error when at least one declared library or tool member was
-loaded. JSON keeps the historical bundle `total` and additionally reports
+Library-only and tool-only workspaces are valid graph inputs, as is an explicitly
+empty scaffold. JSON keeps the historical bundle `total` and additionally reports
 `member_total`, `bundles`, `libraries`, and `tools`.
 
 ## usdview host add-ons

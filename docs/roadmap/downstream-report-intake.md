@@ -78,15 +78,13 @@ superseded failures are not carried forward.
   [VRM report 37](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/37-2026-08-30-v0.22.6-runtime-python-paths-from-the-producer.md),
   and [VRM report 41](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md)
   establish the two exported-CMake layers and the new consumer failures.
-- **P2 — render optional OpenUSD flags portably.** An omitted
-  `require_openusd`/`require_openusd_version` must produce a valid generated
-  workflow under the default Bash on hosted macOS, including cache-verify and
-  remote-pull paths. Exercise both empty and populated selectors; explicit
-  selectors in the 3DGS matrix are a repository workaround.
+- **P2 — prove optional OpenUSD flags on hosted macOS.** Generated jobs now
+  build optional selectors with positional parameters. Exercise the empty and
+  populated paths under the hosted macOS default Bash, including cache-verify
+  and remote-pull paths; explicit selectors in the 3DGS matrix are a repository
+  workaround until that evidence is available.
   [3DGS report 04](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/04-2026-09-15-v0.22.10-macos-empty-openusd-args.md).
-- **P3 — handle empty scaffold CI and product path identity.** Let a declared
-  workspace with zero members render a meaningful graph/CI step, without
-  claiming build or test coverage. In a product activation, emit each bundle
+- **P3 — product path identity.** In a product activation, emit each bundle
   identity once after checking identity/version/contract agreement; a package
   must not gain another bundle's runtime files through a shared directory.
   Sources: [VRM report 41](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md)
@@ -94,6 +92,14 @@ superseded failures are not carried forward.
 
 ### Completed during v0.23.0 development
 
+- Generated source and release lanes now pass optional OpenUSD selectors through
+  Bash positional parameters, which work when the selectors are empty under
+  `set -u`. The source cache verification, remote pull and release candidate
+  gates use the same form. Local empty and populated shell cases pass; hosted
+  macOS execution remains an open acceptance check.
+- An explicitly empty `[workspace]` (`members = []`) validates as a zero-member
+  graph. The graph-only source CI rung can omit the runtime artifact and does
+  not run build, test or package. Undeclared descriptors still fail discovery.
 - `usdview-plugin` is a truthful source bundle kind and packages as the
   first-class `host-addon` component kind. It participates in workspace build,
   package/product composition, activation, managed-output provenance and
