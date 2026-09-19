@@ -6132,12 +6132,19 @@ fn load_workspace_graph() -> Result<(
 )> {
     let members = discover_workspace_members(Utf8Path::new("."))?;
     if members.bundles.is_empty() && members.libraries.is_empty() && members.tools.is_empty() {
-        return Err(Error::precondition(
-            "no bundles, libraries, or tools found in the workspace member set",
-        )
-        .with_hint(
-            "run from the workspace root or declare member descriptors under [workspace].members",
-        ));
+        let root = Utf8Path::new(".");
+        let declared_empty = root.join(PROJECT_MANIFEST).is_file()
+            && load_project(root)?
+                .workspace
+                .is_some_and(|workspace| workspace.members.is_empty());
+        if !declared_empty {
+            return Err(Error::precondition(
+                "no bundles, libraries, or tools found in the workspace member set",
+            )
+            .with_hint(
+                "run from the workspace root or declare member descriptors under [workspace].members",
+            ));
+        }
     }
     let bundles = members
         .bundles
@@ -10237,6 +10244,34 @@ mod tests {
                 "{pattern} / {name}"
             );
         }
+    }
+
+    #[test]
+    fn explicitly_empty_workspace_has_no_members_but_still_rejects_undeclared_descriptors() {
+        let root = unique_tmp("empty-workspace");
+        write_test_file(
+            &root.join(PROJECT_MANIFEST),
+            "[project]\nname = 'empty-workspace'\n[requires]\nplatform = 'cy2026'\n[workspace]\nmembers = []\n",
+        );
+
+        let members = discover_workspace_members(&root).unwrap();
+        assert!(members.bundles.is_empty());
+        assert!(members.libraries.is_empty());
+        assert!(members.tools.is_empty());
+
+        write_test_file(
+            &root
+                .join("tools")
+                .join("new")
+                .join(ost_plugin::TOOL_MANIFEST),
+            "placeholder\n",
+        );
+        let error = discover_workspace_members(&root).unwrap_err().to_string();
+        assert!(
+            error.contains("workspace descriptor(s) found outside [workspace].members: tools/new"),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 
     #[cfg(windows)]

@@ -384,11 +384,6 @@ impl Project {
         let Some(workspace) = &self.workspace else {
             return Ok(());
         };
-        if workspace.members.is_empty() {
-            return Err(Error::InvalidManifest(
-                "workspace.members must declare at least one member pattern".into(),
-            ));
-        }
         let mut seen = std::collections::BTreeSet::new();
         for member in &workspace.members {
             if let Some(reason) = workspace_member_problem(member) {
@@ -1081,7 +1076,12 @@ portability = "portable"
         }
 
         let empty = format!("{SAMPLE}\n[workspace]\nmembers = []\n");
-        assert!(Project::from_toml(&empty).is_err());
+        assert!(Project::from_toml(&empty)
+            .unwrap()
+            .workspace
+            .unwrap()
+            .members
+            .is_empty());
     }
 
     #[test]
