@@ -4,8 +4,8 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-09-12
-updated: 2026-09-20
-applies_to: post-v0.23.0
+updated: 2026-09-21
+applies_to: post-v0.23.2
 ---
 
 # Downstream OST report intake
@@ -61,6 +61,18 @@ superseded failures are not carried forward.
   [VRM report 41](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md)
   records nine blocked VRM members; MMD and connectors have the same future
   boundary.
+
+  **First exercised 2026-09-20/21.** `usd-motion-plugins` v0.5.0 published
+  seven library artifacts on three targets, and `motion-connectors` consumed
+  `motionCore` through the declared edge — the declaration, `ost library pull`,
+  the archive/identity/runtime checks, the graph edge, the link and the tests
+  all held, and an anonymous pull needed no credential. Two defects came out of
+  it and are fixed: the consumer-link claim running before the materialized
+  prefix is repaired (v0.23.1, VRM report 42) and the root build not composing
+  the external prefixes at all (v0.23.2,
+  [VRM report 43](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/43-2026-09-20-v0.23.1-the-root-build-cannot-see-an-external-library.md)).
+  What remains of this item is the migration itself: nine VRM members switched
+  at once, and one independent installed consumer.
 - **P1 — prove relocatable OpenUSD CMake consumption for the actual pinned
   artifact.** v0.22.10 added relocation to newly exported SDK artifacts; it
   cannot rewrite already published, digest-pinned runtime bytes. A hosted

@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.23.2 | [v0.23.2.md](v0.23.2.md) | The root build composes external libraries |
 | v0.23.1 | [v0.23.1.md](v0.23.1.md) | Runtime consumer validation and diagnostics repair |
 | v0.23.0 | [v0.23.0.md](v0.23.0.md) | Release CI, component closure and host add-ons |
 | v0.22.10 | [v0.22.10.md](v0.22.10.md) | Runtime correctness, UX and diagnostics |
