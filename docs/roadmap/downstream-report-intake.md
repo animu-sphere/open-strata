@@ -113,8 +113,10 @@ superseded failures are not carried forward.
 - Generated source and release lanes now pass optional OpenUSD selectors through
   Bash positional parameters, which work when the selectors are empty under
   `set -u`. The source cache verification, remote pull and release candidate
-  gates use the same form. Local empty and populated shell cases pass; hosted
-  macOS execution remains an open acceptance check.
+  gates use the same form. Tests now execute those generated Bash bodies with
+  empty and populated selectors, and the macOS CI lane is configured to run
+  them under its default Bash. Hosted macOS results remain an open acceptance
+  check.
 - An explicitly empty `[workspace]` (`members = []`) validates as a zero-member
   graph. The graph-only source CI rung can omit the runtime artifact and does
   not run build, test or package. Undeclared descriptors still fail discovery.
@@ -127,6 +129,14 @@ superseded failures are not carried forward.
   L2 imports it through the real OpenUSD registry, and L6 launches the host.
   The embedded `usdview-plugin-python` scaffold replaces the codeless-schema
   workaround. Source: [Stage Runner report 03](https://github.com/animu-sphere/usd-stage-runner/blob/main/docs/reports/ost/03-2026-09-02-v0.22.8-usdview-host-plugin-composition.md).
+
+- The first `ost host run` path binds a discovered Maya/Houdini id and
+  fingerprint into a locked Formation, selects a recorded headless executable,
+  and records the host with the runtime and component digests in run evidence.
+  Stale or changed host installs fail before launch; deep fingerprints are
+  rehashed when inventory records are used, and detected host Python must match
+  the runtime Python ABI. Host-specific smoke suites,
+  packaging and the support matrix remain open.
 
 - `ost test --json` attributes selected CTest case counts to each discovered,
   testable workspace member by project-relative root. Unfiltered runs emit

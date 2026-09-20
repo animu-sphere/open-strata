@@ -333,6 +333,12 @@ fn run_command(args: &FormationRunArgs, format: Format) -> Result<()> {
         )
         .with_hint("restore the locked artifacts or deliberately refresh the lock"));
     }
+    let host_record = materialized
+        .resolved
+        .host
+        .as_ref()
+        .map(|host| super::host::checked_pinned_host(&host.id, &host.fingerprint))
+        .transpose()?;
 
     let (program, command_args) = if args.command.is_empty() {
         (
@@ -397,6 +403,8 @@ fn run_command(args: &FormationRunArgs, format: Format) -> Result<()> {
         "manifest_digest": materialized.resolved.manifest_digest,
         "lock_digest": lock_digest,
         "runtime": materialized.resolved.runtime,
+        "host": materialized.resolved.host,
+        "host_record": host_record,
         "components": materialized.resolved.components,
         "program": program,
         "args": command_args,
@@ -473,6 +481,11 @@ impl Drop for StagingRoot {
 fn resolve_path(path: &Utf8Path) -> Result<ResolvedPath> {
     let absolute_path = absolute_from_current(path)?;
     let declared = FormationManifest::load(&absolute_path)?;
+    let host_record = declared
+        .host
+        .as_ref()
+        .map(|host| super::host::checked_pinned_host(&host.id, &host.fingerprint))
+        .transpose()?;
     let parent = absolute_path.parent().unwrap_or(Utf8Path::new("."));
     let staging = StagingRoot {
         path: parent
@@ -498,6 +511,28 @@ fn resolve_path(path: &Utf8Path) -> Result<ResolvedPath> {
         ));
     }
     let runtime_manifest = embedded_runtime_manifest(&store, &runtime_record)?;
+    if let Some((host, python)) = host_record
+        .as_ref()
+        .and_then(|host| host.python.as_ref().map(|python| (host, python)))
+    {
+        let runtime_python = runtime_manifest
+            .python
+            .split('.')
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(".");
+        if python.version != runtime_python {
+            return Err(Error::coded(
+                "HOST_PYTHON_ABI_MISMATCH",
+                Category::Validation,
+                format!(
+                    "host '{}' embeds Python {}, but the pinned runtime uses {}",
+                    host.id, python.version, runtime_manifest.python
+                ),
+            )
+            .with_hint("select a runtime artifact built for the host's Python ABI"));
+        }
+    }
     let runtime_root = materialize(&store, &runtime_record, &staging_root.join("runtime"))?;
     let mut components = Vec::new();
     for component in &declared.components {

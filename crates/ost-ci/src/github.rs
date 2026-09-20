@@ -2832,4 +2832,175 @@ mod tests {
         assert!(!yaml.contains("artifact push"));
         assert!(!yaml.contains("id-token"));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_optional_openusd_source_fetch_runs_with_empty_and_populated_selectors() {
+        // Execute the actual generated Bash step, not a hand-written copy of
+        // its flag construction. Hosted macOS runs this under /bin/bash 3.2.
+        let fragment = runtime_fetch_steps(None);
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&format!("steps:\n{fragment}")).unwrap();
+        let template = document["steps"][0]["run"].as_str().unwrap();
+        for (selectors, cache_hit) in [(false, false), (false, true), (true, false), (true, true)] {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "ost-ci-openusd-bash-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let calls = root.join("calls.txt");
+            let mut run = template.to_string();
+            for (key, value) in [
+                (
+                    "${{ matrix.require_openusd }}",
+                    if selectors {
+                        "cy2026/linux/x86_64/gl"
+                    } else {
+                        ""
+                    },
+                ),
+                (
+                    "${{ matrix.require_openusd_version }}",
+                    if selectors { "26.08" } else { "" },
+                ),
+                ("${{ matrix.runtime_artifact }}", "sha256:fixture"),
+                ("${{ matrix.runtime_remote }}", "file://fixture"),
+                ("${{ matrix.evidence_flags }}", ""),
+                ("${{ matrix.hosted }}", "false"),
+            ] {
+                run = run.replace(key, value);
+            }
+            assert!(!run.contains("${{"), "unsubstituted expression: {run}");
+            let script = [
+                r#"ost() {
+  printf '%s\n' "$*" >> "$OST_CALL_LOG"
+  if [ "$1" = artifact ] && [ "$2" = show ]; then
+    return "$OST_SHOW_STATUS"
+  fi
+  printf '{}\n'
+}"#,
+                &run,
+            ]
+            .join("\n");
+            let output = std::process::Command::new("/bin/bash")
+                .arg("-c")
+                .arg(script)
+                .current_dir(&root)
+                .env("OST_CALL_LOG", &calls)
+                .env("OST_SHOW_STATUS", if cache_hit { "0" } else { "1" })
+                .env_remove("OST_HOME")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "selectors={selectors} cache_hit={cache_hit}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let calls = std::fs::read_to_string(calls).unwrap();
+            let action = if cache_hit {
+                "artifact verify"
+            } else {
+                "artifact pull"
+            };
+            let line = calls.lines().find(|line| line.starts_with(action)).unwrap();
+            assert_eq!(line.contains("--require-openusd "), selectors, "{line}");
+            assert_eq!(
+                line.contains("--require-openusd-version "),
+                selectors,
+                "{line}"
+            );
+            if cache_hit {
+                assert!(!calls.contains("artifact pull"));
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_optional_openusd_release_gate_runs_with_empty_and_populated_selectors() {
+        let release: serde_yaml::Value =
+            serde_yaml::from_str(&generate_release(&release_matrix()).unwrap()).unwrap();
+        let steps = release["jobs"]["candidates"]["steps"]
+            .as_sequence()
+            .unwrap();
+        let template = steps
+            .iter()
+            .find(|step| step["name"] == "Verify and materialize the pinned runtime SDK")
+            .unwrap()["run"]
+            .as_str()
+            .unwrap();
+        for selectors in [false, true] {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "ost-ci-release-bash-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let calls = root.join("calls.txt");
+            let mut run = template.to_string();
+            for (key, value) in [
+                (
+                    "${{ matrix.require_openusd }}",
+                    if selectors {
+                        "cy2026/linux/x86_64/gl"
+                    } else {
+                        ""
+                    },
+                ),
+                (
+                    "${{ matrix.require_openusd_version }}",
+                    if selectors { "26.08" } else { "" },
+                ),
+                ("${{ matrix.runtime_artifact }}", "sha256:fixture"),
+                ("${{ matrix.minimum_trust }}", "trusted"),
+                ("${{ matrix.evidence_flags }}", ""),
+                ("${{ matrix.platform }}", "cy2026"),
+                ("${{ matrix.profile }}", "usd"),
+            ] {
+                run = run.replace(key, value);
+            }
+            assert!(!run.contains("${{"), "unsubstituted expression: {run}");
+            let script = [
+                r#"ost() {
+  printf '%s\n' "$*" >> "$OST_CALL_LOG"
+  printf '{}\n'
+}"#,
+                &run,
+            ]
+            .join("\n");
+            let output = std::process::Command::new("/bin/bash")
+                .arg("-c")
+                .arg(script)
+                .current_dir(&root)
+                .env("OST_CALL_LOG", &calls)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "selectors={selectors}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let calls = std::fs::read_to_string(calls).unwrap();
+            let verify = calls
+                .lines()
+                .find(|line| line.starts_with("artifact verify"))
+                .unwrap();
+            assert_eq!(verify.contains("--require-openusd "), selectors, "{verify}");
+            assert_eq!(
+                verify.contains("--require-openusd-version "),
+                selectors,
+                "{verify}"
+            );
+            assert!(calls.contains("runtime pull"));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
 }

@@ -280,7 +280,7 @@ fn version_from_metadata(family: HostFamily, root: &Utf8Path) -> Option<HostVers
 }
 
 /// Detect the host's embedded Python from its shipped layout.
-fn resolve_python(family: HostFamily, root: &Utf8Path, os: Os) -> Option<HostPython> {
+pub(crate) fn resolve_python(family: HostFamily, root: &Utf8Path, os: Os) -> Option<HostPython> {
     // Ordered most- to least-specific; the first hit wins so a corroborating
     // directory cannot override a definitive one. Houdini's
     // `houdini/python3.11libs` names the ABI outright, which is why it leads.

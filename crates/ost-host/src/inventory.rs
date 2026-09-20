@@ -13,8 +13,8 @@ use ost_core::{Category, Error, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::record::{
-    canonical_root_key, HostFamily, HostRecord, HostStatus, FINGERPRINT_INPUTS_VERSION,
-    HOST_RECORD_SCHEMA,
+    canonical_root_key, fingerprint, FingerprintMode, HostFamily, HostIdentity, HostRecord,
+    HostStatus, FINGERPRINT_INPUTS_VERSION, HOST_RECORD_SCHEMA,
 };
 
 pub const HOST_INVENTORY_SCHEMA: &str = "openstrata.host-inventory/v1alpha1";
@@ -119,6 +119,11 @@ fn current_status(record: &HostRecord) -> HostStatus {
     if !record.root.as_std_path().is_dir() {
         return HostStatus::Unreachable;
     }
+    if crate::validate::resolve_python(record.family, &record.root, record.platform.os)
+        != record.python
+    {
+        return HostStatus::Stale;
+    }
     for executable in record.executables.values() {
         let path = executable.absolute(&record.root);
         let Ok(metadata) = std::fs::metadata(path.as_std_path()) else {
@@ -137,6 +142,23 @@ fn current_status(record: &HostRecord) -> HostStatus {
         if let (Some(recorded), Some(observed)) = (executable.modified_unix, modified) {
             if recorded != observed {
                 return HostStatus::Stale;
+            }
+        }
+    }
+    if let Some(stored) = &record.fingerprint {
+        if stored.mode == FingerprintMode::Deep {
+            let identity = HostIdentity {
+                family: record.family,
+                root: &record.root,
+                version: record.version.as_ref(),
+                executables: &record.executables,
+                python: record.python.as_ref(),
+                markers: &record.markers,
+                platform: record.platform,
+            };
+            match fingerprint(&identity, FingerprintMode::Deep) {
+                Ok(current) if current.digest == stored.digest => {}
+                _ => return HostStatus::Stale,
             }
         }
     }
@@ -222,5 +244,76 @@ fn unique<'a>(matches: &[&'a HostRecord]) -> Option<Selection<'a>> {
         several => Some(Selection::Ambiguous(
             several.iter().map(|record| record.id.clone()).collect(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::record::{HostExecutable, HostPlatform};
+
+    #[test]
+    fn deep_inventory_detects_same_size_executable_changes() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir().join(format!("ost-host-deep-{}-{nonce}", std::process::id())),
+        )
+        .unwrap();
+        let executable = root.join("bin/probe");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"abc").unwrap();
+        let executables = BTreeMap::from([(
+            "interpreter".to_string(),
+            HostExecutable {
+                path: "bin/probe".into(),
+                size: 3,
+                // Simulate a filesystem without a usable modification time.
+                modified_unix: None,
+            },
+        )]);
+        let platform = HostPlatform::detect();
+        let observed = fingerprint(
+            &HostIdentity {
+                family: HostFamily::Maya,
+                root: &root,
+                version: None,
+                executables: &executables,
+                python: None,
+                markers: &[],
+                platform,
+            },
+            FingerprintMode::Deep,
+        )
+        .unwrap();
+        let record = HostRecord {
+            schema_version: HOST_RECORD_SCHEMA.into(),
+            id: HostRecord::instance_id(HostFamily::Maya, None, &root),
+            family: HostFamily::Maya,
+            product: HostFamily::Maya.product().into(),
+            status: HostStatus::Validated,
+            root: root.clone(),
+            version: None,
+            executables,
+            python: None,
+            platform,
+            markers: vec![],
+            evidence: vec![],
+            fingerprint: Some(observed),
+            rejection: None,
+        };
+        assert_eq!(current_status(&record), HostStatus::Validated);
+        let changed_python = root.join("lib/python3.11");
+        std::fs::create_dir_all(&changed_python).unwrap();
+        assert_eq!(current_status(&record), HostStatus::Stale);
+        std::fs::remove_dir_all(root.join("lib")).unwrap();
+        assert_eq!(current_status(&record), HostStatus::Validated);
+        std::fs::write(&executable, b"xyz").unwrap();
+        assert_eq!(current_status(&record), HostStatus::Stale);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -29,7 +29,7 @@ OpenStrata command-line interface (the `ost` binary).
 - [`ost extension`](#ost-extension) — Inspect and request controlled extensions
 - [`ost external`](#ost-external) — Import and inspect provenance for a build OpenStrata did not perform
 - [`ost formation`](#ost-formation) — Resolve, inspect, diagnose, export, lock, and run digest-pinned Formations
-- [`ost host`](#ost-host) — Discover, list, and inspect third-party DCC hosts (Maya, Houdini)
+- [`ost host`](#ost-host) — Discover, inspect, and run third-party DCC hosts (Maya, Houdini)
 - [`ost init`](#ost-init) — Initialise an OpenStrata project in the current directory
 - [`ost library`](#ost-library) — Build, test, package, and verify one descriptor-owned plain CMake library
 - [`ost lock`](#ost-lock) — Generate or verify the project lockfile (strata.lock)
@@ -627,7 +627,7 @@ Launch the Formation's command in the foreground and record evidence
 
 ### `ost host`
 
-Discover, list, and inspect third-party DCC hosts (Maya, Houdini)
+Discover, inspect, and run third-party DCC hosts (Maya, Houdini)
 
 **Usage:** `ost host <COMMAND>`
 
@@ -636,6 +636,7 @@ Discover, list, and inspect third-party DCC hosts (Maya, Houdini)
 - [`ost host discover`](#ost-host-discover) — Scan for DCC installs and record what was found
 - [`ost host inspect`](#ost-host-inspect) — Show one host record in full
 - [`ost host list`](#ost-host-list) — List the hosts already recorded, re-checked against the filesystem
+- [`ost host run`](#ost-host-run) — Run a validated host executable in a locked Formation
 
 #### `ost host discover`
 
@@ -683,6 +684,26 @@ List the hosts already recorded, re-checked against the filesystem
 | --- | --- |
 | `--host <FAMILY>` | Restrict the listing to one family |
 | `--status <STATUS>` | Restrict the listing to one status |
+
+#### `ost host run`
+
+Run a validated host executable in a locked Formation
+
+**Usage:** `ost host run [OPTIONS] <SELECTOR> [<ARGS>]`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<SELECTOR>` | yes | Discovered instance id, install path, family, or unambiguous id prefix |
+| `<ARGS>` | no | Arguments for the selected executable |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--formation <FORMATION>` | Formation manifest with a matching [host] pin and an adjacent lock |
+| `--role <ROLE>` | Headless executable role recorded during discovery |
 
 ### `ost init`
 

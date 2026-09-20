@@ -62,6 +62,7 @@ A digest-pinned runtime and packaged component set composed for one foreground c
 | `command` | object | yes |  |
 | `components` | array | no |  |
 | `formation` | object | yes |  |
+| `host` | — | no |  |
 | `runtime` | object | yes |  |
 | `schema` | — | yes |  |
 
