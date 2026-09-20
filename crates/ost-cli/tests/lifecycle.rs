@@ -1415,6 +1415,28 @@ fn library_scoped_build_test_package_uses_only_its_install_tree() {
     );
     std::fs::write(&cmake_path, cmake).unwrap();
 
+    let descriptor_path = sb.work_file("openstrata.library.yaml");
+    let descriptor = std::fs::read_to_string(&descriptor_path).unwrap();
+    let missing_runtime = descriptor.replace(
+        "  directories: [bin, lib]",
+        &format!(
+            "  directories: [bin, lib]\n  required_files:\n    {}: [bin/missing-runtime{}]",
+            std::env::consts::OS,
+            std::env::consts::DLL_SUFFIX
+        ),
+    );
+    assert_ne!(missing_runtime, descriptor);
+    std::fs::write(&descriptor_path, missing_runtime).unwrap();
+    let missing_build = sb.ost(&["--json", "library", "build", "."]);
+    assert!(
+        !missing_build.status.success(),
+        "{}",
+        out_text(&missing_build)
+    );
+    let missing: serde_json::Value = serde_json::from_slice(&missing_build.stdout).unwrap();
+    assert_eq!(missing["error"]["code"], "LIBRARY_RUNTIME_FILE_MISSING");
+    std::fs::write(&descriptor_path, &descriptor).unwrap();
+
     let build = sb.ost(&["library", "build", "."]);
     assert!(
         build.status.success(),
@@ -1481,7 +1503,6 @@ fn library_scoped_build_test_package_uses_only_its_install_tree() {
     assert_eq!(consumer_value["data"]["checks"]["link"]["status"], "pass");
     assert!(target.join("consumer/library-consumer.json").is_file());
 
-    let descriptor_path = sb.work_file("openstrata.library.yaml");
     let descriptor = std::fs::read_to_string(&descriptor_path).unwrap();
     let missing_target = descriptor.replace(
         "exported_targets: [Work::work]",

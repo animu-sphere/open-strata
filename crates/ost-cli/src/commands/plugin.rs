@@ -5030,12 +5030,12 @@ fn verify_member_manifest_files(root: &Utf8Path, manifest: &serde_json::Value) -
 /// payload. Older packages did not record a per-library inventory, so their
 /// existing manifest and archive checks remain the compatibility boundary.
 fn verify_member_library_files(root: &Utf8Path, manifest: &serde_json::Value) -> Result<()> {
-    let Some(libraries) = manifest
-        .pointer("/dependencies/libraries")
-        .and_then(|v| v.as_array())
-    else {
+    let Some(libraries) = manifest.pointer("/dependencies/libraries") else {
         return Ok(());
     };
+    let libraries = libraries
+        .as_array()
+        .ok_or_else(|| Error::validation("product member library closure is not an array"))?;
     let files = manifest["files"].as_array().ok_or_else(|| {
         Error::validation("product member manifest is missing array field 'files'")
     })?;
@@ -10254,6 +10254,8 @@ mod tests {
         assert_eq!(error.code(), "PLUGIN_PRODUCT_LIBRARY_FILE_MISSING");
         manifest["dependencies"]["libraries"][0]["required_files"] = serde_json::json!([relative]);
         verify_member_library_files(&root, &manifest).unwrap();
+        let malformed = serde_json::json!({ "dependencies": { "libraries": "shared" } });
+        assert!(verify_member_library_files(&root, &malformed).is_err());
         std::fs::remove_file(&installed).unwrap();
         let error = verify_member_library_files(&root, &manifest).unwrap_err();
         assert_eq!(error.code(), "PLUGIN_PRODUCT_LIBRARY_FILE_MISSING");

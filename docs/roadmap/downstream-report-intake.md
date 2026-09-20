@@ -100,7 +100,7 @@ superseded failures are not carried forward.
 - Workspace library builds retain member-specific install snapshots. Packaging
   reads each selected library's own recorded files and fails if an inventoried
   file is missing. A library may declare OS-specific `runtime.required_files`;
-  packaging then fails if its own install snapshot omits a required shared
+  library build and plugin packaging then fail if its own install omits a required shared
   library. Packaged dependency evidence records each library's exact files and
   required runtime files, and product verification checks those paths against
   the member archive and package inventory. Clean installed-product loadability

@@ -35,7 +35,8 @@ pub use doctor::{diagnose, Diagnostic, DoctorReport, RuntimeContext, Status};
 pub use levels::{fixture_identifier, run_levels, usdview_check, Probe, Session, ToolOutput};
 pub use library::{
     Library, LibraryCmake, LibraryConsumer, LibraryIdentity, LibraryManifest, LibraryPackage,
-    LibraryPackageContract, LibraryRequires, LibraryRuntime, LIBRARY_MANIFEST, LIBRARY_SCHEMA,
+    LibraryPackageContract, LibraryRequiredFiles, LibraryRequires, LibraryRuntime,
+    LIBRARY_MANIFEST, LIBRARY_SCHEMA,
 };
 pub use model::{
     BundleDependency, CxxAbi, LibraryDependency, PluginIdentity, PluginKind, PluginManifest,
