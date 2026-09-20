@@ -6,7 +6,7 @@
 //! ```text
 //! oci://ghcr.io/owner/openstrata-runtime@sha256:<oci-manifest-digest>
 //! oci://registry.example.com/vfx/openusd-runtime:usd-24.08-linux-x86_64
-//! file:///abs/path/to/dist-dir
+//! file:///abs/path/to/dist/library/version/target
 //! ```
 //!
 //! Tags are convenience; digests are the contract. A reference is **pinned**
@@ -53,7 +53,7 @@ impl RemoteReference {
         }
         Err(Error::usage(format!(
             "'{input}' is not a remote artifact reference \
-             (expected oci://<registry>/<repository>[:tag][@sha256:<digest>] or file://<dist-dir>)"
+             (expected oci://<registry>/<repository>[:tag][@sha256:<digest>] or file://<package-output-dir>)"
         )))
     }
 
@@ -193,7 +193,7 @@ impl OciReference {
     }
 }
 
-/// A `file://` reference to a producer output directory (dist dir).
+/// A `file://` reference to a producer package output directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileReference {
     /// The referenced directory, as given (platform-native path).
@@ -214,7 +214,7 @@ impl FileReference {
         }
         if path.is_empty() {
             return Err(Error::usage(format!(
-                "'{input}' has an empty file path (expected file://<dist-dir>)"
+                "'{input}' has an empty file path (expected file://<package-output-dir>)"
             )));
         }
         Ok(FileReference {

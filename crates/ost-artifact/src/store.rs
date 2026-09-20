@@ -1292,7 +1292,8 @@ pub(crate) fn locate_manifest(path: &Utf8Path) -> Result<(Utf8PathBuf, Utf8PathB
         if !manifest.as_std_path().is_file() {
             return Err(Error::precondition(format!(
                 "'{path}' has no {MANIFEST_FILE} — point at a package output directory \
-                 (e.g. dist/plugins/<name>/<version>/<target>/)"
+                 (e.g. dist/<library>/<version>/<target>/ for a library, or \
+                 dist/plugins/<name>/<version>/<target>/ for a plugin)"
             )));
         }
         Ok((path.to_owned(), manifest))

@@ -14,7 +14,9 @@ This plan records the reusable OpenStrata work that remains after auditing the
 OST reports in the reference repositories. The 2026-09-12 baseline covered 71
 reports. The 2026-09-19 refresh covers 75 reports in nine repositories,
 excluding each repository's report index; the four additions exercise
-v0.22.10. The three new motion/MMD repositories have no OST report series yet.
+v0.22.10. VRM report 42, received on 2026-09-20, brings the total to 76 and
+exposes a premature `consumer-link` claim repaired in v0.23.1. The three new
+motion/MMD repositories have no OST report series yet.
 MMD's dated model and motion reports test its own format behavior and are not
 counted as OST reports. A request was treated as
 closed only when the current source, tests or a release record supplied the
@@ -26,7 +28,7 @@ superseded failures are not carried forward.
 
 | Repository | Reports | Result |
 | --- | ---: | --- |
-| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 45 | New reports 40–41 expose per-bundle packaging from a shared prefix and missing cross-repository library dependencies; details below. |
+| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 46 | Reports 40–41 expose per-bundle packaging and cross-repository library dependencies; report 42's early consumer claim is repaired in v0.23.1. |
 | [hdMerlin](https://github.com/animu-sphere/hydra-merlin/tree/main/docs/reports/ost) | 12 | No open carryover: managed renderer diagnostics and resilient OCI transfer shipped in v0.22.0, with idle-timeout semantics hardened again in v0.22.9. |
 | [USD Point Cloud Plugins](https://github.com/animu-sphere/usd-pointcloud-plugins/tree/main/docs/reports/ost) | 4 | No open carryover: structured file-format arguments and managed-output provenance are implemented; the preimplementation report requested no change. |
 | [USD 3DGS Plugins](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost) | 4 | New report 04 finds a generated Bash empty-array failure on macOS when optional OpenUSD selectors are absent. |
@@ -65,12 +67,14 @@ superseded failures are not carried forward.
   external consumer must configure, link and test against a republished
   artifact with both `pxrConfig.cmake` and `pxrTargets.cmake` free of
   producer-local Python paths. Runtime validation must distinguish a
-  configure-only check from this linkable consumer claim. The geospatial
-  `sdk-usd` lane remains disabled until that artifact or a fully validated
-  materialized-prefix repair passes.
+  configure-only check from this linkable consumer claim. v0.23.1 applies
+  materialized-prefix repair before both consumer claims; its hosted result
+  remains to be measured. The geospatial `sdk-usd` lane remains disabled until
+  the artifact or a fully validated materialized-prefix repair passes.
   [Geospatial report 01](https://github.com/animu-sphere/usd-geospatial-runtime/blob/main/docs/reports/ost/01-2026-09-18-v0.22.10-openusd-runtime-python-paths.md),
   [VRM report 37](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/37-2026-08-30-v0.22.6-runtime-python-paths-from-the-producer.md),
-  and [VRM report 41](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md)
+  [VRM report 41](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md),
+  and [VRM report 42](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/42-2026-09-20-v0.23.0-a-claim-measured-before-the-repair.md)
   establish the two exported-CMake layers and the new consumer failures.
 - **P2 — prove optional OpenUSD flags on hosted macOS.** Generated jobs now
   build optional selectors with positional parameters. Exercise the empty and

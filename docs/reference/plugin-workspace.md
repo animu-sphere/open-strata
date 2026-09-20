@@ -343,8 +343,10 @@ are tracked in the [v0.23.0 intake](../roadmap/downstream-report-intake.md).
 `requires.libraries` may also name a library artifact from another repository.
 The `artifact` object pins its OpenStrata archive digest; `source` is an
 optional, immutable `oci://...@sha256:...` locator or an air-gapped `file://`
-dist directory. A multi-OS consumer uses `artifact.targets` keyed by exact
-OST target id:
+package output directory containing `manifest.json` and its archive. For a
+library, use `file:///absolute/path/to/dist/<library>/<version>/<target>/`,
+not the `dist/` root. A multi-OS consumer uses `artifact.targets` keyed by
+exact OST target id:
 
 ```yaml
 requires:

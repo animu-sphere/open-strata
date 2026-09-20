@@ -31,8 +31,8 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.23.0** — release CI, component closure and host
-add-ons. Generated and externally managed CI share version and support checks;
+The current release is **v0.23.1** — a runtime validation repair for pulled
+OpenUSD artifacts. Generated and externally managed CI share version and support checks;
 workspace tests report per-member evidence; library packages retain their own
 installed-file inventories and can consume digest-pinned external libraries;
 and first-class `usdview` add-ons plus Formation-
@@ -45,7 +45,7 @@ Post-release work covers hosted consumer and macOS evidence, downstream package
 loadability and external-library adoption, and the full DCC host
 matrix. Release defects will be fixed in v0.23.x.
 See the [composition guide](docs/guides/compose-a-runtime.md),
-[v0.23.0 record](docs/releases/v0.23.0.md),
+[v0.23.1 record](docs/releases/v0.23.1.md),
 [current roadmap](docs/roadmap/current.md) and
 [downstream report intake](docs/roadmap/downstream-report-intake.md).
 
