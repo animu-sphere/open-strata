@@ -245,6 +245,15 @@ evidence, checksums, SBOM, and available provenance. Re-run `ost library build`
 after changing any member of the declared closure, the runtime, or installed
 output.
 
+For a library supplied by another repository, publish it with `ost library
+package`, then import and push its dist directory with `ost artifact`. In the
+consumer's `requires.libraries`, keep the library id and version range and add
+an `artifact` pin. Use `artifact.targets` for separate Windows, macOS and Linux
+archives; each entry supplies the archive `digest` and optionally a pinned
+`oci://` `source`. Generated CI runs `ost library pull` before the build, and a
+local build also pulls a missing pinned artifact. The archive must match the
+selected target and exact OpenUSD runtime identity.
+
 `verify: graph` is the cheap early PR gate, and it gets a job of its own
 (`pr-workspace-graph`) that stops after the checkout: the graph alone, with
 nothing built and no runtime fetched, verified, or materialized. `verify: build`

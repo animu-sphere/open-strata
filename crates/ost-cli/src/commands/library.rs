@@ -34,6 +34,13 @@ const LIBRARY_JUNIT_FILE: &str = ".ost-library-test-results.xml";
 
 #[derive(Debug, Subcommand)]
 pub enum LibraryCmd {
+    /// Pull and verify all external library artifacts declared by this workspace.
+    Pull {
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        profile: Option<String>,
+    },
     /// Configure, build, and install one plain CMake library.
     Build {
         /// Directory containing openstrata.library.yaml.
@@ -147,7 +154,17 @@ struct LibraryBuildRecord {
     install_prefix: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     dependencies: Vec<LibraryDependencyRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    external_dependencies: Vec<ExternalLibraryRecord>,
     files: Vec<LibraryFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ExternalLibraryRecord {
+    id: String,
+    version: String,
+    archive_digest: String,
+    install_prefix: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +190,15 @@ struct RuntimeIdentity {
 
 pub fn run(cmd: LibraryCmd, fmt: Format) -> Result<()> {
     match cmd {
+        LibraryCmd::Pull { target, profile } => {
+            let libraries = plugin::pull_workspace_external_libraries(target, profile)?;
+            if fmt.is_json() {
+                output::success(&serde_json::json!({"libraries": libraries}));
+            } else {
+                println!("Pulled {} external library artifact(s)", libraries.len());
+            }
+            Ok(())
+        }
         LibraryCmd::Build {
             library,
             target,
@@ -357,6 +383,7 @@ fn build_library_member(
         build_dir: portable(&plugin::target_build_dir(&library.root, target_id)),
         install_prefix: portable(&prefix),
         dependencies: dependency_records(prerequisites, target_id)?,
+        external_dependencies: external_dependency_records(library, target_id, runtime)?,
         files,
     };
     write_json(&build_record_path(library, target_id), &record)?;
@@ -386,10 +413,21 @@ fn test(
         &resolved.prefix,
     )?;
     let prerequisites = plugin::selected_workspace_libraries_for_library(&library)?;
+    let external = plugin::selected_external_libraries_for_library(
+        &library,
+        &id,
+        &target.runtime_id,
+        &target.runtime_digest,
+    )?;
     let mut runtime_directories = library.installed_runtime_dirs(&isolated_prefix(&library, &id));
     runtime_directories.extend(prerequisites.iter().flat_map(|prerequisite| {
         prerequisite.installed_runtime_dirs(&isolated_prefix(prerequisite, &id))
     }));
+    runtime_directories.extend(
+        external
+            .iter()
+            .flat_map(|library| library.runtime_directories.clone()),
+    );
     let runtime_directory_refs = runtime_directories
         .iter()
         .map(Utf8PathBuf::as_path)
@@ -561,7 +599,10 @@ fn package(
             "requires": record.dependencies.iter().map(|dependency| serde_json::json!({
                 "capability": format!("library:{}", dependency.id),
                 "version": dependency.version,
-            })).collect::<Vec<_>>(),
+            })).chain(record.external_dependencies.iter().map(|dependency| serde_json::json!({
+                "capability": format!("library:{}", dependency.id),
+                "version": dependency.version,
+            }))).collect::<Vec<_>>(),
             "environment": [
                 {"variable": if target.variant.os == ost_core::host::Os::Windows { "PATH" } else if target.variant.os == ost_core::host::Os::Macos { "DYLD_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" }, "operation": "prepend", "values": ["lib"]},
                 {"variable": "CMAKE_PREFIX_PATH", "operation": "prepend", "values": ["."]}
@@ -586,7 +627,11 @@ fn package(
                     "version": dependency.version,
                     "descriptor_sha256": dependency.descriptor_sha256,
                     "build_record_sha256": dependency.build_record_sha256,
-                })).collect::<Vec<_>>(),
+                })).chain(record.external_dependencies.iter().map(|dependency| serde_json::json!({
+                    "id": dependency.id,
+                    "version": dependency.version,
+                    "archive_digest": dependency.archive_digest,
+                }))).collect::<Vec<_>>(),
             }
         },
         "provenance": {
@@ -622,6 +667,7 @@ fn package(
             "archive": archive,
             "archive_digest": packed.archive_digest,
             "dependencies": record.dependencies,
+            "external_dependencies": record.external_dependencies,
             "files": packed.files.len(),
         }));
     } else {
@@ -705,6 +751,16 @@ fn verify_consumer(
             )
         })
         .collect::<Vec<_>>();
+    closure.extend(
+        plugin::selected_external_libraries_for_library(
+            &library,
+            &target_id,
+            &target.runtime_id,
+            &target.runtime_digest,
+        )?
+        .into_iter()
+        .map(|dependency| (dependency.id, dependency.prefix)),
+    );
     closure.push((
         library.id().to_string(),
         isolated_prefix(&library, &target_id),
@@ -1260,6 +1316,7 @@ fn validated_build_record(
         validated_build_record(prerequisite, target_id, os, runtime_id, runtime_prefix)?;
     }
     let expected_dependencies = dependency_records(&prerequisites, target_id)?;
+    let expected_external = external_dependency_records(library, target_id, &runtime)?;
     let expected_descriptor = descriptor_digest(library)?;
     let expected_build_dir = plugin::target_build_dir(&library.root, target_id);
     let expected_prefix = isolated_prefix(library, target_id);
@@ -1274,6 +1331,7 @@ fn validated_build_record(
         || !recorded_path_matches(&record.build_dir, &expected_build_dir)
         || !recorded_path_matches(&record.install_prefix, &expected_prefix)
         || record.dependencies != expected_dependencies
+        || record.external_dependencies != expected_external
         || record.files != observed_files
     {
         return Err(Error::precondition(format!(
@@ -1313,6 +1371,27 @@ fn dependency_records(
             })
         })
         .collect()
+}
+
+fn external_dependency_records(
+    library: &Library,
+    target_id: &str,
+    runtime: &RuntimeIdentity,
+) -> Result<Vec<ExternalLibraryRecord>> {
+    Ok(plugin::selected_external_libraries_for_library(
+        library,
+        target_id,
+        &runtime.id,
+        &runtime.digest,
+    )?
+    .into_iter()
+    .map(|dependency| ExternalLibraryRecord {
+        id: dependency.id,
+        version: dependency.version,
+        archive_digest: dependency.digest,
+        install_prefix: portable(&dependency.prefix),
+    })
+    .collect::<Vec<_>>())
 }
 
 fn runtime_identity(prefix: &Utf8Path, expected_id: &str) -> Result<RuntimeIdentity> {

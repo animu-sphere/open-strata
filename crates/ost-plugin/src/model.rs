@@ -10,6 +10,7 @@
 use indexmap::IndexMap;
 use ost_core::host::Os;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Filename of the plugin bundle manifest at a bundle root.
 pub const PLUGIN_MANIFEST: &str = "openstrata.plugin.yaml";
@@ -233,6 +234,33 @@ pub struct BundleDependency {
 pub struct LibraryDependency {
     pub id: String,
     pub version: String,
+    /// An independently packaged library. The archive digest is the identity;
+    /// `source` only tells a fresh machine where to obtain those exact bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<LibraryArtifactPin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryArtifactPin {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Exact artifact for each supported target id. Use this for a multi-OS
+    /// library; a scalar digest remains available for a single-target project.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub targets: BTreeMap<String, LibraryArtifactPin>,
+}
+
+impl LibraryArtifactPin {
+    pub fn for_target(&self, target: &str) -> Option<&Self> {
+        if self.targets.is_empty() {
+            Some(self)
+        } else {
+            self.targets.get(target)
+        }
+    }
 }
 
 /// Where the bundle's USD `plugInfo.json` lives, relative to the bundle root.
