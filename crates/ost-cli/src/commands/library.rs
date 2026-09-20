@@ -576,6 +576,29 @@ fn package(
             other => other.describe(),
         },
     };
+    let runtime_directories = library
+        .manifest
+        .runtime
+        .directories
+        .iter()
+        .filter(|directory| {
+            record
+                .files
+                .iter()
+                .any(|file| file.path.starts_with(&format!("{directory}/")))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut component_environment = vec![serde_json::json!({
+        "variable": "CMAKE_PREFIX_PATH", "operation": "prepend", "values": ["."]
+    })];
+    if !runtime_directories.is_empty() {
+        component_environment.push(serde_json::json!({
+            "variable": if target.variant.os == ost_core::host::Os::Windows { "PATH" } else if target.variant.os == ost_core::host::Os::Macos { "DYLD_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" },
+            "operation": "prepend",
+            "values": runtime_directories,
+        }));
+    }
     let mut manifest = serde_json::json!({
         "schema": 1,
         "name": library.id(),
@@ -603,10 +626,7 @@ fn package(
                 "capability": format!("library:{}", dependency.id),
                 "version": dependency.version,
             }))).collect::<Vec<_>>(),
-            "environment": [
-                {"variable": if target.variant.os == ost_core::host::Os::Windows { "PATH" } else if target.variant.os == ost_core::host::Os::Macos { "DYLD_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" }, "operation": "prepend", "values": ["lib"]},
-                {"variable": "CMAKE_PREFIX_PATH", "operation": "prepend", "values": ["."]}
-            ],
+            "environment": component_environment,
             "install": packed.files.iter().map(|file| serde_json::json!({
                 "source": file.path,
                 "destination": file.path,

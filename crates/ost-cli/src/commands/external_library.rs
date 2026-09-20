@@ -317,15 +317,38 @@ pub(crate) fn materialize(
         }
         installed.push(relative.to_path_buf());
     }
-    let runtime_directories = ["bin", "lib"]
-        .into_iter()
-        .map(|path| prefix.join(path))
-        .filter(|directory| {
-            installed
+    let mut runtime_directories = Vec::new();
+    for contribution in &component.environment {
+        if !matches!(
+            contribution.variable.as_str(),
+            "PATH" | "LD_LIBRARY_PATH" | "DYLD_LIBRARY_PATH"
+        ) {
+            continue;
+        }
+        for value in &contribution.values {
+            let relative = Utf8Path::new(value);
+            if !relative.is_relative()
+                || relative
+                    .as_std_path()
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+            {
+                return Err(Error::validation(format!(
+                    "library '{}' artifact has an unsafe runtime directory '{value}'",
+                    dependency.id
+                )));
+            }
+            let directory = prefix.join(relative);
+            if installed
                 .iter()
-                .any(|file| prefix.join(file).starts_with(directory))
-        })
-        .collect();
+                .any(|file| prefix.join(file).starts_with(&directory))
+            {
+                runtime_directories.push(directory);
+            }
+        }
+    }
+    runtime_directories.sort();
+    runtime_directories.dedup();
     Ok(ExternalLibrary {
         id: dependency.id.clone(),
         version: record.version,
