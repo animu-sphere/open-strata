@@ -139,7 +139,8 @@ pub enum ArtifactCmd {
     /// Pull a digest-pinned artifact from a remote source, verify it, and
     /// import it into the local registry.
     Pull {
-        /// oci://…@sha256:<oci-manifest-digest> or file://<dist-dir>.
+        /// oci://…@sha256:<oci-manifest-digest> or file://<package-output-dir>.
+        /// The file directory must contain manifest.json and its archive.
         /// Mutable (tag-only) references are refused: resolve them first.
         reference: String,
         /// Require the pulled OpenStrata artifact digest to equal this pin

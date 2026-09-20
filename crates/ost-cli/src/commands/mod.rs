@@ -148,21 +148,23 @@ pub(crate) fn needs_openusd(capability: &str) -> bool {
 /// targets (→ its current on-host location). Both are no-ops when the baked
 /// paths already exist (the export machine), so a developer's own USD tree is
 /// never touched. Python is relocated first so its now-valid host paths are
-/// not mistaken for the stale install prefix. Shared by `configure` and
-/// `plugin build`.
+/// not mistaken for the stale install prefix. Shared by `configure`,
+/// `plugin build`, and `runtime validate`. Validation suppresses status output
+/// so `--json` remains a single JSON document.
 pub(crate) fn relocate_baked_python_if_stale(
     artifact_prefix: &camino::Utf8Path,
     python: Option<&ost_build::PythonHints>,
+    print_status: bool,
 ) {
     if let Some(h) = python {
         if let Ok(n) = ost_build::relocate_baked_python(artifact_prefix, &h.include_dir) {
-            if n > 0 {
+            if n > 0 && print_status {
                 println!("==> relocated baked Python include in {n} runtime CMake file(s)");
             }
         }
     }
     if let Ok(n) = ost_build::relocate_baked_prefix(artifact_prefix) {
-        if n > 0 {
+        if n > 0 && print_status {
             println!("==> relocated baked runtime install prefix in {n} CMake file(s)");
         }
     }

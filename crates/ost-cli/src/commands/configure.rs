@@ -265,7 +265,7 @@ fn generate_with_generator_mode(
         .then(|| ost_build::resolve_for_runtime(&r.artifact_prefix, &target.python_version))
         .flatten();
     if target.uses_runtime() {
-        crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
+        crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref(), true);
     }
     write(
         &target_dir.join("toolchain.cmake"),

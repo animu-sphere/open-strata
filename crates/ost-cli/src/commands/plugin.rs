@@ -899,7 +899,7 @@ pub(crate) fn build_library_one(
     }
     std::fs::create_dir_all(target_dir.as_std_path())
         .map_err(|error| Error::io(target_dir.to_string(), error))?;
-    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
+    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref(), true);
     let mut toolchain_text =
         ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref());
     let mut cmake_prefixes = dependency_prefixes
@@ -1120,7 +1120,7 @@ fn build_one(
     // this host. `None` when none matches — the toolchain then falls back to
     // the runtime prefix, unchanged from before.
     let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &tgt.python_version);
-    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
+    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref(), true);
     let mut toolchain_text =
         ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref());
     if let Some(prefix) = workspace_prefix {
@@ -5888,7 +5888,7 @@ fn session_toolchain_file(bundle: &Bundle, platform: &str, profile: &str) -> Opt
     // the fresh checkout this branch exists for, a just-pulled adopted runtime
     // still carries the export machine's baked paths in its own CMake files —
     // and pinning Python in the toolchain does not undo that.
-    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref());
+    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref(), true);
     let text = ost_build::render_toolchain(&tgt, &r.artifact_prefix, &compiler, python.as_ref());
     std::fs::create_dir_all(target_dir.as_std_path()).ok()?;
     // Write through a temp file: `plugin build` serializes its writes to this

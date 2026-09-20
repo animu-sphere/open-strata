@@ -3465,7 +3465,7 @@ const CONSUMER_CONFIGURE_TIMEOUT: Duration = Duration::from_secs(180);
 /// What one scratch configure concluded.
 enum ConfigureOutcome {
     Passed,
-    /// Configure ran and failed; carries the tail of its output.
+    /// Configure ran and failed; carries its first error or fallback tail.
     Failed(String),
     /// Configure could not be run to a conclusion here (no spawn, timeout, I/O).
     NoAnswer(String),
@@ -3531,7 +3531,7 @@ fn scratch_configure(
                     return ConfigureOutcome::NoAnswer(format!(
                         "configure did not finish within {}s: {}",
                         CONSUMER_CONFIGURE_TIMEOUT.as_secs(),
-                        configure_failure_tail(&read_lossy(&log_path))
+                        configure_failure_detail(&read_lossy(&log_path))
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -3544,7 +3544,7 @@ fn scratch_configure(
     if status.success() {
         ConfigureOutcome::Passed
     } else {
-        ConfigureOutcome::Failed(configure_failure_tail(&read_lossy(&log_path)))
+        ConfigureOutcome::Failed(configure_failure_detail(&read_lossy(&log_path)))
     }
 }
 
@@ -3611,7 +3611,27 @@ fn read_lossy(path: &Utf8Path) -> String {
         .unwrap_or_default()
 }
 
-/// The last few meaningful lines of a failed configure, for a one-line detail.
+/// Preserve CMake's first error and its context. CMake often appends an unused
+/// variables warning after the actual error, so a log tail hides the cause.
+fn configure_failure_detail(output: &str) -> String {
+    if let Some(error) = output
+        .lines()
+        .position(|line| line.trim_start().starts_with("CMake Error"))
+    {
+        let lines = output
+            .lines()
+            .skip(error)
+            .take_while(|line| !line.trim().is_empty())
+            .take(12)
+            .map(str::trim)
+            .collect::<Vec<_>>();
+        let detail = lines.join(" / ");
+        return detail.chars().take(1200).collect();
+    }
+    configure_failure_tail(output)
+}
+
+/// A fallback for tools that do not emit a CMake error header.
 fn configure_failure_tail(output: &str) -> String {
     let lines: Vec<&str> = output
         .lines()
@@ -5325,6 +5345,13 @@ fn validate(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     let mut manifest = RuntimeManifest::from_json(&src)
         .map_err(|e| Error::parse(MANIFEST_FILE, anyhow::Error::new(e)))?;
 
+    // Measure the same consumer-visible prefix that configure and plugin build
+    // use. Older published runtimes can retain stale producer paths in their
+    // CMake exports; those paths must be repaired before the consumer claims.
+    // Keep JSON output clean when the repair changes files.
+    let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &r.python_version);
+    crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref(), false);
+
     // Validate against the effective artifact prefix (the external USD root for
     // an adopted runtime; the store prefix otherwise).
     let current =
@@ -5727,6 +5754,70 @@ mod tests {
                 .unwrap_or_default()
                 .contains("consumer build failed"),
             "{linked:?}"
+        );
+        std::fs::remove_dir_all(prefix.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn consumer_link_checks_a_repaired_materialized_prefix() {
+        let Some(cmake) = ost_core::tools::which("cmake") else {
+            return;
+        };
+        if ost_core::tools::which("ctest").is_none() {
+            return;
+        }
+        let prerequisite = scratch_dir("consumer-link-relocation-toolchain").unwrap();
+        if !matches!(
+            scratch_configure(&cmake, &prerequisite.path, "toolchain", "", &[]),
+            ConfigureOutcome::Passed
+        ) {
+            return;
+        }
+
+        let prefix = temp_dir("consumer-link-relocation");
+        let header = prefix.join("include/pxr/base/tf/token.h");
+        std::fs::create_dir_all(header.parent().unwrap()).unwrap();
+        std::fs::write(
+            header.as_std_path(),
+            "#include <string>\nnamespace pxr { class TfToken { public: TfToken(const char*); std::string GetString() const; }; }\n",
+        )
+        .unwrap();
+        let stale = prefix.join("absent-producer-include");
+        let stale = stale.as_str().replace('\\', "/");
+        let config = format!(
+            "set(Python3_INCLUDE_DIR [[{stale}]])\n\
+             add_library(pxr::tf INTERFACE IMPORTED)\n\
+             set_target_properties(pxr::tf PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \"{stale}\")\n"
+        );
+        std::fs::write(prefix.join("pxrConfig.cmake").as_std_path(), config).unwrap();
+        let manifest = exportable_manifest();
+        let env = EnvSet::for_runtime(&prefix, ost_core::Host::detect().os, "3.13", false);
+        let before = consumer_link_check(&prefix, &manifest, &env);
+        assert!(
+            before
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("non-existent path"),
+            "{before:?}"
+        );
+
+        let python = ost_build::PythonHints {
+            executable: "python".into(),
+            library: "python".into(),
+            include_dir: prefix.join("include").to_string(),
+            version: "3.13".into(),
+            source: ost_build::PythonSource::Host,
+        };
+        crate::commands::relocate_baked_python_if_stale(&prefix, Some(&python), false);
+        let after = consumer_link_check(&prefix, &manifest, &env);
+        assert!(
+            after
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("consumer build failed"),
+            "{after:?}"
         );
         std::fs::remove_dir_all(prefix.as_std_path()).unwrap();
     }
@@ -6404,14 +6495,17 @@ mod tests {
     }
 
     #[test]
-    fn a_configure_failure_tail_keeps_the_last_meaningful_lines() {
+    fn a_configure_failure_detail_keeps_the_error_and_its_context() {
         let output = "-- Detecting CXX compiler\n\n\
                       CMake Error at pxrConfig.cmake:1 (find_dependency):\n\
-                      \x20 Could NOT find X11 (missing: X11_Xt_LIB)\n";
-        let tail = configure_failure_tail(output);
-        assert!(tail.contains("Could NOT find X11"), "{tail}");
-        assert!(!tail.contains("\n"), "the tail is one line: {tail}");
-        assert_eq!(configure_failure_tail("   \n\n"), "<no output>");
+                      \x20 Could NOT find X11 (missing: X11_Xt_LIB)\n\n\
+                      CMake Warning:\n  Manually-specified variables were not used\n\n\
+                      CMake Generate step failed.\n";
+        let detail = configure_failure_detail(output);
+        assert!(detail.contains("Could NOT find X11"), "{detail}");
+        assert!(!detail.contains("Manually-specified"), "{detail}");
+        assert!(!detail.contains("\n"), "the detail is one line: {detail}");
+        assert_eq!(configure_failure_detail("   \n\n"), "<no output>");
     }
 
     #[test]
