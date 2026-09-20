@@ -11,7 +11,7 @@ Legend: 🚧 in progress · ⬜ not started
 | --- | --- |
 | [current.md](current.md) | The next milestone. |
 | [backlog.md](backlog.md) | Ordered but unscheduled work: the milestone ladder beyond next, future phases, and cross-cutting open items. |
-| [runtime-composition.md](runtime-composition.md) | The active v0.23.0 release-CI and host-integration follow-through. |
+| [runtime-composition.md](runtime-composition.md) | Post-v0.23.0 runtime and host-integration follow-through. |
 | [downstream-report-intake.md](downstream-report-intake.md) | The deduplicated open asks from all reference-repository OST reports. |
 | [component-package-contracts.md](component-package-contracts.md) | Candidate delivery slices for installed-package consumers, dependency correctness, architecture lint, and template integration. |
 

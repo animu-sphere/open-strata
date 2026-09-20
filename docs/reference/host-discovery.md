@@ -207,7 +207,7 @@ Run evidence includes the host pin, current host record, runtime and component
 artifacts, executable and arguments, environment digest, timestamps, output
 and exit status. `--json` captures output in the evidence envelope; human mode
 streams the process output. Host-specific package layouts, smoke suites and
-matrix cells remain separate v0.23.0 work.
+matrix cells remain post-v0.23.0 work.
 
 ## Exit behaviour and stable codes
 

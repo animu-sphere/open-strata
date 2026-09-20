@@ -43,7 +43,7 @@ docs/             this documentation
 | **Composed runtime** | A Formation-resolved graph materialized as a self-contained, relocatable execution/SDK artifact while retaining component identity and evidence. | implemented |
 | **Consumer package** | A registry-neutral identity manifest for a native SDK, Python wheel or npm/JavaScript/Wasm entrypoint derived from one exact composed runtime. Package archive assembly remains adapter-owned. | foundation implemented; adapters in progress |
 | **Support matrix** | `openstrata.ci.yaml`: digest-pinned runtime×plugin support lines, runner profiles, lanes, and trust floors, rendered to CI workflows. | implemented |
-| **Host record** | A versioned, fingerprinted record for a discovered third-party DCC installation. Discovery is implemented; headless adapters and matrix execution are planned for v0.23.0. | partial |
+| **Host record** | A versioned, fingerprinted record for a discovered third-party DCC installation. Discovery and Formation-pinned headless launch are implemented; host-specific add-on packaging and the full matrix remain. | partial |
 | **Session** | A mutable workspace over an immutable runtime. | planned |
 
 ## Canonical identity and adapter boundaries

@@ -5,7 +5,7 @@ owners:
   - openstrata-maintainers
 created: 2026-09-12
 updated: 2026-09-20
-applies_to: v0.23.0
+applies_to: post-v0.23.0
 ---
 
 # Downstream OST report intake
@@ -39,29 +39,23 @@ superseded failures are not carried forward.
 | [USD MMD Plugins](https://github.com/animu-sphere/usd-mmd-plugins) | 0 | Local PMX/VMD reports are domain evidence; cross-repository motion dependency awaits a dedicated OST pass. |
 | [Motion Connectors](https://github.com/animu-sphere/motion-connectors) | 0 | Empty scaffold; VRM report 41 records the generated-CI blockage. |
 
-## v0.23.0 - CI, release and host integration
+## Post-v0.23.0 - downstream acceptance
 
 ### New v0.22.10 dogfooding acceptance
 
-- **P1 — compose and verify each bundle's own library closure.** Workspace
-  package and test must not read a shared prefix left by the last individual
-  bundle build. Package only the selected library's installed files, verify
-  each recorded runtime file exists before writing `dependencies.json`, and
-  make package and product verification fail when a declared shared library is
-  absent. The same workspace must produce identical valid packages regardless
-  of bundle build order; run the packaged consumer and a negative missing-file
-  case. [VRM report 40](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/40-2026-09-13-v0.22.10-one-workspace-prefix-for-every-bundle.md)
+- **P1 — prove each bundle's own library closure downstream.** v0.23.0
+  packages the selected library's installed files and rejects missing declared
+  runtime files. Run the same workspace in another bundle build order, the
+  packaged consumer and a negative missing-file case across target operating
+  systems. [VRM report 40](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/40-2026-09-13-v0.22.10-one-workspace-prefix-for-every-bundle.md)
   measured a product with no `vrmContainer` binary even though packaging
   exited successfully. Its release lane has an ordering workaround and a
   three-OS installed-product check, which do not close the OST defect.
-- **P1 — declare external library artifacts in the workspace graph.** Extend
-  `requires.libraries` with a versioned, digest-pinned provider from another
-  repository. Materialize its declared closure for builds and installed
-  consumers; validate version and runtime identity; record its digest in
-  dependency/product provenance; and render the pull in CI. A missing or wrong
-  artifact must fail the graph or materialization, without relying on ambient
-  `CMAKE_PREFIX_PATH`. Prove the `usd-motion-plugins` `motionCore` →
-  `usd-vrm-plugins` migration and one independent consumer.
+- **P1 — prove the external library artifact edge downstream.** v0.23.0 adds a
+  versioned, digest-pinned provider to `requires.libraries`, checks its runtime
+  identity and selected closure, records its digest in package/product
+  provenance, and pulls it in generated CI. Migrate `usd-motion-plugins`
+  `motionCore` → `usd-vrm-plugins` and run one independent installed consumer.
   [VRM report 41](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md)
   records nine blocked VRM members; MMD and connectors have the same future
   boundary.
@@ -84,87 +78,6 @@ superseded failures are not carried forward.
   and remote-pull paths; explicit selectors in the 3DGS matrix are a repository
   workaround until that evidence is available.
   [3DGS report 04](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/04-2026-09-15-v0.22.10-macos-empty-openusd-args.md).
-- **P3 — product path identity.** In a product activation, emit each bundle
-  identity once after checking identity/version/contract agreement; a package
-  must not gain another bundle's runtime files through a shared directory.
-  Sources: [VRM report 41](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md)
-  and [report 40](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/40-2026-09-13-v0.22.10-one-workspace-prefix-for-every-bundle.md).
-
-### Completed during v0.23.0 development
-
-- Aggregate product verification checks that an internal bundle dependency's
-  recorded version, kind and schema contract match the product member. Product
-  activation emits that member's plugin and library paths once while preserving
-  the individual package's standalone dependency paths. This closes the
-  product-path identity item above.
-- Workspace library builds retain member-specific install snapshots. Packaging
-  reads each selected library's own recorded files and fails if an inventoried
-  file is missing. A library may declare OS-specific `runtime.required_files`;
-  library build and plugin packaging then fail if its own install omits a required shared
-  library. Packaged dependency evidence records each library's exact files and
-  required runtime files, and product verification checks those paths against
-  the member archive and package inventory. Clean installed-product loadability
-  remains part of the bundle-closure acceptance above.
-- Runtime validation now records a separate `consumer-link` result after
-  `consumer-configure`: a scratch C++ consumer builds against the selected
-  OpenUSD CMake export and runs under the runtime loader environment. Generated
-  source CI invokes the same validation and retains its JSON report. A hosted
-  clean-host run against a republished, digest-pinned artifact remains open.
-- Generated source and release lanes now pass optional OpenUSD selectors through
-  Bash positional parameters, which work when the selectors are empty under
-  `set -u`. The source cache verification, remote pull and release candidate
-  gates use the same form. Tests now execute those generated Bash bodies with
-  empty and populated selectors, and the macOS CI lane is configured to run
-  them under its default Bash. Hosted macOS results remain an open acceptance
-  check.
-- An explicitly empty `[workspace]` (`members = []`) validates as a zero-member
-  graph. The graph-only source CI rung can omit the runtime artifact and does
-  not run build, test or package. Undeclared descriptors still fail discovery.
-- `usdview-plugin` is a truthful source bundle kind and packages as the
-  first-class `host-addon` component kind. It participates in workspace build,
-  package/product composition, activation, managed-output provenance and
-  Formation resolution. The `usdview` capability drives `lookdev` selection;
-  `plugin view`, `test-view`, and Level 6 include the full composed bundle
-  closure. Static validation checks the Python `PluginContainer` registration,
-  L2 imports it through the real OpenUSD registry, and L6 launches the host.
-  The embedded `usdview-plugin-python` scaffold replaces the codeless-schema
-  workaround. Source: [Stage Runner report 03](https://github.com/animu-sphere/usd-stage-runner/blob/main/docs/reports/ost/03-2026-09-02-v0.22.8-usdview-host-plugin-composition.md).
-
-- The first `ost host run` path binds a discovered Maya/Houdini id and
-  fingerprint into a locked Formation, selects a recorded headless executable,
-  and records the host with the runtime and component digests in run evidence.
-  Host executable paths and vendor root variables participate in Formation's
-  environment and portable lock report.
-  Stale or changed host installs fail before launch; deep fingerprints are
-  rehashed when inventory records are used, and detected host Python must match
-  the runtime Python ABI. Host-specific smoke suites,
-  packaging and the support matrix remain open.
-
-- `ost test --json` attributes selected CTest case counts to each discovered,
-  testable workspace member by project-relative root. Unfiltered runs emit
-  `WORKSPACE_MEMBER_NO_TESTS` for zero-count members, and the managed completion
-  record retains the same attribution. Source: VRM report 38.
-- `external_workflows` binds each declared hand-authored workflow to named
-  matrix cells. `ost ci validate` checks its `OST_VERSION` against
-  `bootstrap.ost.version` and requires each projected or exact-literal
-  `OST_CI_*` binding to be consumed by a workflow step; `--support` applies the
-  same public declaration to those cells. Local/CI CLI skew is reported as
-  `CI_BOOTSTRAP_VERSION_SKEW`. This merges HTTP report 03 with VRM reports 36
-  and 39.
-- Workspace source cells accept cumulative `verify: pyramid` and
-  `verify: package` rungs. They run the whole-workspace plugin pyramid at the
-  declared `up_to` level, then package every member and the aggregate product,
-  so generated lanes can exercise the same verbs as a release without
-  bundles-times-platforms duplicate cells. Source: VRM reports 38 and 39.
-- Source workspace cells may omit `runtime_artifact` and select a project
-  `[build.intents.*]` declaration. Generated runtime-free jobs are isolated
-  from runtime-backed jobs, carry no runtime cache/pull/validation/evidence
-  contract, and pass the same intent to `ost build --without-runtime` and
-  `ost test --without-runtime`. Source: [HTTP report 01](https://github.com/animu-sphere/usd-http-resolver/blob/main/docs/reports/ost/01-2026-08-16-v0.1.0-ci-without-a-support-matrix.md).
-- `ost ci validate`, `ost ci plan`, and `ost ci generate github` now detect an
-  OST-generated default workflow that the current matrix no longer emits and
-  report `CI_STALE_GENERATED_WORKFLOW` without deleting it. Hand-authored files
-  at the same paths are not claimed. Source: VRM report 38.
 
 ## Closed through v0.22.10
 

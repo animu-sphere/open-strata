@@ -31,23 +31,21 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.22.10** — runtime correctness, UX and diagnostics.
-Runtime exports remove producer-absolute Python metadata, packaging enforces the
-semantic project lock, resolver and managed-build failures retain bounded
-evidence, and workspaces containing libraries/tools without bundles plus
-declarative external CMake inputs are first-class. Deterministic native, wheel
-and npm consumers continue to retain the
-exact OST runtime identity. Per-release detail (objective, shipped capabilities,
-compatibility, known limitations) lives in [docs/releases/](docs/releases/);
-active, incomplete work is in the [roadmap](docs/roadmap/README.md).
+The current release is **v0.23.0** — release CI, component closure and host
+add-ons. Generated and externally managed CI share version and support checks;
+workspace tests report per-member evidence; library packages retain their own
+installed-file inventories and can consume digest-pinned external libraries;
+and first-class `usdview` add-ons plus Formation-
+pinned Maya/Houdini launches use the canonical runtime identity. Per-release
+detail (objective, shipped capabilities, compatibility, known limitations)
+lives in [docs/releases/](docs/releases/); active, incomplete work is in the
+[roadmap](docs/roadmap/README.md).
 
-The next **v0.23.0** milestone expands release CI, closes per-bundle package
-and cross-repository library dependency gaps found by v0.22.10 dogfooding,
-and binds the same canonical runtime identity to DCC host adapters. The
-[current roadmap](docs/roadmap/current.md) distinguishes completed development
-work from remaining acceptance.
+Post-release work covers hosted consumer and macOS evidence, downstream package
+loadability and external-library adoption, and the full DCC host
+matrix. Release defects will be fixed in v0.23.x.
 See the [composition guide](docs/guides/compose-a-runtime.md),
-[v0.22.10 record](docs/releases/v0.22.10.md),
+[v0.23.0 record](docs/releases/v0.23.0.md),
 [current roadmap](docs/roadmap/current.md) and
 [downstream report intake](docs/roadmap/downstream-report-intake.md).
 
