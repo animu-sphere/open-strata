@@ -309,26 +309,22 @@ digests are recorded in its build/package manifests rather than flattened into
 one install tree.
 
 The primary bundle keeps priority in the plugin and loader search paths;
-resolved dependencies follow in a stable order, then the runtime. The intended
-identity contract rejects or deduplicates duplicate bundles after
-identity/version/contract agreement. In v0.22.10 a product activation can still
-list one dependency bundle's plugin path more than once; see the
-[v0.23.0 intake](../roadmap/downstream-report-intake.md).
+resolved dependencies follow in a stable order, then the runtime. A product
+checks the identity, version, kind, and schema contract of a dependency bundle
+against a matching product member. Its activation uses that member's paths once,
+as does the aggregate component contract; an individual bundle package retains
+its embedded provider paths for standalone installation.
 
 A plugin package materializes its selected plain-library runtime under
 `runtime/libraries/`, adds those directories to the packaged manifest's loader
 paths, and records the library closure in `dependencies.json` and the artifact
 manifest.
 
-**Known v0.22.10 limitation:** workspace package/test reads a shared
-`workspace-prefix` that the most recent individual bundle build replaces. The
-packager currently checks for `bin`/`lib` directories rather than each
-declared library's installed files, and can record a library whose binary is
-absent. A product may therefore pass packaging but fail to load; build order
-can change the result. The source of this finding and v0.23.0 acceptance are in
-the [downstream report intake](../roadmap/downstream-report-intake.md). Until
-that contract lands, a clean installed-product test must verify each bundle's
-recorded library files and load behavior.
+Workspace package/test now reads a separate install snapshot for each selected
+library. Packaging checks every file named by that snapshot before recording
+the library closure, so another bundle's build order cannot replace its files.
+The remaining shared-library loadability and clean installed-product acceptance
+are tracked in the [v0.23.0 intake](../roadmap/downstream-report-intake.md).
 
 `requires.libraries` in v0.22.10 resolves only workspace members by id and
 version. An installed library from another repository has no declared artifact

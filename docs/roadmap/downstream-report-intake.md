@@ -92,6 +92,15 @@ superseded failures are not carried forward.
 
 ### Completed during v0.23.0 development
 
+- Aggregate product verification checks that an internal bundle dependency's
+  recorded version, kind and schema contract match the product member. Product
+  activation emits that member's plugin and library paths once while preserving
+  the individual package's standalone dependency paths. This closes the
+  product-path identity item above.
+- Workspace library builds retain member-specific install snapshots. Packaging
+  reads each selected library's own recorded files and fails if an inventoried
+  file is missing. Clean installed-product loadability remains part of the
+  bundle-closure acceptance above.
 - Runtime validation now records a separate `consumer-link` result after
   `consumer-configure`: a scratch C++ consumer builds against the selected
   OpenUSD CMake export and runs under the runtime loader environment. Generated

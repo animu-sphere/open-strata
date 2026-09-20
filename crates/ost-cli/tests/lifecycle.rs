@@ -4037,6 +4037,17 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     let product: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&product_manifest).unwrap()).unwrap();
     assert_eq!(product["kind"], "openstrata.plugin-product");
+    assert!(
+        !product["component"]["environment"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|entry| entry["values"].as_array().into_iter().flatten())
+            .any(|value| value
+                .as_str()
+                .is_some_and(|path| path.starts_with("bundles/consumer/runtime/bundles/schema/"))),
+        "the product component contract must use the schema member's own paths"
+    );
     assert_eq!(
         product["install_order"],
         serde_json::json!(["schema", "consumer"])
@@ -4139,6 +4150,22 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
         .unwrap()
         .iter()
         .any(|path| path == "bundles/schema/plugin/resources/schema"));
+    assert!(
+        !aggregate_activation["plugin_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path == "bundles/consumer/runtime/bundles/schema/plugin/resources/schema"),
+        "the product must activate the schema member once, not its embedded copy"
+    );
+    assert!(
+        !aggregate_activation["library_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path == "bundles/consumer/runtime/bundles/schema/lib"),
+        "the product must use the schema member's library path once"
+    );
     assert!(aggregate_activation["library_paths"]
         .as_array()
         .unwrap()
