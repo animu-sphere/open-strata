@@ -4775,6 +4775,20 @@ fn verify_product_member(
                 member.id
             ))
         })?;
+        if tool.id() != member.id || tool.version() != member.version {
+            return Err(Error::coded(
+                "PLUGIN_PRODUCT_MEMBER_IDENTITY_MISMATCH",
+                Category::Validation,
+                format!(
+                    "product member '{}' is {} {}, but its packaged tool is {} {}",
+                    member.id,
+                    member.kind,
+                    member.version,
+                    tool.id(),
+                    tool.version()
+                ),
+            ));
+        }
         let windows = product_target.contains("-windows-");
         tool.locate_executables(&expanded, windows)
             .map_err(|error| {
@@ -4784,12 +4798,30 @@ fn verify_product_member(
                 ))
             })?;
     } else {
-        Bundle::load(&expanded).map_err(|error| {
+        let bundle = Bundle::load(&expanded).map_err(|error| {
             Error::validation(format!(
                 "installed product member '{}' is not a valid plugin bundle: {error}",
                 member.id
             ))
         })?;
+        if bundle.manifest.name() != member.id
+            || bundle.manifest.plugin.version != member.version
+            || bundle.manifest.kind().as_str() != member.kind
+        {
+            return Err(Error::coded(
+                "PLUGIN_PRODUCT_MEMBER_IDENTITY_MISMATCH",
+                Category::Validation,
+                format!(
+                    "product member '{}' is {} {}, but its packaged bundle is '{}' {} {}",
+                    member.id,
+                    member.kind,
+                    member.version,
+                    bundle.manifest.name(),
+                    bundle.manifest.kind().as_str(),
+                    bundle.manifest.plugin.version
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -5260,11 +5292,13 @@ fn internal_product_bundle_dependencies(
                 ))
             })?;
             let expected = (
+                Some(id),
                 dependency["version"].as_str(),
                 dependency["kind"].as_str(),
                 dependency["contract"].as_u64(),
             );
             let actual = (
+                Some(bundle.manifest.name()),
                 Some(bundle.manifest.plugin.version.as_str()),
                 Some(bundle.manifest.kind().as_str()),
                 bundle
@@ -10407,6 +10441,15 @@ mod tests {
         );
         let mut mismatched = contract;
         mismatched.members[1].dependencies["bundles"][0]["contract"] = serde_json::json!(2);
+        let error = internal_product_bundle_dependencies(&mismatched, |member| {
+            root.join(member.destination())
+        })
+        .unwrap_err();
+        assert_eq!(error.code(), "PLUGIN_PRODUCT_BUNDLE_IDENTITY_MISMATCH");
+        mismatched.members[1].dependencies["bundles"][0]["contract"] = serde_json::json!(1);
+        let descriptor = provider_root.join(ost_plugin::PLUGIN_MANIFEST);
+        let source = std::fs::read_to_string(&descriptor).unwrap();
+        std::fs::write(&descriptor, source.replace("name: schema", "name: other")).unwrap();
         let error = internal_product_bundle_dependencies(&mismatched, |member| {
             root.join(member.destination())
         })
