@@ -240,6 +240,29 @@ args = ["--version"]
     )
     .unwrap();
     json(sandbox.ost(&["--json", "formation", "lock", path(&formation)]));
+    let hosted_resolution =
+        json(sandbox.ost(&["--json", "formation", "resolve", path(&formation)]));
+    let contributions = hosted_resolution["data"]["environment"].as_array().unwrap();
+    assert!(contributions.iter().any(|item| {
+        item["source"] == format!("host:{host_id}")
+            && item["key"] == "PATH"
+            && item["paths"] == serde_json::json!(["host/bin"])
+    }));
+    assert!(contributions.iter().any(|item| {
+        item["source"] == format!("host:{host_id}")
+            && item["key"] == "MAYA_LOCATION"
+            && item["operation"] == "set"
+    }));
+    let hosted_env = json(sandbox.ost(&["--json", "formation", "env", path(&formation)]));
+    let variables = hosted_env["data"]["env"].as_array().unwrap();
+    let variable = |name: &str| {
+        variables.iter().find(|item| item["name"] == name).unwrap()["value"]
+            .as_str()
+            .unwrap()
+    };
+    let host_root_text = path(&host_root).replace('\\', "/");
+    assert_eq!(variable("MAYA_LOCATION"), host_root_text);
+    assert!(variable("PATH").contains(&format!("{host_root_text}/bin")));
     let hosted = json(sandbox.ost(&[
         "--json",
         "host",

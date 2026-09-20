@@ -133,6 +133,8 @@ superseded failures are not carried forward.
 - The first `ost host run` path binds a discovered Maya/Houdini id and
   fingerprint into a locked Formation, selects a recorded headless executable,
   and records the host with the runtime and component digests in run evidence.
+  Host executable paths and vendor root variables participate in Formation's
+  environment and portable lock report.
   Stale or changed host installs fail before launch; deep fingerprints are
   rehashed when inventory records are used, and detected host Python must match
   the runtime Python ABI. Host-specific smoke suites,

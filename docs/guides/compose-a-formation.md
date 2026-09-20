@@ -115,9 +115,10 @@ ost host run maya-2026-1f4c9a2b --formation formation.toml --role interpreter --
 
 `host run` chooses the executable from the validated host record and uses the
 Formation's pinned runtime, component set, composed environment and run
-evidence. The host pin is checked during resolution and immediately before
-launch; a missing, stale or changed install and a detected Python ABI mismatch
-fail before execution. `--json`
+evidence. Formation also adds the host's executable directories and vendor
+root variable (`MAYA_LOCATION` or `HFS`) to that environment. The host pin is
+checked during resolution and immediately before launch; a missing, stale or
+changed install and a detected Python ABI mismatch fail before execution. `--json`
 includes the host record in the run evidence. The host executable's exit code
 is propagated.
 

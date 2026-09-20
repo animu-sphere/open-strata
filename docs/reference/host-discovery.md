@@ -197,6 +197,9 @@ selected. The Formation must have
 pin is written to `formation.lock`, and both Formation resolution and the
 foreground launch re-check the current cache record. The Formation's runtime
 artifact and component digests remain the source of the launch environment.
+The host contributes its recorded executable directories to `PATH` and sets
+`MAYA_LOCATION` or `HFS` through the same Formation `EnvSet`; the lock records
+these as host-relative environment contributions.
 When discovery identifies the host's embedded Python, Formation resolution
 requires the pinned runtime to have the same Python major/minor version.
 
