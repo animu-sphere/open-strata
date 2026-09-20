@@ -48,6 +48,8 @@ pub struct FormationManifest {
     pub schema: String,
     pub formation: FormationHeader,
     pub runtime: RuntimeRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostRef>,
     #[serde(default)]
     pub components: Vec<ComponentRef>,
     pub command: CommandSpec,
@@ -63,6 +65,14 @@ pub struct FormationHeader {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeRef {
     pub artifact: String,
+}
+
+/// A discovered third-party host pinned to its observed install bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostRef {
+    pub id: String,
+    pub fingerprint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +133,10 @@ impl FormationManifest {
         }
         validate_id("formation.name", &self.formation.name)?;
         validate_full_digest("runtime.artifact", &self.runtime.artifact)?;
+        if let Some(host) = &self.host {
+            validate_id("host.id", &host.id)?;
+            validate_full_digest("host.fingerprint", &host.fingerprint)?;
+        }
         if self.command.program.trim().is_empty() {
             return Err(Error::config("command.program must not be empty"));
         }
@@ -222,6 +236,8 @@ pub struct ResolvedFormation {
     pub manifest_digest: String,
     pub target: String,
     pub runtime: ResolvedArtifact,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostRef>,
     pub components: Vec<ResolvedComponent>,
     pub environment: Vec<EnvironmentContribution>,
     pub command: CommandSpec,
@@ -518,6 +534,7 @@ pub fn resolve(
             input.runtime_manifest.profile
         ),
         runtime: ResolvedArtifact::from(&input.runtime_record),
+        host: declared.host.clone(),
         components: resolved_components,
         environment,
         command: declared.command.clone(),

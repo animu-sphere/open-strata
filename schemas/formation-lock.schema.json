@@ -28,6 +28,7 @@
         "manifest_digest": { "$ref": "#/$defs/digest" },
         "target": { "type": "string", "minLength": 1 },
         "runtime": { "$ref": "#/$defs/artifact" },
+        "host": { "$ref": "#/$defs/host" },
         "components": {
           "type": "array",
           "items": {
@@ -69,7 +70,7 @@
             "required": ["key", "operation", "source", "paths"],
             "properties": {
               "key": { "type": "string", "minLength": 1 },
-              "operation": { "const": "prepend" },
+              "operation": { "enum": ["prepend", "set"] },
               "source": { "type": "string", "minLength": 1 },
               "paths": {
                 "type": "array",
@@ -100,6 +101,15 @@
     "digest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "fingerprint"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "fingerprint": { "$ref": "#/$defs/digest" }
+      }
     },
     "artifact": {
       "type": "object",

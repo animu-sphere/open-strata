@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `ost host` — discover, list, and inspect third-party DCC installs.
+//! `ost host` — discover, inspect, and run third-party DCC installs.
 //!
 //! These commands are **diagnostic**: `discover` and `list` report what is on
 //! the machine, so finding nothing is an answer and exits `0`, exactly as
 //! `doctor` does. Only a real failure — an unusable selector, an unreadable
 //! inventory — takes a category exit code.
 //!
-//! Nothing here launches, configures, or modifies a host. Composing one into a
-//! runnable environment is Formation's job.
+//! A host launch uses a locked Formation's composed environment and evidence.
 
 use std::collections::BTreeSet;
 
@@ -15,6 +14,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
 use ost_core::paths::{find_project_root, PROJECT_MANIFEST};
 use ost_core::{Category, Error, Result};
+use ost_formation::FormationManifest;
 use ost_host::{
     canonical_root_key, discover, project_inventory_path, select, user_cache_path,
     DiscoveryRequest, FingerprintMode, HostFamily, HostInventory, HostRecord, HostStatus,
@@ -22,6 +22,7 @@ use ost_host::{
 };
 use ost_manifest::{Project, DEFAULT_DISCOVERY_DEPTH};
 
+use super::formation::{self, FormationCmd, FormationRunArgs};
 use crate::output::{self, Format};
 
 #[derive(Debug, Subcommand)]
@@ -32,6 +33,8 @@ pub enum HostCmd {
     List(ListArgs),
     /// Show one host record in full.
     Inspect(InspectArgs),
+    /// Run a validated host executable in a locked Formation.
+    Run(HostRunArgs),
 }
 
 #[derive(Debug, Args)]
@@ -105,11 +108,30 @@ pub struct InspectArgs {
     pub selector: String,
 }
 
+#[derive(Debug, Args)]
+pub struct HostRunArgs {
+    /// Discovered instance id, install path, family, or unambiguous id prefix.
+    pub selector: String,
+
+    /// Formation manifest with a matching [host] pin and an adjacent lock.
+    #[arg(long, default_value = "formation.toml")]
+    pub formation: Utf8PathBuf,
+
+    /// Headless executable role recorded during discovery.
+    #[arg(long, default_value = "interpreter", value_parser = ["interpreter", "batch", "render"])]
+    pub role: String,
+
+    /// Arguments for the selected executable.
+    #[arg(last = true)]
+    pub args: Vec<String>,
+}
+
 pub fn run(command: HostCmd, format: Format) -> Result<()> {
     match command {
         HostCmd::Discover(args) => discover_command(&args, format),
         HostCmd::List(args) => list_command(&args, format),
         HostCmd::Inspect(args) => inspect_command(&args, format),
+        HostCmd::Run(args) => run_command(&args, format),
     }
 }
 
@@ -362,12 +384,24 @@ fn list_command(args: &ListArgs, format: Format) -> Result<()> {
 }
 
 fn inspect_command(args: &InspectArgs, format: Format) -> Result<()> {
+    let record = selected_host(&args.selector)?;
+
+    match format {
+        Format::Json => output::success(&serde_json::to_value(&record).map_err(|error| {
+            Error::Operation(format!("cannot serialize the host record: {error}"))
+        })?),
+        Format::Human => print_record_detail(&record),
+    }
+    Ok(())
+}
+
+fn selected_host(selector: &str) -> Result<HostRecord> {
     let cache_path = user_cache_path();
     let mut inventory =
         HostInventory::load(&cache_path)?.unwrap_or_else(|| HostInventory::new(Vec::new()));
     inventory.refresh_statuses();
 
-    let record = match select(&inventory.records, &args.selector) {
+    let record = match select(&inventory.records, selector) {
         Selection::One(record) => record.clone(),
         Selection::Ambiguous(ids) => {
             return Err(Error::coded(
@@ -375,7 +409,7 @@ fn inspect_command(args: &InspectArgs, format: Format) -> Result<()> {
                 Category::Usage,
                 format!(
                     "'{}' matches {} hosts: {}",
-                    args.selector,
+                    selector,
                     ids.len(),
                     ids.join(", ")
                 ),
@@ -386,19 +420,103 @@ fn inspect_command(args: &InspectArgs, format: Format) -> Result<()> {
             return Err(Error::coded(
                 "HOST_NOT_FOUND",
                 Category::Precondition,
-                format!("no host matches '{}'", args.selector),
+                format!("no host matches '{selector}'"),
             )
             .with_hint("run `ost host discover`, then `ost host list`"));
         }
     };
+    Ok(record)
+}
 
-    match format {
-        Format::Json => output::success(&serde_json::to_value(&record).map_err(|error| {
-            Error::Operation(format!("cannot serialize the host record: {error}"))
-        })?),
-        Format::Human => print_record_detail(&record),
+/// A Formation run rechecks this pin immediately before launching. A cached
+/// record is evidence only while its install status and fingerprint still match.
+pub(super) fn checked_pinned_host(id: &str, fingerprint: &str) -> Result<HostRecord> {
+    let record = selected_host(id)?;
+    if !record.status.is_usable() {
+        return Err(Error::coded(
+            "HOST_NOT_VALIDATED",
+            Category::Validation,
+            format!("host '{}' is {}", record.id, record.status.as_str()),
+        )
+        .with_hint("re-run `ost host discover --refresh` after checking the install"));
     }
-    Ok(())
+    if record.fingerprint_digest() != Some(fingerprint) {
+        return Err(Error::coded(
+            "HOST_FINGERPRINT_DRIFT",
+            Category::Validation,
+            format!(
+                "host '{}' no longer matches the Formation fingerprint",
+                record.id
+            ),
+        )
+        .with_hint("inspect the host and deliberately update the Formation and lock"));
+    }
+    Ok(record)
+}
+
+fn run_command(args: &HostRunArgs, format: Format) -> Result<()> {
+    if args.args.is_empty() {
+        return Err(Error::coded(
+            "HOST_ARGUMENTS_REQUIRED",
+            Category::Usage,
+            "host run needs arguments for a headless executable",
+        )
+        .with_hint("pass host arguments after `--`, such as `-- -c <script>`"));
+    }
+    let manifest = FormationManifest::load(&args.formation)?;
+    let pin = manifest.host.as_ref().ok_or_else(|| {
+        Error::coded(
+            "HOST_FORMATION_PIN_REQUIRED",
+            Category::Configuration,
+            format!("Formation '{}' has no [host] pin", args.formation),
+        )
+        .with_hint("add the discovered host id and fingerprint to [host], then lock the Formation")
+    })?;
+    let selected = selected_host(&args.selector)?;
+    if selected.id != pin.id {
+        return Err(Error::coded(
+            "HOST_FORMATION_ID_MISMATCH",
+            Category::Validation,
+            format!(
+                "selected host '{}' differs from Formation host '{}'",
+                selected.id, pin.id
+            ),
+        ));
+    }
+    let host = checked_pinned_host(&pin.id, &pin.fingerprint)?;
+    // Maya's Unix batch mode is its interactive binary with an explicit
+    // headless flag; Windows ships a separate mayabatch executable.
+    let maya_batch_fallback = args.role == "batch"
+        && host.family == HostFamily::Maya
+        && host.platform.os != ost_core::host::Os::Windows
+        && !host.executables.contains_key("batch");
+    let executable = host
+        .executables
+        .get(if maya_batch_fallback {
+            "interactive"
+        } else {
+            &args.role
+        })
+        .ok_or_else(|| {
+            Error::coded(
+                "HOST_EXECUTABLE_UNAVAILABLE",
+                Category::Precondition,
+                format!("host '{}' has no '{}' executable", host.id, args.role),
+            )
+            .with_hint("use a role shown by `ost host inspect`, or rediscover the install")
+        })?;
+    let mut command = vec![executable.absolute(&host.root).to_string()];
+    if maya_batch_fallback {
+        command.push("-batch".into());
+    }
+    command.extend(args.args.iter().cloned());
+    formation::run(
+        FormationCmd::Run(FormationRunArgs {
+            path: args.formation.clone(),
+            command,
+        }),
+        format,
+    )
 }
 
 fn print_records(records: &[HostRecord]) {

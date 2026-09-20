@@ -580,7 +580,9 @@ fn discovery_root_problem(root: &str) -> Option<&'static str> {
     if trimmed.contains(['*', '?', '[', ']', '{', '}']) {
         return Some("must be a literal directory: discovery roots are declarative, not globs");
     }
-    if trimmed.contains('$') || trimmed.contains('~') || trimmed.contains('%') {
+    // A tilde inside an absolute path is a literal filename character (and
+    // appears in Windows 8.3 short names such as RUNNER~1).
+    if trimmed.contains('$') || trimmed.contains('%') {
         return Some("must not need shell or environment expansion");
     }
     if !is_absolute_declared_path(trimmed) {
@@ -919,6 +921,12 @@ portability = "portable"
         assert_eq!(discovery.roots, vec!["/tools/maya".to_string()]);
         assert_eq!(discovery.max_depth, Some(3));
         assert_eq!(discovery.families, vec!["maya".to_string()]);
+
+        // Windows runners may expose the temp directory through an 8.3 name.
+        let short_name = format!(
+            "{SAMPLE}\n[host.discovery]\nroots = ['C:/Users/RUNNER~1/AppData/Local/Temp/dcc']\n"
+        );
+        Project::from_toml(&short_name).expect("literal Windows short path");
     }
 
     #[test]

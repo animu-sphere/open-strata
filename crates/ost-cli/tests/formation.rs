@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Formation CLI lifecycle over a real digest-pinned runtime artifact.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -128,7 +129,7 @@ args = ["--version"]
 "#
     );
     let formation = sandbox.base.join("formation.toml");
-    std::fs::write(&formation, manifest).unwrap();
+    std::fs::write(&formation, &manifest).unwrap();
 
     let resolved = json(sandbox.ost(&["--json", "formation", "resolve", path(&formation)]));
     assert_eq!(
@@ -185,4 +186,207 @@ args = ["--version"]
         .contains("ost "));
     let evidence = PathBuf::from(ran["data"]["evidence"].as_str().unwrap());
     assert!(evidence.is_file());
+
+    // A host is pinned into the same Formation lock and launched through the
+    // same environment/evidence path. The fixture executable is a copy of ost:
+    // its --version is safe to invoke without a DCC installation or license.
+    let host_root = sandbox.base.join("maya2026");
+    let bin = host_root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in ["maya", "mayapy"] {
+        let executable = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.into()
+        };
+        std::fs::copy(ost_bin(), bin.join(executable)).unwrap();
+    }
+    let header = host_root.join("include/maya/MTypes.h");
+    std::fs::create_dir_all(header.parent().unwrap()).unwrap();
+    std::fs::write(header, "#define MAYA_APP_VERSION 2026\n").unwrap();
+    let discovered = json(sandbox.ost(&[
+        "--json",
+        "host",
+        "discover",
+        "--host",
+        "maya",
+        "--path",
+        path(&host_root),
+        "--no-environment",
+        "--no-known-roots",
+    ]));
+    let host = &discovered["data"]["records"][0];
+    assert_eq!(host["status"], "validated");
+    let host_id = host["id"].as_str().unwrap();
+    let host_fingerprint = host["fingerprint"]["digest"].as_str().unwrap();
+
+    let unpinned = sandbox.ost(&[
+        "--json",
+        "host",
+        "run",
+        host_id,
+        "--formation",
+        path(&formation),
+        "--",
+        "--version",
+    ]);
+    assert!(!unpinned.status.success());
+    let unpinned: serde_json::Value = serde_json::from_slice(&unpinned.stdout).unwrap();
+    assert_eq!(unpinned["error"]["code"], "HOST_FORMATION_PIN_REQUIRED");
+
+    std::fs::write(
+        &formation,
+        format!("{manifest}\n[host]\nid = \"{host_id}\"\nfingerprint = \"{host_fingerprint}\"\n"),
+    )
+    .unwrap();
+    json(sandbox.ost(&["--json", "formation", "lock", path(&formation)]));
+    let hosted_resolution =
+        json(sandbox.ost(&["--json", "formation", "resolve", path(&formation)]));
+    let contributions = hosted_resolution["data"]["environment"].as_array().unwrap();
+    assert!(contributions.iter().any(|item| {
+        item["source"] == format!("host:{host_id}")
+            && item["key"] == "PATH"
+            && item["paths"] == serde_json::json!(["host/bin"])
+    }));
+    assert!(contributions.iter().any(|item| {
+        item["source"] == format!("host:{host_id}")
+            && item["key"] == "MAYA_LOCATION"
+            && item["operation"] == "set"
+    }));
+    let hosted_env = json(sandbox.ost(&["--json", "formation", "env", path(&formation)]));
+    let variables = hosted_env["data"]["env"].as_array().unwrap();
+    let variable = |name: &str| {
+        variables.iter().find(|item| item["name"] == name).unwrap()["value"]
+            .as_str()
+            .unwrap()
+    };
+    let canonical_host_root = std::fs::canonicalize(&host_root).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(variable("MAYA_LOCATION")).unwrap(),
+        canonical_host_root
+    );
+    let canonical_bin = std::fs::canonicalize(&bin).unwrap();
+    assert!(std::env::split_paths(variable("PATH"))
+        .filter_map(|directory| std::fs::canonicalize(directory).ok())
+        .any(|directory| directory == canonical_bin));
+    let hosted = json(sandbox.ost(&[
+        "--json",
+        "host",
+        "run",
+        host_id,
+        "--formation",
+        path(&formation),
+        "--",
+        "--version",
+    ]));
+    assert_eq!(hosted["data"]["run"]["host"]["id"], host_id);
+    assert_eq!(
+        hosted["data"]["run"]["host"]["fingerprint"],
+        host_fingerprint
+    );
+    assert!(hosted["data"]["run"]["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("ost "));
+
+    let runtime_manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(sandbox.runtime_prefix().join("runtime.json")).unwrap(),
+    )
+    .unwrap();
+    let runtime_python = runtime_manifest["python"].as_str().unwrap();
+    let runtime_minor = runtime_python
+        .split('.')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(".");
+    let incompatible_minor = if runtime_minor == "3.11" {
+        "3.12"
+    } else {
+        "3.11"
+    };
+    let incompatible_dir = host_root.join(format!("lib/python{incompatible_minor}"));
+    std::fs::create_dir_all(&incompatible_dir).unwrap();
+    let rediscovered = json(sandbox.ost(&[
+        "--json",
+        "host",
+        "discover",
+        "--host",
+        "maya",
+        "--path",
+        path(&host_root),
+        "--no-environment",
+        "--no-known-roots",
+        "--refresh",
+    ]));
+    let incompatible_pin = rediscovered["data"]["records"][0]["fingerprint"]["digest"]
+        .as_str()
+        .unwrap();
+    std::fs::write(
+        &formation,
+        format!("{manifest}\n[host]\nid = \"{host_id}\"\nfingerprint = \"{incompatible_pin}\"\n"),
+    )
+    .unwrap();
+    let mismatch = sandbox.ost(&["--json", "formation", "lock", path(&formation)]);
+    assert!(!mismatch.status.success());
+    let mismatch: serde_json::Value = serde_json::from_slice(&mismatch.stdout).unwrap();
+    assert_eq!(mismatch["error"]["code"], "HOST_PYTHON_ABI_MISMATCH");
+
+    std::fs::remove_dir_all(host_root.join("lib")).unwrap();
+    json(sandbox.ost(&[
+        "--json",
+        "host",
+        "discover",
+        "--host",
+        "maya",
+        "--path",
+        path(&host_root),
+        "--no-environment",
+        "--no-known-roots",
+        "--refresh",
+    ]));
+    std::fs::write(
+        &formation,
+        format!("{manifest}\n[host]\nid = \"{host_id}\"\nfingerprint = \"{host_fingerprint}\"\n"),
+    )
+    .unwrap();
+    json(sandbox.ost(&["--json", "formation", "lock", path(&formation)]));
+
+    let interpreter = if cfg!(windows) {
+        "mayapy.exe"
+    } else {
+        "mayapy"
+    };
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(bin.join(interpreter))
+        .unwrap()
+        .write_all(b"changed")
+        .unwrap();
+    let drifted = sandbox.ost(&[
+        "--json",
+        "host",
+        "run",
+        host_id,
+        "--formation",
+        path(&formation),
+        "--",
+        "--version",
+    ]);
+    assert!(!drifted.status.success());
+    let drifted: serde_json::Value = serde_json::from_slice(&drifted.stdout).unwrap();
+    assert_eq!(drifted["error"]["code"], "HOST_NOT_VALIDATED");
+
+    // Calling Formation directly cannot bypass the host pin either.
+    let bypass = sandbox.ost(&[
+        "--json",
+        "formation",
+        "run",
+        path(&formation),
+        "--",
+        ost_bin(),
+        "--version",
+    ]);
+    assert!(!bypass.status.success());
+    let bypass: serde_json::Value = serde_json::from_slice(&bypass.stdout).unwrap();
+    assert_eq!(bypass["error"]["code"], "HOST_NOT_VALIDATED");
 }

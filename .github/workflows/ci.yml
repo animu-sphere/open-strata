@@ -113,6 +113,13 @@ jobs:
       - name: Test clean composition and relocated native SDK consumption
         run: cargo test -p ost-cli --test runtime_composition --locked -- --nocapture
 
+      - name: Test pinned headless host launch fixtures
+        run: cargo test -p ost-cli --test formation --test host_discovery --locked
+
+      - name: Exercise generated optional OpenUSD flags under macOS Bash
+        if: startsWith(matrix.os, 'macos-')
+        run: cargo test -p ost-ci --lib --locked generated_optional_openusd
+
   # The generated reference docs (CLI, exits, schemas, OST variables, support)
   # must match their sources. Regenerate and fail on any diff so a contract
   # change cannot silently leave the docs stale.

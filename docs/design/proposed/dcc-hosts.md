@@ -282,8 +282,11 @@ Houdini's interpreter is deliberately not asked, because `hython --version`
 reports Python's version and would answer confidently and wrongly.
 
 Still open from phase 2 onward: a Nuke validator, JSONL output, headless
-`run`/`test` and host-standard packaging (phase 3), the matrix and cross-DCC
-compatibility edges (phase 4), and fleet/productization (phase 5).
+`test` and host-standard packaging (phase 3), the matrix and cross-DCC
+compatibility edges (phase 4), and fleet/productization (phase 5). During
+v0.23.0 development, `ost host run` gained a first pinned headless path through
+Formation: it checks a discovered host id/fingerprint, selects a recorded
+headless executable, and records the host alongside Formation run evidence.
 
 **Milestone split (replanned 2026-08-09).** v0.21.0 shipped the discovery half
 above and nothing that runs a host. v0.22.0 establishes the OpenUSD artifact,

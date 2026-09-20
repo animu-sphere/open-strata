@@ -96,6 +96,32 @@ bundles, renderer, and executable ran:
 ost formation run formation.toml -- usdview avatar.vrm
 ```
 
+For a discovered Maya or Houdini installation, add its exact id and fingerprint
+from `ost host inspect --json` to the same Formation manifest:
+
+```toml
+[host]
+id = "maya-2026-1f4c9a2b"
+fingerprint = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+```
+
+Resolve and lock again, then launch one of the recorded headless executable
+roles through the locked Formation:
+
+```sh
+ost formation lock formation.toml
+ost host run maya-2026-1f4c9a2b --formation formation.toml --role interpreter -- -c "print('ready')"
+```
+
+`host run` chooses the executable from the validated host record and uses the
+Formation's pinned runtime, component set, composed environment and run
+evidence. Formation also adds the host's executable directories and vendor
+root variable (`MAYA_LOCATION` or `HFS`) to that environment. The host pin is
+checked during resolution and immediately before launch; a missing, stale or
+changed install and a detected Python ABI mismatch fail before execution. `--json`
+includes the host record in the run evidence. The host executable's exit code
+is propagated.
+
 ## Notes
 
 - Every subcommand emits the shipped `{ok, schema, data, warnings}` envelope with

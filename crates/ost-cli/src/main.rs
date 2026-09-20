@@ -106,7 +106,7 @@ enum Command {
     #[command(subcommand)]
     Formation(formation::FormationCmd),
 
-    /// Discover, list, and inspect third-party DCC hosts (Maya, Houdini).
+    /// Discover, inspect, and run third-party DCC hosts (Maya, Houdini).
     #[command(subcommand)]
     Host(host::HostCmd),
 

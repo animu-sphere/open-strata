@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `ost formation` — digest-pinned cross-repository composition and launch.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,11 +11,12 @@ use ost_artifact::{extract_archive, ArtifactKind, ArtifactRecord, ArtifactStore}
 use ost_core::fs::write_atomic;
 use ost_core::{digest, Category, Error, Result};
 use ost_formation::{
-    ActivationInput, ComponentInput, FormationLock, FormationManifest, MaterializedFormation,
-    ResolutionInput,
+    ActivationInput, ComponentInput, EnvironmentContribution, FormationLock, FormationManifest,
+    MaterializedFormation, ResolutionInput,
 };
+use ost_host::{HostFamily, HostRecord};
 use ost_plugin::Bundle;
-use ost_runtime::RuntimeManifest;
+use ost_runtime::{EnvOp, EnvVar, RuntimeManifest};
 use serde::Deserialize;
 
 use crate::output::{self, Format};
@@ -333,6 +334,12 @@ fn run_command(args: &FormationRunArgs, format: Format) -> Result<()> {
         )
         .with_hint("restore the locked artifacts or deliberately refresh the lock"));
     }
+    let host_record = materialized
+        .resolved
+        .host
+        .as_ref()
+        .map(|host| super::host::checked_pinned_host(&host.id, &host.fingerprint))
+        .transpose()?;
 
     let (program, command_args) = if args.command.is_empty() {
         (
@@ -397,6 +404,8 @@ fn run_command(args: &FormationRunArgs, format: Format) -> Result<()> {
         "manifest_digest": materialized.resolved.manifest_digest,
         "lock_digest": lock_digest,
         "runtime": materialized.resolved.runtime,
+        "host": materialized.resolved.host,
+        "host_record": host_record,
         "components": materialized.resolved.components,
         "program": program,
         "args": command_args,
@@ -473,6 +482,11 @@ impl Drop for StagingRoot {
 fn resolve_path(path: &Utf8Path) -> Result<ResolvedPath> {
     let absolute_path = absolute_from_current(path)?;
     let declared = FormationManifest::load(&absolute_path)?;
+    let host_record = declared
+        .host
+        .as_ref()
+        .map(|host| super::host::checked_pinned_host(&host.id, &host.fingerprint))
+        .transpose()?;
     let parent = absolute_path.parent().unwrap_or(Utf8Path::new("."));
     let staging = StagingRoot {
         path: parent
@@ -498,6 +512,28 @@ fn resolve_path(path: &Utf8Path) -> Result<ResolvedPath> {
         ));
     }
     let runtime_manifest = embedded_runtime_manifest(&store, &runtime_record)?;
+    if let Some((host, python)) = host_record
+        .as_ref()
+        .and_then(|host| host.python.as_ref().map(|python| (host, python)))
+    {
+        let runtime_python = runtime_manifest
+            .python
+            .split('.')
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(".");
+        if python.version != runtime_python {
+            return Err(Error::coded(
+                "HOST_PYTHON_ABI_MISMATCH",
+                Category::Validation,
+                format!(
+                    "host '{}' embeds Python {}, but the pinned runtime uses {}",
+                    host.id, python.version, runtime_manifest.python
+                ),
+            )
+            .with_hint("select a runtime artifact built for the host's Python ABI"));
+        }
+    }
     let runtime_root = materialize(&store, &runtime_record, &staging_root.join("runtime"))?;
     let mut components = Vec::new();
     for component in &declared.components {
@@ -516,7 +552,7 @@ fn resolve_path(path: &Utf8Path) -> Result<ResolvedPath> {
             activation,
         });
     }
-    let materialized = ost_formation::resolve(
+    let mut materialized = ost_formation::resolve(
         &declared,
         ResolutionInput {
             runtime_record,
@@ -525,11 +561,65 @@ fn resolve_path(path: &Utf8Path) -> Result<ResolvedPath> {
             components,
         },
     )?;
+    if let Some(host) = &host_record {
+        append_host_environment(&mut materialized, host);
+    }
     Ok(ResolvedPath {
         materialized,
         manifest_path: absolute_path,
         staging,
     })
+}
+
+/// The host contributes to the same Formation EnvSet and portable lock report
+/// as the runtime and packaged components. The lock names host-relative paths;
+/// only the materialized EnvSet carries the machine-local install root.
+fn append_host_environment(materialized: &mut MaterializedFormation, host: &HostRecord) {
+    let source = format!("host:{}", host.id);
+    let mut directories = BTreeMap::new();
+    for executable in host.executables.values() {
+        let relative = Utf8Path::new(&executable.path)
+            .parent()
+            .unwrap_or(Utf8Path::new("."));
+        let portable = format!("host/{}", relative.as_str().replace('\\', "/"));
+        let absolute = host.root.join(relative).to_string().replace('\\', "/");
+        directories.insert(portable, absolute);
+    }
+    // EnvSet::Prepend applies in sequence, so reverse the sorted declarations
+    // to keep the portable report and effective PATH in the same order.
+    for absolute in directories.values().rev() {
+        materialized.env.vars.push(EnvVar {
+            key: "PATH".into(),
+            op: EnvOp::Prepend(absolute.clone()),
+        });
+    }
+    materialized
+        .resolved
+        .environment
+        .push(EnvironmentContribution {
+            key: "PATH".into(),
+            operation: "prepend".into(),
+            source: source.clone(),
+            paths: directories.into_keys().collect(),
+        });
+
+    let variable = match host.family {
+        HostFamily::Maya => "MAYA_LOCATION",
+        HostFamily::Houdini => "HFS",
+    };
+    materialized.env.vars.push(EnvVar {
+        key: variable.into(),
+        op: EnvOp::Set(host.root.to_string().replace('\\', "/")),
+    });
+    materialized
+        .resolved
+        .environment
+        .push(EnvironmentContribution {
+            key: variable.into(),
+            operation: "set".into(),
+            source,
+            paths: vec!["host".into()],
+        });
 }
 
 fn checked_record(store: &ArtifactStore, digest_ref: &str) -> Result<ArtifactRecord> {

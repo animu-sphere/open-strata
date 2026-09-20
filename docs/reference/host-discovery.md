@@ -1,4 +1,4 @@
-# DCC host discovery contract
+# DCC host discovery and launch contract
 
 `ost host discover | list | inspect` finds third-party DCC installs already on
 the machine, confirms what they are, and records the result. OpenStrata never
@@ -152,9 +152,10 @@ Two inventories share one document shape
 
 Both are written atomically. An inventory records a *past observation*, so every
 read re-checks the installs it names — root readable, executables unchanged in
-size and mtime, record schema and fingerprint input set still current — before
-serving any of them as usable. A record is downgraded to `stale`, `unreachable`,
-or `invalidated` rather than served stale.
+size and mtime, embedded Python layout unchanged, deep-mode executable digests
+unchanged, record schema and fingerprint input set still current — before
+serving any of them as usable. A record is downgraded to `stale`,
+`unreachable`, or `invalidated` rather than served stale.
 
 `discover` keeps cached records the current scan did not re-find, because a
 narrow scan must not silently delete hosts a wider one recorded earlier.
@@ -183,6 +184,31 @@ Selection is status-agnostic: `inspect` is the command that explains a refusal,
 so it must be able to reach a `rejected` record. A caller that needs an install
 it can *run* filters on `validated` itself.
 
+## Pinned headless launch
+
+`ost host run <selector> --formation <path> [--role interpreter|batch|render]
+-- <arguments>` launches the selected executable under a locked Formation.
+`interpreter` is the default role. The role must appear in the discovered
+record, and arguments after `--` are required so a bare interpreter cannot
+open an interactive prompt. The `batch` role selects `mayabatch.exe` on Windows
+or `maya -batch` on Linux/macOS. Other interactive GUI executables are not
+selected. The Formation must have
+`[host]` with the exact instance `id` and full `fingerprint` digest. The same
+pin is written to `formation.lock`, and both Formation resolution and the
+foreground launch re-check the current cache record. The Formation's runtime
+artifact and component digests remain the source of the launch environment.
+The host contributes its recorded executable directories to `PATH` and sets
+`MAYA_LOCATION` or `HFS` through the same Formation `EnvSet`; the lock records
+these as host-relative environment contributions.
+When discovery identifies the host's embedded Python, Formation resolution
+requires the pinned runtime to have the same Python major/minor version.
+
+Run evidence includes the host pin, current host record, runtime and component
+artifacts, executable and arguments, environment digest, timestamps, output
+and exit status. `--json` captures output in the evidence envelope; human mode
+streams the process output. Host-specific package layouts, smoke suites and
+matrix cells remain separate v0.23.0 work.
+
 ## Exit behaviour and stable codes
 
 `discover` and `list` are diagnostic, like `doctor`: finding nothing is an
@@ -192,12 +218,19 @@ answer and exits `0`. Only a real failure takes a
 | Code | Category | Exit | Meaning |
 | --- | --- | --- | --- |
 | `HOST_FAMILY_UNKNOWN` | usage | 2 | A family selector this `ost` does not support; the hint names the supported ones. |
+| `HOST_ARGUMENTS_REQUIRED` | usage | 2 | A headless launch supplied no arguments after `--`. |
 | `HOST_STATUS_UNKNOWN` | usage | 2 | An unsupported `--status` filter. |
 | `HOST_FINGERPRINT_MODE_UNKNOWN` | usage | 2 | An unsupported `--fingerprint` mode. |
 | `HOST_SELECTOR_AMBIGUOUS` | usage | 2 | A selector matched several installs; the message lists their ids. |
 | `HOST_INVENTORY_SCHEMA_UNSUPPORTED` | configuration | 3 | A persisted inventory uses an unknown schema. |
 | `HOST_NOT_FOUND` | precondition | 4 | No record matches the selector. |
 | `HOST_PROJECT_REQUIRED` | precondition | 4 | `--register` was used outside a project. |
+| `HOST_EXECUTABLE_UNAVAILABLE` | precondition | 4 | The selected host has no executable for the requested headless role. |
+| `HOST_FORMATION_PIN_REQUIRED` | configuration | 3 | A host run's Formation has no `[host]` pin. |
+| `HOST_FORMATION_ID_MISMATCH` | validation | 5 | The selected host differs from the Formation's pinned id. |
+| `HOST_NOT_VALIDATED` | validation | 5 | The cached install is no longer validated. |
+| `HOST_FINGERPRINT_DRIFT` | validation | 5 | The Formation's fingerprint differs from the current host record. |
+| `HOST_PYTHON_ABI_MISMATCH` | validation | 5 | The detected embedded Python and pinned runtime Python differ. |
 
 Warnings carried in the envelope's `warnings` array:
 
@@ -218,10 +251,9 @@ Rejection codes recorded on a record:
 
 ## Scope
 
-This contract covers discovery, records, and inventories only. Launching a host,
-composing its environment, host-standard packaging (Maya `.mod`, Houdini package
-JSON), cross-DCC USD compatibility edges, and matrix cells are separate work —
-see [dcc-hosts.md](../design/proposed/dcc-hosts.md). A host launch will go
-through the same resolved [Formation](../guides/compose-a-formation.md)
-environment as a runtime-native app rather than a parallel DCC-specific
-mechanism.
+This contract covers discovery, records, inventories, and the first pinned
+headless launch. Host-standard packaging (Maya `.mod`, Houdini package JSON),
+cross-DCC USD compatibility edges, and matrix cells are separate work — see
+[dcc-hosts.md](../design/proposed/dcc-hosts.md). Host launch uses the same
+resolved [Formation](../guides/compose-a-formation.md) environment as a
+runtime-native app.
