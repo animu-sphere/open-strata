@@ -9,6 +9,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
+use ost_core::host::Os;
 use ost_core::{Error, Result};
 
 use crate::bundle::{canonicalize_root, check_safe_relative};
@@ -84,12 +85,39 @@ pub struct LibraryRuntime {
     /// only directories materialized by install are injected or packaged.
     #[serde(default = "default_runtime_directories")]
     pub directories: Vec<String>,
+    /// Exact shared-library files required in a packaged install, by target OS.
+    /// A declaration makes a missing payload a packaging error even when the
+    /// CMake install manifest omitted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_files: Option<LibraryRequiredFiles>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryRequiredFiles {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub linux: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub macos: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<String>,
+}
+
+impl LibraryRequiredFiles {
+    pub fn for_os(&self, os: Os) -> &[String] {
+        match os {
+            Os::Linux => &self.linux,
+            Os::Macos => &self.macos,
+            Os::Windows => &self.windows,
+        }
+    }
 }
 
 impl Default for LibraryRuntime {
     fn default() -> Self {
         Self {
             directories: default_runtime_directories(),
+            required_files: None,
         }
     }
 }
@@ -222,6 +250,45 @@ impl LibraryManifest {
         }
         for directory in &self.runtime.directories {
             check_safe_relative("runtime.directories", directory)?;
+        }
+        if let Some(required) = &self.runtime.required_files {
+            if required.linux.is_empty() && required.macos.is_empty() && required.windows.is_empty()
+            {
+                return Err(Error::config(
+                    "runtime.required_files must name at least one OS file",
+                ));
+            }
+            for files in [&required.linux, &required.macos, &required.windows] {
+                if files
+                    .iter()
+                    .enumerate()
+                    .any(|(index, file)| files[..index].contains(file))
+                {
+                    return Err(Error::config(
+                        "runtime.required_files contains duplicate paths",
+                    ));
+                }
+                for file in files {
+                    check_safe_relative("runtime.required_files", file)?;
+                    if file.contains('\\')
+                        || file.split('/').any(|part| part.is_empty() || part == ".")
+                    {
+                        return Err(Error::config(format!(
+                            "runtime.required_files path '{file}' must use normalized forward slashes"
+                        )));
+                    }
+                    if !self
+                        .runtime
+                        .directories
+                        .iter()
+                        .any(|directory| Utf8Path::new(file).starts_with(Utf8Path::new(directory)))
+                    {
+                        return Err(Error::config(format!(
+                            "runtime.required_files path '{file}' is outside runtime.directories"
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -365,6 +432,26 @@ mod tests {
         ))
         .unwrap();
         assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn required_runtime_files_stay_within_declared_runtime_directories() {
+        let valid = LibraryManifest::parse(&descriptor(
+            "runtime:\n  directories: [bin, lib]\n  required_files:\n    windows: [bin/vrmContainer.dll]\n    linux: [lib/libvrmContainer.so]\n",
+        ))
+        .unwrap();
+        assert!(valid.validate().is_ok());
+        assert_eq!(
+            valid.runtime.required_files.unwrap().for_os(Os::Windows),
+            ["bin/vrmContainer.dll"]
+        );
+        for file in ["../escape.dll", "share/vrmContainer.dll"] {
+            let invalid = LibraryManifest::parse(&descriptor(&format!(
+                "runtime:\n  directories: [bin]\n  required_files:\n    windows: ['{file}']\n"
+            )))
+            .unwrap();
+            assert!(invalid.validate().is_err(), "{file} must be rejected");
+        }
     }
 
     #[test]

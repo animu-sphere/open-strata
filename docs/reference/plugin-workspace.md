@@ -234,6 +234,10 @@ package_contract:
     symbol: vrmContainer::version
 runtime:
   directories: [bin, lib]
+  required_files:
+    linux: [lib/libvrmContainer.so]
+    macos: [lib/libvrmContainer.dylib]
+    windows: [bin/vrmContainer.dll]
 ```
 
 The library may itself declare `requires.libraries` for a transitive closure.
@@ -243,6 +247,12 @@ use `find_package(vrmContainer CONFIG REQUIRED)`. A library descriptor carries
 no plugin kind, `plugInfo.json`, registration, or OpenUSD dependency. Legacy
 plugin manifests retain their previous permissive parsing for compatibility,
 but using either composition field requires the versioned plugin header.
+For a shared library, `runtime.required_files` declares the exact installed
+binary for each supported OS. When present, `library build|test|package` and
+plugin packaging require the selected OS entry and every named file in that
+library's own install tree or snapshot; an installed CMake config alone cannot
+satisfy the runtime contract. Static or header-only libraries may omit this
+field.
 
 ## Dependency directions
 
@@ -323,6 +333,10 @@ manifest.
 Workspace package/test now reads a separate install snapshot for each selected
 library. Packaging checks every file named by that snapshot before recording
 the library closure, so another bundle's build order cannot replace its files.
+The packaged dependency record lists each library's exact files under
+`runtime/libraries/<id>/`. Product verification checks that every recorded file
+is present in the member archive and its file inventory. Older packages without
+the per-library file list retain their existing archive checks.
 The remaining shared-library loadability and clean installed-product acceptance
 are tracked in the [v0.23.0 intake](../roadmap/downstream-report-intake.md).
 
@@ -524,4 +538,6 @@ written. Issues use stable codes:
 | `WORKSPACE_LIBRARY_DEPENDENCY_VERSION_INVALID` | A library version range cannot be parsed. |
 | `WORKSPACE_LIBRARY_DEPENDENCY_VERSION_MISMATCH` | The provider version does not satisfy the range. |
 | `WORKSPACE_LIBRARY_DEPENDENCY_CYCLE` | The directed plain-library graph contains a cycle. |
-| `WORKSPACE_LIBRARY_RUNTIME_MISSING` | Build/package/test/run needs an installed library runtime directory which is absent. |
+| `WORKSPACE_LIBRARY_RUNTIME_MISSING` | A selected library install snapshot or its declared runtime file is missing during plugin package/test. |
+| `LIBRARY_RUNTIME_FILE_MISSING` | A plain-library build or package lacks a file declared in `runtime.required_files` for the target OS. |
+| `PLUGIN_PRODUCT_LIBRARY_FILE_MISSING` | Product verification finds a library file absent from the member payload or file inventory. |

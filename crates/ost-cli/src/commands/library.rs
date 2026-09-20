@@ -256,13 +256,14 @@ fn build_inner(
             &platform,
             &profile,
             &id,
+            target.os(),
             runtime.as_ref(),
             &prerequisites,
             &prerequisite_prefixes,
             dry_run,
             ninja.clone(),
             compiler.clone(),
-            !emit_output,
+            !emit_output || fmt.is_json(),
         )?;
         if member.id() == library.id() {
             record = built;
@@ -306,6 +307,7 @@ fn build_library_member(
     platform: &str,
     profile: &str,
     target_id: &str,
+    os: ost_core::host::Os,
     runtime: Option<&RuntimeIdentity>,
     prerequisites: &[Library],
     prerequisite_prefixes: &[Utf8PathBuf],
@@ -342,6 +344,7 @@ fn build_library_member(
         ))
         .with_hint("add CMake install rules for the library target, headers, and config package"));
     }
+    verify_required_install_files(library, os, &files)?;
     let record = LibraryBuildRecord {
         schema: LIBRARY_BUILD_SCHEMA.into(),
         library: LibraryIdentity {
@@ -375,7 +378,13 @@ fn test(
     let (platform, profile) = selection(target, profile)?;
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
-    validated_build_record(&library, &id, &target.runtime_id, &resolved.prefix)?;
+    validated_build_record(
+        &library,
+        &id,
+        target.os(),
+        &target.runtime_id,
+        &resolved.prefix,
+    )?;
     let prerequisites = plugin::selected_workspace_libraries_for_library(&library)?;
     let mut runtime_directories = library.installed_runtime_dirs(&isolated_prefix(&library, &id));
     runtime_directories.extend(prerequisites.iter().flat_map(|prerequisite| {
@@ -498,7 +507,13 @@ fn package(
     let (platform, profile) = selection(target, profile)?;
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
-    let record = validated_build_record(&library, &id, &target.runtime_id, &resolved.prefix)?;
+    let record = validated_build_record(
+        &library,
+        &id,
+        target.os(),
+        &target.runtime_id,
+        &resolved.prefix,
+    )?;
     let prefix = isolated_prefix(&library, &id);
     let staged = stage_files(&prefix).map_err(stage_error(&prefix))?;
     let dist = library
@@ -672,7 +687,13 @@ fn verify_consumer(
     let (platform, profile) = selection(target, profile)?;
     let (target, resolved) = build_target(&platform, &profile)?;
     let target_id = target.id();
-    validated_build_record(&library, &target_id, &target.runtime_id, &resolved.prefix)?;
+    validated_build_record(
+        &library,
+        &target_id,
+        target.os(),
+        &target.runtime_id,
+        &resolved.prefix,
+    )?;
     let compiler_record = library_compiler_record(&library, &target_id)?;
     let prerequisites = plugin::selected_workspace_libraries_for_library(&library)?;
     let mut closure = prerequisites
@@ -1220,6 +1241,7 @@ fn remove_existing_prefix(prefix: &Utf8Path) -> Result<()> {
 fn validated_build_record(
     library: &Library,
     target_id: &str,
+    os: ost_core::host::Os,
     runtime_id: &str,
     runtime_prefix: &Utf8Path,
 ) -> Result<LibraryBuildRecord> {
@@ -1235,13 +1257,14 @@ fn validated_build_record(
     let runtime = runtime_identity(runtime_prefix, runtime_id)?;
     let prerequisites = plugin::selected_workspace_libraries_for_library(library)?;
     for prerequisite in &prerequisites {
-        validated_build_record(prerequisite, target_id, runtime_id, runtime_prefix)?;
+        validated_build_record(prerequisite, target_id, os, runtime_id, runtime_prefix)?;
     }
     let expected_dependencies = dependency_records(&prerequisites, target_id)?;
     let expected_descriptor = descriptor_digest(library)?;
     let expected_build_dir = plugin::target_build_dir(&library.root, target_id);
     let expected_prefix = isolated_prefix(library, target_id);
     let observed_files = snapshot_files(&expected_prefix)?;
+    verify_required_install_files(library, os, &observed_files)?;
     if record.schema != LIBRARY_BUILD_SCHEMA
         || record.library.id != library.id()
         || record.library.version != library.version()
@@ -1335,6 +1358,41 @@ fn snapshot_files(prefix: &Utf8Path) -> Result<Vec<LibraryFile>> {
         .collect()
 }
 
+fn verify_required_install_files(
+    library: &Library,
+    os: ost_core::host::Os,
+    files: &[LibraryFile],
+) -> Result<()> {
+    let Some(required) = &library.manifest.runtime.required_files else {
+        return Ok(());
+    };
+    let selected = required.for_os(os);
+    if selected.is_empty() {
+        return Err(Error::coded(
+            "LIBRARY_RUNTIME_FILE_MISSING",
+            Category::Validation,
+            format!(
+                "library '{}' declares runtime.required_files but has no '{}' entries",
+                library.id(),
+                os.as_str()
+            ),
+        ));
+    }
+    for relative in selected {
+        if !files.iter().any(|file| file.path == *relative) {
+            return Err(Error::coded(
+                "LIBRARY_RUNTIME_FILE_MISSING",
+                Category::Validation,
+                format!(
+                    "library '{}' is missing declared runtime file '{relative}' from its install tree",
+                    library.id()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn file_digest(path: &Utf8Path) -> Result<(String, u64)> {
     let metadata = std::fs::symlink_metadata(path.as_std_path())
         .map_err(|error| Error::io(path.to_string(), error))?;
@@ -1416,6 +1474,31 @@ fn exit_detail(code: Option<i32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn required_runtime_files_gate_library_build_records() {
+        let manifest = ost_plugin::LibraryManifest::parse(
+            "schema: openstrata.library/v1alpha1\nlibrary: { id: shared, version: 1.0.0 }\ncmake: { package: shared, target: 'shared::shared' }\nruntime:\n  directories: [bin]\n  required_files:\n    windows: [bin/shared.dll]\n",
+        )
+        .unwrap();
+        let library = Library {
+            root: Utf8PathBuf::from("."),
+            manifest,
+        };
+        let missing =
+            verify_required_install_files(&library, ost_core::host::Os::Windows, &[]).unwrap_err();
+        assert_eq!(missing.code(), "LIBRARY_RUNTIME_FILE_MISSING");
+        let installed = vec![LibraryFile {
+            path: "bin/shared.dll".into(),
+            sha256: "unused".into(),
+            size: 1,
+        }];
+        verify_required_install_files(&library, ost_core::host::Os::Windows, &installed).unwrap();
+        let no_linux_entry =
+            verify_required_install_files(&library, ost_core::host::Os::Linux, &installed)
+                .unwrap_err();
+        assert_eq!(no_linux_entry.code(), "LIBRARY_RUNTIME_FILE_MISSING");
+    }
 
     #[test]
     fn descriptor_named_archive_is_stable() {
