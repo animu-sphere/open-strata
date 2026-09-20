@@ -94,6 +94,17 @@
           "type": "array",
           "default": ["bin", "lib"],
           "items": { "type": "string", "minLength": 1 }
+        },
+        "required_files": {
+          "type": "object",
+          "description": "Exact installed runtime files required for each supported target OS. A missing file fails plugin packaging.",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "linux": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+            "macos": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+            "windows": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+          }
         }
       }
     }

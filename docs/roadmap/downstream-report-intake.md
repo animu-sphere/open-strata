@@ -4,7 +4,7 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-09-12
-updated: 2026-09-19
+updated: 2026-09-20
 applies_to: v0.23.0
 ---
 
@@ -99,8 +99,12 @@ superseded failures are not carried forward.
   product-path identity item above.
 - Workspace library builds retain member-specific install snapshots. Packaging
   reads each selected library's own recorded files and fails if an inventoried
-  file is missing. Clean installed-product loadability remains part of the
-  bundle-closure acceptance above.
+  file is missing. A library may declare OS-specific `runtime.required_files`;
+  packaging then fails if its own install snapshot omits a required shared
+  library. Packaged dependency evidence records each library's exact files and
+  required runtime files, and product verification checks those paths against
+  the member archive and package inventory. Clean installed-product loadability
+  remains part of the bundle-closure acceptance above.
 - Runtime validation now records a separate `consumer-link` result after
   `consumer-configure`: a scratch C++ consumer builds against the selected
   OpenUSD CMake export and runs under the runtime loader environment. Generated

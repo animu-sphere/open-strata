@@ -2344,7 +2344,7 @@ fn package_bundle(
     // a scalar (collapsing any per-OS/`inherit` source declaration).
     packaged_manifest.runtime.cxx_abi = ctx.cxx_abi.clone().map(CxxAbi::Scalar);
     packaged_manifest.runtime.python_abi = ctx.python_abi.clone();
-    let library_closure = selected_library_package_closure(&bundle, &id)?;
+    let library_closure = selected_library_package_closure(&bundle, &id, tgt.os())?;
     for relative in library_closure.runtime_dirs.values().flatten() {
         // The directory values are portable artifact paths, including on a
         // Windows producer where native paths use backslashes.
@@ -2364,7 +2364,33 @@ fn package_bundle(
                 .and_then(|id| library_closure.runtime_dirs.get(id))
                 .cloned()
                 .unwrap_or_default();
-            serde_json::json!({
+            let files = library["id"]
+                .as_str()
+                .and_then(|id| library_closure.files_by_library.get(id))
+                .cloned()
+                .or_else(|| {
+                    library["files"].as_array().map(|files| {
+                        files
+                            .iter()
+                            .filter_map(|file| file.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
+            let required_files = library["id"]
+                .as_str()
+                .and_then(|id| library_closure.required_files_by_library.get(id))
+                .cloned()
+                .or_else(|| {
+                    library["required_files"].as_array().map(|files| {
+                        files
+                            .iter()
+                            .filter_map(|file| file.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
+            let mut evidence = serde_json::json!({
                 "id": library["id"],
                 "version": library["version"],
                 "descriptor": ost_plugin::LIBRARY_MANIFEST,
@@ -2373,7 +2399,14 @@ fn package_bundle(
                 "prefix": serde_json::Value::Null,
                 "runtime_directories": runtime_directories,
                 "provenance": "source-workspace",
-            })
+            });
+            if !files.is_empty() {
+                evidence["files"] = serde_json::json!(files);
+            }
+            if !required_files.is_empty() {
+                evidence["required_files"] = serde_json::json!(required_files);
+            }
+            evidence
         })
         .collect::<Vec<_>>();
     // The bundle half of the closure travels with the artifact too. Without it a
@@ -4764,6 +4797,7 @@ fn verify_product_member(
     let expanded = root.join("expanded").join(&member.id);
     ost_artifact::extract_archive(&archive, &member.archive_digest, &expanded)?;
     verify_member_manifest_files(&expanded, &manifest)?;
+    verify_member_library_files(&expanded, &manifest)?;
     // Each member shape is loaded by its own model, so the extracted tree is
     // checked against the contract it actually claims rather than only unpacking
     // cleanly. A tool additionally has to still contain its executables: an
@@ -4987,6 +5021,93 @@ fn verify_member_manifest_files(root: &Utf8Path, manifest: &serde_json::Value) -
                     "installed member file '{relative}' is {actual} ({size} bytes), expected {expected} ({expected_size} bytes)"
                 ),
             ));
+        }
+    }
+    Ok(())
+}
+
+/// The package file inventory and the library closure must describe the same
+/// payload. Older packages did not record a per-library inventory, so their
+/// existing manifest and archive checks remain the compatibility boundary.
+fn verify_member_library_files(root: &Utf8Path, manifest: &serde_json::Value) -> Result<()> {
+    let Some(libraries) = manifest
+        .pointer("/dependencies/libraries")
+        .and_then(|v| v.as_array())
+    else {
+        return Ok(());
+    };
+    let files = manifest["files"].as_array().ok_or_else(|| {
+        Error::validation("product member manifest is missing array field 'files'")
+    })?;
+    let packaged = files
+        .iter()
+        .filter_map(|file| file["path"].as_str())
+        .collect::<BTreeSet<_>>();
+    for library in libraries {
+        let Some(recorded) = library.get("files") else {
+            if library.get("required_files").is_some() {
+                return Err(Error::validation(
+                    "product member library has required_files but no file inventory",
+                ));
+            }
+            continue;
+        };
+        let id = library["id"].as_str().ok_or_else(|| {
+            Error::validation("product member library closure is missing string 'id'")
+        })?;
+        let required_prefix = format!("runtime/libraries/{id}/");
+        let recorded = recorded
+            .as_array()
+            .filter(|files| !files.is_empty())
+            .ok_or_else(|| {
+                Error::validation(format!(
+                    "product member library '{id}' has no recorded files"
+                ))
+            })?;
+        for entry in recorded {
+            let relative = entry.as_str().ok_or_else(|| {
+                Error::validation(format!(
+                    "product member library '{id}' has a non-string file"
+                ))
+            })?;
+            if !relative.starts_with(&required_prefix) || !packaged.contains(relative) {
+                return Err(Error::coded(
+                    "PLUGIN_PRODUCT_LIBRARY_FILE_MISSING",
+                    Category::Validation,
+                    format!("product member library '{id}' has no packaged file '{relative}'"),
+                ));
+            }
+            let path = safe_product_join(root, relative, "product member library file")?;
+            if !path.as_std_path().is_file() {
+                return Err(Error::coded(
+                    "PLUGIN_PRODUCT_LIBRARY_FILE_MISSING",
+                    Category::Validation,
+                    format!("product member library '{id}' is missing file '{relative}'"),
+                ));
+            }
+        }
+        if let Some(required) = library.get("required_files") {
+            let required = required.as_array().ok_or_else(|| {
+                Error::validation(format!(
+                    "product member library '{id}' required_files is not an array"
+                ))
+            })?;
+            for entry in required {
+                let relative = entry.as_str().ok_or_else(|| {
+                    Error::validation(format!(
+                        "product member library '{id}' has a non-string required file"
+                    ))
+                })?;
+                if !recorded.iter().any(|file| file.as_str() == Some(relative)) {
+                    return Err(Error::coded(
+                        "PLUGIN_PRODUCT_LIBRARY_FILE_MISSING",
+                        Category::Validation,
+                        format!(
+                            "product member library '{id}' is missing declared runtime file '{relative}'"
+                        ),
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -7834,6 +7955,8 @@ fn selected_workspace_library_evidence(
 /// declared runtime directories to expose through activation and provenance.
 struct LibraryPackageClosure {
     files: Vec<(Utf8PathBuf, Utf8PathBuf)>,
+    files_by_library: BTreeMap<String, Vec<String>>,
+    required_files_by_library: BTreeMap<String, Vec<String>>,
     runtime_dirs: BTreeMap<String, Vec<String>>,
 }
 
@@ -7911,25 +8034,68 @@ fn materialized_workspace_library_runtime_dirs(
 fn selected_library_package_closure(
     primary: &Bundle,
     target_id: &str,
+    os: Os,
 ) -> Result<LibraryPackageClosure> {
     let Some(workspace) = source_workspace_for(primary)? else {
         return Ok(LibraryPackageClosure {
             files: Vec::new(),
+            files_by_library: BTreeMap::new(),
+            required_files_by_library: BTreeMap::new(),
             runtime_dirs: BTreeMap::new(),
         });
     };
     let libraries = libraries_from_workspace(primary, &workspace)?;
     let mut mappings = BTreeMap::<Utf8PathBuf, Utf8PathBuf>::new();
+    let mut files_by_library = BTreeMap::new();
+    let mut required_files_by_library = BTreeMap::new();
     let mut directories_by_library = BTreeMap::new();
     for library in libraries {
         let prefix = workspace_library_snapshot(&library, target_id);
         let installed = verified_workspace_library_files(&library, target_id, &primary.root)?;
+        if let Some(required) = &library.manifest.runtime.required_files {
+            let selected = required.for_os(os);
+            if selected.is_empty() {
+                return Err(Error::coded(
+                    "WORKSPACE_LIBRARY_RUNTIME_MISSING",
+                    Category::Validation,
+                    format!(
+                        "library '{}' declares runtime.required_files but has no '{}' entries",
+                        library.id(),
+                        os.as_str()
+                    ),
+                ));
+            }
+            let mut packaged_required = Vec::new();
+            for relative in selected {
+                if !installed.iter().any(|file| file == Utf8Path::new(relative)) {
+                    return Err(Error::coded(
+                        "WORKSPACE_LIBRARY_RUNTIME_MISSING",
+                        Category::Validation,
+                        format!(
+                            "library '{}' is missing declared runtime file '{relative}' from its install snapshot",
+                            library.id()
+                        ),
+                    ));
+                }
+                packaged_required.push(portable(
+                    &Utf8Path::new("runtime/libraries")
+                        .join(library.id())
+                        .join(relative),
+                ));
+            }
+            required_files_by_library.insert(library.id().to_string(), packaged_required);
+        }
+        let mut library_files = Vec::new();
         for relative in &installed {
             let destination = Utf8Path::new("runtime/libraries")
                 .join(library.id())
                 .join(relative);
+            library_files.push(portable(&destination));
             mappings.insert(destination, prefix.join(relative));
         }
+        library_files.sort();
+        library_files.dedup();
+        files_by_library.insert(library.id().to_string(), library_files);
         let directories =
             materialized_workspace_library_runtime_dirs(&library, &prefix, &installed)
                 .into_iter()
@@ -7950,6 +8116,8 @@ fn selected_library_package_closure(
             .into_iter()
             .map(|(destination, source)| (source, destination))
             .collect(),
+        files_by_library,
+        required_files_by_library,
         runtime_dirs: directories_by_library,
     })
 }
@@ -10053,6 +10221,44 @@ pub(crate) fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
 mod tests {
     use super::*;
     use ost_core::host::Arch;
+
+    #[test]
+    fn product_library_inventory_requires_each_recorded_file() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = Utf8PathBuf::from_path_buf(std::env::temp_dir().join(format!(
+            "ost-product-library-files-{}-{nonce}",
+            std::process::id()
+        )))
+        .unwrap();
+        let relative = "runtime/libraries/shared/bin/shared.dll";
+        let installed = root.join(relative);
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, b"shared library").unwrap();
+        let mut manifest = serde_json::json!({
+            "files": [{ "path": relative }],
+            "dependencies": { "libraries": [{ "id": "shared", "files": [relative] }] }
+        });
+        verify_member_library_files(&root, &manifest).unwrap();
+
+        manifest["files"] = serde_json::json!([]);
+        let error = verify_member_library_files(&root, &manifest).unwrap_err();
+        assert_eq!(error.code(), "PLUGIN_PRODUCT_LIBRARY_FILE_MISSING");
+
+        manifest["files"] = serde_json::json!([{ "path": relative }]);
+        manifest["dependencies"]["libraries"][0]["required_files"] =
+            serde_json::json!(["runtime/libraries/shared/bin/missing.dll"]);
+        let error = verify_member_library_files(&root, &manifest).unwrap_err();
+        assert_eq!(error.code(), "PLUGIN_PRODUCT_LIBRARY_FILE_MISSING");
+        manifest["dependencies"]["libraries"][0]["required_files"] = serde_json::json!([relative]);
+        verify_member_library_files(&root, &manifest).unwrap();
+        std::fs::remove_file(&installed).unwrap();
+        let error = verify_member_library_files(&root, &manifest).unwrap_err();
+        assert_eq!(error.code(), "PLUGIN_PRODUCT_LIBRARY_FILE_MISSING");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn workspace_library_snapshots_keep_overlapping_installs_separate() {

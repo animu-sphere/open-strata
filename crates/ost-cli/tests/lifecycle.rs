@@ -4457,7 +4457,11 @@ fn plain_library_dependencies_validate_inspect_and_render_build_order() {
     std::fs::create_dir_all(&library_root).unwrap();
     std::fs::write(
         library_root.join("openstrata.library.yaml"),
-        "schema: openstrata.library/v1alpha1\nlibrary: { id: container, version: 1.2.0 }\ncmake: { package: container, target: 'container::container' }\nruntime: { directories: [bin, lib] }\n",
+        format!(
+            "schema: openstrata.library/v1alpha1\nlibrary: {{ id: container, version: 1.2.0 }}\ncmake: {{ package: container, target: 'container::container' }}\nruntime:\n  directories: [bin, lib]\n  required_files:\n    {}: ['bin/container{}']\n",
+            std::env::consts::OS,
+            std::env::consts::DLL_SUFFIX
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -4552,6 +4556,30 @@ fn plain_library_dependencies_validate_inspect_and_render_build_order() {
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(package_manifest).unwrap()).unwrap();
     assert_eq!(value["dependencies"]["libraries"][0]["id"], "container");
+    assert_eq!(
+        value["dependencies"]["libraries"][0]["required_files"],
+        serde_json::json!([format!(
+            "runtime/libraries/container/bin/container{}",
+            std::env::consts::DLL_SUFFIX
+        )])
+    );
+    let recorded_files = value["dependencies"]["libraries"][0]["files"]
+        .as_array()
+        .expect("packaged library file inventory");
+    assert!(recorded_files.iter().any(|path| {
+        path.as_str()
+            .is_some_and(|path| path.contains("runtime/libraries/container/bin/container"))
+    }));
+    for path in recorded_files {
+        assert!(
+            value["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|file| { file["path"].as_str() == path.as_str() }),
+            "library file {path} is absent from the package inventory"
+        );
+    }
     assert!(value["files"].as_array().unwrap().iter().any(|file| {
         file["path"]
             .as_str()
@@ -4565,6 +4593,30 @@ fn plain_library_dependencies_validate_inspect_and_render_build_order() {
             path.contains("unrelated-library-marker") || path.contains("unrecorded-marker")
         })
     }));
+    let workspace_package = sb.ost(&["plugin", "package", "--workspace", "--product"]);
+    assert!(
+        workspace_package.status.success(),
+        "{}",
+        out_text(&workspace_package)
+    );
+    let product_manifest = find_first(&sb.work_file("dist/products"), "manifest.json").unwrap();
+    let product_dist = product_manifest.parent().unwrap().to_str().unwrap();
+    let verified = sb.ost(&["plugin", "product", "verify", product_dist]);
+    assert!(verified.status.success(), "{}", out_text(&verified));
+    let inventory = installed_bin
+        .parent()
+        .unwrap()
+        .join(".openstrata-installed-files");
+    let recorded = std::fs::read_to_string(&inventory).unwrap();
+    std::fs::write(&inventory, "lib/cmake/container/containerConfig.cmake\n").unwrap();
+    let undeclared = sb.ost(&["plugin", "package", "consumer"]);
+    assert!(!undeclared.status.success(), "{}", out_text(&undeclared));
+    assert!(
+        out_text(&undeclared).contains("WORKSPACE_LIBRARY_RUNTIME_MISSING"),
+        "{}",
+        out_text(&undeclared)
+    );
+    std::fs::write(&inventory, recorded).unwrap();
     let source_test = sb.ost(&["--json", "plugin", "test", "consumer", "--up-to", "1"]);
     assert!(source_test.status.success(), "{}", out_text(&source_test));
     let source_evidence: serde_json::Value = serde_json::from_slice(&source_test.stdout).unwrap();

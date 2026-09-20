@@ -234,6 +234,10 @@ package_contract:
     symbol: vrmContainer::version
 runtime:
   directories: [bin, lib]
+  required_files:
+    linux: [lib/libvrmContainer.so]
+    macos: [lib/libvrmContainer.dylib]
+    windows: [bin/vrmContainer.dll]
 ```
 
 The library may itself declare `requires.libraries` for a transitive closure.
@@ -243,6 +247,11 @@ use `find_package(vrmContainer CONFIG REQUIRED)`. A library descriptor carries
 no plugin kind, `plugInfo.json`, registration, or OpenUSD dependency. Legacy
 plugin manifests retain their previous permissive parsing for compatibility,
 but using either composition field requires the versioned plugin header.
+For a shared library, `runtime.required_files` declares the exact installed
+binary for each supported OS. When present, packaging requires the selected
+OS entry and every named file in that library's own install snapshot; an
+installed CMake config alone cannot satisfy the runtime contract. Static or
+header-only libraries may omit this field.
 
 ## Dependency directions
 
@@ -323,6 +332,10 @@ manifest.
 Workspace package/test now reads a separate install snapshot for each selected
 library. Packaging checks every file named by that snapshot before recording
 the library closure, so another bundle's build order cannot replace its files.
+The packaged dependency record lists each library's exact files under
+`runtime/libraries/<id>/`. Product verification checks that every recorded file
+is present in the member archive and its file inventory. Older packages without
+the per-library file list retain their existing archive checks.
 The remaining shared-library loadability and clean installed-product acceptance
 are tracked in the [v0.23.0 intake](../roadmap/downstream-report-intake.md).
 
