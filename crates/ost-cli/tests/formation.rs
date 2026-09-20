@@ -260,9 +260,15 @@ args = ["--version"]
             .as_str()
             .unwrap()
     };
-    let host_root_text = path(&host_root).replace('\\', "/");
-    assert_eq!(variable("MAYA_LOCATION"), host_root_text);
-    assert!(variable("PATH").contains(&format!("{host_root_text}/bin")));
+    let canonical_host_root = std::fs::canonicalize(&host_root).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(variable("MAYA_LOCATION")).unwrap(),
+        canonical_host_root
+    );
+    let canonical_bin = std::fs::canonicalize(&bin).unwrap();
+    assert!(std::env::split_paths(variable("PATH"))
+        .filter_map(|directory| std::fs::canonicalize(directory).ok())
+        .any(|directory| directory == canonical_bin));
     let hosted = json(sandbox.ost(&[
         "--json",
         "host",
