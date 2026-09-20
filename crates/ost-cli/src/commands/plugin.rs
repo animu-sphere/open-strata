@@ -3854,6 +3854,31 @@ fn package_workspace_product(
     )?;
     let data_file_count = data_files.len();
 
+    let contract = serde_json::json!({
+        "schema": "openstrata.plugin-product/v1alpha1",
+        "name": name,
+        "version": version,
+        "target": target,
+        "install": {
+            "layout": "members/<member-id>/",
+            // The default for a bundle member; each member carries the exact
+            // destination its kind installs into (`tools/<id>/` for a tool).
+            "destination": "bundles/<bundle-id>/",
+            "os": first.os.as_str(),
+            "order": order,
+            "activation": "openstrata.activation.json",
+            "contract": "run `ost plugin product verify`, then `ost plugin product install --prefix <dir>`; members are verified and installed in dependency order",
+        },
+        "members": members,
+        "data": data_files,
+    });
+    let product_contract: PluginProductContract = serde_json::from_value(contract.clone())
+        .map_err(|error| Error::parse("product contract", anyhow::Error::new(error)))?;
+    let internal_dependencies =
+        internal_product_bundle_dependencies(&product_contract, |member| {
+            stage.join(member.destination())
+        })?;
+
     // Aggregate the independently packaged member contracts without flattening
     // their artifact identity. Requirements satisfied by another member become
     // internal edges; external capabilities remain requirements of the product.
@@ -3912,8 +3937,14 @@ fn package_workspace_product(
         }
         let destination = member.destination();
         for contribution in component.environment {
-            let values = contribution
-                .values
+            let selected = without_internal_bundle_paths(
+                &contribution.values,
+                internal_dependencies.get(&member.id),
+            );
+            if selected.is_empty() {
+                continue;
+            }
+            let values = selected
                 .iter()
                 .map(|value| {
                     if value == "." {
@@ -3957,24 +3988,6 @@ fn package_workspace_product(
         })
     }));
 
-    let contract = serde_json::json!({
-        "schema": "openstrata.plugin-product/v1alpha1",
-        "name": name,
-        "version": version,
-        "target": target,
-        "install": {
-            "layout": "members/<member-id>/",
-            // The default for a bundle member; each member carries the exact
-            // destination its kind installs into (`tools/<id>/` for a tool).
-            "destination": "bundles/<bundle-id>/",
-            "os": first.os.as_str(),
-            "order": order,
-            "activation": "openstrata.activation.json",
-            "contract": "run `ost plugin product verify`, then `ost plugin product install --prefix <dir>`; members are verified and installed in dependency order",
-        },
-        "members": members,
-        "data": data_files,
-    });
     write_text(
         &stage.join("openstrata.product.json"),
         &pretty_json(&contract)?,
@@ -4262,6 +4275,9 @@ fn verify_plugin_product(
     for member in &contract.members {
         verify_product_member(&tree.path, &contract.target, member, project_hint)?;
     }
+    internal_product_bundle_dependencies(&contract, |member| {
+        tree.path.join("expanded").join(&member.id)
+    })?;
     verify_product_data(&tree.path, &contract.data)?;
 
     Ok(VerifiedPluginProduct {
@@ -4849,6 +4865,14 @@ fn verify_product_member_manifest(
             )));
         }
     }
+    if manifest.get("dependencies") != Some(&member.dependencies)
+        && !(manifest.get("dependencies").is_none() && member.dependencies.is_null())
+    {
+        return Err(Error::validation(format!(
+            "product member '{}' dependencies differ from its package manifest",
+            member.id
+        )));
+    }
     Ok(())
 }
 
@@ -5075,6 +5099,8 @@ fn install_plugin_product(
 }
 
 fn write_product_activation(root: &Utf8Path, contract: &PluginProductContract) -> Result<()> {
+    let internal_dependencies =
+        internal_product_bundle_dependencies(contract, |member| root.join(member.destination()))?;
     let mut target_os: Option<Os> = None;
     let mut plugin_paths = Vec::new();
     let mut library_paths = Vec::new();
@@ -5122,13 +5148,13 @@ fn write_product_activation(root: &Utf8Path, contract: &PluginProductContract) -
             &activation.python_dll_search,
         );
         let destination = member.destination();
-        extend_product_activation_paths(&mut plugin_paths, &destination, &activation.plugin_paths)?;
-        extend_product_activation_paths(
-            &mut library_paths,
-            &destination,
-            &activation.library_paths,
-        )?;
-        extend_product_activation_paths(&mut python_paths, &destination, &activation.python_paths)?;
+        let internal = internal_dependencies.get(&member.id);
+        let plugin = without_internal_bundle_paths(&activation.plugin_paths, internal);
+        let library = without_internal_bundle_paths(&activation.library_paths, internal);
+        let python = without_internal_bundle_paths(&activation.python_paths, internal);
+        extend_product_activation_paths(&mut plugin_paths, &destination, &plugin)?;
+        extend_product_activation_paths(&mut library_paths, &destination, &library)?;
+        extend_product_activation_paths(&mut python_paths, &destination, &python)?;
     }
     // A product whose only members are tools has no member activation contract
     // to read the OS from, so the product records it directly. Older products
@@ -5184,6 +5210,108 @@ fn write_product_activation(root: &Utf8Path, contract: &PluginProductContract) -
         &root.join("openstrata_activate.py"),
         &render_python_activation(&plugin_paths, &library_paths, &python_paths),
     )
+}
+
+/// A member archive may contain its providers for standalone installation. If
+/// the product also carries a provider as a member, use that member's paths once.
+/// Check the recorded identity before suppressing the embedded copy's paths.
+fn internal_product_bundle_dependencies(
+    contract: &PluginProductContract,
+    member_root: impl Fn(&PluginProductMember) -> Utf8PathBuf,
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    let providers = contract
+        .members
+        .iter()
+        .filter(|member| !member.is_tool())
+        .map(|member| (member.id.as_str(), member))
+        .collect::<BTreeMap<_, _>>();
+    let mut internal = BTreeMap::new();
+    for consumer in contract.members.iter().filter(|member| !member.is_tool()) {
+        let Some(bundles) = consumer.dependencies.get("bundles") else {
+            continue;
+        };
+        let bundles = bundles.as_array().ok_or_else(|| {
+            Error::validation(format!(
+                "product member '{}' dependencies.bundles must be an array",
+                consumer.id
+            ))
+        })?;
+        let mut ids = BTreeSet::new();
+        for dependency in bundles {
+            let id = dependency["id"].as_str().ok_or_else(|| {
+                Error::validation(format!(
+                    "product member '{}' has a bundle dependency without an id",
+                    consumer.id
+                ))
+            })?;
+            if !ids.insert(id.to_string()) {
+                return Err(Error::validation(format!(
+                    "product member '{}' repeats bundle dependency '{id}'",
+                    consumer.id
+                )));
+            }
+            let Some(provider) = providers.get(id) else {
+                continue;
+            };
+            let bundle = Bundle::load(&member_root(provider)).map_err(|error| {
+                Error::validation(format!(
+                    "product member '{}' cannot load bundle provider '{id}': {error}",
+                    consumer.id
+                ))
+            })?;
+            let expected = (
+                dependency["version"].as_str(),
+                dependency["kind"].as_str(),
+                dependency["contract"].as_u64(),
+            );
+            let actual = (
+                Some(bundle.manifest.plugin.version.as_str()),
+                Some(bundle.manifest.kind().as_str()),
+                bundle
+                    .manifest
+                    .schema
+                    .as_ref()
+                    .and_then(|schema| schema.contract),
+            );
+            if expected != actual
+                || provider.version != bundle.manifest.plugin.version
+                || provider.kind != bundle.manifest.kind().as_str()
+            {
+                return Err(Error::coded(
+                    "PLUGIN_PRODUCT_BUNDLE_IDENTITY_MISMATCH",
+                    Category::Validation,
+                    format!(
+                        "product member '{}' requires bundle '{id}' as {expected:?}, but the product provides {actual:?}",
+                        consumer.id
+                    ),
+                ));
+            }
+            internal
+                .entry(consumer.id.clone())
+                .or_insert_with(BTreeSet::new)
+                .insert(id.to_string());
+        }
+    }
+    Ok(internal)
+}
+
+fn without_internal_bundle_paths(
+    paths: &[String],
+    internal: Option<&BTreeSet<String>>,
+) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|path| {
+            let Some(id) = path
+                .strip_prefix("runtime/bundles/")
+                .and_then(|tail| tail.split('/').next())
+            else {
+                return true;
+            };
+            !internal.is_some_and(|internal| internal.contains(id))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Prefix a member's own activation paths with where that member installs.
@@ -10223,6 +10351,68 @@ mod tests {
             debug: RequiredProductDebug(None),
             dependencies: serde_json::Value::Null,
         }
+    }
+
+    #[test]
+    fn product_uses_one_matching_bundle_identity_for_activation() {
+        let root = unique_tmp("product-bundle-identity");
+        let provider_root = root.join("bundles/schema");
+        write_test_file(
+            &provider_root.join(ost_plugin::PLUGIN_MANIFEST),
+            "manifest: { schema: openstrata.plugin/v1alpha1 }\n\
+             plugin: { name: schema, version: 0.1.0, kind: usd-schema }\n\
+             runtime: { openusd: '>=25.05,<26.0' }\n\
+             usd: { plug_info: plugin/resources/schema/plugInfo.json }\n\
+             schema: { codeless: true, contract: 1 }\n",
+        );
+        let mut provider = product_member();
+        provider.id = "schema".into();
+        provider.name = "schema".into();
+        provider.kind = "usd-schema".into();
+        provider.position = 0;
+        let mut consumer = product_member();
+        consumer.id = "consumer".into();
+        consumer.name = "consumer".into();
+        consumer.position = 1;
+        consumer.dependencies = serde_json::json!({
+            "bundles": [{"id": "schema", "version": "0.1.0", "kind": "usd-schema", "contract": 1}]
+        });
+        let contract = PluginProductContract {
+            schema: "openstrata.plugin-product/v1alpha1".into(),
+            name: "workspace".into(),
+            version: "0.1.0".into(),
+            target: "test".into(),
+            install: PluginProductInstall {
+                layout: "members/<member-id>/".into(),
+                order: vec!["schema".into(), "consumer".into()],
+                contract: "test".into(),
+                os: Some("linux".into()),
+                destination: "bundles/<bundle-id>/".into(),
+                activation: "openstrata.activation.json".into(),
+            },
+            members: vec![provider, consumer],
+            data: Vec::new(),
+        };
+        let internal = internal_product_bundle_dependencies(&contract, |member| {
+            root.join(member.destination())
+        })
+        .unwrap();
+        let paths = vec![
+            "plugin/resources/consumer".into(),
+            "runtime/bundles/schema/plugin/resources/schema".into(),
+        ];
+        assert_eq!(
+            without_internal_bundle_paths(&paths, internal.get("consumer")),
+            vec!["plugin/resources/consumer"]
+        );
+        let mut mismatched = contract;
+        mismatched.members[1].dependencies["bundles"][0]["contract"] = serde_json::json!(2);
+        let error = internal_product_bundle_dependencies(&mismatched, |member| {
+            root.join(member.destination())
+        })
+        .unwrap_err();
+        assert_eq!(error.code(), "PLUGIN_PRODUCT_BUNDLE_IDENTITY_MISMATCH");
+        let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 
     #[test]
