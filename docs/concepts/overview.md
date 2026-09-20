@@ -49,12 +49,13 @@ deps), Jenkins (CI orchestration), OCI (transport), and Git (workspace history).
 ## Near-term product direction
 
 The runtime/artifact/Formation, consumer-package, ordinary runtime UX and
-correctness-diagnostic foundation is established through v0.22.10. The
-near-term work deliberately carries that identity into release CI and hosts
+correctness-diagnostic foundation is established through v0.23.0. The
+near-term work carries that identity through downstream and hosted evidence
 instead of widening the low-level feature set:
 
 ```text
-v0.23.0  expand release CI and bind the same runtime to DCC hosts
+v0.23.x  fix defects found by downstream and hosted release validation
+next     complete DCC add-on packaging and the host execution matrix
 v1.0.0   trust the complete produce -> CI -> Formation -> DCC execution arc
 ```
 

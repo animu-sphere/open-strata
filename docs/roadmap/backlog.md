@@ -9,7 +9,8 @@ Legend: ⬜ not started
 
 ## Milestone ladder (beyond next)
 
-v0.23.0 release CI, host adapters and matrix is active in
+The v0.23.0 release is recorded in [releases/](../releases/v0.23.0.md).
+Post-release evidence and remaining host-adapter work are in
 [current.md](current.md). Detailed acceptance is in
 [runtime-composition.md](runtime-composition.md) and the
 [downstream report intake](downstream-report-intake.md).

@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod env;
 pub mod extension;
 pub mod external;
+pub(crate) mod external_library;
 pub mod formation;
 pub mod host;
 pub mod init;

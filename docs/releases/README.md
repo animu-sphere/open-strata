@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.23.0 | [v0.23.0.md](v0.23.0.md) | Release CI, component closure and host add-ons |
 | v0.22.10 | [v0.22.10.md](v0.22.10.md) | Runtime correctness, UX and diagnostics |
 | v0.22.9 | [v0.22.9.md](v0.22.9.md) | Consumer packaging and downstream intake |
 | v0.22.8 | [v0.22.8.md](v0.22.8.md) | Geospatial runtime dogfood |

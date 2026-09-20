@@ -340,10 +340,32 @@ the per-library file list retain their existing archive checks.
 The remaining shared-library loadability and clean installed-product acceptance
 are tracked in the [v0.23.0 intake](../roadmap/downstream-report-intake.md).
 
-`requires.libraries` in v0.22.10 resolves only workspace members by id and
-version. An installed library from another repository has no declared artifact
-source in this graph. The cross-repository dependency acceptance is in the
-[same intake](../roadmap/downstream-report-intake.md).
+`requires.libraries` may also name a library artifact from another repository.
+The `artifact` object pins its OpenStrata archive digest; `source` is an
+optional, immutable `oci://...@sha256:...` locator or an air-gapped `file://`
+dist directory. A multi-OS consumer uses `artifact.targets` keyed by exact
+OST target id:
+
+```yaml
+requires:
+  libraries:
+    - id: motionCore
+      version: ">=0.1,<0.2"
+      artifact:
+        targets:
+          cy2026-windows-x86_64-py313-usd:
+            digest: sha256:<64-hex-archive-digest>
+            source: oci://ghcr.io/example/motion-core@sha256:<64-hex-oci-digest>
+```
+
+Replace the placeholders with published digests and add each supported target
+from `ost ci plan`. `ost library pull --target cy2026 --profile usd` checks the
+selected archive, library/version/target and runtime identity, materializes its
+installed files, and rejects a missing prerequisite library. Generated source
+and release CI run that pull before building. Build and package reuse the same
+pin and record it in `dependencies.json` and product provenance. The
+`motionCore` → VRM downstream acceptance remains in the
+[intake](../roadmap/downstream-report-intake.md).
 
 Every package also carries
 [`openstrata.activation.json`](../../schemas/plugin-activation.schema.json), `activate.ps1`,
@@ -537,6 +559,11 @@ written. Issues use stable codes:
 | `WORKSPACE_LIBRARY_DEPENDENCY_MISSING` | No unique descriptor provides the required library. |
 | `WORKSPACE_LIBRARY_DEPENDENCY_VERSION_INVALID` | A library version range cannot be parsed. |
 | `WORKSPACE_LIBRARY_DEPENDENCY_VERSION_MISMATCH` | The provider version does not satisfy the range. |
+| `WORKSPACE_LIBRARY_ARTIFACT_DIGEST_INVALID` | An external library has no valid archive digest for its declared target. |
+| `WORKSPACE_LIBRARY_PROVIDER_AMBIGUOUS` | A dependency pins an artifact while the workspace also declares the same library id. |
+| `WORKSPACE_LIBRARY_ARTIFACT_IDENTITY_MISMATCH` | A pulled artifact has the wrong library, version, kind, digest or target. |
+| `WORKSPACE_LIBRARY_ARTIFACT_RUNTIME_MISMATCH` | A library artifact targets another runtime id or digest. |
+| `WORKSPACE_LIBRARY_ARTIFACT_CLOSURE_INCOMPLETE` | An artifact requires a library absent from the selected pinned closure. |
 | `WORKSPACE_LIBRARY_DEPENDENCY_CYCLE` | The directed plain-library graph contains a cycle. |
 | `WORKSPACE_LIBRARY_RUNTIME_MISSING` | A selected library install snapshot or its declared runtime file is missing during plugin package/test. |
 | `LIBRARY_RUNTIME_FILE_MISSING` | A plain-library build or package lacks a file declared in `runtime.required_files` for the target OS. |

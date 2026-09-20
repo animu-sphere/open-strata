@@ -48,6 +48,7 @@ use ost_runtime::{EnvSet, ProfileCatalog, RuntimeManifest, MANIFEST_FILE};
 
 use crate::commands::compiler::{self, CompilerOpts};
 use crate::commands::configure::{build_target, load_project};
+use crate::commands::external_library::{self, ExternalLibrary};
 use crate::commands::resolve;
 use crate::output::{self, Format};
 
@@ -826,6 +827,17 @@ pub(crate) fn build_library_one(
     })?;
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
+    let external = if dry_run {
+        Vec::new()
+    } else {
+        let path = r.prefix.join(MANIFEST_FILE);
+        let manifest = RuntimeManifest::from_json(
+            &std::fs::read_to_string(path.as_std_path())
+                .map_err(|error| Error::io(path.to_string(), error))?,
+        )
+        .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
+        selected_external_libraries_for_library(library, &id, &manifest.id, &manifest.digest)?
+    };
     let compiler = resolve_plugin_compiler(&library.root, &compiler_opts)?;
     let (project_root, build_intent) = scoped_build_intent(&library.root)?;
     let target_dir = target_state_dir(&library.root, &id);
@@ -894,6 +906,11 @@ pub(crate) fn build_library_one(
         .iter()
         .map(|prefix| format!("\"{}\"", cmake_path(prefix)))
         .collect::<Vec<_>>();
+    cmake_prefixes.extend(
+        external
+            .iter()
+            .map(|library| format!("\"{}\"", cmake_path(&library.prefix))),
+    );
     cmake_prefixes.push(format!("\"{}\"", cmake_path(install_prefix)));
     toolchain_text.push_str(&format!(
         "\n# Validated source-workspace library prefixes.\nlist(PREPEND CMAKE_PREFIX_PATH {})\n",
@@ -1061,6 +1078,11 @@ fn build_one(
         selection_for_capabilities(target, profile, &bundle.manifest.requires.capabilities)?;
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
+    let external = if dry_run {
+        Vec::new()
+    } else {
+        selected_external_libraries(&bundle, &r)?
+    };
 
     // Compiler policy: CLI flags over the enclosing project's `[build]`, else host.
     let compiler = resolve_plugin_compiler(&bundle.root, &compiler_opts)?;
@@ -1105,6 +1127,16 @@ fn build_one(
         toolchain_text.push_str(&format!(
             "\n# Source-workspace dependency install prefix.\nlist(PREPEND CMAKE_PREFIX_PATH \"{}\")\n",
             cmake_path(prefix)
+        ));
+    }
+    if !external.is_empty() {
+        let prefixes = external
+            .iter()
+            .map(|library| format!("\"{}\"", cmake_path(&library.prefix)))
+            .collect::<Vec<_>>();
+        toolchain_text.push_str(&format!(
+            "\n# Digest-pinned external library artifacts.\nlist(PREPEND CMAKE_PREFIX_PATH {})\n",
+            prefixes.join(" ")
         ));
     }
     std::fs::write(toolchain.as_std_path(), format!("{toolchain_text}\n"))
@@ -2344,7 +2376,7 @@ fn package_bundle(
     // a scalar (collapsing any per-OS/`inherit` source declaration).
     packaged_manifest.runtime.cxx_abi = ctx.cxx_abi.clone().map(CxxAbi::Scalar);
     packaged_manifest.runtime.python_abi = ctx.python_abi.clone();
-    let library_closure = selected_library_package_closure(&bundle, &id, tgt.os())?;
+    let library_closure = selected_library_package_closure(&bundle, &r, tgt.os())?;
     for relative in library_closure.runtime_dirs.values().flatten() {
         // The directory values are portable artifact paths, including on a
         // Windows producer where native paths use backslashes.
@@ -2393,13 +2425,16 @@ fn package_bundle(
             let mut evidence = serde_json::json!({
                 "id": library["id"],
                 "version": library["version"],
-                "descriptor": ost_plugin::LIBRARY_MANIFEST,
+                "descriptor": if library["provenance"] == "external-artifact" { serde_json::Value::Null } else { serde_json::json!(ost_plugin::LIBRARY_MANIFEST) },
                 "cmake_package": library["cmake_package"],
                 "cmake_target": library["cmake_target"],
                 "prefix": serde_json::Value::Null,
                 "runtime_directories": runtime_directories,
-                "provenance": "source-workspace",
+                "provenance": library["provenance"],
             });
+            if let Some(digest) = library["archive_digest"].as_str() {
+                evidence["archive_digest"] = serde_json::json!(digest);
+            }
             if !files.is_empty() {
                 evidence["files"] = serde_json::json!(files);
             }
@@ -7612,7 +7647,15 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
     };
     let root = project_root.as_deref().unwrap_or(conventional_root);
     let members = discover_workspace_members(root)?;
-    if members.bundles.len() < 2 && members.libraries.is_empty() {
+    if members.bundles.len() < 2
+        && members.libraries.is_empty()
+        && !primary
+            .manifest
+            .requires
+            .libraries
+            .iter()
+            .any(|dependency| dependency.artifact.is_some())
+    {
         return Ok(None);
     }
     let loaded = members
@@ -7856,6 +7899,205 @@ fn target_id_from_resolved(resolved: &crate::commands::Resolved) -> String {
     )
 }
 
+fn external_dependencies_from_workspace(
+    primary: &Bundle,
+    workspace: &SourceWorkspace,
+) -> Result<Vec<ost_plugin::LibraryDependency>> {
+    let mut dependencies = BTreeMap::<String, ost_plugin::LibraryDependency>::new();
+    let mut bundles = dependencies_from_workspace(primary, workspace)?;
+    bundles.push(primary.clone());
+    let libraries = libraries_from_workspace(primary, workspace)?;
+    for dependency in bundles
+        .iter()
+        .flat_map(|bundle| bundle.manifest.requires.libraries.iter())
+        .chain(
+            libraries
+                .iter()
+                .flat_map(|library| library.manifest.requires.libraries.iter()),
+        )
+        .filter(|dependency| dependency.artifact.is_some())
+    {
+        if let Some(previous) = dependencies.insert(dependency.id.clone(), dependency.clone()) {
+            if previous != *dependency {
+                return Err(Error::coded(
+                    "WORKSPACE_LIBRARY_ARTIFACT_CONFLICT",
+                    Category::Validation,
+                    format!(
+                        "library '{}' has conflicting external artifact pins",
+                        dependency.id
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(dependencies.into_values().collect())
+}
+
+fn selected_external_libraries(
+    primary: &Bundle,
+    resolved: &crate::commands::Resolved,
+) -> Result<Vec<ExternalLibrary>> {
+    let Some(workspace) = source_workspace_for(primary)? else {
+        return Ok(Vec::new());
+    };
+    let dependencies = external_dependencies_from_workspace(primary, &workspace)?;
+    if dependencies.is_empty() {
+        return Ok(Vec::new());
+    }
+    let manifest_path = resolved.prefix.join(MANIFEST_FILE);
+    let manifest = RuntimeManifest::from_json(
+        &std::fs::read_to_string(manifest_path.as_std_path())
+            .map_err(|error| Error::io(manifest_path.to_string(), error))?,
+    )
+    .map_err(|error| Error::parse(manifest_path.to_string(), anyhow::Error::new(error)))?;
+    let target = target_id_from_resolved(resolved);
+    let external = dependencies
+        .iter()
+        .map(|dependency| {
+            external_library::materialize(
+                dependency,
+                &target,
+                &manifest.id,
+                &manifest.digest,
+                &workspace.root,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    external_library::validate_closure(&external, &libraries_from_workspace(primary, &workspace)?)?;
+    Ok(external)
+}
+
+pub(crate) fn selected_external_libraries_for_library(
+    primary: &Library,
+    target: &str,
+    runtime_id: &str,
+    runtime_digest: &str,
+) -> Result<Vec<ExternalLibrary>> {
+    let prerequisites = selected_workspace_libraries_for_library(primary)?;
+    let root = find_project_root(primary.root.as_std_path())
+        .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+        .or_else(|| primary.root.parent().map(Utf8Path::to_path_buf))
+        .ok_or_else(|| {
+            Error::config(format!("library '{}' has no workspace root", primary.id()))
+        })?;
+    let mut dependencies = BTreeMap::<String, ost_plugin::LibraryDependency>::new();
+    for dependency in prerequisites
+        .iter()
+        .chain(std::iter::once(primary))
+        .flat_map(|library| library.manifest.requires.libraries.iter())
+        .filter(|dependency| dependency.artifact.is_some())
+    {
+        if let Some(previous) = dependencies.insert(dependency.id.clone(), dependency.clone()) {
+            if previous != *dependency {
+                return Err(Error::validation(format!(
+                    "library '{}' has conflicting external artifact pins",
+                    dependency.id
+                )));
+            }
+        }
+    }
+    let external = dependencies
+        .values()
+        .map(|dependency| {
+            external_library::materialize(dependency, target, runtime_id, runtime_digest, &root)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    external_library::validate_closure(&external, &prerequisites)?;
+    Ok(external)
+}
+
+pub(crate) fn pull_workspace_external_libraries(
+    target: Option<String>,
+    profile: Option<String>,
+) -> Result<Vec<serde_json::Value>> {
+    let current = std::env::current_dir().map_err(|error| Error::io("current directory", error))?;
+    let current = Utf8PathBuf::from_path_buf(current)
+        .map_err(|path| Error::config(format!("non-UTF-8 workspace path: {}", path.display())))?;
+    let root = find_project_root(current.as_std_path())
+        .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+        .unwrap_or(current);
+    let members = discover_workspace_members(&root)?;
+    let bundles = members
+        .bundles
+        .iter()
+        .map(|path| Bundle::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let libraries = members
+        .libraries
+        .iter()
+        .map(|path| Library::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
+    if !graph.passed {
+        return Err(Error::coded(
+            "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+            Category::Validation,
+            format!(
+                "external library pull requires a valid workspace graph: {}",
+                graph
+                    .issues
+                    .iter()
+                    .map(|issue| issue.message.as_str())
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        ));
+    }
+    let (platform, profile) = selection(target, profile)
+        .ok_or_else(|| Error::usage("select a platform/profile for external library artifacts"))?;
+    let (target, resolved) = build_target(&platform, &profile)?;
+    if !resolved.pulled {
+        return Err(Error::precondition(format!(
+            "runtime '{}' must be pulled before external libraries",
+            target.runtime_id
+        )));
+    }
+    let path = resolved.prefix.join(MANIFEST_FILE);
+    let runtime = RuntimeManifest::from_json(
+        &std::fs::read_to_string(path.as_std_path())
+            .map_err(|error| Error::io(path.to_string(), error))?,
+    )
+    .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
+    let mut pins = BTreeMap::<String, ost_plugin::LibraryDependency>::new();
+    for dependency in bundles
+        .iter()
+        .flat_map(|bundle| bundle.manifest.requires.libraries.iter())
+        .chain(
+            libraries
+                .iter()
+                .flat_map(|library| library.manifest.requires.libraries.iter()),
+        )
+        .filter(|dependency| dependency.artifact.is_some())
+    {
+        if let Some(previous) = pins.insert(dependency.id.clone(), dependency.clone()) {
+            if previous != *dependency {
+                return Err(Error::validation(format!(
+                    "conflicting artifact pins for library '{}'",
+                    dependency.id
+                )));
+            }
+        }
+    }
+    let external = pins
+        .values()
+        .map(|dependency| {
+            external_library::materialize(
+                dependency,
+                &target.id(),
+                &runtime.id,
+                &runtime.digest,
+                &root,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    external_library::validate_closure(&external, &libraries)?;
+    Ok(external
+        .into_iter()
+        .map(|library| library.evidence())
+        .collect())
+}
+
 fn library_runtime_dirs_from_workspace(
     primary: &Bundle,
     workspace: &SourceWorkspace,
@@ -7876,6 +8118,13 @@ fn library_runtime_dirs_from_workspace(
         let materialized =
             materialized_workspace_library_runtime_dirs(&library, &prefix, &installed);
         directories.extend(materialized);
+    }
+    if require_materialized {
+        directories.extend(
+            selected_external_libraries(primary, resolved)?
+                .into_iter()
+                .flat_map(|library| library.runtime_directories),
+        );
     }
     directories.sort();
     directories.dedup();
@@ -7912,7 +8161,7 @@ fn selected_workspace_library_evidence(
     };
     let libraries = libraries_from_workspace(primary, &workspace)?;
     let target_id = resolved.map(target_id_from_resolved);
-    Ok(libraries
+    let mut evidence = libraries
         .into_iter()
         .map(|library| {
             let prefix = target_id
@@ -7948,7 +8197,28 @@ fn selected_workspace_library_evidence(
                 "provenance": "source-workspace",
             })
         })
-        .collect())
+        .collect::<Vec<_>>();
+    if let Some(resolved) = resolved {
+        evidence.extend(
+            selected_external_libraries(primary, resolved)?
+                .into_iter()
+                .map(|library| library.evidence()),
+        );
+    } else {
+        evidence.extend(
+            external_dependencies_from_workspace(primary, &workspace)?
+                .into_iter()
+                .map(|dependency| {
+                    serde_json::json!({
+                        "id": dependency.id,
+                        "version": dependency.version,
+                        "artifact": dependency.artifact,
+                        "provenance": "external-artifact",
+                    })
+                }),
+        );
+    }
+    Ok(evidence)
 }
 
 /// Return exact installed files for the bundle's library closure, plus the
@@ -8033,9 +8303,10 @@ fn materialized_workspace_library_runtime_dirs(
 
 fn selected_library_package_closure(
     primary: &Bundle,
-    target_id: &str,
+    resolved: &crate::commands::Resolved,
     os: Os,
 ) -> Result<LibraryPackageClosure> {
+    let target_id = target_id_from_resolved(resolved);
     let Some(workspace) = source_workspace_for(primary)? else {
         return Ok(LibraryPackageClosure {
             files: Vec::new(),
@@ -8050,8 +8321,8 @@ fn selected_library_package_closure(
     let mut required_files_by_library = BTreeMap::new();
     let mut directories_by_library = BTreeMap::new();
     for library in libraries {
-        let prefix = workspace_library_snapshot(&library, target_id);
-        let installed = verified_workspace_library_files(&library, target_id, &primary.root)?;
+        let prefix = workspace_library_snapshot(&library, &target_id);
+        let installed = verified_workspace_library_files(&library, &target_id, &primary.root)?;
         if let Some(required) = &library.manifest.runtime.required_files {
             let selected = required.for_os(os);
             if selected.is_empty() {
@@ -8111,6 +8382,40 @@ fn selected_library_package_closure(
                 .collect::<Vec<_>>();
         directories_by_library.insert(library.id().to_string(), directories);
     }
+    for library in selected_external_libraries(primary, resolved)? {
+        let mut library_files = Vec::new();
+        for relative in &library.files {
+            let destination = Utf8Path::new("runtime/libraries")
+                .join(&library.id)
+                .join(relative);
+            library_files.push(portable(&destination));
+            mappings.insert(
+                destination,
+                package_external_library_source(&library.prefix, relative)?,
+            );
+        }
+        library_files.sort();
+        files_by_library.insert(library.id.clone(), library_files);
+        directories_by_library.insert(
+            library.id.clone(),
+            library
+                .runtime_directories
+                .iter()
+                .filter_map(|directory| {
+                    directory
+                        .strip_prefix(&library.prefix)
+                        .ok()
+                        .map(|relative| {
+                            portable(
+                                &Utf8Path::new("runtime/libraries")
+                                    .join(&library.id)
+                                    .join(relative),
+                            )
+                        })
+                })
+                .collect(),
+        );
+    }
     Ok(LibraryPackageClosure {
         files: mappings
             .into_iter()
@@ -8119,6 +8424,33 @@ fn selected_library_package_closure(
         files_by_library,
         required_files_by_library,
         runtime_dirs: directories_by_library,
+    })
+}
+
+/// Flatten a verified artifact's symlink aliases when staging a plugin package.
+/// The package stage accepts regular files only, and shared libraries commonly
+/// ship versioned aliases such as libfoo.so -> libfoo.so.1.
+fn package_external_library_source(prefix: &Utf8Path, relative: &Utf8Path) -> Result<Utf8PathBuf> {
+    let source = prefix.join(relative);
+    let metadata = std::fs::symlink_metadata(source.as_std_path())
+        .map_err(|error| Error::io(source.to_string(), error))?;
+    if !metadata.file_type().is_symlink() {
+        return Ok(source);
+    }
+    let resolved = std::fs::canonicalize(source.as_std_path())
+        .map_err(|error| Error::io(source.to_string(), error))?;
+    let canonical_prefix = std::fs::canonicalize(prefix.as_std_path())
+        .map_err(|error| Error::io(prefix.to_string(), error))?;
+    if !resolved.starts_with(&canonical_prefix) || !resolved.is_file() {
+        return Err(Error::validation(format!(
+            "external library symlink escapes its artifact prefix: {source}"
+        )));
+    }
+    Utf8PathBuf::from_path_buf(resolved).map_err(|path| {
+        Error::validation(format!(
+            "non-UTF-8 external library path: {}",
+            path.display()
+        ))
     })
 }
 
@@ -10221,6 +10553,34 @@ pub(crate) fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
 mod tests {
     use super::*;
     use ost_core::host::Arch;
+
+    #[cfg(unix)]
+    #[test]
+    fn external_shared_library_alias_can_be_staged_without_escaping_its_artifact() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_tmp("external-library-alias");
+        let prefix = root.join("artifact");
+        let lib = prefix.join("lib");
+        let stage = root.join("stage");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("libfoo.so.1"), b"shared library").unwrap();
+        symlink("libfoo.so.1", lib.join("libfoo.so")).unwrap();
+
+        let source =
+            package_external_library_source(&prefix, Utf8Path::new("lib/libfoo.so")).unwrap();
+        let relative = Utf8Path::new("runtime/libraries/foo/lib/libfoo.so");
+        copy_file_required(&source, relative, &stage).unwrap();
+        assert_eq!(
+            std::fs::read(stage.join(relative)).unwrap(),
+            b"shared library"
+        );
+
+        std::fs::write(root.join("outside.so"), b"outside").unwrap();
+        symlink("../../outside.so", lib.join("escape.so")).unwrap();
+        assert!(package_external_library_source(&prefix, Utf8Path::new("lib/escape.so")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn product_library_inventory_requires_each_recorded_file() {

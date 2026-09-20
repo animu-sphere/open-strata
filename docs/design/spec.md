@@ -29,7 +29,8 @@ packaging、通常利用の runtime UX と correctness diagnostics の基盤が�
 直近は新しい低レベル機能を広げるよりも、次の順に収束させる。
 
 ```text
-v0.23.0  release CI, DCC host adapters and matrix
+v0.23.0  release CI, library artifact edges and initial host adapters
+next     complete host add-on packaging and matrix evidence
 v1.0.0   trusted production arc
 ```
 
@@ -1827,7 +1828,7 @@ provenance metadata
 The phases below are the original architectural decomposition, not the current
 release order. The active milestone ladder in [roadmap](../roadmap/README.md)
 supersedes their sequencing; in particular, sessions and AI/GPU profiles remain
-future work while release CI and DCC adapters form the v0.23.0 mainline.
+future work while release CI and initial DCC adapters form the v0.23.0 slice.
 
 ## Phase 0 — Foundation
 
@@ -2083,12 +2084,12 @@ Success means:
 
 # 22. Immediate Implementation Tasks
 
-The bootstrap, consumer-package, runtime-UX and correctness-diagnostic lists have
-shipped through v0.22.10 and are retained in release history. From 2026-09-13,
-implement in this order:
+The bootstrap, consumer-package, runtime-UX, release-CI and initial host lists
+have shipped through v0.23.0 and are retained in release history. Continue in
+this order:
 
-1. Complete v0.23.0 release-lane expansion, DCC headless adapters,
-   Maya `.mod`, Houdini package JSON and matrix cells pinned to host records,
+1. Complete DCC add-on packaging, Maya `.mod`, Houdini package JSON and matrix
+   cells pinned to host records,
    artifact digests, tiers and execution evidence on Windows/Linux/macOS.
 2. Complete component package contracts on top of the existing workspace graph:
    workspace-wide consumers, PUBLIC/package dependency consistency, standalone

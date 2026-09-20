@@ -55,7 +55,29 @@
             "additionalProperties": false,
             "properties": {
               "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*$" },
-              "version": { "type": "string", "minLength": 1 }
+              "version": { "type": "string", "minLength": 1 },
+              "artifact": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "digest": { "type": "string", "pattern": "^sha256:[A-Fa-f0-9]{64}$" },
+                  "source": { "type": "string", "minLength": 1 },
+                  "targets": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "additionalProperties": {
+                      "type": "object",
+                      "required": ["digest"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "digest": { "type": "string", "pattern": "^sha256:[A-Fa-f0-9]{64}$" },
+                        "source": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  }
+                },
+                "oneOf": [ { "required": ["digest"] }, { "required": ["targets"] } ]
+              }
             }
           }
         }

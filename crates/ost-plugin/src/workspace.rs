@@ -41,6 +41,12 @@ pub struct WorkspaceLibraryEdge {
     pub from_kind: String,
     pub to: String,
     pub version: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_targets: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -187,7 +193,7 @@ impl WorkspaceValidation {
             .map(|library| (library.id.as_str(), Vec::new()))
             .collect();
         for edge in &self.library_edges {
-            if edge.from_kind == "library" {
+            if edge.from_kind == "library" && !edge.external {
                 library_adjacency
                     .entry(edge.from.as_str())
                     .or_default()
@@ -222,7 +228,11 @@ impl WorkspaceValidation {
         let mut roots = self
             .library_edges
             .iter()
-            .filter(|edge| edge.from_kind == "bundle" && selected.contains(edge.from.as_str()))
+            .filter(|edge| {
+                edge.from_kind == "bundle"
+                    && !edge.external
+                    && selected.contains(edge.from.as_str())
+            })
             .map(|edge| edge.to.as_str())
             .collect::<Vec<_>>();
         roots.sort_unstable();
@@ -263,7 +273,7 @@ impl WorkspaceValidation {
         for edge in self
             .library_edges
             .iter()
-            .filter(|edge| edge.from_kind == "library")
+            .filter(|edge| edge.from_kind == "library" && !edge.external)
         {
             adjacency
                 .entry(edge.from.as_str())
@@ -603,6 +613,76 @@ fn validate_library_dependency(
         ));
         return;
     }
+    if let Some(artifact) = &dependency.artifact {
+        let pins = if artifact.targets.is_empty() {
+            vec![(None, artifact)]
+        } else {
+            artifact
+                .targets
+                .iter()
+                .map(|(target, pin)| (Some(target.as_str()), pin))
+                .collect::<Vec<_>>()
+        };
+        let malformed = pins.is_empty()
+            || (!artifact.targets.is_empty()
+                && (!artifact.digest.is_empty() || artifact.source.is_some()))
+            || pins.iter().any(|(target, pin)| {
+                let digest = pin.digest.strip_prefix("sha256:");
+                target.is_some_and(|target| target.trim().is_empty())
+                    || !pin.targets.is_empty()
+                    || !digest.is_some_and(|hex| {
+                        hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                    || pin
+                        .source
+                        .as_deref()
+                        .is_some_and(|source| source.trim().is_empty())
+            });
+        if malformed {
+            issues.push(issue(
+                "WORKSPACE_LIBRARY_ARTIFACT_DIGEST_INVALID",
+                consumer_id,
+                Some(&dependency.id),
+                format!("{consumer_kind} '{consumer_id}' pins library '{}' with an invalid sha256 artifact digest", dependency.id),
+            ));
+            return;
+        }
+        if providers.contains_key(dependency.id.as_str()) {
+            issues.push(issue(
+                "WORKSPACE_LIBRARY_PROVIDER_AMBIGUOUS",
+                consumer_id,
+                Some(&dependency.id),
+                format!("{consumer_kind} '{consumer_id}' declares both a workspace provider and an artifact for library '{}'", dependency.id),
+            ));
+            return;
+        }
+        if dependency.version.trim().is_empty() || satisfies("0.0.0", &dependency.version).is_err()
+        {
+            issues.push(issue(
+                "WORKSPACE_LIBRARY_DEPENDENCY_VERSION_INVALID",
+                consumer_id,
+                Some(&dependency.id),
+                format!("{consumer_kind} '{consumer_id}' declares an invalid version requirement for '{}'", dependency.id),
+            ));
+            return;
+        }
+        edges.push(WorkspaceLibraryEdge {
+            from: consumer_id.to_string(),
+            from_kind: consumer_kind.to_string(),
+            to: dependency.id.clone(),
+            version: dependency.version.clone(),
+            external: true,
+            artifact_digest: artifact.targets.is_empty().then(|| artifact.digest.clone()),
+            artifact_targets: (!artifact.targets.is_empty()).then(|| {
+                artifact
+                    .targets
+                    .iter()
+                    .map(|(target, pin)| (target.clone(), pin.digest.clone()))
+                    .collect()
+            }),
+        });
+        return;
+    }
     let Some(provider) = providers.get(dependency.id.as_str()) else {
         issues.push(issue(
             "WORKSPACE_LIBRARY_DEPENDENCY_MISSING",
@@ -620,6 +700,9 @@ fn validate_library_dependency(
         from_kind: consumer_kind.to_string(),
         to: dependency.id.clone(),
         version: dependency.version.clone(),
+        external: false,
+        artifact_digest: None,
+        artifact_targets: None,
     });
     if dependency.version.trim().is_empty() {
         issues.push(issue(
@@ -787,7 +870,10 @@ fn find_library_cycles(
         .iter()
         .map(|node| (node.id.clone(), Vec::new()))
         .collect();
-    for edge in edges.iter().filter(|edge| edge.from_kind == "library") {
+    for edge in edges
+        .iter()
+        .filter(|edge| edge.from_kind == "library" && !edge.external)
+    {
         adjacency
             .entry(edge.from.clone())
             .or_default()

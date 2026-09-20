@@ -754,6 +754,9 @@ fn source_preamble(matrix: &SupportMatrix) -> String {
           fi
           ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}} \"$@\"{policy}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
+      - name: Pull digest-pinned external library artifacts
+        shell: bash
+        run: ost library pull --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --json
 {cache_save}\
 {prebuild}",
         checkout = checkout_preamble(matrix),
@@ -1224,6 +1227,9 @@ fn release_candidate_steps(matrix: &SupportMatrix) -> String {
           ost artifact verify ${{{{ matrix.runtime_artifact }}}} --minimum-trust ${{{{ matrix.minimum_trust }}}} ${{{{ matrix.evidence_flags }}}} \"$@\" --policy {policy}
           ost runtime pull ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --from-artifact ${{{{ matrix.runtime_artifact }}}} --force
 {prebuild}\
+\x20     - name: Pull digest-pinned external library artifacts
+        shell: bash
+        run: ost library pull --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}} --json
 \x20     - name: Build the release candidate from source
         shell: bash
         run: ost plugin build ${{{{ matrix.bundle }}}} --target ${{{{ matrix.platform }}}} --profile ${{{{ matrix.profile }}}}

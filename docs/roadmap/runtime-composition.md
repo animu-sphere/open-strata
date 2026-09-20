@@ -4,8 +4,8 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-08-24
-updated: 2026-09-19
-applies_to: v0.23.0
+updated: 2026-09-20
+applies_to: post-v0.23.0
 ---
 
 # Runtime composition follow-through
@@ -13,27 +13,25 @@ applies_to: v0.23.0
 This plan contains only incomplete work on the proposed
 [runtime-composition contract](../design/proposed/runtime-composition.md).
 Canonical artifacts, locked composition, the native SDK, geospatial dogfood,
-consumer packaging, ordinary runtime UX and bounded correctness diagnostics are
-release facts through [v0.22.10](../releases/v0.22.10.md). The next milestone is
-summarized in [current.md](current.md); later slices are ordered in
+consumer packaging, release CI and initial host adapters are release facts
+through [v0.23.0](../releases/v0.23.0.md). The remaining work is summarized in
+[current.md](current.md); later slices are ordered in
 [backlog.md](backlog.md).
 
-## v0.23.0 - release CI and host integration
+## Post-v0.23.0 - release evidence and host integration
 
-**Objective:** exercise the same composed runtime identity through complete
-release lanes and truthful DCC-host entry points.
+**Objective:** finish downstream and hosted evidence for the released paths,
+then extend the same composed runtime identity across host adapters.
 
-- Reconcile generated and externally managed workflow lanes against the same
-  release pins and support declaration.
-- Preserve each component's own package closure and admit digest-pinned
-  libraries from another repository without an ambient dependency edge.
+- Prove each packaged component's installed loadability and missing-file
+  rejection across target operating systems and bundle build orders.
+- Prove the cross-repository motion library migration and an independent
+  installed consumer with the new digest-pinned library edge.
 - Prove the pinned OpenUSD runtime's exported CMake package on a clean host;
-  generated optional OpenUSD flags must also work on macOS when absent.
-- Model `usdview` and DCC adapters as first-class components rather than
-  codeless schema bundles or alternate dependency stores.
-- Preserve distinct component, composition, execution, plugin-load, render and
-  physical-device claims, including explained host-capability SKIPs.
-- Complete the host/OS/OpenUSD/Python matrix with pinned runtime and plugin
+  exercise generated optional OpenUSD flags on hosted macOS.
+- Complete DCC add-on packaging and host-specific smoke suites with explained
+  capability SKIPs and separate component, execution and plugin-load claims.
+- Complete the host/OS/OpenUSD/Python matrix with pinned runtime and component
   artifact identities and bounded execution evidence.
 
 The report sources and exact acceptance are retained in the

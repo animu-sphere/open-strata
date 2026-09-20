@@ -22,10 +22,10 @@ in [USD VRM Plugins](usd-vrm-plugins.md), VMD in
   hosted run encountered producer-local Python paths in the existing runtime
   artifact; the project supplied explicit `Python3_*` values to continue.
 - A library artifact intended to be consumed by other repositories through a
-  declared, versioned, digest-pinned dependency. OpenStrata v0.22.10 can
-  resolve `requires.libraries` only inside one workspace. The VRM migration
-  report records the blocking edge and the
-  [v0.23.0 intake](../roadmap/downstream-report-intake.md) tracks the contract.
+  declared, versioned, digest-pinned dependency. OpenStrata v0.23.0 adds that
+  edge; the VRM migration report records the original blockage, and the
+  [post-release intake](../roadmap/downstream-report-intake.md) tracks its
+  downstream acceptance.
 
 The source of truth for component identities, support and release timing stays
 in the [workspace contract](https://github.com/animu-sphere/usd-motion-plugins/blob/main/docs/architecture/WORKSPACE.md),
