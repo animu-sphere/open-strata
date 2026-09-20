@@ -8006,6 +8006,82 @@ pub(crate) fn selected_external_libraries_for_library(
     Ok(external)
 }
 
+/// Every digest-pinned external library artifact this workspace's members
+/// declare, materialized and checked, for a root build of `root`.
+///
+/// This is the set `ost library build` and `ost plugin build` each compose for
+/// one member. The root build needs the union of them, because the root CMake
+/// tree configures every member in one pass: a member's `find_package` runs
+/// there too, and until 0.23.2 the root toolchain named only the runtime, so a
+/// workspace with one external-consuming member could not configure at all
+/// (usd-vrm-plugins' ost report 43).
+///
+/// Returns an empty vector for a workspace that declares no artifact pin,
+/// which is every workspace that has not adopted the edge — their toolchains
+/// are byte-identical to before.
+pub(crate) fn workspace_external_libraries(
+    root: &Utf8Path,
+    target_id: &str,
+    runtime_id: &str,
+    runtime_digest: &str,
+) -> Result<Vec<ExternalLibrary>> {
+    let members = discover_workspace_members(root)?;
+    let libraries = members
+        .libraries
+        .iter()
+        .map(|path| Library::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let bundles = members
+        .bundles
+        .iter()
+        .map(|path| Bundle::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let pins = external_artifact_pins(&bundles, &libraries)?;
+    if pins.is_empty() {
+        return Ok(Vec::new());
+    }
+    let external = pins
+        .values()
+        .map(|dependency| {
+            external_library::materialize(dependency, target_id, runtime_id, runtime_digest, root)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    external_library::validate_closure(&external, &libraries)?;
+    Ok(external)
+}
+
+/// The artifact pins declared across a member set, one per library id.
+///
+/// Two members may name the same external library, and they must name it
+/// identically: a workspace that pins two digests for one id would build its
+/// members against different copies of the same package.
+fn external_artifact_pins(
+    bundles: &[Bundle],
+    libraries: &[Library],
+) -> Result<BTreeMap<String, ost_plugin::LibraryDependency>> {
+    let mut pins = BTreeMap::<String, ost_plugin::LibraryDependency>::new();
+    for dependency in bundles
+        .iter()
+        .flat_map(|bundle| bundle.manifest.requires.libraries.iter())
+        .chain(
+            libraries
+                .iter()
+                .flat_map(|library| library.manifest.requires.libraries.iter()),
+        )
+        .filter(|dependency| dependency.artifact.is_some())
+    {
+        if let Some(previous) = pins.insert(dependency.id.clone(), dependency.clone()) {
+            if previous != *dependency {
+                return Err(Error::validation(format!(
+                    "conflicting artifact pins for library '{}'",
+                    dependency.id
+                )));
+            }
+        }
+    }
+    Ok(pins)
+}
+
 pub(crate) fn pull_workspace_external_libraries(
     target: Option<String>,
     profile: Option<String>,
@@ -8059,39 +8135,7 @@ pub(crate) fn pull_workspace_external_libraries(
             .map_err(|error| Error::io(path.to_string(), error))?,
     )
     .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
-    let mut pins = BTreeMap::<String, ost_plugin::LibraryDependency>::new();
-    for dependency in bundles
-        .iter()
-        .flat_map(|bundle| bundle.manifest.requires.libraries.iter())
-        .chain(
-            libraries
-                .iter()
-                .flat_map(|library| library.manifest.requires.libraries.iter()),
-        )
-        .filter(|dependency| dependency.artifact.is_some())
-    {
-        if let Some(previous) = pins.insert(dependency.id.clone(), dependency.clone()) {
-            if previous != *dependency {
-                return Err(Error::validation(format!(
-                    "conflicting artifact pins for library '{}'",
-                    dependency.id
-                )));
-            }
-        }
-    }
-    let external = pins
-        .values()
-        .map(|dependency| {
-            external_library::materialize(
-                dependency,
-                &target.id(),
-                &runtime.id,
-                &runtime.digest,
-                &root,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
-    external_library::validate_closure(&external, &libraries)?;
+    let external = workspace_external_libraries(&root, &target.id(), &runtime.id, &runtime.digest)?;
     Ok(external
         .into_iter()
         .map(|library| library.evidence())
@@ -9331,7 +9375,7 @@ fn schema_sources_dir(target_dir: &Utf8Path) -> Utf8PathBuf {
     target_dir.join("schema-sources")
 }
 
-fn cmake_path(path: &Utf8Path) -> String {
+pub(crate) fn cmake_path(path: &Utf8Path) -> String {
     path.to_string().replace('\\', "/")
 }
 
@@ -10553,6 +10597,115 @@ pub(crate) fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
 mod tests {
     use super::*;
     use ost_core::host::Arch;
+
+    /// A workspace that declares no artifact pin resolves to an empty set, and
+    /// so never reaches the artifact store.
+    ///
+    /// This is the compatibility claim of the root-build change: a workspace
+    /// that has not adopted the cross-repository edge gets a byte-identical
+    /// toolchain, because its caller appends nothing for an empty result. A
+    /// regression here would make every existing project's configure depend on
+    /// a store lookup it never needed.
+    #[test]
+    fn a_workspace_with_no_artifact_pin_resolves_to_no_external_library() {
+        let root = unique_tmp("external-none");
+        let member = root.join("libs").join("plain");
+        std::fs::create_dir_all(member.as_std_path()).unwrap();
+        std::fs::write(
+            root.join("openstrata.toml").as_std_path(),
+            concat!(
+                "[project]\n",
+                "name = \"probe\"\n",
+                "version = \"0.1.0\"\n\n",
+                "[requires]\n",
+                "platform = \"cy2026\"\n",
+                "profile = \"usd\"\n\n",
+                "[workspace]\n",
+                "members = [\"libs/plain\"]\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            member.join("openstrata.library.yaml").as_std_path(),
+            PLAIN_LIBRARY,
+        )
+        .unwrap();
+
+        let external = workspace_external_libraries(
+            &root,
+            "cy2026-linux-x86_64-py313-usd",
+            "openstrata-cy2026-linux-x86_64-py313-usd",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        assert!(external.is_empty());
+        std::fs::remove_dir_all(root.as_std_path()).unwrap();
+    }
+
+    /// Two members may name the same external library, and must name it
+    /// identically.
+    ///
+    /// The union the root build composes is per library id, not per member, so
+    /// one id pinned twice is one prefix -- and two *different* pins for one id
+    /// would build the members of a single workspace against different copies
+    /// of the same package, which is refused rather than resolved by order.
+    #[test]
+    fn one_library_pinned_twice_must_be_pinned_the_same_way() {
+        let library = |digest: &str| {
+            let manifest = ost_plugin::LibraryManifest::parse(&pinned_library(digest)).unwrap();
+            Library {
+                root: Utf8PathBuf::from("libs/consumer"),
+                manifest,
+            }
+        };
+        let same = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let other = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+
+        let agreeing = [library(same), library(same)];
+        let pins = external_artifact_pins(&[], &agreeing).unwrap();
+        assert_eq!(pins.len(), 1);
+        assert!(pins.contains_key("motionCore"));
+
+        let disagreeing = [library(same), library(other)];
+        let error = external_artifact_pins(&[], &disagreeing).unwrap_err();
+        assert!(
+            error.to_string().contains("conflicting artifact pins"),
+            "unexpected error: {error}"
+        );
+    }
+
+    const PLAIN_LIBRARY: &str = concat!(
+        "schema: openstrata.library/v1alpha1\n",
+        "library:\n",
+        "  id: plain\n",
+        "  version: 0.1.0\n",
+        "cmake:\n",
+        "  package: plain\n",
+        "  target: plain::plain\n",
+    );
+
+    fn pinned_library(digest: &str) -> String {
+        format!(
+            concat!(
+                "schema: openstrata.library/v1alpha1\n",
+                "library:\n",
+                "  id: consumer\n",
+                "  version: 0.1.0\n",
+                "requires:\n",
+                "  libraries:\n",
+                "    - id: motionCore\n",
+                "      version: \">=0.5,<0.6\"\n",
+                "      artifact:\n",
+                "        targets:\n",
+                "          cy2026-linux-x86_64-py313-usd:\n",
+                "            digest: {digest}\n",
+                "cmake:\n",
+                "  package: consumer\n",
+                "  target: consumer::consumer\n",
+            ),
+            digest = digest
+        )
+    }
 
     #[cfg(unix)]
     #[test]
