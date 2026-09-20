@@ -731,6 +731,7 @@ Build, test, package, and verify one descriptor-owned plain CMake library
 
 - [`ost library build`](#ost-library-build) — Configure, build, and install one plain CMake library
 - [`ost library package`](#ost-library-package) — Package one library's isolated install tree as a tar.zst artifact
+- [`ost library pull`](#ost-library-pull) — Pull and verify all external library artifacts declared by this workspace
 - [`ost library test`](#ost-library-test) — Run CTest for one completed library build
 - [`ost library verify-consumer`](#ost-library-verify-consumer) — Build, install, and link a generated consumer against the declared package closure
 
@@ -776,6 +777,19 @@ Package one library's isolated install tree as a tar.zst artifact
 | --- | --- |
 | `--profile <PROFILE>` | Runtime profile. Defaults to the enclosing project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
+
+#### `ost library pull`
+
+Pull and verify all external library artifacts declared by this workspace
+
+**Usage:** `ost library pull [OPTIONS]`
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--profile <PROFILE>` | Runtime profile. Defaults to the enclosing project's profile |
+| `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's target |
 
 #### `ost library test`
 

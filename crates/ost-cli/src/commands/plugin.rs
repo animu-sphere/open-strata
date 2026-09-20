@@ -8389,7 +8389,10 @@ fn selected_library_package_closure(
                 .join(&library.id)
                 .join(relative);
             library_files.push(portable(&destination));
-            mappings.insert(destination, library.prefix.join(relative));
+            mappings.insert(
+                destination,
+                package_external_library_source(&library.prefix, relative)?,
+            );
         }
         library_files.sort();
         files_by_library.insert(library.id.clone(), library_files);
@@ -8421,6 +8424,33 @@ fn selected_library_package_closure(
         files_by_library,
         required_files_by_library,
         runtime_dirs: directories_by_library,
+    })
+}
+
+/// Flatten a verified artifact's symlink aliases when staging a plugin package.
+/// The package stage accepts regular files only, and shared libraries commonly
+/// ship versioned aliases such as libfoo.so -> libfoo.so.1.
+fn package_external_library_source(prefix: &Utf8Path, relative: &Utf8Path) -> Result<Utf8PathBuf> {
+    let source = prefix.join(relative);
+    let metadata = std::fs::symlink_metadata(source.as_std_path())
+        .map_err(|error| Error::io(source.to_string(), error))?;
+    if !metadata.file_type().is_symlink() {
+        return Ok(source);
+    }
+    let resolved = std::fs::canonicalize(source.as_std_path())
+        .map_err(|error| Error::io(source.to_string(), error))?;
+    let canonical_prefix = std::fs::canonicalize(prefix.as_std_path())
+        .map_err(|error| Error::io(prefix.to_string(), error))?;
+    if !resolved.starts_with(&canonical_prefix) || !resolved.is_file() {
+        return Err(Error::validation(format!(
+            "external library symlink escapes its artifact prefix: {source}"
+        )));
+    }
+    Utf8PathBuf::from_path_buf(resolved).map_err(|path| {
+        Error::validation(format!(
+            "non-UTF-8 external library path: {}",
+            path.display()
+        ))
     })
 }
 
@@ -10523,6 +10553,34 @@ pub(crate) fn target_build_dir(root: &Utf8Path, id: &str) -> Utf8PathBuf {
 mod tests {
     use super::*;
     use ost_core::host::Arch;
+
+    #[cfg(unix)]
+    #[test]
+    fn external_shared_library_alias_can_be_staged_without_escaping_its_artifact() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_tmp("external-library-alias");
+        let prefix = root.join("artifact");
+        let lib = prefix.join("lib");
+        let stage = root.join("stage");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("libfoo.so.1"), b"shared library").unwrap();
+        symlink("libfoo.so.1", lib.join("libfoo.so")).unwrap();
+
+        let source =
+            package_external_library_source(&prefix, Utf8Path::new("lib/libfoo.so")).unwrap();
+        let relative = Utf8Path::new("runtime/libraries/foo/lib/libfoo.so");
+        copy_file_required(&source, relative, &stage).unwrap();
+        assert_eq!(
+            std::fs::read(stage.join(relative)).unwrap(),
+            b"shared library"
+        );
+
+        std::fs::write(root.join("outside.so"), b"outside").unwrap();
+        symlink("../../outside.so", lib.join("escape.so")).unwrap();
+        assert!(package_external_library_source(&prefix, Utf8Path::new("lib/escape.so")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn product_library_inventory_requires_each_recorded_file() {

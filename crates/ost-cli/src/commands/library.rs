@@ -36,8 +36,10 @@ const LIBRARY_JUNIT_FILE: &str = ".ost-library-test-results.xml";
 pub enum LibraryCmd {
     /// Pull and verify all external library artifacts declared by this workspace.
     Pull {
+        /// Platform target, e.g. `cy2026`. Defaults to the enclosing project's target.
         #[arg(long)]
         target: Option<String>,
+        /// Runtime profile. Defaults to the enclosing project's profile.
         #[arg(long)]
         profile: Option<String>,
     },
