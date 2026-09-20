@@ -263,7 +263,7 @@ fn build_inner(
             dry_run,
             ninja.clone(),
             compiler.clone(),
-            !emit_output,
+            !emit_output || fmt.is_json(),
         )?;
         if member.id() == library.id() {
             record = built;

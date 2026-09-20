@@ -1433,7 +1433,13 @@ fn library_scoped_build_test_package_uses_only_its_install_tree() {
         "{}",
         out_text(&missing_build)
     );
-    let missing: serde_json::Value = serde_json::from_slice(&missing_build.stdout).unwrap();
+    let missing: serde_json::Value =
+        serde_json::from_slice(&missing_build.stdout).unwrap_or_else(|error| {
+            panic!(
+                "library build JSON is invalid: {error}\n{}",
+                out_text(&missing_build)
+            )
+        });
     assert_eq!(missing["error"]["code"], "LIBRARY_RUNTIME_FILE_MISSING");
     std::fs::write(&descriptor_path, &descriptor).unwrap();
 
