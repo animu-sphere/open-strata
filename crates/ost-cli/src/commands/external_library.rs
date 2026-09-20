@@ -191,13 +191,31 @@ pub(crate) fn materialize(
     if record.runtime_id.as_deref() != Some(runtime_id)
         || record.runtime_digest.as_deref() != Some(runtime_digest)
     {
+        // Name both identities. A reader hitting this is usually a developer
+        // whose own runtime is an adopted build while the artifact was
+        // produced against the pinned one, and the bare "a different runtime"
+        // told them neither which runtime the artifact wants nor that
+        // materializing that exact artifact is the way through.
+        let built_for = record
+            .runtime_id
+            .as_deref()
+            .unwrap_or("<none recorded>")
+            .to_string();
+        let built_digest = record
+            .runtime_digest
+            .as_deref()
+            .unwrap_or("<none recorded>")
+            .to_string();
         return Err(Error::coded(
             "WORKSPACE_LIBRARY_ARTIFACT_RUNTIME_MISMATCH",
             Category::Validation,
             format!(
-                "library '{}' artifact {} was built for a different runtime",
+                "library '{}' artifact {} was built against runtime '{built_for}'                  ({built_digest}), and this target selects '{runtime_id}'                  ({runtime_digest})",
                 dependency.id, pin.digest
             ),
+        )
+        .with_hint(
+            "every package in this ecosystem is built against one exact OpenUSD              runtime; materialize the one the artifact names with `ost runtime              pull <platform> --profile <profile> --from-artifact <digest>`",
         ));
     }
     let required_libraries = component

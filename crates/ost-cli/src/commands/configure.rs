@@ -267,10 +267,43 @@ fn generate_with_generator_mode(
     if target.uses_runtime() {
         crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref(), true);
     }
-    write(
-        &target_dir.join("toolchain.cmake"),
-        &render_toolchain(&target, &r.artifact_prefix, compiler, python.as_ref()),
-    )?;
+    let mut toolchain_text =
+        render_toolchain(&target, &r.artifact_prefix, compiler, python.as_ref());
+    // The root CMake tree configures every member in one pass, so a member's
+    // `find_package` for a digest-pinned library from another repository runs
+    // here too. `ost library build` and `ost plugin build` each compose that
+    // member's prefixes; the root build needs the union, and without it a
+    // workspace with one external-consuming member cannot configure at all
+    // even though the artifact is materialized beside it (usd-vrm-plugins' ost
+    // report 43).
+    //
+    // A workspace that declares no artifact pin resolves to an empty set and
+    // the toolchain is byte-identical to before.
+    if target.uses_runtime() {
+        let external = crate::commands::plugin::workspace_external_libraries(
+            root,
+            &id,
+            &target.runtime_id,
+            &target.runtime_digest,
+        )?;
+        if !external.is_empty() {
+            let prefixes = external
+                .iter()
+                .map(|library| {
+                    format!(
+                        "\"{}\"",
+                        crate::commands::plugin::cmake_path(&library.prefix)
+                    )
+                })
+                .collect::<Vec<_>>();
+            toolchain_text.push_str(&format!(
+                "\n# Digest-pinned external library artifacts declared by this \
+                 workspace's members.\nlist(PREPEND CMAKE_PREFIX_PATH {})\n",
+                prefixes.join(" ")
+            ));
+        }
+    }
+    write(&target_dir.join("toolchain.cmake"), &toolchain_text)?;
 
     // 2. env.json (resolved env for build steps to reuse)
     let env_vars: Vec<_> = if target.uses_runtime() {
