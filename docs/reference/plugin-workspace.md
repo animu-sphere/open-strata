@@ -369,6 +369,38 @@ pin and record it in `dependencies.json` and product provenance. The
 `motionCore` → VRM downstream acceptance remains in the
 [intake](../roadmap/downstream-report-intake.md).
 
+Bundles and test tools can use the same exact artifact pin table:
+
+```yaml
+requires:
+  bundles:
+    - id: execMotion
+      version: ">=0.5,<0.6"
+      artifact:
+        targets:
+          cy2026-windows-x86_64-py313-usd:
+            digest: sha256:<bundle-archive-digest>
+            source: oci://ghcr.io/example/motion@sha256:<oci-manifest-digest>
+  tools:
+    - id: motion_convert
+      version: ">=0.5,<0.6"
+      artifact:
+        targets:
+          cy2026-windows-x86_64-py313-usd:
+            digest: sha256:<tool-archive-digest>
+            source: oci://ghcr.io/example/motion@sha256:<oci-manifest-digest>
+```
+
+An external bundle must not also be a source workspace member with the same id.
+The selected artifact must match the bundle identity, version, target, runtime
+digest and any declared schema contract. `ost plugin test`, `run`, and package
+materialize it automatically. Package output embeds the verified bundle and
+its packaged closure under `runtime/bundles/<id>/` so an installed consumer
+can activate the same USD registration paths. A published tool is checked with
+the same identity and runtime rules; its executable directory is added to
+the `PATH` used by `ost plugin test` and `ost plugin run`. `requires.tools` is
+for test execution and is not copied into the production bundle package.
+
 Every package also carries
 [`openstrata.activation.json`](../../schemas/plugin-activation.schema.json), `activate.ps1`,
 `activate.sh`, and `openstrata_activate.py`. The JSON document is the portable

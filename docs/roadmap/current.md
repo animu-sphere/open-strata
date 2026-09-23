@@ -1,10 +1,10 @@
 # Current
 
-The v0.23.3 repair is recorded in the
-[release record](../releases/v0.23.3.md). This page tracks the remaining
+The v0.23.4 repair is recorded in the
+[release record](../releases/v0.23.4.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.3 evidence
+## Post-release v0.23.4 evidence
 
 - Confirm the published release assets, checksums and attestations, then run an
   installed CLI smoke test. Fix release defects in v0.23.x.
@@ -20,6 +20,8 @@ acceptance and the next feature work.
   Python paths.
 - Exercise empty and populated optional OpenUSD selectors on hosted macOS,
   including cache verification and remote pulls.
+- Exercise the standalone VRM bundle and library build sequence against the
+  published v0.23.4 executable with a deliberately stale runtime cache.
 
 ## Next feature work
 
@@ -28,6 +30,8 @@ acceptance and the next feature work.
   component identities.
 - Continue installed-package dependency correctness and component-level
   architecture evidence in the [package-contract plan](component-package-contracts.md).
+- Migrate `usd-vrm-plugins` to the published `execMotion` bundle and
+  `motion_convert` tool, then verify the installed consumer and fixture flow.
 
 The [runtime-composition follow-through](runtime-composition.md) and
 [downstream report intake](downstream-report-intake.md) retain the detailed

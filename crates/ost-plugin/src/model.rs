@@ -203,6 +203,9 @@ pub struct Requires {
     /// not become OpenUSD plugin bundles.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub libraries: Vec<LibraryDependency>,
+    /// Published executables made available to this bundle's test session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDependency>,
     /// Unknown keys are retained only long enough for [`crate::Bundle::load`] to apply
     /// the versioned-manifest compatibility rule. Legacy manifests keep their
     /// historical fail-open behavior; `openstrata.plugin/v1alpha1` manifests
@@ -226,6 +229,18 @@ pub struct BundleDependency {
     /// Authored-data contract required from a schema bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<u64>,
+    /// An independently published bundle, pinned to exact archive bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<LibraryArtifactPin>,
+}
+
+/// A published tool used by a bundle's tests, not a runtime dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolDependency {
+    pub id: String,
+    pub version: String,
+    pub artifact: LibraryArtifactPin,
 }
 
 /// A versioned dependency on a plain CMake library/package.

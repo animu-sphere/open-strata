@@ -25,7 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use ost_build::{
     pack_dir_with, stage_files, BuildCompletion, BuildIntent, BuildOutput, BuildProjectIdentity,
@@ -44,11 +44,12 @@ use ost_plugin::{
     ExecTemplateInputs, Library, PluginKind, PluginVerification, Probe, RuntimeContext, Session,
     Status, ToolOutput, PLUGIN_VERIFICATION, PLUGIN_VERIFICATION_SCHEMA,
 };
-use ost_runtime::{EnvSet, ProfileCatalog, RuntimeManifest, MANIFEST_FILE};
+use ost_runtime::{EnvOp, EnvSet, EnvVar, ProfileCatalog, RuntimeManifest, MANIFEST_FILE};
 
 use crate::commands::compiler::{self, CompilerOpts};
 use crate::commands::configure::{build_target, load_project};
 use crate::commands::external_library::{self, ExternalLibrary};
+use crate::commands::external_member::{self, MemberKind};
 use crate::commands::resolve;
 use crate::output::{self, Format};
 
@@ -897,6 +898,11 @@ pub(crate) fn build_library_one(
         }
         return Ok(());
     }
+    invalidate_member_build_tree_if_runtime_changed(
+        &build_dir,
+        &tgt.runtime_digest,
+        &r.artifact_prefix,
+    )?;
     std::fs::create_dir_all(target_dir.as_std_path())
         .map_err(|error| Error::io(target_dir.to_string(), error))?;
     crate::commands::relocate_baked_python_if_stale(&r.artifact_prefix, python.as_ref(), true);
@@ -950,6 +956,7 @@ pub(crate) fn build_library_one(
     invalidate_plugin_build_tree_if_toolchain_moved(&library.root, &id, &lock_compiler);
     let build_env = maybe_bootstrap_msvc(tgt.os(), quiet);
     run_step_mode(PHASE_CONFIGURE, &cmake, &configure_args, &build_env, quiet)?;
+    record_member_runtime_identity(&build_dir, &tgt.runtime_digest, &r.artifact_prefix)?;
     run_step_mode(PHASE_COMPILE_LINK, &cmake, &build_args, &build_env, quiet)?;
     run_step_mode(
         "workspace-install",
@@ -1093,6 +1100,7 @@ fn build_one(
     // platform/profile/runtime never reuses (and corrupts) another target's
     // CMake cache — mirroring the project-level `build/<id>` layout.
     let target_dir = target_state_dir(&bundle.root, &id);
+    let build_dir = target_build_dir(&bundle.root, &id);
     // A plugin build publishes the same authoritative completion evidence as a
     // project build, so it must obey the same single-writer rule. Hold the
     // target lease from the first generated target file through completion
@@ -1114,6 +1122,13 @@ fn build_one(
     })?;
     std::fs::create_dir_all(target_dir.as_std_path())
         .map_err(|e| Error::io(target_dir.to_string(), e))?;
+    if !dry_run {
+        invalidate_member_build_tree_if_runtime_changed(
+            &build_dir,
+            &tgt.runtime_digest,
+            &r.artifact_prefix,
+        )?;
+    }
     let toolchain = target_dir.join("toolchain.cmake");
     // Pin a host interpreter's Development artifacts so an adopted runtime's
     // pxrConfig (which bakes the export machine's Python paths) configures on
@@ -1146,7 +1161,6 @@ fn build_one(
         crate::commands::build::chainload_external_toolchain(&toolchain, &external)?;
     }
 
-    let build_dir = target_build_dir(&bundle.root, &id);
     let cmake = tools::which("cmake");
     let ninja = ninja.map(PathBuf::from).or_else(|| tools::which("ninja"));
 
@@ -1310,6 +1324,7 @@ fn build_one(
     };
 
     run_step(PHASE_CONFIGURE, &cmake, &configure_args, &build_env)?;
+    record_member_runtime_identity(&build_dir, &tgt.runtime_digest, &r.artifact_prefix)?;
     run_step(PHASE_COMPILE_LINK, &cmake, &build_args, &build_env)?;
     if let Some(args) = &install_args {
         run_step("workspace-install", &cmake, args, &build_env)?;
@@ -2328,7 +2343,7 @@ fn package_bundle(
     let bundle = bundle.clone();
     let host = Host::detect();
 
-    let bundle_dependencies = selected_workspace_dependencies(&bundle)?;
+    let mut bundle_dependencies = selected_workspace_dependencies(&bundle)?;
     let required = session_capabilities(&bundle, &bundle_dependencies, false);
 
     let (platform, profile) = selection_for_capabilities(target, profile, &required)?;
@@ -2344,6 +2359,8 @@ fn package_bundle(
             ),
         ));
     }
+    let external_bundles = selected_external_bundles(&bundle, &r)?;
+    bundle_dependencies.extend(external_bundles.iter().map(|(bundle, _)| bundle.clone()));
 
     let runtime_manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
         .ok()
@@ -2450,14 +2467,33 @@ fn package_bundle(
     let packaged_bundle_evidence = bundle_dependencies
         .iter()
         .map(|dependency| {
-            bundle_evidence(dependency, ost_plugin::PLUGIN_MANIFEST, "source-workspace")
+            if let Some((_, digest)) = external_bundles
+                .iter()
+                .find(|(external, _)| external.manifest.name() == dependency.manifest.name())
+            {
+                let mut evidence =
+                    bundle_evidence(dependency, ost_plugin::PLUGIN_MANIFEST, "external-artifact");
+                evidence["archive_digest"] = serde_json::json!(digest);
+                evidence
+            } else {
+                bundle_evidence(dependency, ost_plugin::PLUGIN_MANIFEST, "source-workspace")
+            }
         })
         .collect::<Vec<_>>();
     // …and so does the registration half those records point at. Recording a
     // resolved `bundles` closure while shipping only its libraries is what made
     // a v0.18.0 package look closed and still fail at `Usd.Stage.Open()`.
-    let bundle_registration = selected_bundle_package_registration(&bundle_dependencies)?;
-    let bundle_libraries = selected_bundle_package_libraries(&bundle_dependencies)?;
+    let local_bundle_dependencies = bundle_dependencies
+        .iter()
+        .filter(|dependency| {
+            !external_bundles
+                .iter()
+                .any(|(external, _)| external.manifest.name() == dependency.manifest.name())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let bundle_registration = selected_bundle_package_registration(&local_bundle_dependencies)?;
+    let bundle_libraries = selected_bundle_package_libraries(&local_bundle_dependencies)?;
     for (_, relative) in &bundle_registration {
         let relative = portable(relative);
         if !packaged_manifest
@@ -2477,6 +2513,47 @@ fn package_bundle(
             packaged_manifest.requires.runtime_libs.push(relative);
         }
     }
+    for (external, _) in &external_bundles {
+        let base = Utf8Path::new("runtime/bundles").join(external.manifest.name());
+        let mut registration = vec![plug_info_root_rel(external)];
+        registration.extend(
+            external
+                .manifest
+                .requires
+                .runtime_plugin_paths
+                .iter()
+                .map(Utf8PathBuf::from),
+        );
+        for path in registration {
+            let relative = portable(&base.join(path));
+            if !packaged_manifest
+                .requires
+                .runtime_plugin_paths
+                .contains(&relative)
+            {
+                packaged_manifest
+                    .requires
+                    .runtime_plugin_paths
+                    .push(relative);
+            }
+        }
+        let mut library_dirs = external
+            .manifest
+            .requires
+            .runtime_libs
+            .iter()
+            .map(Utf8PathBuf::from)
+            .collect::<Vec<_>>();
+        if external.lib_dir().as_std_path().is_dir() {
+            library_dirs.push(Utf8PathBuf::from("lib"));
+        }
+        for path in library_dirs {
+            let relative = portable(&base.join(path));
+            if !packaged_manifest.requires.runtime_libs.contains(&relative) {
+                packaged_manifest.requires.runtime_libs.push(relative);
+            }
+        }
+    }
 
     // Reruns must not fail on a stage the previous run left temporarily
     // undeletable (scanner-held handles, dogfooding report #9): stage into a
@@ -2493,6 +2570,13 @@ fn package_bundle(
     }
     for (source, relative) in &bundle_registration {
         copy_tree_required(source, relative, &stage)?;
+    }
+    for (external, _) in &external_bundles {
+        copy_tree_required(
+            &external.root,
+            &Utf8Path::new("runtime/bundles").join(external.manifest.name()),
+            &stage,
+        )?;
     }
     write_packaged_manifest(&stage.join(ost_plugin::PLUGIN_MANIFEST), &packaged_manifest)?;
     write_dependency_evidence(
@@ -3952,6 +4036,7 @@ fn package_workspace_product(
     // internal edges; external capabilities remain requirements of the product.
     let mut aggregate_provides = BTreeMap::<String, serde_json::Value>::new();
     let mut aggregate_requires = BTreeMap::<(String, String, String), serde_json::Value>::new();
+    let mut embedded_external_bundles = BTreeMap::<String, (String, String)>::new();
     let mut aggregate_environment = Vec::new();
     let mut aggregate_install = Vec::new();
     let mut aggregate_compatibility = None;
@@ -4003,6 +4088,43 @@ fn package_workspace_product(
                     Error::Operation(format!("cannot serialize product requirement: {error}"))
                 })?);
         }
+        if let Some(dependencies) = member.outcome.manifest["dependencies"]["bundles"].as_array() {
+            for dependency in dependencies
+                .iter()
+                .filter(|value| value["provenance"] == "external-artifact")
+            {
+                let id = dependency["id"].as_str().ok_or_else(|| {
+                    Error::InvalidManifest(format!(
+                        "product member '{}' has an external bundle without an id",
+                        member.id
+                    ))
+                })?;
+                let version = dependency["version"].as_str().ok_or_else(|| {
+                    Error::InvalidManifest(format!(
+                        "product member '{}' has an external bundle without a version",
+                        member.id
+                    ))
+                })?;
+                let digest = dependency["archive_digest"].as_str().ok_or_else(|| {
+                    Error::InvalidManifest(format!(
+                        "product member '{}' has an external bundle without an archive digest",
+                        member.id
+                    ))
+                })?;
+                let identity = (version.to_owned(), digest.to_owned());
+                if let Some(previous) =
+                    embedded_external_bundles.insert(id.to_owned(), identity.clone())
+                {
+                    if previous != identity {
+                        return Err(Error::coded(
+                            "PRODUCT_CAPABILITY_COLLISION",
+                            Category::Validation,
+                            format!("product members embed different artifacts for external bundle '{id}'"),
+                        ));
+                    }
+                }
+            }
+        }
         let destination = member.destination();
         for contribution in component.environment {
             let selected = without_internal_bundle_paths(
@@ -4033,6 +4155,26 @@ fn package_workspace_product(
                 "source": format!("{destination}/{}", mapping.source),
                 "destination": format!("{destination}/{}", mapping.destination),
             }));
+        }
+    }
+    for (id, (version, _)) in embedded_external_bundles {
+        let capability = format!("component:{id}");
+        if aggregate_provides
+            .insert(
+                capability.clone(),
+                serde_json::json!({
+                    "capability": capability,
+                    "version": version,
+                    "singleton": true,
+                }),
+            )
+            .is_some()
+        {
+            return Err(Error::coded(
+                "PRODUCT_CAPABILITY_COLLISION",
+                Category::Validation,
+                format!("product member and embedded bundle both provide '{capability}'"),
+            ));
         }
     }
     let internally_provided = aggregate_provides.keys().cloned().collect::<BTreeSet<_>>();
@@ -5777,7 +5919,7 @@ fn run_session(
         selected_workspace_dependencies(&bundle)?
     };
     let explicit = load_with_bundles(with_paths)?;
-    let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
+    let mut with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     // An external installed/extracted tree is itself a bundle (same layout +
     // openstrata.plugin.yaml), so it composes through the same bundle_vars.
     let plugin_path_bundles = load_with_bundles(plugin_paths)?;
@@ -5806,6 +5948,16 @@ fn run_session(
     let required = session_capabilities(&bundle, &capability_bundles, false);
     let (platform, profile) = selection_for_capabilities(target, profile, &required)?;
     let r = require_real_runtime(Some(platform.clone()), Some(profile.clone()))?;
+    if !no_inject {
+        with_bundles = merge_composed_bundles(
+            &bundle,
+            with_bundles,
+            selected_external_bundles(&bundle, &r)?
+                .into_iter()
+                .map(|(bundle, _)| bundle)
+                .collect(),
+        )?;
+    }
     let library_dirs = if no_inject {
         Vec::new()
     } else {
@@ -5824,15 +5976,24 @@ fn run_session(
         .iter()
         .map(Utf8PathBuf::as_path)
         .collect::<Vec<_>>();
-    let session = ost_plugin::session_env_from_with_library_dirs(
+    let mut session = ost_plugin::session_env_from_with_library_dirs(
         &r.env,
         &contributing,
         &library_dirs,
         host.os,
     );
+    if !no_inject {
+        for directory in external_tool_directories(&bundle, &r)?.iter().rev() {
+            session.vars.push(EnvVar {
+                key: "PATH".into(),
+                op: EnvOp::Prepend(portable(directory)),
+            });
+        }
+    }
     let (program, args) = prepare_session_command(&command, &r.artifact_prefix, &r.python_version)?;
 
-    let mut cmd = Command::new(&program);
+    let executable = ProcessProbe::new(session.resolve()).session_program(&program);
+    let mut cmd = Command::new(&executable);
     cmd.args(&args);
     session.apply(&mut cmd); // overlay the resolved session env, no global mutation
     if let Some(toolchain) = session_toolchain_file(&bundle, &platform, &profile) {
@@ -6019,10 +6180,26 @@ fn test(
     let bundle = load_bundle(bundle_path)?;
     let dependencies = selected_workspace_dependencies(&bundle)?;
     let explicit = load_with_bundles(with_paths)?;
-    let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
+    let mut with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     let host = Host::detect();
     let required = session_capabilities(&bundle, &with_bundles, up_to >= 6);
     let resolved = resolve_runtime_for_capabilities(target, profile, &required)?;
+    let mut external_bundles = Vec::new();
+    let mut tool_dirs = Vec::new();
+    if let Some(runtime) = resolved.as_ref() {
+        external_bundles = selected_external_bundles(&bundle, runtime)?;
+        with_bundles = merge_composed_bundles(
+            &bundle,
+            with_bundles,
+            external_bundles
+                .iter()
+                .map(|(bundle, _)| bundle.clone())
+                .collect(),
+        )?;
+        if up_to >= 2 {
+            tool_dirs = external_tool_directories(&bundle, runtime)?;
+        }
+    }
     let library_dirs = match resolved.as_ref() {
         Some(resolved) => selected_workspace_library_runtime_dirs(&bundle, resolved, up_to >= 2)?,
         None => Vec::new(),
@@ -6032,12 +6209,19 @@ fn test(
         &bundle,
         &with_bundles,
         &library_dirs,
+        &tool_dirs,
         resolved.as_ref(),
         &host,
         up_to,
     )?;
     let libraries = selected_workspace_library_evidence(&bundle, resolved.as_ref())?;
-    let dependency_bundles = selected_workspace_bundle_evidence(&bundle)?;
+    let mut dependency_bundles = selected_workspace_bundle_evidence(&bundle)?;
+    dependency_bundles.extend(external_bundles.iter().map(|(external, digest)| {
+        let mut evidence =
+            bundle_evidence(external, ost_plugin::PLUGIN_MANIFEST, "external-artifact");
+        evidence["archive_digest"] = serde_json::json!(digest);
+        evidence
+    }));
     write_dependency_evidence(&report_dir, &libraries, &dependency_bundles)?;
 
     if fmt.is_json() {
@@ -6202,8 +6386,20 @@ fn test_workspace_from_package(
         let package = &extracted_by_id[source_id];
         let composed =
             merge_composed_bundles(&package.bundle, dependencies, explicit_bundles.clone())?;
-        let (report, report_dir) =
-            test_bundle(&package.bundle, &composed, &[], Some(&r), &host, up_to)?;
+        let tool_dirs = if up_to >= 2 {
+            external_tool_directories(&source_by_id[source_id], &r)?
+        } else {
+            Vec::new()
+        };
+        let (report, report_dir) = test_bundle(
+            &package.bundle,
+            &composed,
+            &[],
+            &tool_dirs,
+            Some(&r),
+            &host,
+            up_to,
+        )?;
         if !fmt.is_json() {
             println!(
                 "== {} (packaged: {}) ==",
@@ -6294,7 +6490,20 @@ fn test_from_package(
         extraction.extract_dir,
         extraction.archive_path,
     );
-    let (report, report_dir) = test_bundle(&extracted, &with_bundles, &[], Some(&r), &host, up_to)?;
+    let tool_dirs = if up_to >= 2 {
+        external_tool_directories(&extracted, &r)?
+    } else {
+        Vec::new()
+    };
+    let (report, report_dir) = test_bundle(
+        &extracted,
+        &with_bundles,
+        &[],
+        &tool_dirs,
+        Some(&r),
+        &host,
+        up_to,
+    )?;
 
     if fmt.is_json() {
         let mut body = ost_plugin::report_json(&extracted, &report);
@@ -6325,6 +6534,7 @@ fn test_bundle(
     bundle: &Bundle,
     with_bundles: &[Bundle],
     library_dirs: &[Utf8PathBuf],
+    tool_dirs: &[Utf8PathBuf],
     resolved: Option<&crate::commands::Resolved>,
     host: &Host,
     up_to: u8,
@@ -6339,12 +6549,18 @@ fn test_bundle(
                 .iter()
                 .map(Utf8PathBuf::as_path)
                 .collect::<Vec<_>>();
-            let env = ost_plugin::session_env_from_with_library_dirs(
+            let mut env = ost_plugin::session_env_from_with_library_dirs(
                 &r.env,
                 &contributing,
                 &library_dirs,
                 host.os,
             );
+            for directory in tool_dirs.iter().rev() {
+                env.vars.push(EnvVar {
+                    key: "PATH".into(),
+                    op: EnvOp::Prepend(portable(directory)),
+                });
+            }
             // An adopted runtime may not bundle Python; put a matching host
             // interpreter's dir on the loader path so usdcat/usdview and the
             // pxr bindings can load pythonXY.dll and a matched `python` runs.
@@ -6599,7 +6815,25 @@ fn test_workspace(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let composed = merge_composed_bundles(&bundle, dependencies, explicit_bundles.clone())?;
+        let mut composed = merge_composed_bundles(&bundle, dependencies, explicit_bundles.clone())?;
+        if let Some(runtime) = resolved.as_ref() {
+            composed = merge_composed_bundles(
+                &bundle,
+                composed,
+                selected_external_bundles(&bundle, runtime)?
+                    .into_iter()
+                    .map(|(bundle, _)| bundle)
+                    .collect(),
+            )?;
+        }
+        let tool_dirs = if up_to >= 2 {
+            match resolved.as_ref() {
+                Some(runtime) => external_tool_directories(&bundle, runtime)?,
+                None => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
         let library_dirs = match resolved.as_ref() {
             Some(resolved) => {
                 library_runtime_dirs_from_workspace(&bundle, &workspace, resolved, up_to >= 2)?
@@ -6610,6 +6844,7 @@ fn test_workspace(
             &bundle,
             &composed,
             &library_dirs,
+            &tool_dirs,
             resolved.as_ref(),
             &host,
             up_to,
@@ -7654,6 +7889,13 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
             .libraries
             .iter()
             .any(|dependency| dependency.artifact.is_some())
+        && !primary
+            .manifest
+            .requires
+            .bundles
+            .iter()
+            .any(|dependency| dependency.artifact.is_some())
+        && primary.manifest.requires.tools.is_empty()
     {
         return Ok(None);
     }
@@ -7866,6 +8108,173 @@ fn selected_workspace_dependencies(primary: &Bundle) -> Result<Vec<Bundle>> {
         Some(workspace) => dependencies_from_workspace(primary, &workspace),
         None => Ok(Vec::new()),
     }
+}
+
+fn external_member_context(
+    primary: &Bundle,
+    resolved: &crate::commands::Resolved,
+) -> Result<(Utf8PathBuf, String, RuntimeManifest)> {
+    let root = find_project_root(primary.root.as_std_path())
+        .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+        .or_else(|| primary.root.parent().map(Utf8Path::to_path_buf))
+        .ok_or_else(|| {
+            Error::config(format!(
+                "bundle '{}' has no workspace root",
+                primary.manifest.name()
+            ))
+        })?;
+    let path = resolved.prefix.join(MANIFEST_FILE);
+    let runtime = RuntimeManifest::from_json(
+        &std::fs::read_to_string(path.as_std_path())
+            .map_err(|error| Error::io(path.to_string(), error))?,
+    )
+    .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
+    Ok((root, target_id_from_resolved(resolved), runtime))
+}
+
+fn selected_external_bundles(
+    primary: &Bundle,
+    resolved: &crate::commands::Resolved,
+) -> Result<Vec<(Bundle, String)>> {
+    // A package already contains its dependency closure under runtime/bundles.
+    if primary
+        .root
+        .join("dependencies.json")
+        .as_std_path()
+        .is_file()
+        && !primary.manifest.requires.runtime_plugin_paths.is_empty()
+    {
+        return Ok(Vec::new());
+    }
+    let mut local = selected_workspace_dependencies(primary)?;
+    local.push(primary.clone());
+    let mut pins = BTreeMap::<String, ost_plugin::BundleDependency>::new();
+    for dependency in local
+        .iter()
+        .flat_map(|bundle| bundle.manifest.requires.bundles.iter())
+        .filter(|dependency| dependency.artifact.is_some())
+    {
+        if let Some(previous) = pins.insert(dependency.id.clone(), dependency.clone()) {
+            if previous != *dependency {
+                return Err(Error::validation(format!(
+                    "conflicting artifact pins for bundle '{}'",
+                    dependency.id
+                )));
+            }
+        }
+    }
+    if pins.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (root, target, runtime) = external_member_context(primary, resolved)?;
+    pins.values()
+        .map(|dependency| {
+            let member = external_member::materialize(
+                &dependency.id,
+                &dependency.version,
+                dependency
+                    .artifact
+                    .as_ref()
+                    .expect("filtered artifact pins"),
+                MemberKind::Bundle,
+                &target,
+                &runtime.id,
+                &runtime.digest,
+                &root,
+            )?;
+            let bundle = Bundle::load(&member.prefix)?;
+            if bundle.manifest.name() != dependency.id
+                || !matches!(
+                    ost_plugin::satisfies(&bundle.manifest.plugin.version, &dependency.version),
+                    Ok(true)
+                )
+                || dependency.contract.is_some_and(|contract| {
+                    bundle
+                        .manifest
+                        .schema
+                        .as_ref()
+                        .and_then(|schema| schema.contract)
+                        != Some(contract)
+                })
+            {
+                return Err(Error::coded(
+                    "WORKSPACE_BUNDLE_ARTIFACT_CONTRACT_MISMATCH",
+                    Category::Validation,
+                    format!(
+                        "bundle '{}' artifact does not satisfy its descriptor contract",
+                        dependency.id
+                    ),
+                ));
+            }
+            Ok((bundle, member.digest))
+        })
+        .collect()
+}
+
+fn selected_external_tools(
+    primary: &Bundle,
+    resolved: &crate::commands::Resolved,
+) -> Result<Vec<(ost_plugin::Tool, String)>> {
+    if primary.manifest.requires.tools.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (root, target, runtime) = external_member_context(primary, resolved)?;
+    primary
+        .manifest
+        .requires
+        .tools
+        .iter()
+        .map(|dependency| {
+            let member = external_member::materialize(
+                &dependency.id,
+                &dependency.version,
+                &dependency.artifact,
+                MemberKind::Tool,
+                &target,
+                &runtime.id,
+                &runtime.digest,
+                &root,
+            )?;
+            let tool = ost_plugin::Tool::load(&member.prefix)?;
+            if tool.id() != dependency.id
+                || !matches!(
+                    ost_plugin::satisfies(tool.version(), &dependency.version),
+                    Ok(true)
+                )
+            {
+                return Err(Error::validation(format!(
+                    "tool '{}' artifact descriptor does not match its pin",
+                    dependency.id
+                )));
+            }
+            tool.locate_executables(&tool.root, target.contains("windows"))?;
+            Ok((tool, member.digest))
+        })
+        .collect()
+}
+
+fn external_tool_directories(
+    primary: &Bundle,
+    resolved: &crate::commands::Resolved,
+) -> Result<Vec<Utf8PathBuf>> {
+    let windows = Host::detect().os == Os::Windows;
+    let mut directories = Vec::new();
+    for (tool, _) in selected_external_tools(primary, resolved)? {
+        for executable in tool.locate_executables(&tool.root, windows)? {
+            let directory = tool
+                .root
+                .join(&executable)
+                .parent()
+                .map(Utf8Path::to_path_buf)
+                .ok_or_else(|| {
+                    Error::validation(format!("tool '{}' executable has no directory", tool.id()))
+                })?;
+            if !directories.contains(&directory) {
+                directories.push(directory);
+            }
+        }
+    }
+    Ok(directories)
 }
 
 fn libraries_from_workspace(primary: &Bundle, workspace: &SourceWorkspace) -> Result<Vec<Library>> {
@@ -8731,11 +9140,19 @@ fn view(
     let bundle = load_bundle(bundle_path)?;
     let dependencies = selected_workspace_dependencies(&bundle)?;
     let explicit = load_with_bundles(with_paths)?;
-    let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
+    let mut with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     let host = Host::detect();
     let capabilities = session_capabilities(&bundle, &with_bundles, true);
     let (platform, profile) = selection_for_capabilities(target, profile, &capabilities)?;
     let r = require_real_runtime(Some(platform), Some(profile))?;
+    with_bundles = merge_composed_bundles(
+        &bundle,
+        with_bundles,
+        selected_external_bundles(&bundle, &r)?
+            .into_iter()
+            .map(|(bundle, _)| bundle)
+            .collect(),
+    )?;
     let library_dirs = selected_workspace_library_runtime_dirs(&bundle, &r, true)?;
 
     let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"])
@@ -8785,11 +9202,19 @@ fn test_view(
     let bundle = load_bundle(bundle_path)?;
     let dependencies = selected_workspace_dependencies(&bundle)?;
     let explicit = load_with_bundles(with_paths)?;
-    let with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
+    let mut with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     let host = Host::detect();
     let capabilities = session_capabilities(&bundle, &with_bundles, true);
     let (platform, profile) = selection_for_capabilities(target, profile, &capabilities)?;
     let r = require_real_runtime(Some(platform), Some(profile))?;
+    with_bundles = merge_composed_bundles(
+        &bundle,
+        with_bundles,
+        selected_external_bundles(&bundle, &r)?
+            .into_iter()
+            .map(|(bundle, _)| bundle)
+            .collect(),
+    )?;
     let library_dirs = selected_workspace_library_runtime_dirs(&bundle, &r, true)?;
 
     let mut contributing = Vec::with_capacity(with_bundles.len() + 1);
@@ -8856,7 +9281,7 @@ impl ProcessProbe {
 
 impl Probe for ProcessProbe {
     fn run(&self, program: &str, args: &[&str]) -> ToolOutput {
-        let mut cmd = Command::new(program);
+        let mut cmd = Command::new(self.session_program(program));
         cmd.args(args);
         for (k, v) in &self.env {
             cmd.env(k, v);
@@ -8873,6 +9298,37 @@ impl Probe for ProcessProbe {
                 stderr: format!("could not spawn {program}"),
             },
         }
+    }
+}
+
+impl ProcessProbe {
+    /// `Command::new` may resolve a bare executable against the parent PATH
+    /// before applying `.env()`. Resolve it against the composed test session
+    /// so a declared published tool is actually the program the probe runs.
+    fn session_program(&self, program: &str) -> PathBuf {
+        if program.contains('/') || program.contains('\\') {
+            return PathBuf::from(program);
+        }
+        let Some((_, path)) = self
+            .env
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        else {
+            return PathBuf::from(program);
+        };
+        for directory in std::env::split_paths(path) {
+            let candidate = directory.join(program);
+            if candidate.is_file() {
+                return candidate;
+            }
+            if cfg!(windows) && candidate.extension().is_none() {
+                let exe = candidate.with_extension("exe");
+                if exe.is_file() {
+                    return exe;
+                }
+            }
+        }
+        PathBuf::from(program)
     }
 }
 
@@ -10592,6 +11048,64 @@ fn invalidate_plugin_build_tree_if_toolchain_moved(
     };
     println!("==> dropping {build_dir}: {reason}");
     let _ = std::fs::remove_dir_all(build_dir.as_std_path());
+}
+
+/// A member cache can have correct runtime markers but stale package paths:
+/// v0.23.3 wrote the markers with FORCE before checking the cache. Require a
+/// separate record written only after a successful configure with this guard.
+/// An unrecorded tree is rebuilt once, including trees poisoned by v0.23.3.
+#[derive(Serialize, Deserialize)]
+struct MemberRuntimeIdentity {
+    digest: String,
+    prefix: String,
+}
+
+const MEMBER_RUNTIME_IDENTITY_FILE: &str = ".openstrata-runtime-identity.json";
+
+fn invalidate_member_build_tree_if_runtime_changed(
+    build_dir: &Utf8Path,
+    digest: &str,
+    prefix: &Utf8Path,
+) -> Result<()> {
+    if !build_dir.join("CMakeCache.txt").as_std_path().is_file() {
+        return Ok(());
+    }
+    let record = build_dir.join(MEMBER_RUNTIME_IDENTITY_FILE);
+    let previous = std::fs::read_to_string(record.as_std_path())
+        .ok()
+        .and_then(|text| serde_json::from_str::<MemberRuntimeIdentity>(&text).ok());
+    let expected_prefix = prefix.as_str().replace('\\', "/");
+    let trusted = previous.is_some_and(|previous| {
+        let previous_prefix = previous.prefix.replace('\\', "/");
+        previous.digest == digest
+            && if cfg!(windows) {
+                previous_prefix.eq_ignore_ascii_case(&expected_prefix)
+            } else {
+                previous_prefix == expected_prefix
+            }
+    });
+    if !trusted {
+        std::fs::remove_dir_all(build_dir.as_std_path())
+            .map_err(|error| Error::io(build_dir.to_string(), error))?;
+        return Ok(());
+    }
+    crate::commands::configure::invalidate_build_tree_if_runtime_changed(build_dir, digest, prefix)
+}
+
+fn record_member_runtime_identity(
+    build_dir: &Utf8Path,
+    digest: &str,
+    prefix: &Utf8Path,
+) -> Result<()> {
+    let record = build_dir.join(MEMBER_RUNTIME_IDENTITY_FILE);
+    let identity = MemberRuntimeIdentity {
+        digest: digest.to_string(),
+        prefix: prefix.as_str().replace('\\', "/"),
+    };
+    let contents = serde_json::to_vec_pretty(&identity)
+        .map_err(|error| Error::parse(record.to_string(), anyhow::Error::new(error)))?;
+    std::fs::write(record.as_std_path(), contents)
+        .map_err(|error| Error::io(record.to_string(), error))
 }
 
 /// The `CMAKE_CXX_COMPILER` a build tree was configured with, when the file it
@@ -12389,6 +12903,70 @@ usd: { plug_info: plugin/plugInfo.json }
         assert!(
             build_dir.as_std_path().exists(),
             "a tree whose cached compiler still exists is kept"
+        );
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn member_build_tree_requires_a_verified_runtime_identity() {
+        let root = unique_tmp("member-runtime-cache");
+        let build = root.join("build");
+        let cache = build.join("CMakeCache.txt");
+        let digest = "sha256:new";
+        let prefix = Utf8Path::new("C:/runtimes/new");
+        let write_cache = |recorded_digest: &str, recorded_prefix: &str| {
+            std::fs::create_dir_all(build.as_std_path()).unwrap();
+            std::fs::write(
+                cache.as_std_path(),
+                format!(
+                    "OPENSTRATA_RUNTIME_DIGEST:STRING={recorded_digest}\n\
+                     OPENSTRATA_RUNTIME_PREFIX:STRING={recorded_prefix}\n\
+                     pxr_DIR:PATH=C:/runtimes/old\n"
+                ),
+            )
+            .unwrap();
+        };
+
+        // v0.23.3 could stamp new markers over a stale pxr_DIR. Its member
+        // trees have no separate record and must be rebuilt on first use.
+        write_cache(digest, prefix.as_str());
+        invalidate_member_build_tree_if_runtime_changed(&build, digest, prefix).unwrap();
+        assert!(!build.as_std_path().exists());
+
+        write_cache(digest, prefix.as_str());
+        record_member_runtime_identity(&build, digest, prefix).unwrap();
+        invalidate_member_build_tree_if_runtime_changed(&build, digest, prefix).unwrap();
+        assert!(cache.as_std_path().is_file());
+
+        // Both the independent record and the CMake cache must match.
+        invalidate_member_build_tree_if_runtime_changed(&build, "sha256:another", prefix).unwrap();
+        assert!(!build.as_std_path().exists());
+
+        write_cache("sha256:old", prefix.as_str());
+        record_member_runtime_identity(&build, digest, prefix).unwrap();
+        invalidate_member_build_tree_if_runtime_changed(&build, digest, prefix).unwrap();
+        assert!(!build.as_std_path().exists());
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn test_probe_resolves_published_tool_from_session_path() {
+        let root = unique_tmp("session-tool-path");
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
+        let executable = root.join(if cfg!(windows) {
+            "motion_convert.exe"
+        } else {
+            "motion_convert"
+        });
+        std::fs::write(executable.as_std_path(), b"fixture").unwrap();
+        let path = std::env::join_paths([root.as_std_path()])
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let probe = ProcessProbe::new(vec![("PATH".into(), path)]);
+        assert_eq!(
+            probe.session_program("motion_convert"),
+            executable.as_std_path()
         );
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
