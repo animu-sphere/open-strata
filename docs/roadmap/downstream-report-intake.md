@@ -5,7 +5,7 @@ owners:
   - openstrata-maintainers
 created: 2026-09-12
 updated: 2026-09-21
-applies_to: post-v0.23.2
+applies_to: post-v0.23.3
 ---
 
 # Downstream OST report intake
@@ -28,7 +28,7 @@ superseded failures are not carried forward.
 
 | Repository | Reports | Result |
 | --- | ---: | --- |
-| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 46 | Reports 40–41 expose per-bundle packaging and cross-repository library dependencies; report 42's early consumer claim is repaired in v0.23.1. |
+| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 46 | Reports 40–41 expose per-bundle packaging and cross-repository library dependencies; report 42's early consumer claim is repaired in v0.23.1, and report 44's tool edges and runtime cache are repaired in v0.23.3. |
 | [hdMerlin](https://github.com/animu-sphere/hydra-merlin/tree/main/docs/reports/ost) | 12 | No open carryover: managed renderer diagnostics and resilient OCI transfer shipped in v0.22.0, with idle-timeout semantics hardened again in v0.22.9. |
 | [USD Point Cloud Plugins](https://github.com/animu-sphere/usd-pointcloud-plugins/tree/main/docs/reports/ost) | 4 | No open carryover: structured file-format arguments and managed-output provenance are implemented; the preimplementation report requested no change. |
 | [USD 3DGS Plugins](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost) | 4 | New report 04 finds a generated Bash empty-array failure on macOS when optional OpenUSD selectors are absent. |
@@ -72,7 +72,10 @@ superseded failures are not carried forward.
   the external prefixes at all (v0.23.2,
   [VRM report 43](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/43-2026-09-20-v0.23.1-the-root-build-cannot-see-an-external-library.md)).
   What remains of this item is the migration itself: nine VRM members switched
-  at once, and one independent installed consumer.
+  at once, and one independent installed consumer. v0.23.3 also fixes the
+  tool-only external edges exposed by
+  [VRM report 44](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/44-2026-09-23-v0.23.2-a-tool-edge-reaches-nothing-and-a-tree-keeps-its-runtime.md);
+  the downstream rerun remains to be measured.
 - **P1 — prove relocatable OpenUSD CMake consumption for the actual pinned
   artifact.** v0.22.10 added relocation to newly exported SDK artifacts; it
   cannot rewrite already published, digest-pinned runtime bytes. A hosted
