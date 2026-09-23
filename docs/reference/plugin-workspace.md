@@ -401,6 +401,27 @@ the same identity and runtime rules; its executable directory is added to
 the `PATH` used by `ost plugin test` and `ost plugin run`. `requires.tools` is
 for test execution and is not copied into the production bundle package.
 
+For a root `ost build` or `ost test`, `ost configure` materializes all external
+bundle and tool pins declared by workspace bundles. The generated root CMake
+toolchain provides `OPENSTRATA_EXTERNAL_BUNDLE_<id>_ROOT` and
+`OPENSTRATA_EXTERNAL_TOOL_<id>_DIR` as verified absolute paths. If a tool's
+executables occupy multiple directories, the toolchain also provides
+`OPENSTRATA_EXTERNAL_TOOL_<id>_DIRS` as a CMake list. Root CMake tests should
+use these variables in their test definitions, for example:
+
+```cmake
+if(OPENSTRATA_EXTERNAL_TOOL_motion_convert_DIR)
+  set_tests_properties(motion_conversion PROPERTIES
+    ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:${OPENSTRATA_EXTERNAL_TOOL_motion_convert_DIR}")
+endif()
+```
+
+The bundle root contains the verified artifact's `plugin/`, `lib/`, and
+`python/` trees. Tests can select the directories they need, including a
+negative case that omits the plugin directory. A removed pin clears its old
+toolchain cache variable on the next configure.
+
 Every package also carries
 [`openstrata.activation.json`](../../schemas/plugin-activation.schema.json), `activate.ps1`,
 `activate.sh`, and `openstrata_activate.py`. The JSON document is the portable

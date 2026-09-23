@@ -265,12 +265,23 @@ pyramid and package verification require OpenUSD.
 
 A workspace stays dual-mode: the same tree builds with `ost` and with plain
 CMake. Do not let OpenStrata-specific files break a direct `cmake` build; the
-reference projects build both ways in CI. When both modes write to a bundle's
-staged `lib/`, `ost build` records the package-relevant workspace bundle bytes
-in its managed completion. `ost plugin package` accepts those root-build digests
-or a matching bundle-local `ost plugin build` completion; a later plain CMake
-overwrite is still reported as `mismatched` and needs the explicit
-`--allow-unmanaged-output` override.
+reference projects build both ways in CI. `ost plugin build <bundle>` installs
+an installable bundle to `<bundle>/.strata/targets/<target>/bundle-stage/`.
+`plugin test`, `run`, and `package` use its installed `plugInfo.json`, `lib/`,
+and `python/`; fixtures, notices, and the manifest remain source inputs.
+Install rules should put `lib/` beside the manifest's `usd.plug_info` path.
+Bundles without install rules keep their source output layout. Root `ost build`
+still records package-relevant workspace bundle bytes in its managed
+completion. `ost plugin package` accepts those root-build digests or a matching
+bundle-local completion; an overwrite of the selected output remains a
+`mismatched` result unless explicitly overridden.
+
+Root `ost build` stages discovered tool executables under each member's
+`.strata/targets/<target>/tool-stage/`. `plugin package` reads the target stage
+when it exists. Other declared tool directories come from the member's CMake
+binary tree when present, with the source directory kept as a compatibility
+fallback for existing workspaces. Older builds without a target stage continue
+to package the source-directory layout.
 
 ## Reference implementations
 

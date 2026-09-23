@@ -251,6 +251,7 @@ mod tests {
                 "plugin: { name: toy, version: 1.0.0, kind: usd-fileformat }\nruntime: { openusd: '>=25.05,<27.0' }\nprovides: [usd-fileformat:toy]\nusd: { plug_info: plugin/resources/toy/plugInfo.json }\n",
             )
             .unwrap(),
+            output_root: None,
         };
         let diagnostic = crate::doctor::Diagnostic::fail("probe", 2, "failed", vec![])
             .with_probe_output(Some(9), "stdout detail", "");

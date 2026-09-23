@@ -17,6 +17,9 @@ use crate::model::{PluginKind, PluginManifest, SmokeFixture, PLUGIN_MANIFEST, PL
 pub struct Bundle {
     pub root: Utf8PathBuf,
     pub manifest: PluginManifest,
+    /// Installed build outputs for the selected target, when a managed build
+    /// has staged them separately from the source bundle.
+    pub output_root: Option<Utf8PathBuf>,
 }
 
 impl Bundle {
@@ -122,7 +125,11 @@ impl Bundle {
             check_path("schema.source", src)?;
         }
 
-        Ok(Bundle { root, manifest })
+        Ok(Bundle {
+            root,
+            manifest,
+            output_root: None,
+        })
     }
 
     /// Resolve a bundle-relative path against the root.
@@ -138,9 +145,28 @@ impl Bundle {
         self.root.join(rel)
     }
 
+    /// Resolve a generated output while keeping fixtures and manifests at the
+    /// source root. The stage is selected by the CLI only after target lookup.
+    pub fn output_path(&self, rel: &str) -> Utf8PathBuf {
+        self.output_root.as_ref().unwrap_or(&self.root).join(rel)
+    }
+
+    /// Select an installed output tree for the current target. Generated paths
+    /// must remain confined to that tree, just as source paths are confined by
+    /// `load`.
+    pub fn with_output_root(mut self, root: &Utf8Path) -> Result<Self> {
+        let root = canonicalize_root(root)?;
+        check_existing_bundle_path(&root, "usd.plug_info", &self.manifest.usd.plug_info)?;
+        for path in ["lib", "python"] {
+            check_existing_bundle_path(&root, "installed output", path)?;
+        }
+        self.output_root = Some(root);
+        Ok(self)
+    }
+
     /// Absolute path to the declared `plugInfo.json`.
     pub fn plug_info(&self) -> Utf8PathBuf {
-        self.path(&self.manifest.usd.plug_info)
+        self.output_path(&self.manifest.usd.plug_info)
     }
 
     /// The directory a USD `PXR_PLUGINPATH_NAME` entry should point at: the
@@ -152,7 +178,7 @@ impl Bundle {
 
     /// The bundle's `lib/` directory (built shared libraries land here).
     pub fn lib_dir(&self) -> Utf8PathBuf {
-        self.path("lib")
+        self.output_path("lib")
     }
 
     /// Bundle-relative runtime library directories declared by the manifest.
@@ -178,7 +204,7 @@ impl Bundle {
 
     /// The bundle's `python/` directory (Python modules, if any).
     pub fn python_dir(&self) -> Utf8PathBuf {
-        self.path("python")
+        self.output_path("python")
     }
 
     /// Bundle-relative third-party notice files declared by the manifest.
@@ -441,6 +467,28 @@ mod tests {
             bundle.root.join("resources/plugInfo.json")
         );
         assert!(bundle.root.is_absolute(), "load must absolutize the root");
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn installed_outputs_do_not_move_source_fixtures() {
+        let root = write_bundle("plugin/resources/toy/plugInfo.json");
+        let stage = root.join(".strata/targets/test/bundle-stage");
+        std::fs::create_dir_all(stage.join("plugin/resources/toy").as_std_path()).unwrap();
+        std::fs::create_dir_all(stage.join("lib").as_std_path()).unwrap();
+        let bundle = Bundle::load(&root)
+            .unwrap()
+            .with_output_root(&stage)
+            .unwrap();
+        assert_eq!(
+            bundle.plug_info(),
+            stage.join("plugin/resources/toy/plugInfo.json")
+        );
+        assert_eq!(bundle.lib_dir(), stage.join("lib"));
+        assert_eq!(
+            bundle.path("tests/fixtures/a.toy"),
+            root.join("tests/fixtures/a.toy")
+        );
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

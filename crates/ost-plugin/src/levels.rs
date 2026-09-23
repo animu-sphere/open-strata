@@ -1566,6 +1566,7 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         let bundle = Bundle {
             root: dir.path.clone(),
             manifest,
+            output_root: None,
         };
         (dir, bundle)
     }
@@ -1592,6 +1593,7 @@ tests: { smoke: ["tests/fixtures/basic.usda"] }
         let bundle = Bundle {
             root: dir.path.clone(),
             manifest,
+            output_root: None,
         };
         (dir, bundle)
     }
@@ -1628,6 +1630,7 @@ usd: { plug_info: plugin/plugInfo.json }
         let bundle = Bundle {
             root: dir.path.clone(),
             manifest,
+            output_root: None,
         };
         (dir, bundle)
     }
@@ -1667,6 +1670,7 @@ tests: { smoke: [tests/fixtures/basic.usda] }
         let bundle = Bundle {
             root: dir.path.clone(),
             manifest,
+            output_root: None,
         };
         (dir, bundle)
     }
@@ -1707,6 +1711,7 @@ tests: { smoke: [tests/fixtures/basic.usda] }
         let bundle = Bundle {
             root: dir.path.clone(),
             manifest,
+            output_root: None,
         };
         (dir, bundle)
     }
@@ -1945,6 +1950,7 @@ usd: { plug_info: plugin/resources/vrm/plugInfo.json }
         let bundle = Bundle {
             root: dir.path.clone(),
             manifest,
+            output_root: None,
         };
         // `provides` is empty, so the names come from the plugInfo `Info.Types`.
         assert!(bundle.manifest.provides.is_empty());
@@ -1974,6 +1980,7 @@ tests: { smoke: ["tests/fixtures/basic.toy"] }
         let bundle = Bundle {
             root: dir.path.clone(),
             manifest,
+            output_root: None,
         };
         let probe =
             FakeProbe::new()
@@ -2298,6 +2305,7 @@ tests:
         let extracted = Bundle {
             root: extracted_dir.path.clone(),
             manifest: source.manifest.clone(),
+            output_root: None,
         };
         let probe = FakeProbe::new().on("usdcat", Some(0), flattened, "");
         let session = Session {

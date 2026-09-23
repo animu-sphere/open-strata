@@ -233,7 +233,14 @@ tests: { smoke: [tests/fixtures/basic.toy], roundtrip: [tests/fixtures/basic.toy
         )
         .unwrap();
         let root = dir.path.clone();
-        (dir, Bundle { root, manifest })
+        (
+            dir,
+            Bundle {
+                root,
+                manifest,
+                output_root: None,
+            },
+        )
     }
 
     #[test]

@@ -18,6 +18,7 @@ and [reference/](../reference/)).
 | [USD VRM report #41 — v0.22.10 external library](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/41-2026-09-19-v0.22.10-a-library-from-another-repository.md) | Missing cross-repository library edge, empty-scaffold CI, and the installed OpenUSD consumer result. |
 | [USD 3DGS report #4 — v0.22.10 macOS generated CI](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/04-2026-09-15-v0.22.10-macos-empty-openusd-args.md) | Empty optional OpenUSD Bash array under `set -u`, and the repository-side selector workaround. |
 | [USD Geospatial Runtime report #1 — v0.22.10 SDK consumer](https://github.com/animu-sphere/usd-geospatial-runtime/blob/main/docs/reports/ost/01-2026-09-18-v0.22.10-openusd-runtime-python-paths.md) | A hosted SDK lane exposes producer-local Python paths in its existing pinned OpenUSD runtime. |
+| [USD MMD Plugins report #1 — v0.23.3 bundle staging](https://github.com/animu-sphere/usd-mmd-plugins/blob/main/docs/reports/ost/01-2026-09-24-v0.23.3-a-bundle-is-staged-in-its-source-tree.md) | A standalone bundle and workspace tools need target-local build outputs for test and package. |
 | [incident-notes.md](incident-notes.md) | Short debugging notes: incidents, root causes, fixes, and future guardrails. |
 
 Additional dogfooding evidence remains in downstream validation repositories and

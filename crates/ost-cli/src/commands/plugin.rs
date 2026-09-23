@@ -1101,6 +1101,7 @@ fn build_one(
     // CMake cache — mirroring the project-level `build/<id>` layout.
     let target_dir = target_state_dir(&bundle.root, &id);
     let build_dir = target_build_dir(&bundle.root, &id);
+    let bundle_stage = target_dir.join("bundle-stage");
     // A plugin build publishes the same authoritative completion evidence as a
     // project build, so it must obey the same single-writer rule. Hold the
     // target lease from the first generated target file through completion
@@ -1179,10 +1180,14 @@ fn build_one(
         // ships/adopts are Release, so default the build type to match.
         "-DCMAKE_BUILD_TYPE=Release".to_string(),
     ];
-    // Only a dependency being installed into the workspace prefix configures
-    // with it; the primary consumes the prefix (via CMAKE_PREFIX_PATH in the
-    // toolchain) but keeps its own install destination untouched.
-    let install_prefix = workspace_prefix.filter(|_| install_to_workspace);
+    // Dependencies install into the shared workspace prefix. The primary
+    // consumes that prefix through CMAKE_PREFIX_PATH and installs its own
+    // outputs into a target-local bundle stage.
+    let install_prefix = if install_to_workspace {
+        workspace_prefix
+    } else {
+        Some(bundle_stage.as_path())
+    };
     if let Some(prefix) = install_prefix {
         configure_args.push(format!("-DCMAKE_INSTALL_PREFIX={}", cmake_path(prefix)));
     }
@@ -1326,14 +1331,30 @@ fn build_one(
     run_step(PHASE_CONFIGURE, &cmake, &configure_args, &build_env)?;
     record_member_runtime_identity(&build_dir, &tgt.runtime_digest, &r.artifact_prefix)?;
     run_step(PHASE_COMPILE_LINK, &cmake, &build_args, &build_env)?;
-    if let Some(args) = &install_args {
-        run_step("workspace-install", &cmake, args, &build_env)?;
-    }
-
     if let Some(schema) = &cohosted_schema {
         merge_cohosted_schema_resources(&bundle, schema)
             .map_err(|e| in_phase(PHASE_SCHEMA_MERGE, e))?;
     }
+    if !install_to_workspace && bundle_stage.as_std_path().exists() {
+        std::fs::remove_dir_all(bundle_stage.as_std_path())
+            .map_err(|error| Error::io(bundle_stage.to_string(), error))?;
+    }
+    if let Some(args) = &install_args {
+        run_step("workspace-install", &cmake, args, &build_env)?;
+    }
+
+    // An installable bundle has a target-local output tree. Legacy bundles
+    // without install rules continue to use their source-tree outputs.
+    let installed = !install_to_workspace
+        && bundle_stage
+            .join(&bundle.manifest.usd.plug_info)
+            .as_std_path()
+            .is_file();
+    let built_bundle = if installed {
+        bundle.clone().with_output_root(&bundle_stage)?
+    } else {
+        bundle.clone()
+    };
 
     // The plugInfo the runtime will dlopen at registration/test time must name a
     // library with *this* platform's suffix. A committed plugInfo carrying
@@ -1341,7 +1362,7 @@ fn build_one(
     // with USD's opaque loader error; fail here with the exact fix instead. A
     // source bundle shipping `plugInfo.json.in` has already had this regenerated
     // per target by configure, so its concrete path is correct by construction.
-    verify_target_library_suffix(&bundle, tgt.os())?;
+    verify_target_library_suffix(&built_bundle, tgt.os())?;
 
     // Keep the compiler fingerprint beside the toolchain so the next invocation
     // can invalidate CMake's compiler-cached build tree before configuring.
@@ -1350,7 +1371,7 @@ fn build_one(
         let _ = std::fs::write(record.as_std_path(), json);
     }
     let completion = write_plugin_build_completion(
-        &bundle,
+        &built_bundle,
         &tgt,
         &lock_compiler,
         &toolchain,
@@ -1358,6 +1379,12 @@ fn build_one(
         build_intent,
         lease.invocation(),
     )?;
+    if installed {
+        write_atomic(
+            bundle_stage.join(".openstrata-bundle-stage").as_std_path(),
+            id.as_bytes(),
+        )?;
+    }
     lease.release();
 
     if !emit_result {
@@ -1365,14 +1392,14 @@ fn build_one(
     }
 
     // plugInfo.json is shipped in the bundle (staged at scaffold time); confirm it.
-    let plug_info = bundle.plug_info();
+    let plug_info = built_bundle.plug_info();
     if fmt.is_json() {
         output::success(&serde_json::json!({
             "built": true,
             "plugin": bundle.manifest.plugin.name,
             "runtime": tgt.runtime_id,
             "build_dir": build_dir.to_string(),
-            "lib_dir": bundle.lib_dir().to_string(),
+            "lib_dir": built_bundle.lib_dir().to_string(),
             "plug_info": plug_info.to_string(),
             "workspace_prefix": workspace_prefix.map(ToString::to_string),
             "build_completion": build_dir.join(BUILD_COMPLETION_FILE).to_string(),
@@ -1385,7 +1412,7 @@ fn build_one(
         "\nBuilt {} against {}",
         bundle.manifest.plugin.name, tgt.runtime_id
     );
-    println!("  lib:       {}", bundle.lib_dir());
+    println!("  lib:       {}", built_bundle.lib_dir());
     println!("  plugInfo:  {plug_info}");
     println!(
         "  provenance: {} managed output(s)",
@@ -1532,10 +1559,10 @@ fn collect_plugin_managed_outputs_from(
                 "special file is not allowed in managed plugin outputs: {path}"
             )));
         }
-        let relative = path.strip_prefix(&bundle.root).map_err(|error| {
+        let output_root = bundle.output_root.as_ref().unwrap_or(&bundle.root);
+        let relative = path.strip_prefix(output_root).map_err(|error| {
             Error::Operation(format!(
-                "managed plugin output '{path}' is outside bundle '{}': {error}",
-                bundle.root
+                "managed plugin output '{path}' is outside output root '{output_root}': {error}"
             ))
         })?;
         let bytes = std::fs::read(path.as_std_path())
@@ -2349,6 +2376,7 @@ fn package_bundle(
     let (platform, profile) = selection_for_capabilities(target, profile, &required)?;
     let (tgt, r) = build_target(&platform, &profile)?;
     let id = tgt.id();
+    let bundle = managed_bundle_stage(bundle, &id)?;
     if !r.pulled {
         return Err(Error::coded(
             "RUNTIME_NOT_FOUND",
@@ -2360,6 +2388,10 @@ fn package_bundle(
         ));
     }
     let external_bundles = selected_external_bundles(&bundle, &r)?;
+    bundle_dependencies = bundle_dependencies
+        .into_iter()
+        .map(|dependency| managed_bundle_stage(dependency, &id))
+        .collect::<Result<Vec<_>>>()?;
     bundle_dependencies.extend(external_bundles.iter().map(|(bundle, _)| bundle.clone()));
 
     let runtime_manifest = std::fs::read_to_string(r.prefix.join(MANIFEST_FILE).as_std_path())
@@ -2587,6 +2619,7 @@ fn package_bundle(
     let packaged_bundle = Bundle {
         root: stage.clone(),
         manifest: packaged_manifest.clone(),
+        output_root: None,
     };
     let staged_outputs = collect_plugin_managed_outputs(&packaged_bundle)?;
     let mut build_provenance =
@@ -2938,13 +2971,18 @@ fn package_tool(
     // Resolve before staging: a tool package with no tool in it is the one
     // outcome that must never be produced quietly.
     let windows = tgt.variant.os == Os::Windows;
-    let executables = tool.locate_executables(&tool.root, windows)?;
-    let directories = tool.built_directories();
+    let output_root = managed_tool_output_root(tool, &id)?;
+    let executables = tool.locate_executables(&output_root, windows)?;
+    let directories = tool.built_directories_from(&output_root);
 
     let preferred_stage = target_state_dir(&tool.root, &id).join("package-stage");
     let (stage, mut stage_warnings) = super::prepare_package_stage(&preferred_stage, clean_stage)?;
     for directory in &directories {
-        copy_tree_required(&tool.root.join(directory), Utf8Path::new(directory), &stage)?;
+        copy_tree_required(
+            &output_root.join(directory),
+            Utf8Path::new(directory),
+            &stage,
+        )?;
     }
     // The descriptor travels with the artifact: a consumer reads the executables
     // and layout it declares without unpacking conventions from the filename.
@@ -3456,14 +3494,14 @@ fn package_workspace(
     let discovered_product_members: Vec<ProductMember<'_>> = order
         .iter()
         .zip(outcomes.iter())
-        .map(|(id, outcome)| ProductMember::bundle(id.clone(), outcome))
+        .map(|(id, outcome)| Ok(ProductMember::bundle(id.clone(), outcome)))
         .chain(
             tools
                 .iter()
                 .zip(tool_outcomes.iter())
                 .map(|(tool, outcome)| ProductMember::tool(tool, outcome)),
         )
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let members = resolve_product_members(discovered_product_members)?;
     if !fmt.is_json() {
         println!(
@@ -3661,13 +3699,14 @@ impl<'a> ProductMember<'a> {
         }
     }
 
-    fn tool(tool: &ost_plugin::Tool, outcome: &'a PackageOutcome) -> Self {
-        Self {
+    fn tool(tool: &ost_plugin::Tool, outcome: &'a PackageOutcome) -> Result<Self> {
+        let output_root = managed_tool_output_root(tool, &outcome.id)?;
+        Ok(Self {
             id: tool.id().to_string(),
             kind: "tool",
-            paths: tool.built_directories(),
+            paths: tool.built_directories_from(&output_root),
             outcome,
-        }
+        })
     }
 
     fn is_tool(&self) -> bool {
@@ -5964,6 +6003,13 @@ fn run_session(
         selected_workspace_library_runtime_dirs(&bundle, &r, true)?
     };
 
+    let id = runtime_target_id(&r);
+    let bundle = managed_bundle_stage(bundle, &id)?;
+    let with_bundles = with_bundles
+        .into_iter()
+        .map(|companion| managed_bundle_stage(companion, &id))
+        .collect::<Result<Vec<_>>>()?;
+
     // Search order (highest first): the source bundle unless --no-inject, then
     // any --plugin-path trees, then --with companions, then the runtime.
     let mut contributing: Vec<&Bundle> = Vec::new();
@@ -6203,6 +6249,17 @@ fn test(
     let library_dirs = match resolved.as_ref() {
         Some(resolved) => selected_workspace_library_runtime_dirs(&bundle, resolved, up_to >= 2)?,
         None => Vec::new(),
+    };
+    let (bundle, with_bundles) = if let Some(runtime) = resolved.as_ref() {
+        let id = runtime_target_id(runtime);
+        let bundle = managed_bundle_stage(bundle, &id)?;
+        let companions = with_bundles
+            .into_iter()
+            .map(|companion| managed_bundle_stage(companion, &id))
+            .collect::<Result<Vec<_>>>()?;
+        (bundle, companions)
+    } else {
+        (bundle, with_bundles)
     };
 
     let (report, report_dir) = test_bundle(
@@ -6840,6 +6897,17 @@ fn test_workspace(
             }
             None => Vec::new(),
         };
+        let (bundle, composed) = if let Some(runtime) = resolved.as_ref() {
+            let id = runtime_target_id(runtime);
+            let bundle = managed_bundle_stage(bundle, &id)?;
+            let companions = composed
+                .into_iter()
+                .map(|companion| managed_bundle_stage(companion, &id))
+                .collect::<Result<Vec<_>>>()?;
+            (bundle, companions)
+        } else {
+            (bundle, composed)
+        };
         let (report, report_dir) = test_bundle(
             &bundle,
             &composed,
@@ -7258,8 +7326,9 @@ fn wildcard_component_matches(pattern: &str, name: &str) -> bool {
 pub(crate) fn workspace_managed_outputs(
     root: &Utf8Path,
     os: Os,
+    target_id: Option<&str>,
 ) -> (Vec<BuildOutput>, Vec<String>) {
-    let (tool_outputs, mut warnings) = workspace_tool_outputs(root, os);
+    let (tool_outputs, mut warnings) = workspace_tool_outputs(root, os, target_id);
     let mut outputs = tool_outputs
         .into_iter()
         .map(|output| (output.path.clone(), output))
@@ -7414,6 +7483,7 @@ pub(crate) fn stage_workspace_tool_executables(
     os: Os,
     config: &str,
     baseline: &ToolBuildBaseline,
+    target_id: Option<&str>,
 ) -> Result<Vec<String>> {
     let tool_roots = discover_workspace_tools(root)?;
     if tool_roots.is_empty() {
@@ -7426,9 +7496,13 @@ pub(crate) fn stage_workspace_tool_executables(
     let mut notes = Vec::new();
     let mut plans = Vec::new();
     let mut destinations = BTreeSet::new();
+    let mut staged_tools = BTreeMap::new();
     let multi_config = build_tree_is_multi_config(build_dir);
     for tool_root in tool_roots {
         let tool = ost_plugin::Tool::load(&tool_root)?;
+        let output_root = target_id
+            .map(|id| tool_stage_root(&tool, id))
+            .unwrap_or_else(|| tool.root.clone());
         let member = member_relative(&canonical_project_root, &tool.root).ok_or_else(|| {
             Error::validation(format!(
                 "tool '{}' at {} is outside the project root {root}",
@@ -7443,7 +7517,7 @@ pub(crate) fn stage_workspace_tool_executables(
                 .manifest
                 .directories
                 .iter()
-                .any(|directory| tool.root.join(directory).join(&filename).is_file());
+                .any(|directory| output_root.join(directory).join(&filename).is_file());
 
             let candidates = build_files
                 .iter()
@@ -7490,7 +7564,7 @@ pub(crate) fn stage_workspace_tool_executables(
                 .directories
                 .first()
                 .expect("validated tool descriptors have at least one directory");
-            let destination = tool.root.join(directory).join(&filename);
+            let destination = output_root.join(directory).join(&filename);
             let bytes = std::fs::read(source.as_std_path())
                 .map_err(|error| Error::io(source.to_string(), error))?;
             let source_permissions = std::fs::metadata(source.as_std_path())
@@ -7516,9 +7590,50 @@ pub(crate) fn stage_workspace_tool_executables(
                 original,
                 note,
             });
+            if target_id.is_some() {
+                staged_tools.insert(output_root.clone(), (tool.clone(), member.clone()));
+            }
+        }
+    }
+    // Replace each target-local tool tree before publishing its marker. A
+    // declared directory produced below the member's CMake binary tree wins;
+    // older workspaces that still stage a directory in the member source tree
+    // remain packageable. The selected executable plans are applied last, so
+    // a stale `bin/` copy cannot replace the build's verified executable.
+    for (stage, (tool, member)) in &staged_tools {
+        if stage.as_std_path().exists() {
+            std::fs::remove_dir_all(stage.as_std_path())
+                .map_err(|error| Error::io(stage.to_string(), error))?;
+        }
+        std::fs::create_dir_all(stage.as_std_path())
+            .map_err(|error| Error::io(stage.to_string(), error))?;
+        for directory in &tool.manifest.directories {
+            let built = build_dir.join(member).join(directory);
+            let source = if built.is_dir() {
+                built
+            } else {
+                tool.root.join(directory)
+            };
+            if source.is_dir() {
+                if stage.starts_with(&source) {
+                    return Err(Error::config(format!(
+                        "tool '{}' directory '{directory}' contains its target stage '{stage}'",
+                        tool.id()
+                    )));
+                }
+                copy_tree_required(&source, Utf8Path::new(directory), stage)?;
+            }
         }
     }
     apply_tool_staging_plans(&plans)?;
+    if let Some(id) = target_id {
+        for stage in staged_tools.keys() {
+            write_atomic(
+                stage.join(".openstrata-tool-stage").as_std_path(),
+                id.as_bytes(),
+            )?;
+        }
+    }
     notes.extend(plans.into_iter().map(|plan| plan.note));
     Ok(notes)
 }
@@ -7736,7 +7851,11 @@ fn build_tree_is_multi_config(build_dir: &Utf8Path) -> bool {
 /// unreadable descriptor, or an executable that cannot be digested each drop out
 /// with a warning — the packaged tool then reports `untracked` provenance, which
 /// is the honest answer rather than a build the caller has to re-run.
-pub(crate) fn workspace_tool_outputs(root: &Utf8Path, os: Os) -> (Vec<BuildOutput>, Vec<String>) {
+pub(crate) fn workspace_tool_outputs(
+    root: &Utf8Path,
+    os: Os,
+    target_id: Option<&str>,
+) -> (Vec<BuildOutput>, Vec<String>) {
     let mut outputs = Vec::new();
     let mut warnings = Vec::new();
     let tool_roots = match discover_workspace_tools(root) {
@@ -7761,7 +7880,20 @@ pub(crate) fn workspace_tool_outputs(root: &Utf8Path, os: Os) -> (Vec<BuildOutpu
                 continue;
             }
         };
-        let Ok(executables) = tool.locate_executables(&tool.root, os == Os::Windows) else {
+        let output_root = match target_id {
+            Some(id) => match managed_tool_output_root(&tool, id) {
+                Ok(root) => root,
+                Err(error) => {
+                    warnings.push(format!(
+                        "warning: tool '{}' output cannot be read: {error}",
+                        tool.id()
+                    ));
+                    continue;
+                }
+            },
+            None => tool.root.clone(),
+        };
+        let Ok(executables) = tool.locate_executables(&output_root, os == Os::Windows) else {
             continue;
         };
         let Some(member) = member_relative(&canonical_root, &tool.root) else {
@@ -7774,7 +7906,7 @@ pub(crate) fn workspace_tool_outputs(root: &Utf8Path, os: Os) -> (Vec<BuildOutpu
             continue;
         };
         for relative in executables {
-            let path = tool.root.join(&relative);
+            let path = output_root.join(&relative);
             match digest_file(&path) {
                 Ok((sha256, size)) => outputs.push(BuildOutput {
                     path: format!("{member}/{relative}"),
@@ -8469,6 +8601,141 @@ pub(crate) fn workspace_external_libraries(
         .collect::<Result<Vec<_>>>()?;
     external_library::validate_closure(&external, &libraries)?;
     Ok(external)
+}
+
+/// Bundle and tool artifact pins needed by the root CMake tree. A member
+/// session already materializes these pins, but root CTest runs outside that
+/// session and must be able to name the same verified paths explicitly.
+pub(crate) struct WorkspaceExternalMembers {
+    pub bundles: BTreeMap<String, Utf8PathBuf>,
+    pub tools: BTreeMap<String, Vec<Utf8PathBuf>>,
+}
+
+pub(crate) fn workspace_external_members(
+    root: &Utf8Path,
+    target_id: &str,
+    runtime_id: &str,
+    runtime_digest: &str,
+) -> Result<WorkspaceExternalMembers> {
+    let members = discover_workspace_members(root)?;
+    let bundles = members
+        .bundles
+        .iter()
+        .map(|path| Bundle::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let mut bundle_pins = BTreeMap::<String, ost_plugin::BundleDependency>::new();
+    let mut tool_pins = BTreeMap::<String, ost_plugin::ToolDependency>::new();
+    for bundle in &bundles {
+        for dependency in bundle
+            .manifest
+            .requires
+            .bundles
+            .iter()
+            .filter(|dependency| dependency.artifact.is_some())
+        {
+            if let Some(previous) = bundle_pins.insert(dependency.id.clone(), dependency.clone()) {
+                if previous != *dependency {
+                    return Err(Error::validation(format!(
+                        "conflicting artifact pins for bundle '{}'",
+                        dependency.id
+                    )));
+                }
+            }
+        }
+        for dependency in &bundle.manifest.requires.tools {
+            if let Some(previous) = tool_pins.insert(dependency.id.clone(), dependency.clone()) {
+                if previous != *dependency {
+                    return Err(Error::validation(format!(
+                        "conflicting artifact pins for tool '{}'",
+                        dependency.id
+                    )));
+                }
+            }
+        }
+    }
+    let mut bundle_roots = BTreeMap::new();
+    for dependency in bundle_pins.values() {
+        let member = external_member::materialize(
+            &dependency.id,
+            &dependency.version,
+            dependency
+                .artifact
+                .as_ref()
+                .expect("filtered artifact pins"),
+            MemberKind::Bundle,
+            target_id,
+            runtime_id,
+            runtime_digest,
+            root,
+        )?;
+        let bundle = Bundle::load(&member.prefix)?;
+        if bundle.manifest.name() != dependency.id
+            || !matches!(
+                ost_plugin::satisfies(&bundle.manifest.plugin.version, &dependency.version),
+                Ok(true)
+            )
+            || dependency.contract.is_some_and(|contract| {
+                bundle
+                    .manifest
+                    .schema
+                    .as_ref()
+                    .and_then(|schema| schema.contract)
+                    != Some(contract)
+            })
+        {
+            return Err(Error::coded(
+                "WORKSPACE_BUNDLE_ARTIFACT_CONTRACT_MISMATCH",
+                Category::Validation,
+                format!(
+                    "bundle '{}' artifact does not satisfy its descriptor contract",
+                    dependency.id
+                ),
+            ));
+        }
+        bundle_roots.insert(dependency.id.clone(), member.prefix);
+    }
+    let mut tool_dirs = BTreeMap::new();
+    for dependency in tool_pins.values() {
+        let member = external_member::materialize(
+            &dependency.id,
+            &dependency.version,
+            &dependency.artifact,
+            MemberKind::Tool,
+            target_id,
+            runtime_id,
+            runtime_digest,
+            root,
+        )?;
+        let tool = ost_plugin::Tool::load(&member.prefix)?;
+        if tool.id() != dependency.id
+            || !matches!(
+                ost_plugin::satisfies(tool.version(), &dependency.version),
+                Ok(true)
+            )
+        {
+            return Err(Error::validation(format!(
+                "tool '{}' artifact descriptor does not match its pin",
+                dependency.id
+            )));
+        }
+        let mut dirs = Vec::new();
+        for executable in tool.locate_executables(&tool.root, target_id.contains("windows"))? {
+            let dir = tool
+                .root
+                .join(&executable)
+                .parent()
+                .expect("executable has parent")
+                .to_path_buf();
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        tool_dirs.insert(dependency.id.clone(), dirs);
+    }
+    Ok(WorkspaceExternalMembers {
+        bundles: bundle_roots,
+        tools: tool_dirs,
+    })
 }
 
 /// The artifact pins declared across a member set, one per library id.
@@ -9387,6 +9654,58 @@ fn has_display(os: Os) -> bool {
 fn load_bundle(path: &str) -> Result<Bundle> {
     let root = Utf8PathBuf::from(path);
     Bundle::load(&root)
+}
+
+fn managed_bundle_stage(bundle: Bundle, target_id: &str) -> Result<Bundle> {
+    let stage = target_state_dir(&bundle.root, target_id).join("bundle-stage");
+    let marker = stage.join(".openstrata-bundle-stage");
+    if !marker.is_file() {
+        return Ok(bundle);
+    }
+    let recorded = std::fs::read_to_string(marker.as_std_path())
+        .map_err(|error| Error::io(marker.to_string(), error))?;
+    if recorded != target_id {
+        return Err(Error::validation(format!(
+            "bundle stage at '{stage}' belongs to target '{recorded}', expected '{target_id}'"
+        )));
+    }
+    bundle.with_output_root(&stage)
+}
+
+fn tool_stage_root(tool: &ost_plugin::Tool, target_id: &str) -> Utf8PathBuf {
+    target_state_dir(&tool.root, target_id).join("tool-stage")
+}
+
+fn managed_tool_output_root(tool: &ost_plugin::Tool, target_id: &str) -> Result<Utf8PathBuf> {
+    let stage = tool_stage_root(tool, target_id);
+    let marker = stage.join(".openstrata-tool-stage");
+    if !marker.is_file() {
+        return Ok(tool.root.clone());
+    }
+    let recorded = std::fs::read_to_string(marker.as_std_path())
+        .map_err(|error| Error::io(marker.to_string(), error))?;
+    if recorded != target_id {
+        return Err(Error::validation(format!(
+            "tool stage at '{stage}' belongs to target '{recorded}', expected '{target_id}'"
+        )));
+    }
+    let stage = canonical_root(&stage);
+    if !stage.starts_with(&tool.root) {
+        return Err(Error::validation(format!(
+            "tool stage resolves outside member root '{}': {stage}",
+            tool.root
+        )));
+    }
+    Ok(stage)
+}
+
+fn runtime_target_id(runtime: &crate::commands::Resolved) -> String {
+    format!(
+        "{}-{}-{}",
+        runtime.runtime.platform,
+        runtime.runtime.variant.short_slug(),
+        runtime.runtime.profile
+    )
 }
 
 fn load_with_bundles(paths: &[String]) -> Result<Vec<Bundle>> {
@@ -11373,7 +11692,7 @@ mod tests {
     }
 
     #[test]
-    fn root_build_stages_declared_tool_executables_into_the_member() {
+    fn root_build_stages_declared_tool_executables_per_target() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -11401,13 +11720,21 @@ mod tests {
             "schema: openstrata.tool/v1alpha1\n\
              tool: { id: motion_retarget, version: 0.4.0 }\n\
              executables: [motion_retarget]\n\
-             directories: [bin]\n",
+             directories: [bin, lib]\n",
         )
         .unwrap();
         let produced = build.join("tools/motion_retarget/Release").join(filename);
         std::fs::write(produced.as_std_path(), b"managed tool bytes").unwrap();
+        write_test_file(
+            &build.join("tools/motion_retarget/lib/dependency.bin"),
+            "build-tree library",
+        );
         std::fs::create_dir_all(tool_root.join("bin").as_std_path()).unwrap();
         std::fs::write(tool_root.join("bin").join(filename), b"stale member bytes").unwrap();
+        write_test_file(
+            &tool_root.join("lib/dependency.bin"),
+            "stale source library",
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -11424,13 +11751,32 @@ mod tests {
             os,
             "Release",
             &ToolBuildBaseline::default(),
+            Some("test-target"),
         )
         .unwrap();
 
-        let staged = tool_root.join("bin").join(filename);
+        let tool = ost_plugin::Tool::load(&tool_root).unwrap();
+        let staged = managed_tool_output_root(&tool, "test-target")
+            .unwrap()
+            .join("bin")
+            .join(filename);
         assert_eq!(
             std::fs::read(staged.as_std_path()).unwrap(),
             b"managed tool bytes"
+        );
+        assert_eq!(
+            std::fs::read(tool_root.join("bin").join(filename).as_std_path()).unwrap(),
+            b"stale member bytes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                managed_tool_output_root(&tool, "test-target")
+                    .unwrap()
+                    .join("lib/dependency.bin")
+                    .as_std_path()
+            )
+            .unwrap(),
+            "build-tree library"
         );
         #[cfg(unix)]
         {
@@ -11445,7 +11791,7 @@ mod tests {
             );
         }
         assert_eq!(notes.len(), 1);
-        let (outputs, warnings) = workspace_tool_outputs(&root, os);
+        let (outputs, warnings) = workspace_tool_outputs(&root, os, Some("test-target"));
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(outputs.len(), 1);
         assert_eq!(
@@ -11536,8 +11882,8 @@ mod tests {
         std::fs::write(produced.as_std_path(), b"old build bytes").unwrap();
         let baseline = snapshot_workspace_tool_build_outputs(&root, &build, os).unwrap();
 
-        let notes =
-            stage_workspace_tool_executables(&root, &build, os, "Release", &baseline).unwrap();
+        let notes = stage_workspace_tool_executables(&root, &build, os, "Release", &baseline, None)
+            .unwrap();
 
         assert!(!tool_root.join("bin").join(filename).exists());
         assert_eq!(notes.len(), 1);
@@ -11597,6 +11943,7 @@ mod tests {
             os,
             "Release",
             &ToolBuildBaseline::default(),
+            None,
         )
         .is_err());
         assert_eq!(
@@ -11812,7 +12159,7 @@ mod tests {
             "schema: openstrata.tool/v0-not-a-schema\ntool: { id: broken }\n",
         );
 
-        let (outputs, warnings) = workspace_tool_outputs(&root, Os::Linux);
+        let (outputs, warnings) = workspace_tool_outputs(&root, Os::Linux, None);
 
         assert!(outputs.is_empty(), "a tool that cannot be read has none");
         assert_eq!(warnings.len(), 1, "and is reported once: {warnings:?}");
@@ -11839,7 +12186,7 @@ mod tests {
              executables: [motion_retarget]\n",
         );
 
-        let (outputs, warnings) = workspace_tool_outputs(&root, Os::Linux);
+        let (outputs, warnings) = workspace_tool_outputs(&root, Os::Linux, None);
 
         assert!(outputs.is_empty());
         assert!(
@@ -11873,7 +12220,7 @@ mod tests {
         );
         write_test_file(&bundle.join("lib/libToy.so"), "managed bytes");
 
-        let (outputs, warnings) = workspace_managed_outputs(&root, Os::Linux);
+        let (outputs, warnings) = workspace_managed_outputs(&root, Os::Linux, None);
 
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
         let paths = outputs
@@ -12263,6 +12610,7 @@ schema: { codeless: true, contract: 1 }
         let dependency = Bundle {
             root: root.clone(),
             manifest,
+            output_root: None,
         };
 
         let error = selected_bundle_package_registration(&[dependency]).unwrap_err();
@@ -12375,6 +12723,38 @@ schema: { codeless: true, contract: 1 }
             generator: "Ninja".into(),
         };
         (root, bundle, target)
+    }
+
+    #[test]
+    fn package_stage_uses_target_bundle_outputs_and_source_notices() {
+        let (root, mut bundle, target) = managed_output_test_bundle("bundle-install-stage");
+        let id = target.id();
+        let installed = target_state_dir(&bundle.root, &id).join("bundle-stage");
+        write_test_file(
+            &installed.join("plugin/resources/toy/plugInfo.json"),
+            r#"{ "Plugins": [{ "Type": "library", "Name": "installed" }] }"#,
+        );
+        write_test_file(&installed.join("lib/libToy.so"), "installed library");
+        write_test_file(&installed.join(".openstrata-bundle-stage"), &id);
+        write_test_file(&root.join("NOTICE.md"), "source notice");
+        bundle.manifest.notices.push("NOTICE.md".into());
+        std::fs::remove_dir_all(root.join("lib").as_std_path()).unwrap();
+        std::fs::remove_dir_all(root.join("plugin").as_std_path()).unwrap();
+
+        let selected = managed_bundle_stage(bundle, &id).unwrap();
+        let package = root.join("package");
+        stage_plugin_bundle(&selected, &package).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(package.join("lib/libToy.so").as_std_path()).unwrap(),
+            "installed library"
+        );
+        assert_eq!(
+            std::fs::read_to_string(package.join("NOTICE.md").as_std_path()).unwrap(),
+            "source notice"
+        );
+        let outputs = collect_plugin_managed_outputs(&selected).unwrap();
+        assert!(outputs.iter().any(|output| output.path == "lib/libToy.so"));
+        std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 
     #[test]
