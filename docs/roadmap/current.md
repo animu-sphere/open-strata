@@ -6,6 +6,10 @@ acceptance and the next feature work.
 
 ## Post-release v0.23.4 evidence
 
+- Recheck `usd-mmd-plugins` report 01 against target-local bundle and tool
+  staging: source tests, packages, and a second target must consume their own
+  outputs without source-tree generated files.
+
 - Confirm the published release assets, checksums and attestations, then run an
   installed CLI smoke test. Fix release defects in v0.23.x.
 - Complete the `usd-vrm-plugins` migration through the external artifact edge,

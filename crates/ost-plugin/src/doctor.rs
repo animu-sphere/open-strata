@@ -1290,6 +1290,7 @@ usd: { plug_info: plugin/resources/toy/plugInfo.json }
         let bundle = Bundle {
             root: dir.path.clone(),
             manifest,
+            output_root: None,
         };
         (dir, bundle)
     }
@@ -1524,6 +1525,7 @@ usd: { plug_info: plugin/resources/vrm/plugInfo.json }
         let bundle = Bundle {
             root: dir.path.clone(),
             manifest,
+            output_root: None,
         };
         (dir, bundle)
     }
@@ -1607,6 +1609,7 @@ usd: { plug_info: plugin/plugInfo.json }
         let bundle = Bundle {
             root: dir.path.clone(),
             manifest,
+            output_root: None,
         };
 
         let report = diagnose(&bundle, &RuntimeContext::default(), 0);

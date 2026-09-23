@@ -142,6 +142,7 @@ usd: { plug_info: plugin/resources/usdluma/plugInfo.json }
         Bundle {
             root: Utf8PathBuf::from("/bundles/usdluma"),
             manifest,
+            output_root: None,
         }
     }
 

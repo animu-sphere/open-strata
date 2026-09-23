@@ -1127,6 +1127,7 @@ mod tests {
         Bundle {
             root: Utf8PathBuf::from("unused"),
             manifest: PluginManifest::parse(source).unwrap(),
+            output_root: None,
         }
     }
 

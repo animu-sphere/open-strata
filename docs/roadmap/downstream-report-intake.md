@@ -16,7 +16,8 @@ reports. The 2026-09-19 refresh covers 75 reports in nine repositories,
 excluding each repository's report index; the four additions exercise
 v0.22.10. VRM report 42, received on 2026-09-20, brings the total to 76 and
 exposes a premature `consumer-link` claim repaired in v0.23.1. The three new
-motion/MMD repositories have no OST report series yet.
+motion/MMD repositories had no OST report series then. MMD report 01, received
+on 2026-09-24, brings the total to 77 and exercises target-local output staging.
 MMD's dated model and motion reports test its own format behavior and are not
 counted as OST reports. A request was treated as
 closed only when the current source, tests or a release record supplied the
@@ -38,10 +39,18 @@ superseded failures are not carried forward.
 | [USD Raster Plugins](https://github.com/animu-sphere/usd-raster-plugins/tree/main/docs/reports/ost) | 1 | Bundle-free workspace graph validation shipped in v0.22.10. |
 | [USD Geospatial Runtime](https://github.com/animu-sphere/usd-geospatial-runtime/tree/main/docs/reports/ost) | 1 | Its first hosted SDK lane cannot consume the existing pinned OpenUSD runtime's producer-local Python paths. |
 | [USD Motion Plugins](https://github.com/animu-sphere/usd-motion-plugins) | 0 | No OST report series; VRM report 41 covers its installed-consumer result and dependency need. |
-| [USD MMD Plugins](https://github.com/animu-sphere/usd-mmd-plugins) | 0 | Local PMX/VMD reports are domain evidence; cross-repository motion dependency awaits a dedicated OST pass. |
+| [USD MMD Plugins](https://github.com/animu-sphere/usd-mmd-plugins/tree/main/docs/reports/ost) | 1 | Report 01 finds that bundle registration/libraries and tool directories are read from the source tree. Target-local staging is implemented locally and awaits a downstream rerun. |
 | [Motion Connectors](https://github.com/animu-sphere/motion-connectors) | 0 | Empty scaffold; VRM report 41 records the generated-CI blockage. |
 
 ## Post-v0.23.0 - downstream acceptance
+
+- **P2 — verify target-local bundle and tool stages downstream.**
+  [MMD report 01](https://github.com/animu-sphere/usd-mmd-plugins/blob/main/docs/reports/ost/01-2026-09-24-v0.23.3-a-bundle-is-staged-in-its-source-tree.md)
+  reproduced a successful bundle build followed by L0–L5 failures when its
+  generated `plugInfo.json` and library were moved out of the source tree.
+  Exercise its install rules with a target-local bundle stage, then run source
+  tests and packaging without source-generated outputs. Verify root-built tool
+  packages from their target-local stage and repeat on another target.
 
 ### New v0.22.10 dogfooding acceptance
 

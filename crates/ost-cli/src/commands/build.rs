@@ -445,7 +445,8 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     // its mere presence after the root build is not proof that this invocation
     // produced it.
     let previous_completion = read_previous_completion(&build_dir);
-    let (outputs, _) = crate::commands::plugin::workspace_managed_outputs(&root, target.os());
+    let (outputs, _) =
+        crate::commands::plugin::workspace_managed_outputs(&root, target.os(), Some(&id));
     let root_output_baseline = RootOutputBaseline {
         outputs,
         previous_completion,
@@ -691,6 +692,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         target.os(),
         &args.config,
         &tool_build_baseline,
+        Some(&id),
     ) {
         Ok(notes) => notes,
         Err(error) => {
@@ -867,8 +869,11 @@ fn write_completion(
     // invocation, plus exact bytes already attributed by a completion with the
     // same validated build identity. Everything else remains honestly
     // `untracked` instead of borrowing this root build's provenance.
-    let (outputs_after, mut warnings) =
-        crate::commands::plugin::workspace_managed_outputs(root, lock.variant.os);
+    let (outputs_after, mut warnings) = crate::commands::plugin::workspace_managed_outputs(
+        root,
+        lock.variant.os,
+        Some(&lock.target),
+    );
     let previous_outputs = root_output_baseline
         .previous_completion
         .as_ref()

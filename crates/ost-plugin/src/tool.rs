@@ -164,10 +164,15 @@ impl Tool {
     /// Declared directories that the build actually produced, in declared
     /// order. A tool that installs only `bin` contributes only `bin`.
     pub fn built_directories(&self) -> Vec<String> {
+        self.built_directories_from(&self.root)
+    }
+
+    /// Declared directories present in a selected target's output tree.
+    pub fn built_directories_from(&self, root: &Utf8Path) -> Vec<String> {
         self.manifest
             .directories
             .iter()
-            .filter(|directory| self.root.join(directory).as_std_path().is_dir())
+            .filter(|directory| root.join(directory).as_std_path().is_dir())
             .cloned()
             .collect()
     }
