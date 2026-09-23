@@ -1,14 +1,17 @@
 # Current
 
-The v0.23.4 repair is recorded in the
-[release record](../releases/v0.23.4.md). This page tracks the remaining
+The v0.23.5 repair is recorded in the
+[release record](../releases/v0.23.5.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.4 evidence
+## Post-release v0.23.5 evidence
 
-- Recheck `usd-mmd-plugins` report 01 against target-local bundle and tool
-  staging: source tests, packages, and a second target must consume their own
-  outputs without source-tree generated files.
+- Recheck `usd-mmd-plugins` report 01 against the published target-local bundle
+  and tool stages: source tests, packages, and a second target must consume
+  their own outputs without source-tree generated files.
+- Recheck `usd-vrm-plugins` report 46 against the published root toolchain:
+  migrate root CMake tests to the exported bundle and tool paths, then compare
+  root CTest discovery and results with the member session suites.
 
 - Confirm the published release assets, checksums and attestations, then run an
   installed CLI smoke test. Fix release defects in v0.23.x.
@@ -34,8 +37,8 @@ acceptance and the next feature work.
   component identities.
 - Continue installed-package dependency correctness and component-level
   architecture evidence in the [package-contract plan](component-package-contracts.md).
-- Migrate `usd-vrm-plugins` to the published `execMotion` bundle and
-  `motion_convert` tool, then verify the installed consumer and fixture flow.
+- Complete the `usd-vrm-plugins` migration to the published `execMotion` bundle
+  and `motion_convert` tool, then verify the installed consumer and fixture flow.
 
 The [runtime-composition follow-through](runtime-composition.md) and
 [downstream report intake](downstream-report-intake.md) retain the detailed

@@ -5,7 +5,7 @@ owners:
   - openstrata-maintainers
 created: 2026-09-12
 updated: 2026-09-24
-applies_to: post-v0.23.4
+applies_to: post-v0.23.5
 ---
 
 # Downstream OST report intake
@@ -18,6 +18,8 @@ v0.22.10. VRM report 42, received on 2026-09-20, brings the total to 76 and
 exposes a premature `consumer-link` claim repaired in v0.23.1. The three new
 motion/MMD repositories had no OST report series then. MMD report 01, received
 on 2026-09-24, brings the total to 77 and exercises target-local output staging.
+VRM report 46 then brings the total to 78 and exposes root CTest's missing
+external bundle and tool paths.
 MMD's dated model and motion reports test its own format behavior and are not
 counted as OST reports. A request was treated as
 closed only when the current source, tests or a release record supplied the
@@ -29,7 +31,7 @@ superseded failures are not carried forward.
 
 | Repository | Reports | Result |
 | --- | ---: | --- |
-| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 46 | Reports 40–41 expose per-bundle packaging and cross-repository library dependencies; report 42's early consumer claim is repaired in v0.23.1; report 44's tool edges shipped in v0.23.3; report 45's cache repair and external bundle/tool pins ship in v0.23.4. |
+| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 46 | Reports 40–41 expose per-bundle packaging and cross-repository library dependencies; report 42's early consumer claim is repaired in v0.23.1; report 44's tool edges shipped in v0.23.3; report 45's cache repair and external bundle/tool pins ship in v0.23.4; report 46's root CTest paths ship in v0.23.5. |
 | [hdMerlin](https://github.com/animu-sphere/hydra-merlin/tree/main/docs/reports/ost) | 12 | No open carryover: managed renderer diagnostics and resilient OCI transfer shipped in v0.22.0, with idle-timeout semantics hardened again in v0.22.9. |
 | [USD Point Cloud Plugins](https://github.com/animu-sphere/usd-pointcloud-plugins/tree/main/docs/reports/ost) | 4 | No open carryover: structured file-format arguments and managed-output provenance are implemented; the preimplementation report requested no change. |
 | [USD 3DGS Plugins](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost) | 4 | New report 04 finds a generated Bash empty-array failure on macOS when optional OpenUSD selectors are absent. |
@@ -39,18 +41,24 @@ superseded failures are not carried forward.
 | [USD Raster Plugins](https://github.com/animu-sphere/usd-raster-plugins/tree/main/docs/reports/ost) | 1 | Bundle-free workspace graph validation shipped in v0.22.10. |
 | [USD Geospatial Runtime](https://github.com/animu-sphere/usd-geospatial-runtime/tree/main/docs/reports/ost) | 1 | Its first hosted SDK lane cannot consume the existing pinned OpenUSD runtime's producer-local Python paths. |
 | [USD Motion Plugins](https://github.com/animu-sphere/usd-motion-plugins) | 0 | No OST report series; VRM report 41 covers its installed-consumer result and dependency need. |
-| [USD MMD Plugins](https://github.com/animu-sphere/usd-mmd-plugins/tree/main/docs/reports/ost) | 1 | Report 01 finds that bundle registration/libraries and tool directories are read from the source tree. Target-local staging is implemented locally and awaits a downstream rerun. |
+| [USD MMD Plugins](https://github.com/animu-sphere/usd-mmd-plugins/tree/main/docs/reports/ost) | 1 | Report 01 finds that bundle registration/libraries and tool directories are read from the source tree. Target-local staging ships in v0.23.5 and awaits a downstream rerun. |
 | [Motion Connectors](https://github.com/animu-sphere/motion-connectors) | 0 | Empty scaffold; VRM report 41 records the generated-CI blockage. |
 
-## Post-v0.23.0 - downstream acceptance
+## Post-v0.23.5 - downstream acceptance
 
 - **P2 — verify target-local bundle and tool stages downstream.**
   [MMD report 01](https://github.com/animu-sphere/usd-mmd-plugins/blob/main/docs/reports/ost/01-2026-09-24-v0.23.3-a-bundle-is-staged-in-its-source-tree.md)
   reproduced a successful bundle build followed by L0–L5 failures when its
   generated `plugInfo.json` and library were moved out of the source tree.
-  Exercise its install rules with a target-local bundle stage, then run source
-  tests and packaging without source-generated outputs. Verify root-built tool
-  packages from their target-local stage and repeat on another target.
+  v0.23.5 stages the installed bundle and tool outputs per target. Run source
+  tests and packaging without source-generated outputs, then repeat on another
+  target to close downstream acceptance.
+- **P1 — prove root CTest sees published bundle and tool pins.**
+  [VRM report 46](https://github.com/animu-sphere/usd-vrm-plugins/pull/226)
+  passes member sessions but root CTest omits suites guarded by local CMake
+  targets and lacks the pinned bundle and tool paths. v0.23.5 materializes the
+  pins for the root and exports CMake paths; the VRM root tests must consume
+  those paths and report the restored suite count and negative-case result.
 
 ### New v0.22.10 dogfooding acceptance
 
