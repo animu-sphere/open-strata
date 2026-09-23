@@ -8603,6 +8603,141 @@ pub(crate) fn workspace_external_libraries(
     Ok(external)
 }
 
+/// Bundle and tool artifact pins needed by the root CMake tree. A member
+/// session already materializes these pins, but root CTest runs outside that
+/// session and must be able to name the same verified paths explicitly.
+pub(crate) struct WorkspaceExternalMembers {
+    pub bundles: BTreeMap<String, Utf8PathBuf>,
+    pub tools: BTreeMap<String, Vec<Utf8PathBuf>>,
+}
+
+pub(crate) fn workspace_external_members(
+    root: &Utf8Path,
+    target_id: &str,
+    runtime_id: &str,
+    runtime_digest: &str,
+) -> Result<WorkspaceExternalMembers> {
+    let members = discover_workspace_members(root)?;
+    let bundles = members
+        .bundles
+        .iter()
+        .map(|path| Bundle::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let mut bundle_pins = BTreeMap::<String, ost_plugin::BundleDependency>::new();
+    let mut tool_pins = BTreeMap::<String, ost_plugin::ToolDependency>::new();
+    for bundle in &bundles {
+        for dependency in bundle
+            .manifest
+            .requires
+            .bundles
+            .iter()
+            .filter(|dependency| dependency.artifact.is_some())
+        {
+            if let Some(previous) = bundle_pins.insert(dependency.id.clone(), dependency.clone()) {
+                if previous != *dependency {
+                    return Err(Error::validation(format!(
+                        "conflicting artifact pins for bundle '{}'",
+                        dependency.id
+                    )));
+                }
+            }
+        }
+        for dependency in &bundle.manifest.requires.tools {
+            if let Some(previous) = tool_pins.insert(dependency.id.clone(), dependency.clone()) {
+                if previous != *dependency {
+                    return Err(Error::validation(format!(
+                        "conflicting artifact pins for tool '{}'",
+                        dependency.id
+                    )));
+                }
+            }
+        }
+    }
+    let mut bundle_roots = BTreeMap::new();
+    for dependency in bundle_pins.values() {
+        let member = external_member::materialize(
+            &dependency.id,
+            &dependency.version,
+            dependency
+                .artifact
+                .as_ref()
+                .expect("filtered artifact pins"),
+            MemberKind::Bundle,
+            target_id,
+            runtime_id,
+            runtime_digest,
+            root,
+        )?;
+        let bundle = Bundle::load(&member.prefix)?;
+        if bundle.manifest.name() != dependency.id
+            || !matches!(
+                ost_plugin::satisfies(&bundle.manifest.plugin.version, &dependency.version),
+                Ok(true)
+            )
+            || dependency.contract.is_some_and(|contract| {
+                bundle
+                    .manifest
+                    .schema
+                    .as_ref()
+                    .and_then(|schema| schema.contract)
+                    != Some(contract)
+            })
+        {
+            return Err(Error::coded(
+                "WORKSPACE_BUNDLE_ARTIFACT_CONTRACT_MISMATCH",
+                Category::Validation,
+                format!(
+                    "bundle '{}' artifact does not satisfy its descriptor contract",
+                    dependency.id
+                ),
+            ));
+        }
+        bundle_roots.insert(dependency.id.clone(), member.prefix);
+    }
+    let mut tool_dirs = BTreeMap::new();
+    for dependency in tool_pins.values() {
+        let member = external_member::materialize(
+            &dependency.id,
+            &dependency.version,
+            &dependency.artifact,
+            MemberKind::Tool,
+            target_id,
+            runtime_id,
+            runtime_digest,
+            root,
+        )?;
+        let tool = ost_plugin::Tool::load(&member.prefix)?;
+        if tool.id() != dependency.id
+            || !matches!(
+                ost_plugin::satisfies(tool.version(), &dependency.version),
+                Ok(true)
+            )
+        {
+            return Err(Error::validation(format!(
+                "tool '{}' artifact descriptor does not match its pin",
+                dependency.id
+            )));
+        }
+        let mut dirs = Vec::new();
+        for executable in tool.locate_executables(&tool.root, target_id.contains("windows"))? {
+            let dir = tool
+                .root
+                .join(&executable)
+                .parent()
+                .expect("executable has parent")
+                .to_path_buf();
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        tool_dirs.insert(dependency.id.clone(), dirs);
+    }
+    Ok(WorkspaceExternalMembers {
+        bundles: bundle_roots,
+        tools: tool_dirs,
+    })
+}
+
 /// The artifact pins declared across a member set, one per library id.
 ///
 /// Two members may name the same external library, and they must name it

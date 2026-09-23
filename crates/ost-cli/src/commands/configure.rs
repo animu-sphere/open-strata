@@ -311,6 +311,24 @@ fn generate_with_generator_mode(
                 prefixes.join(" ")
             ));
         }
+        let members = crate::commands::plugin::workspace_external_members(
+            root,
+            &id,
+            &target.runtime_id,
+            &target.runtime_digest,
+        )?;
+        append_external_member_paths(&mut toolchain_text, &members.bundles, &members.tools);
+    }
+    // A removed pin must not remain visible through an older CMake cache.
+    // Once a target has exported member paths, retain the cleanup stanza even
+    // when its current workspace declares none.
+    let prior_toolchain = target_dir.join("toolchain.cmake");
+    if !toolchain_text.contains("OPENSTRATA_EXTERNAL_MEMBER_VARIABLES")
+        && std::fs::read_to_string(prior_toolchain.as_std_path())
+            .is_ok_and(|old| old.contains("OPENSTRATA_EXTERNAL_MEMBER_VARIABLES"))
+    {
+        append_external_member_cleanup(&mut toolchain_text);
+        toolchain_text.push_str("set(OPENSTRATA_EXTERNAL_MEMBER_VARIABLES \"\" CACHE INTERNAL \"OpenStrata external member variables\" FORCE)\n");
     }
     write(&target_dir.join("toolchain.cmake"), &toolchain_text)?;
 
@@ -368,6 +386,56 @@ fn generate_with_generator_mode(
         compiler: compiler.clone(),
         presets,
     })
+}
+
+fn append_external_member_cleanup(toolchain: &mut String) {
+    toolchain.push_str("\n# Clear paths from an earlier workspace pin set.\nforeach(_ost_external_var IN LISTS OPENSTRATA_EXTERNAL_MEMBER_VARIABLES)\n  unset(${_ost_external_var} CACHE)\nendforeach()\n");
+}
+
+fn append_external_member_paths(
+    toolchain: &mut String,
+    bundles: &std::collections::BTreeMap<String, Utf8PathBuf>,
+    tools: &std::collections::BTreeMap<String, Vec<Utf8PathBuf>>,
+) {
+    if bundles.is_empty() && tools.is_empty() {
+        return;
+    }
+    append_external_member_cleanup(toolchain);
+    let mut variables = Vec::new();
+    for (id, root) in bundles {
+        let name = format!("OPENSTRATA_EXTERNAL_BUNDLE_{id}_ROOT");
+        variables.push(name.clone());
+        toolchain.push_str(&format!(
+            "set({name} \"{}\" CACHE PATH \"Verified external bundle root\" FORCE)\n",
+            crate::commands::plugin::cmake_path(root)
+        ));
+    }
+    for (id, dirs) in tools {
+        if let Some(first) = dirs.first() {
+            let name = format!("OPENSTRATA_EXTERNAL_TOOL_{id}_DIR");
+            variables.push(name.clone());
+            toolchain.push_str(&format!(
+                "set({name} \"{}\" CACHE PATH \"Verified external tool directory\" FORCE)\n",
+                crate::commands::plugin::cmake_path(first)
+            ));
+        }
+        if dirs.len() > 1 {
+            let name = format!("OPENSTRATA_EXTERNAL_TOOL_{id}_DIRS");
+            variables.push(name.clone());
+            let paths = dirs
+                .iter()
+                .map(|dir| crate::commands::plugin::cmake_path(dir))
+                .collect::<Vec<_>>()
+                .join(";");
+            toolchain.push_str(&format!(
+                "set({name} \"{paths}\" CACHE STRING \"Verified external tool directories\" FORCE)\n"
+            ));
+        }
+    }
+    toolchain.push_str(&format!(
+        "set(OPENSTRATA_EXTERNAL_MEMBER_VARIABLES \"{}\" CACHE INTERNAL \"OpenStrata external member variables\" FORCE)\n",
+        variables.join(";")
+    ));
 }
 
 /// The files [`generate`] writes for a target, relative to the project root.
@@ -626,6 +694,34 @@ fn report(g: &Generated, fmt: Format) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn root_toolchain_exports_verified_member_paths_and_clears_removed_pins() {
+        let mut bundles = BTreeMap::new();
+        bundles.insert(
+            "execMotion".to_string(),
+            Utf8PathBuf::from("C:/stage/execMotion"),
+        );
+        let mut tools = BTreeMap::new();
+        tools.insert(
+            "motion_convert".to_string(),
+            vec![Utf8PathBuf::from("C:/stage/motion_convert/bin")],
+        );
+        let mut toolchain = "# base toolchain\n".to_string();
+        append_external_member_paths(&mut toolchain, &bundles, &tools);
+        assert!(toolchain
+            .contains("OPENSTRATA_EXTERNAL_BUNDLE_execMotion_ROOT \"C:/stage/execMotion\""));
+        assert!(toolchain.contains(
+            "OPENSTRATA_EXTERNAL_TOOL_motion_convert_DIR \"C:/stage/motion_convert/bin\""
+        ));
+        assert!(toolchain.contains("unset(${_ost_external_var} CACHE)"));
+        assert!(toolchain.contains("OPENSTRATA_EXTERNAL_MEMBER_VARIABLES \"OPENSTRATA_EXTERNAL_BUNDLE_execMotion_ROOT;OPENSTRATA_EXTERNAL_TOOL_motion_convert_DIR\""));
+
+        let mut unpinned = "# base toolchain\n".to_string();
+        append_external_member_paths(&mut unpinned, &BTreeMap::new(), &BTreeMap::new());
+        assert_eq!(unpinned, "# base toolchain\n");
+    }
 
     #[test]
     fn cmake_tree_is_discarded_when_runtime_identity_changes() {
