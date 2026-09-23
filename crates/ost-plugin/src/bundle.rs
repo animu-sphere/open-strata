@@ -47,6 +47,7 @@ impl Bundle {
 
         let uses_composition = !manifest.requires.bundles.is_empty()
             || !manifest.requires.libraries.is_empty()
+            || !manifest.requires.tools.is_empty()
             || manifest
                 .schema
                 .as_ref()
@@ -75,7 +76,7 @@ impl Bundle {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let message = format!(
-                    "versioned plugin manifest contains unknown field(s): {fields} (allowed below requires: capabilities, components, runtime_libs, runtime_plugin_paths, bundles, libraries)"
+                    "versioned plugin manifest contains unknown field(s): {fields} (allowed below requires: capabilities, components, runtime_libs, runtime_plugin_paths, bundles, libraries, tools)"
                 );
                 return Err(Error::config(message));
             }

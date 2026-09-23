@@ -41,7 +41,7 @@ pub use library::{
 pub use model::{
     BundleDependency, CxxAbi, LibraryArtifactPin, LibraryDependency, PluginIdentity, PluginKind,
     PluginManifest, PluginManifestHeader, Requires, RuntimeReq, SchemaSection, SmokeFixture,
-    StructuredSmokeFixture, Tests, UsdSection, PLUGIN_MANIFEST, PLUGIN_SCHEMA,
+    StructuredSmokeFixture, Tests, ToolDependency, UsdSection, PLUGIN_MANIFEST, PLUGIN_SCHEMA,
 };
 pub use plug_info::{
     contains_template_token, library_plugin_names, library_plugin_paths, merge_schema_types,

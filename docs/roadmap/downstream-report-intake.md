@@ -4,8 +4,8 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-09-12
-updated: 2026-09-21
-applies_to: post-v0.23.3
+updated: 2026-09-24
+applies_to: post-v0.23.4
 ---
 
 # Downstream OST report intake
@@ -28,7 +28,7 @@ superseded failures are not carried forward.
 
 | Repository | Reports | Result |
 | --- | ---: | --- |
-| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 46 | Reports 40–41 expose per-bundle packaging and cross-repository library dependencies; report 42's early consumer claim is repaired in v0.23.1, and report 44's tool edges and runtime cache are repaired in v0.23.3. |
+| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 46 | Reports 40–41 expose per-bundle packaging and cross-repository library dependencies; report 42's early consumer claim is repaired in v0.23.1; report 44's tool edges shipped in v0.23.3; report 45's cache repair and external bundle/tool pins ship in v0.23.4. |
 | [hdMerlin](https://github.com/animu-sphere/hydra-merlin/tree/main/docs/reports/ost) | 12 | No open carryover: managed renderer diagnostics and resilient OCI transfer shipped in v0.22.0, with idle-timeout semantics hardened again in v0.22.9. |
 | [USD Point Cloud Plugins](https://github.com/animu-sphere/usd-pointcloud-plugins/tree/main/docs/reports/ost) | 4 | No open carryover: structured file-format arguments and managed-output provenance are implemented; the preimplementation report requested no change. |
 | [USD 3DGS Plugins](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost) | 4 | New report 04 finds a generated Bash empty-array failure on macOS when optional OpenUSD selectors are absent. |
@@ -76,6 +76,13 @@ superseded failures are not carried forward.
   tool-only external edges exposed by
   [VRM report 44](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/44-2026-09-23-v0.23.2-a-tool-edge-reaches-nothing-and-a-tree-keeps-its-runtime.md);
   the downstream rerun remains to be measured.
+- **P2 — prove published bundles and tools across repositories.**
+  [VRM report 45](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/45-2026-09-23-v0.23.3-a-tool-edge-arrives-and-a-bundle-tree-keeps-its-runtime.md)
+  requests artifact pins for `requires.bundles` so `execVrm` can consume the
+  published `execMotion` bundle, and a way for tests to run published tools
+  instead of storing their output as fixtures. v0.23.4 adds the descriptor,
+  graph, artifact, execution and packaging paths. The remaining acceptance is
+  a downstream migration and installed-consumer result against those pins.
 - **P1 — prove relocatable OpenUSD CMake consumption for the actual pinned
   artifact.** v0.22.10 added relocation to newly exported SDK artifacts; it
   cannot rewrite already published, digest-pinned runtime bytes. A hosted

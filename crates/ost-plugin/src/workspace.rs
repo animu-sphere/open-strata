@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::library::is_portable_id;
-use crate::{satisfies, Bundle, Library, LibraryDependency, PluginKind, Tool};
+use crate::{satisfies, Bundle, Library, LibraryArtifactPin, LibraryDependency, PluginKind, Tool};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkspaceNode {
@@ -24,6 +24,12 @@ pub struct WorkspaceEdge {
     pub version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_targets: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -85,7 +91,7 @@ impl WorkspaceValidation {
             .iter()
             .map(|node| (node.id.as_str(), Vec::new()))
             .collect();
-        for edge in &self.edges {
+        for edge in self.edges.iter().filter(|edge| !edge.external) {
             adjacency
                 .entry(edge.from.as_str())
                 .or_default()
@@ -138,7 +144,7 @@ impl WorkspaceValidation {
             .iter()
             .map(|node| (node.id.as_str(), Vec::new()))
             .collect();
-        for edge in &self.edges {
+        for edge in self.edges.iter().filter(|edge| !edge.external) {
             adjacency
                 .entry(edge.from.as_str())
                 .or_default()
@@ -427,6 +433,8 @@ pub fn validate_workspace_with_members(
         .collect();
     let mut edges = Vec::new();
     let mut library_edges = Vec::new();
+    let mut external_bundle_pins = BTreeMap::<&str, &crate::BundleDependency>::new();
+    let mut external_tool_pins = BTreeMap::<&str, &crate::ToolDependency>::new();
 
     for (id, bundle) in &unique {
         let mut dependencies = BTreeSet::new();
@@ -455,6 +463,82 @@ pub fn validate_workspace_with_members(
                 ));
                 continue;
             }
+            if let Some(artifact) = &dependency.artifact {
+                if let Some(previous) = external_bundle_pins.insert(&dependency.id, dependency) {
+                    if previous != dependency {
+                        issues.push(issue(
+                            "WORKSPACE_BUNDLE_ARTIFACT_CONFLICT",
+                            id,
+                            Some(&dependency.id),
+                            format!(
+                                "bundle '{}' has conflicting external artifact pins",
+                                dependency.id
+                            ),
+                        ));
+                        continue;
+                    }
+                }
+                if !valid_artifact_pin(artifact) {
+                    issues.push(issue(
+                        "WORKSPACE_BUNDLE_ARTIFACT_DIGEST_INVALID",
+                        id,
+                        Some(&dependency.id),
+                        format!(
+                            "bundle '{id}' pins '{}' with an invalid sha256 artifact digest",
+                            dependency.id
+                        ),
+                    ));
+                    continue;
+                }
+                if unique.contains_key(dependency.id.as_str()) {
+                    issues.push(issue(
+                        "WORKSPACE_BUNDLE_PROVIDER_AMBIGUOUS",
+                        id,
+                        Some(&dependency.id),
+                        format!("bundle '{id}' declares both a workspace provider and an artifact for '{}'", dependency.id),
+                    ));
+                    continue;
+                }
+                if dependency.version.trim().is_empty()
+                    || satisfies("0.0.0", &dependency.version).is_err()
+                {
+                    issues.push(issue(
+                        "WORKSPACE_DEPENDENCY_VERSION_INVALID",
+                        id,
+                        Some(&dependency.id),
+                        format!(
+                            "bundle '{id}' declares an invalid version requirement for '{}'",
+                            dependency.id
+                        ),
+                    ));
+                    continue;
+                }
+                if dependency.contract == Some(0) {
+                    issues.push(issue(
+                        "WORKSPACE_SCHEMA_CONTRACT_INVALID",
+                        id,
+                        Some(&dependency.id),
+                        "required schema contract must be greater than zero".into(),
+                    ));
+                    continue;
+                }
+                edges.push(WorkspaceEdge {
+                    from: id.to_string(),
+                    to: dependency.id.clone(),
+                    version: dependency.version.clone(),
+                    contract: dependency.contract,
+                    external: true,
+                    artifact_digest: artifact.targets.is_empty().then(|| artifact.digest.clone()),
+                    artifact_targets: (!artifact.targets.is_empty()).then(|| {
+                        artifact
+                            .targets
+                            .iter()
+                            .map(|(target, pin)| (target.clone(), pin.digest.clone()))
+                            .collect()
+                    }),
+                });
+                continue;
+            }
             let Some(provider) = unique.get(dependency.id.as_str()) else {
                 issues.push(issue(
                     "WORKSPACE_DEPENDENCY_MISSING",
@@ -470,6 +554,9 @@ pub fn validate_workspace_with_members(
                 to: dependency.id.clone(),
                 version: dependency.version.clone(),
                 contract: dependency.contract,
+                external: false,
+                artifact_digest: None,
+                artifact_targets: None,
             });
 
             if dependency.version.trim().is_empty() {
@@ -531,6 +618,57 @@ pub fn validate_workspace_with_members(
                 &mut issues,
                 &mut library_edges,
             );
+        }
+        let mut tool_dependencies = BTreeSet::new();
+        for dependency in &bundle.manifest.requires.tools {
+            if !tool_dependencies.insert(dependency.id.as_str()) {
+                issues.push(issue(
+                    "WORKSPACE_DUPLICATE_TOOL_DEPENDENCY",
+                    id,
+                    Some(&dependency.id),
+                    format!(
+                        "bundle '{id}' declares tool dependency '{}' more than once",
+                        dependency.id
+                    ),
+                ));
+            } else if !is_portable_id(&dependency.id)
+                || dependency.version.trim().is_empty()
+                || satisfies("0.0.0", &dependency.version).is_err()
+                || !valid_artifact_pin(&dependency.artifact)
+            {
+                issues.push(issue(
+                    "WORKSPACE_TOOL_ARTIFACT_INVALID",
+                    id,
+                    Some(&dependency.id),
+                    format!(
+                        "bundle '{id}' has an invalid published tool dependency '{}'",
+                        dependency.id
+                    ),
+                ));
+            } else if external_tool_pins
+                .insert(&dependency.id, dependency)
+                .is_some_and(|previous| previous != dependency)
+            {
+                issues.push(issue(
+                    "WORKSPACE_TOOL_ARTIFACT_CONFLICT",
+                    id,
+                    Some(&dependency.id),
+                    format!(
+                        "tool '{}' has conflicting external artifact pins",
+                        dependency.id
+                    ),
+                ));
+            } else if tools.iter().any(|tool| tool.id() == dependency.id) {
+                issues.push(issue(
+                    "WORKSPACE_TOOL_PROVIDER_AMBIGUOUS",
+                    id,
+                    Some(&dependency.id),
+                    format!(
+                        "bundle '{id}' declares both a workspace tool and an artifact for '{}'",
+                        dependency.id
+                    ),
+                ));
+            }
         }
     }
 
@@ -641,6 +779,33 @@ pub fn validate_workspace_with_members(
     }
 }
 
+fn valid_artifact_pin(artifact: &LibraryArtifactPin) -> bool {
+    let pins = if artifact.targets.is_empty() {
+        vec![(None, artifact)]
+    } else {
+        artifact
+            .targets
+            .iter()
+            .map(|(target, pin)| (Some(target.as_str()), pin))
+            .collect::<Vec<_>>()
+    };
+    !pins.is_empty()
+        && (artifact.targets.is_empty()
+            || (artifact.digest.is_empty() && artifact.source.is_none()))
+        && pins.iter().all(|(target, pin)| {
+            let digest = pin.digest.strip_prefix("sha256:");
+            !target.is_some_and(|target| target.trim().is_empty())
+                && pin.targets.is_empty()
+                && digest.is_some_and(|hex| {
+                    hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                && !pin
+                    .source
+                    .as_deref()
+                    .is_some_and(|source| source.trim().is_empty())
+        })
+}
+
 fn validate_library_dependency(
     consumer_id: &str,
     consumer_kind: &str,
@@ -662,31 +827,7 @@ fn validate_library_dependency(
         return;
     }
     if let Some(artifact) = &dependency.artifact {
-        let pins = if artifact.targets.is_empty() {
-            vec![(None, artifact)]
-        } else {
-            artifact
-                .targets
-                .iter()
-                .map(|(target, pin)| (Some(target.as_str()), pin))
-                .collect::<Vec<_>>()
-        };
-        let malformed = pins.is_empty()
-            || (!artifact.targets.is_empty()
-                && (!artifact.digest.is_empty() || artifact.source.is_some()))
-            || pins.iter().any(|(target, pin)| {
-                let digest = pin.digest.strip_prefix("sha256:");
-                target.is_some_and(|target| target.trim().is_empty())
-                    || !pin.targets.is_empty()
-                    || !digest.is_some_and(|hex| {
-                        hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
-                    || pin
-                        .source
-                        .as_deref()
-                        .is_some_and(|source| source.trim().is_empty())
-            });
-        if malformed {
+        if !valid_artifact_pin(artifact) {
             issues.push(issue(
                 "WORKSPACE_LIBRARY_ARTIFACT_DIGEST_INVALID",
                 consumer_id,
@@ -888,7 +1029,7 @@ fn find_cycles(nodes: &[WorkspaceNode], edges: &[WorkspaceEdge]) -> BTreeSet<Vec
         .iter()
         .map(|node| (node.id.clone(), Vec::new()))
         .collect();
-    for edge in edges {
+    for edge in edges.iter().filter(|edge| !edge.external) {
         adjacency
             .entry(edge.from.clone())
             .or_default()
@@ -1032,6 +1173,34 @@ mod tests {
                 && issue.message.contains("tool 'consumer'")
                 && issue.message.contains("absent")
         }));
+    }
+
+    #[test]
+    fn external_bundle_and_test_tool_pins_validate_without_source_providers() {
+        let digest = format!("sha256:{}", "ab".repeat(32));
+        let consumer = bundle(&manifest(
+            "consumer",
+            "1.0.0",
+            "usd-exec",
+            &format!(
+                "requires:\n  bundles:\n    - id: execMotion\n      version: '>=0.5,<0.6'\n      artifact:\n        targets:\n          cy2026-windows-x86_64-py313-usd:\n            digest: {digest}\n  tools:\n    - id: motion_convert\n      version: '>=0.5,<0.6'\n      artifact:\n        digest: {digest}\n"
+            ),
+        ));
+        let report = validate_workspace(std::slice::from_ref(&consumer));
+        assert!(report.passed, "{:?}", report.issues);
+        assert_eq!(report.dependency_order("consumer"), Some(Vec::new()));
+        assert_eq!(report.topological_order(), Some(vec!["consumer".into()]));
+        assert!(report
+            .edges
+            .iter()
+            .any(|edge| edge.external && edge.to == "execMotion"));
+
+        let local = bundle(&manifest("execMotion", "0.5.0", "usd-exec", ""));
+        let report = validate_workspace(&[consumer, local]);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "WORKSPACE_BUNDLE_PROVIDER_AMBIGUOUS"));
     }
 
     #[test]
