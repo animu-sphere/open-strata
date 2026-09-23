@@ -65,6 +65,7 @@ pub use verification::{
 };
 pub use version::{satisfies, RangeError};
 pub use workspace::{
-    validate_workspace, validate_workspace_with_libraries, WorkspaceEdge, WorkspaceIssue,
-    WorkspaceLibraryEdge, WorkspaceLibraryNode, WorkspaceNode, WorkspaceValidation,
+    validate_workspace, validate_workspace_with_libraries, validate_workspace_with_members,
+    WorkspaceEdge, WorkspaceIssue, WorkspaceLibraryEdge, WorkspaceLibraryNode, WorkspaceNode,
+    WorkspaceValidation,
 };

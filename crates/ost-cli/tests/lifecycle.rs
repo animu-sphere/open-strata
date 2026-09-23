@@ -3528,8 +3528,8 @@ fn workspace_graph_accepts_library_and_tool_members_without_bundles() {
     let tool = sb.work_file("tools/check/openstrata.tool.yaml");
     std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
     std::fs::write(
-        tool,
-        "schema: openstrata.tool/v1alpha1\ntool: { id: check, version: 1.0.0, license: Apache-2.0 }\nexecutables: [check]\n",
+        &tool,
+        "schema: openstrata.tool/v1alpha1\ntool: { id: check, version: 1.0.0, license: Apache-2.0 }\nexecutables: [check]\nrequires:\n  libraries:\n    - { id: base, version: '>=1.0,<2.0' }\n",
     )
     .unwrap();
 
@@ -3550,6 +3550,26 @@ fn workspace_graph_accepts_library_and_tool_members_without_bundles() {
     assert_eq!(value["data"]["libraries"], 2);
     assert_eq!(value["data"]["tools"], 1);
     assert_eq!(value["data"]["graph"]["passed"], true);
+    assert!(value["data"]["graph"]["library_edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|edge| edge["from_kind"] == "tool" && edge["to"] == "base"));
+
+    let source = std::fs::read_to_string(&tool).unwrap();
+    std::fs::write(&tool, source.replace("id: base", "id: absent")).unwrap();
+    let invalid = sb.ost(&["--json", "plugin", "test", "--workspace", "--graph-only"]);
+    assert_eq!(invalid.status.code(), Some(5), "{}", out_text(&invalid));
+    let error: serde_json::Value = serde_json::from_slice(&invalid.stdout).unwrap();
+    assert!(error["data"]["graph"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(
+            |issue| issue["code"] == "WORKSPACE_LIBRARY_DEPENDENCY_MISSING"
+                && issue["message"].as_str().unwrap().contains("tool 'check'")
+        ));
+    std::fs::write(&tool, source).unwrap();
 
     for args in [
         vec!["--json", "plugin", "test", "--workspace"],
