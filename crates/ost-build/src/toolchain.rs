@@ -92,6 +92,21 @@ pub fn render_toolchain(
         out.push_str(&format!("# digest:   {}\n", target.runtime_digest));
     }
     out.push('\n');
+    // Persist the runtime selected when CMake configured this build tree.
+    // A later ost invocation reads these cache entries before CMake can reuse
+    // cached package locations such as pxr_DIR and TBB_DIR.
+    out.push_str(&format!(
+        "set(OPENSTRATA_RUNTIME_DIGEST \"{}\" CACHE STRING \"OpenStrata runtime digest\" FORCE)\n",
+        target.runtime_digest
+    ));
+    let runtime_prefix = if target.uses_runtime() {
+        root.as_str()
+    } else {
+        ""
+    };
+    out.push_str(&format!(
+        "set(OPENSTRATA_RUNTIME_PREFIX \"{runtime_prefix}\" CACHE STRING \"OpenStrata runtime prefix\" FORCE)\n\n"
+    ));
 
     // Compilers. The concrete paths come from `resolved_paths` so this matches
     // exactly what gets recorded in the target lock.

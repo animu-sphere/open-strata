@@ -480,6 +480,15 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         generate_with_generator(&root, &platform, &profile, &compiler, &args.generator)?
     };
     debug_assert_eq!(g.id, id);
+    crate::commands::configure::invalidate_build_tree_if_runtime_changed(
+        &build_dir,
+        &target.runtime_digest,
+        if target.uses_runtime() {
+            &resolved.artifact_prefix
+        } else {
+            Utf8Path::new("")
+        },
+    )?;
     if let Some(external) = external_toolchain(&root, &intent) {
         let toolchain = root
             .join(STATE_DIR)

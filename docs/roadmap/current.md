@@ -1,18 +1,17 @@
 # Current
 
-The v0.23.2 repair is recorded in the
-[release record](../releases/v0.23.2.md). This page tracks the remaining
+The v0.23.3 repair is recorded in the
+[release record](../releases/v0.23.3.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.2 evidence
+## Post-release v0.23.3 evidence
 
 - Confirm the published release assets, checksums and attestations, then run an
   installed CLI smoke test. Fix release defects in v0.23.x.
-- Migrate `usd-motion-plugins`' libraries into `usd-vrm-plugins` through the
-  external artifact edge — nine members at once — and run an independent
-  installed consumer. The edge itself is now exercised end to end by
-  `motion-connectors` (intake, "First exercised"); what is unproven is the
-  migration's scale and a consumer outside the ecosystem.
+- Complete the `usd-vrm-plugins` migration through the external artifact edge,
+  including the three identities consumed only by tools, and run an independent
+  installed consumer. Four packages and 75 tests already passed in the root
+  build under v0.23.2; the tool-only edges need a v0.23.3 downstream rerun.
 - Run the packaged VRM consumer and missing-file negative case across target
   operating systems, including a different bundle build order.
 - Run a clean-host configure, link and test against the existing pinned

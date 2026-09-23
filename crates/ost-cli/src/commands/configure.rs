@@ -256,6 +256,15 @@ fn generate_with_generator_mode(
     // build/<id> is stale (cached compiler/ABI) — drop it so the next configure
     // is clean. The toolchain/presets themselves are always regenerated below.
     invalidate_build_tree_if_configuration_changed(root, &id, &lock_compiler, generator);
+    invalidate_build_tree_if_runtime_changed(
+        &root.join("build").join(&id),
+        &target.runtime_digest,
+        if target.uses_runtime() {
+            &r.artifact_prefix
+        } else {
+            Utf8Path::new("")
+        },
+    )?;
 
     // 1. toolchain.cmake — pin a host interpreter's Development artifacts so
     // an adopted runtime's pxrConfig (which bakes the export machine's Python
@@ -407,6 +416,45 @@ fn invalidate_build_tree_if_configuration_changed(
             }
         }
     }
+}
+
+/// A CMake cache keeps resolved package directories even when the toolchain
+/// changes. Drop a managed tree if it was configured with a different runtime
+/// digest or prefix, including an unmarked tree made by an older ost release.
+pub(crate) fn invalidate_build_tree_if_runtime_changed(
+    build_dir: &Utf8Path,
+    digest: &str,
+    prefix: &Utf8Path,
+) -> Result<()> {
+    let cache = build_dir.join("CMakeCache.txt");
+    if !cache.as_std_path().is_file() {
+        return Ok(());
+    }
+    let contents = std::fs::read_to_string(cache.as_std_path())
+        .map_err(|error| Error::io(cache.to_string(), error))?;
+    let entry = |name: &str| {
+        contents.lines().find_map(|line| {
+            line.strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix(":STRING="))
+        })
+    };
+    let recorded_digest = entry("OPENSTRATA_RUNTIME_DIGEST");
+    let recorded_prefix = entry("OPENSTRATA_RUNTIME_PREFIX");
+    let expected_prefix = prefix.as_str().replace('\\', "/");
+    let prefix_matches = recorded_prefix.is_some_and(|recorded| {
+        let recorded = recorded.replace('\\', "/");
+        if cfg!(windows) {
+            recorded.eq_ignore_ascii_case(&expected_prefix)
+        } else {
+            recorded == expected_prefix
+        }
+    });
+    if recorded_digest == Some(digest) && prefix_matches {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(build_dir.as_std_path())
+        .map_err(|error| Error::io(build_dir.to_string(), error))?;
+    Ok(())
 }
 
 /// What [`refresh_user_presets`] changed, beyond adding the target's include.
@@ -573,4 +621,52 @@ fn report(g: &Generated, fmt: Format) {
     println!("\nNext:");
     println!("  cmake --preset {id}    (or `ost build`)");
     println!("  to wire presets into your committed CMakePresets.json: `ost presets install`");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cmake_tree_is_discarded_when_runtime_identity_changes() {
+        let root = Utf8PathBuf::from_path_buf(std::env::temp_dir().join(format!(
+            "ost-runtime-cache-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        )))
+        .unwrap();
+        let build = root.join("build");
+        let cache = build.join("CMakeCache.txt");
+        let digest = "sha256:new";
+        let prefix = Utf8Path::new("C:/runtimes/new");
+        let make_cache = |recorded_digest: Option<&str>, recorded_prefix: &str| {
+            std::fs::create_dir_all(build.as_std_path()).unwrap();
+            let mut contents = String::new();
+            if let Some(recorded_digest) = recorded_digest {
+                contents.push_str(&format!(
+                    "OPENSTRATA_RUNTIME_DIGEST:STRING={recorded_digest}\n"
+                ));
+                contents.push_str(&format!(
+                    "OPENSTRATA_RUNTIME_PREFIX:STRING={recorded_prefix}\n"
+                ));
+            }
+            contents.push_str("pxr_DIR:PATH=C:/runtimes/old\n");
+            std::fs::write(cache.as_std_path(), contents).unwrap();
+        };
+
+        make_cache(Some(digest), prefix.as_str());
+        invalidate_build_tree_if_runtime_changed(&build, digest, prefix).unwrap();
+        assert!(cache.as_std_path().is_file());
+
+        for (recorded_digest, recorded_prefix) in [
+            (Some("sha256:old"), prefix.as_str()),
+            (Some(digest), "C:/runtimes/old"),
+            (None, ""),
+        ] {
+            make_cache(recorded_digest, recorded_prefix);
+            invalidate_build_tree_if_runtime_changed(&build, digest, prefix).unwrap();
+            assert!(!build.as_std_path().exists());
+        }
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
 }

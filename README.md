@@ -31,9 +31,9 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.23.2** — the root build composes the external
-library artifacts its members declare, so a workspace consuming a
-digest-pinned library from another repository builds from its root CMake tree.
+The current release is **v0.23.3** — tool members now participate in external
+library pulling and graph validation, and a root build discards a CMake tree
+configured against a different runtime digest or prefix.
 Generated and externally managed CI share version and support checks;
 workspace tests report per-member evidence; library packages retain their own
 installed-file inventories and can consume digest-pinned external libraries;
@@ -47,7 +47,7 @@ Post-release work covers hosted consumer and macOS evidence, downstream package
 loadability and external-library adoption, and the full DCC host
 matrix. Release defects will be fixed in v0.23.x.
 See the [composition guide](docs/guides/compose-a-runtime.md),
-[v0.23.2 record](docs/releases/v0.23.2.md),
+[v0.23.3 record](docs/releases/v0.23.3.md),
 [current roadmap](docs/roadmap/current.md) and
 [downstream report intake](docs/roadmap/downstream-report-intake.md).
 

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::library::is_portable_id;
-use crate::{satisfies, Bundle, Library, LibraryDependency, PluginKind};
+use crate::{satisfies, Bundle, Library, LibraryDependency, PluginKind, Tool};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkspaceNode {
@@ -37,7 +37,7 @@ pub struct WorkspaceLibraryNode {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct WorkspaceLibraryEdge {
     pub from: String,
-    /// `bundle` or `library`; the namespaces stay distinct even when ids match.
+    /// `bundle`, `library`, or `tool`; the namespaces stay distinct even when ids match.
     pub from_kind: String,
     pub to: String,
     pub version: String,
@@ -321,6 +321,15 @@ pub fn validate_workspace_with_libraries(
     bundles: &[Bundle],
     libraries: &[Library],
 ) -> WorkspaceValidation {
+    validate_workspace_with_members(bundles, libraries, &[])
+}
+
+/// Validate every member's library edges, including executable tools.
+pub fn validate_workspace_with_members(
+    bundles: &[Bundle],
+    libraries: &[Library],
+    tools: &[Tool],
+) -> WorkspaceValidation {
     let mut by_id: BTreeMap<&str, Vec<&Bundle>> = BTreeMap::new();
     for bundle in bundles {
         by_id
@@ -543,6 +552,45 @@ pub fn validate_workspace_with_libraries(
             validate_library_dependency(
                 id,
                 "library",
+                dependency,
+                &unique_libraries,
+                &mut issues,
+                &mut library_edges,
+            );
+        }
+    }
+
+    let mut tools_by_id: BTreeMap<&str, Vec<&Tool>> = BTreeMap::new();
+    for tool in tools {
+        tools_by_id.entry(tool.id()).or_default().push(tool);
+    }
+    for (id, matches) in tools_by_id {
+        if matches.len() > 1 {
+            issues.push(issue(
+                "WORKSPACE_DUPLICATE_TOOL_ID",
+                id,
+                None,
+                format!("tool id '{id}' is declared {} times", matches.len()),
+            ));
+            continue;
+        }
+        let mut dependencies = BTreeSet::new();
+        for dependency in &matches[0].manifest.requires.libraries {
+            if !dependencies.insert(dependency.id.as_str()) {
+                issues.push(issue(
+                    "WORKSPACE_DUPLICATE_LIBRARY_DEPENDENCY",
+                    id,
+                    Some(&dependency.id),
+                    format!(
+                        "tool '{id}' declares library dependency '{}' more than once",
+                        dependency.id
+                    ),
+                ));
+                continue;
+            }
+            validate_library_dependency(
+                id,
+                "tool",
                 dependency,
                 &unique_libraries,
                 &mut issues,
@@ -932,7 +980,7 @@ mod tests {
     use camino::Utf8PathBuf;
 
     use super::*;
-    use crate::{LibraryManifest, PluginManifest, LIBRARY_SCHEMA};
+    use crate::{LibraryManifest, PluginManifest, ToolManifest, LIBRARY_SCHEMA};
 
     fn bundle(source: &str) -> Bundle {
         Bundle {
@@ -955,6 +1003,35 @@ mod tests {
             root: Utf8PathBuf::from(format!("unused/libs/{id}")),
             manifest: LibraryManifest::parse(&source).unwrap(),
         }
+    }
+
+    fn tool(id: &str, extra: &str) -> Tool {
+        let source = format!(
+            "schema: openstrata.tool/v1alpha1\ntool: {{ id: {id}, version: 1.0.0 }}\nexecutables: [{id}]\n{extra}"
+        );
+        Tool {
+            root: Utf8PathBuf::from(format!("unused/tools/{id}")),
+            manifest: ToolManifest::parse(&source).unwrap(),
+        }
+    }
+
+    #[test]
+    fn tool_library_edges_are_graphed_and_validated() {
+        let consumer = tool(
+            "consumer",
+            "requires:\n  libraries:\n    - { id: base, version: '>=1.0,<2.0' }\n    - { id: absent, version: '>=1.0,<2.0' }\n",
+        );
+        let report =
+            validate_workspace_with_members(&[], &[library("base", "1.2.0", "")], &[consumer]);
+        assert!(!report.passed);
+        assert!(report.library_edges.iter().any(|edge| {
+            edge.from_kind == "tool" && edge.from == "consumer" && edge.to == "base"
+        }));
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == "WORKSPACE_LIBRARY_DEPENDENCY_MISSING"
+                && issue.message.contains("tool 'consumer'")
+                && issue.message.contains("absent")
+        }));
     }
 
     #[test]

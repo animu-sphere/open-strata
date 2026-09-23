@@ -3264,7 +3264,12 @@ fn package_workspace(
         .map(|root| Library::load(root))
         .collect::<Result<Vec<_>>>()?;
 
-    let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
+    let tools = members
+        .tools
+        .iter()
+        .map(|root| ost_plugin::Tool::load(root))
+        .collect::<Result<Vec<_>>>()?;
+    let graph = ost_plugin::validate_workspace_with_members(&bundles, &libraries, &tools);
     if !graph.passed {
         if fmt.is_json() {
             output::report(
@@ -3340,11 +3345,6 @@ fn package_workspace(
 
     // Tools come last: nothing in the graph depends on an executable, and a tool
     // may load the libraries the bundles just staged.
-    let tools = members
-        .tools
-        .iter()
-        .map(|root| ost_plugin::Tool::load(root))
-        .collect::<Result<Vec<_>>>()?;
     let mut tool_outcomes = Vec::new();
     for tool in &tools {
         let outcome = package_tool(
@@ -6474,14 +6474,13 @@ fn load_workspace_graph() -> Result<(
         .iter()
         .map(|root| Library::load(root))
         .collect::<Result<Vec<_>>>()?;
-    // Tools have no dependency edges, but their descriptors are still declared
-    // workspace members. Load them before a graph-only success can be reported
-    // so an unreadable or invalid descriptor cannot disappear from the gate.
-    for root in &members.tools {
-        ost_plugin::Tool::load(root)?;
-    }
-    let tool_count = members.tools.len();
-    let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
+    let tools = members
+        .tools
+        .iter()
+        .map(|root| ost_plugin::Tool::load(root))
+        .collect::<Result<Vec<_>>>()?;
+    let tool_count = tools.len();
+    let graph = ost_plugin::validate_workspace_with_members(&bundles, &libraries, &tools);
     Ok((bundles, libraries, tool_count, graph))
 }
 
@@ -7672,7 +7671,13 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
         .iter()
         .map(|path| Library::load(path))
         .collect::<Result<Vec<_>>>()?;
-    let graph = ost_plugin::validate_workspace_with_libraries(&loaded, &loaded_libraries);
+    let loaded_tools = members
+        .tools
+        .iter()
+        .map(|path| ost_plugin::Tool::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let graph =
+        ost_plugin::validate_workspace_with_members(&loaded, &loaded_libraries, &loaded_tools);
     if !graph.passed {
         let details = graph
             .issues
@@ -7739,9 +7744,11 @@ pub(crate) fn selected_workspace_libraries_for_library(primary: &Library) -> Res
         .iter()
         .map(|path| Library::load(path))
         .collect::<Result<Vec<_>>>()?;
-    for path in &members.tools {
-        ost_plugin::Tool::load(path)?;
-    }
+    let tools = members
+        .tools
+        .iter()
+        .map(|path| ost_plugin::Tool::load(path))
+        .collect::<Result<Vec<_>>>()?;
     if !libraries.iter().any(|library| library.root == primary.root) {
         return Err(Error::coded(
             "WORKSPACE_LIBRARY_NOT_DECLARED",
@@ -7754,7 +7761,7 @@ pub(crate) fn selected_workspace_libraries_for_library(primary: &Library) -> Res
         .with_hint("add the library root to [workspace].members in openstrata.toml"));
     }
 
-    let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
+    let graph = ost_plugin::validate_workspace_with_members(&bundles, &libraries, &tools);
     if !graph.passed {
         let details = graph
             .issues
@@ -8036,7 +8043,12 @@ pub(crate) fn workspace_external_libraries(
         .iter()
         .map(|path| Bundle::load(path))
         .collect::<Result<Vec<_>>>()?;
-    let pins = external_artifact_pins(&bundles, &libraries)?;
+    let tools = members
+        .tools
+        .iter()
+        .map(|path| ost_plugin::Tool::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let pins = external_artifact_pins(&bundles, &libraries, &tools)?;
     if pins.is_empty() {
         return Ok(Vec::new());
     }
@@ -8058,6 +8070,7 @@ pub(crate) fn workspace_external_libraries(
 fn external_artifact_pins(
     bundles: &[Bundle],
     libraries: &[Library],
+    tools: &[ost_plugin::Tool],
 ) -> Result<BTreeMap<String, ost_plugin::LibraryDependency>> {
     let mut pins = BTreeMap::<String, ost_plugin::LibraryDependency>::new();
     for dependency in bundles
@@ -8067,6 +8080,11 @@ fn external_artifact_pins(
             libraries
                 .iter()
                 .flat_map(|library| library.manifest.requires.libraries.iter()),
+        )
+        .chain(
+            tools
+                .iter()
+                .flat_map(|tool| tool.manifest.requires.libraries.iter()),
         )
         .filter(|dependency| dependency.artifact.is_some())
     {
@@ -8103,7 +8121,12 @@ pub(crate) fn pull_workspace_external_libraries(
         .iter()
         .map(|path| Library::load(path))
         .collect::<Result<Vec<_>>>()?;
-    let graph = ost_plugin::validate_workspace_with_libraries(&bundles, &libraries);
+    let tools = members
+        .tools
+        .iter()
+        .map(|path| ost_plugin::Tool::load(path))
+        .collect::<Result<Vec<_>>>()?;
+    let graph = ost_plugin::validate_workspace_with_members(&bundles, &libraries, &tools);
     if !graph.passed {
         return Err(Error::coded(
             "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
@@ -10662,16 +10685,30 @@ mod tests {
         let other = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
 
         let agreeing = [library(same), library(same)];
-        let pins = external_artifact_pins(&[], &agreeing).unwrap();
+        let pins = external_artifact_pins(&[], &agreeing, &[]).unwrap();
         assert_eq!(pins.len(), 1);
         assert!(pins.contains_key("motionCore"));
 
         let disagreeing = [library(same), library(other)];
-        let error = external_artifact_pins(&[], &disagreeing).unwrap_err();
+        let error = external_artifact_pins(&[], &disagreeing, &[]).unwrap_err();
         assert!(
             error.to_string().contains("conflicting artifact pins"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn a_tool_only_artifact_pin_is_in_the_root_workspace_union() {
+        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let source = format!(
+            "schema: openstrata.tool/v1alpha1\ntool: {{ id: consumer, version: 1.0.0 }}\nexecutables: [consumer]\nrequires:\n  libraries:\n    - id: motionUsd\n      version: '>=1.0,<2.0'\n      artifact:\n        digest: {digest}\n"
+        );
+        let tool = ost_plugin::Tool {
+            root: Utf8PathBuf::from("tools/consumer"),
+            manifest: ost_plugin::ToolManifest::parse(&source).unwrap(),
+        };
+        let pins = external_artifact_pins(&[], &[], &[tool]).unwrap();
+        assert_eq!(pins["motionUsd"].artifact.as_ref().unwrap().digest, digest);
     }
 
     const PLAIN_LIBRARY: &str = concat!(

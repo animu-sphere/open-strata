@@ -133,19 +133,43 @@ pub fn validate(prefix: &Utf8Path, manifest: &RuntimeManifest) -> ValidationRepo
         ));
     }
 
-    // 3. Every declared layout directory exists on disk.
+    // 3. Every declared layout directory exists on disk. Real runtimes must
+    // also retain the primary bin/lib contents: a temporary-file cleaner can
+    // leave the directory skeleton intact after deleting the installed files.
+    // Other declared directories can legitimately be empty for a profile.
     let missing: Vec<&str> = manifest
         .layout
         .iter()
         .filter(|sub| !prefix.join(sub).as_std_path().is_dir())
         .map(|s| s.as_str())
         .collect();
-    if missing.is_empty() {
+    let empty: Vec<&str> = if manifest.source.is_real() {
+        manifest
+            .layout
+            .iter()
+            .filter(|sub| sub.as_str() == "bin" || sub.as_str() == "lib")
+            .filter(|sub| {
+                let dir = prefix.join(sub);
+                dir.as_std_path().is_dir()
+                    && std::fs::read_dir(dir.as_std_path())
+                        .map(|mut entries| entries.next().is_none())
+                        .unwrap_or(true)
+            })
+            .map(String::as_str)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if missing.is_empty() && empty.is_empty() {
         checks.push(Check::pass("layout-complete"));
     } else {
         checks.push(Check::fail(
             "layout-complete",
-            format!("missing directories: {}", missing.join(", ")),
+            format!(
+                "missing directories: {}; empty directories: {}",
+                missing.join(", "),
+                empty.join(", ")
+            ),
         ));
     }
 
@@ -464,6 +488,7 @@ mod tests {
         let m = manifest(RuntimeSource::Local, vec!["bin".into(), "lib".into()]);
 
         let report = validate(&prefix, &m);
+        assert_eq!(named(&report, "layout-complete"), Some(false));
         assert_eq!(named(&report, "usdcat-present"), Some(false));
         assert_eq!(named(&report, "pxr-package"), Some(false));
         assert!(!report.passed());
