@@ -1335,21 +1335,36 @@ fn build_one(
         merge_cohosted_schema_resources(&bundle, schema)
             .map_err(|e| in_phase(PHASE_SCHEMA_MERGE, e))?;
     }
-    if !install_to_workspace && bundle_stage.as_std_path().exists() {
+    if bundle_stage.as_std_path().exists() {
         std::fs::remove_dir_all(bundle_stage.as_std_path())
             .map_err(|error| Error::io(bundle_stage.to_string(), error))?;
     }
     if let Some(args) = &install_args {
         run_step("workspace-install", &cmake, args, &build_env)?;
     }
+    if install_to_workspace {
+        // Dependencies must remain installed in the shared prefix for later
+        // members to link, but their package evidence must describe the same
+        // target-local install tree that packaging reads. The linker may leave
+        // by-products (for example MSVC .exp files) in the source tree that
+        // CMake intentionally does not install.
+        let stage_args = vec![
+            "--install".to_string(),
+            cmake_path(&build_dir),
+            "--prefix".to_string(),
+            cmake_path(&bundle_stage),
+            "--config".to_string(),
+            "Release".to_string(),
+        ];
+        run_step("bundle-stage-install", &cmake, &stage_args, &build_env)?;
+    }
 
     // An installable bundle has a target-local output tree. Legacy bundles
     // without install rules continue to use their source-tree outputs.
-    let installed = !install_to_workspace
-        && bundle_stage
-            .join(&bundle.manifest.usd.plug_info)
-            .as_std_path()
-            .is_file();
+    let installed = bundle_stage
+        .join(&bundle.manifest.usd.plug_info)
+        .as_std_path()
+        .is_file();
     let built_bundle = if installed {
         bundle.clone().with_output_root(&bundle_stage)?
     } else {
@@ -12754,6 +12769,64 @@ schema: { codeless: true, contract: 1 }
         );
         let outputs = collect_plugin_managed_outputs(&selected).unwrap();
         assert!(outputs.iter().any(|output| output.path == "lib/libToy.so"));
+        std::fs::remove_dir_all(root.as_std_path()).ok();
+    }
+
+    #[test]
+    fn workspace_installed_bundle_records_only_packaged_outputs() {
+        let (root, bundle, target) = managed_output_test_bundle("workspace-install-outputs");
+        let id = target.id();
+        let target_dir = target_state_dir(&root, &id);
+        let build_dir = target_build_dir(&root, &id);
+        let installed = target_dir.join("bundle-stage");
+        write_test_file(
+            &installed.join("plugin/resources/toy/plugInfo.json"),
+            r#"{ "Plugins": [{ "Type": "library", "Name": "toy" }] }"#,
+        );
+        write_test_file(&installed.join("lib/libToy.so"), "managed bytes");
+        write_test_file(&installed.join(".openstrata-bundle-stage"), &id);
+        // A Windows linker emits this into the source lib directory, while
+        // cmake --install omits it. It must not become required package output.
+        write_test_file(&root.join("lib/toy.exp"), "link by-product");
+        let selected = managed_bundle_stage(bundle, &id).unwrap();
+        let toolchain = target_dir.join("toolchain.cmake");
+        write_test_file(&toolchain, "# managed");
+        std::fs::create_dir_all(build_dir.as_std_path()).unwrap();
+        let completion = write_plugin_build_completion(
+            &selected,
+            &target,
+            &ost_build::LockCompiler::default(),
+            &toolchain,
+            &build_dir,
+            BuildIntent::default(),
+            Some("test-workspace-install"),
+        )
+        .unwrap();
+        assert!(!completion
+            .outputs
+            .iter()
+            .any(|output| output.path.ends_with(".exp")));
+
+        let package = root.join("package");
+        stage_plugin_bundle(&selected, &package).unwrap();
+        let packaged = Bundle::load(&root)
+            .unwrap()
+            .with_output_root(&package)
+            .unwrap();
+        let outputs = collect_plugin_managed_outputs(&packaged).unwrap();
+        assert_eq!(
+            assess_plugin_build_provenance_for_outputs(&selected, &target, outputs)
+                .unwrap()
+                .status,
+            PluginBuildProvenanceStatus::Matched
+        );
+        write_test_file(&installed.join("lib/libToy.so"), "changed after build");
+        assert_eq!(
+            assess_plugin_build_provenance(&selected, &target)
+                .unwrap()
+                .status,
+            PluginBuildProvenanceStatus::Mismatched
+        );
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }
 

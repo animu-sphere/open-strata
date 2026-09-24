@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.23.6 | [v0.23.6.md](v0.23.6.md) | Workspace bundle package output consistency |
 | v0.23.5 | [v0.23.5.md](v0.23.5.md) | Root suite external members and target-local output stages |
 | v0.23.4 | [v0.23.4.md](v0.23.4.md) | Runtime-safe member builds and external bundles/tools |
 | v0.23.3 | [v0.23.3.md](v0.23.3.md) | Tool library edges and runtime-safe build trees |
