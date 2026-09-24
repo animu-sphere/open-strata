@@ -1,17 +1,18 @@
 # Current
 
-The v0.23.5 repair is recorded in the
-[release record](../releases/v0.23.5.md). This page tracks the remaining
+The v0.23.6 repair is recorded in the
+[release record](../releases/v0.23.6.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.5 evidence
+## Post-release v0.23.6 evidence
 
 - Recheck `usd-mmd-plugins` report 01 against the published target-local bundle
   and tool stages: source tests, packages, and a second target must consume
   their own outputs without source-tree generated files.
-- Recheck `usd-vrm-plugins` report 46 against the published root toolchain:
-  migrate root CMake tests to the exported bundle and tool paths, then compare
-  root CTest discovery and results with the member session suites.
+- Recheck `usd-vrm-plugins` report 47 against the published CLI: its root
+  CTest suite passed 38 of 38 with the external bundle, but `vrmSchema` and the
+  product package must pass again with the target-local install-stage repair.
+  Repeat the package cell on Linux and macOS.
 
 - Confirm the published release assets, checksums and attestations, then run an
   installed CLI smoke test. Fix release defects in v0.23.x.

@@ -31,10 +31,11 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.23.5** — the root build materializes digest-pinned
-external bundles and tools and exports their paths to CMake, so root CTest suites
-can use the same artifacts as member sessions. Bundle and tool outputs are
-staged per target for testing and packaging.
+The current release is **v0.23.6** — workspace-installed bundles now record
+their target-local installed outputs for packaging, so platform linker by-products
+absent from the install stage do not break product releases. The root build
+materializes digest-pinned external bundles and tools and exports their paths to
+CMake for root CTest suites. Bundle and tool outputs are staged per target.
 Generated and externally managed CI share version and support checks;
 workspace tests report per-member evidence; library packages retain their own
 installed-file inventories and can consume digest-pinned external libraries;
@@ -48,7 +49,7 @@ Post-release work covers hosted consumer and macOS evidence, downstream package
 loadability and external-library adoption, and the full DCC host
 matrix. Release defects will be fixed in v0.23.x.
 See the [composition guide](docs/guides/compose-a-runtime.md),
-[v0.23.5 record](docs/releases/v0.23.5.md),
+[v0.23.6 record](docs/releases/v0.23.6.md),
 [current roadmap](docs/roadmap/current.md) and
 [downstream report intake](docs/roadmap/downstream-report-intake.md).
 
