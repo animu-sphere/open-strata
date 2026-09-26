@@ -5,7 +5,7 @@ owners:
   - openstrata-maintainers
 created: 2026-09-12
 updated: 2026-09-26
-applies_to: post-v0.23.7
+applies_to: post-v0.23.8
 ---
 
 # Downstream OST report intake
@@ -23,7 +23,9 @@ external bundle and tool paths. Report 47 brings the total to 79: v0.23.5
 restored the root suite, but a workspace-installed schema bundle's package
 failed because its build and package recorded different output trees.
 hydra-toon report 01, received on 2026-09-26, brings this OST-series intake to
-80 reports and drives the v0.23.7 renderer fixes. Physics has no numbered OST
+80 reports and drives the v0.23.7 renderer fixes. Report 02 brings the total
+to 81, confirms those fixes and requests the core install-tree evidence repair
+shipped in v0.23.8. Physics has no numbered OST
 series; its separate dated adoption and artifact reports are linked below.
 MMD's dated model and motion reports test its own format behavior and are not
 counted as OST reports. A request was treated as
@@ -48,18 +50,20 @@ superseded failures are not carried forward.
 | [USD Motion Plugins](https://github.com/animu-sphere/usd-motion-plugins) | 0 | No OST report series; VRM report 41 covers its installed-consumer result and dependency need. |
 | [USD MMD Plugins](https://github.com/animu-sphere/usd-mmd-plugins/tree/main/docs/reports/ost) | 1 | Report 01 finds that bundle registration/libraries and tool directories are read from the source tree. Target-local staging ships in v0.23.5 and awaits a downstream rerun. |
 | [Motion Connectors](https://github.com/animu-sphere/motion-connectors) | 0 | Empty scaffold; VRM report 41 records the generated-CI blockage. |
-| [hydra-toon](https://github.com/animu-sphere/hydra-toon/tree/main/docs/reports/ost) | 1 | Report 01's incremental renderer bindings, viewport isolation and template compatibility fixes ship in v0.23.7; downstream rerun remains. |
+| [hydra-toon](https://github.com/animu-sphere/hydra-toon/tree/main/docs/reports/ost) | 2 | Report 02 confirms all five report 01 fixes in published v0.23.7. Its core install-tree verdict repair ships in v0.23.8; downstream rerun remains. |
 | [USD Physics Plugins](https://github.com/animu-sphere/usd-physics-plugins/tree/main/docs/reports) | 0 | No numbered OST series. Dated reports prove library packaging and Stage Runner consumption, and expose the external Jolt SDK consumer gap below. |
 
-## Post-v0.23.7 - downstream acceptance
+## Post-v0.23.8 - downstream acceptance
 
-- **P1 — rerun hydra-toon renderer bootstrap with the published fixes.**
-  [Report 01](https://github.com/animu-sphere/hydra-toon/blob/main/docs/reports/ost/01-2026-09-26-v0.23.6-renderer-template-bootstrap.md)
-  found no-op build evidence loss, viewport/default validation interference,
-  OpenUSD 26.08 API incompatibility, CP932 compiler warnings and an inaccurate
-  frame-context declaration. v0.23.7 supplies the CLI and template fixes.
-  Repeat build/build/validate, default and viewport validation, and Hydra
-  build/test on the reported hardware; retain the result as downstream evidence.
+- **P3 — verify core renderer install-tree evidence downstream.**
+  [Report 02](https://github.com/animu-sphere/hydra-toon/blob/main/docs/reports/ost/02-2026-09-26-v0.23.7-report-01-reverified.md)
+  confirms report 01's five fixes, but the core install-tree CTest writes its
+  verdict outside the primary report consumed by validation. Apply template
+  0.5.3's script change, then repeat build/test/validate and a no-op build with
+  v0.23.8. `renderer.install_tree` must pass with the managed test producer.
+  The report's lockfile question is answered in the
+  [lock guide](../guides/examples.md#lock--reproducibility); profile override
+  behavior is unchanged.
 - **P2 — prove isolated physicsJolt consumption with its external SDK closure.**
   The [Physics Phase 3 report](https://github.com/animu-sphere/usd-physics-plugins/blob/main/docs/reports/2026-09-23-phase3-linux-artifacts.md)
   records that generated consumer verification clears `CMAKE_PREFIX_PATH` and

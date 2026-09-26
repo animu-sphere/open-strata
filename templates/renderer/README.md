@@ -30,6 +30,12 @@ Run CTest for build-tree and install-tree evidence:
 ctest --test-dir build/<target-id> -C Release --output-on-failure
 ```
 
+Use `ost test` followed by `ost validate` for managed producer attribution.
+The install-tree test retains its report under `renderer-install/` and copies
+its `renderer.install_tree` verdict into the primary `renderer-report.json`.
+This check can pass on `core`; it does not require Hydra or usdview. Other
+assertions retain their own verdicts, including capability SKIPs.
+
 ## Standalone viewport
 
 The optional `adapters/viewport` host presents the same bootstrap draw in a

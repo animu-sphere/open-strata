@@ -966,6 +966,19 @@ ost lock                               # write strata.lock for the resolved runt
 ost lock --check                       # verify it's up to date (exit 1 if not) — gate CI
 ```
 
+`strata.lock` pins one resolved runtime, not a map of profiles and not a copy
+of the manifest's default. Runtime-backed `ost configure` and `ost build`
+refresh it for the selected platform/profile, including explicit overrides.
+Thus a renderer's `--profile lookdev` build replaces its `core` pin; a later
+default build restores it. `ost test` and `ost validate` do not refresh it.
+Each configured target also keeps its own `.strata/targets/<id>/target.lock.json`.
+
+After alternate-profile work, run `ost lock` to restore the project's default
+pin before committing; use `ost lock --check` to verify it. To deliberately pin
+another profile, use `ost lock --profile lookdev` and check with the same selector.
+Packaging must still use the runtime pinned by `strata.lock`; restore the lock
+only after finishing the alternate profile's package work.
+
 ## uv — Python pinned to the runtime
 
 ```bash

@@ -1,14 +1,14 @@
 # Current
 
-The v0.23.7 repairs are recorded in the
-[release record](../releases/v0.23.7.md). This page tracks the remaining
+The v0.23.8 repair is recorded in the
+[release record](../releases/v0.23.8.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.7 evidence
+## Post-release v0.23.8 evidence
 
-- Recheck hydra-toon report 01 with the published CLI and renderer template
-  fixes: repeated no-op builds, default and viewport validation, OpenUSD 26.08
-  Hydra compilation and warning-free Japanese MSVC compilation. Expand the
+- Recheck hydra-toon report 02 after applying renderer template 0.5.3's
+  install-tree script: core `ost test` followed by `ost validate` must report
+  `renderer.install_tree` PASS, including after an unchanged build. Expand the
   renderer's hosted OS/OpenUSD matrix beyond its local Windows evidence.
 
 - Recheck `usd-mmd-plugins` report 01 against the published target-local bundle

@@ -15,6 +15,13 @@ build required a local API correction, and the Japanese Windows host required
 UTF-8 compiler flags. Those template fixes ship in [v0.23.7](../releases/v0.23.7.md),
 alongside no-op build evidence retention and viewport validation isolation.
 
+[Report 02](https://github.com/animu-sphere/hydra-toon/blob/main/docs/reports/ost/02-2026-09-26-v0.23.7-report-01-reverified.md)
+confirms all five report 01 requests against published v0.23.7, including
+seven passing Hydra CTests. It identifies a new core install-tree verdict
+that is written outside validation's primary report; renderer template 0.5.3
+in [v0.23.8](../releases/v0.23.8.md) publishes that verdict. Its lockfile
+question is answered in the [lock guide](../guides/examples.md#lock--reproducibility).
+
 This is a working bootstrap triangle, not implemented avatar rendering.
 Mesh rendering, skinning, MToon/MMD materials, late motion latching and WebGPU
 remain downstream work. The repository's
