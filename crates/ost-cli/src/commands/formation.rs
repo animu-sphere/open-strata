@@ -2,6 +2,7 @@
 //! `ost formation` — digest-pinned cross-repository composition and launch.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -174,6 +175,7 @@ fn lock_command(args: &FormationLockArgs, format: Format) -> Result<()> {
 
 fn env_command(args: &FormationEnvArgs, format: Format) -> Result<()> {
     let mut resolution = resolve_path(&args.path)?;
+    resolution.activate_python();
     let shell = super::devshell::pick_shell(args.shell.as_deref(), ost_core::Host::detect().os)?;
     let env = resolution.materialized.env.resolve_over(&HashMap::new());
     match format {
@@ -203,7 +205,8 @@ fn env_command(args: &FormationEnvArgs, format: Format) -> Result<()> {
 }
 
 fn doctor_command(path: &Utf8Path, format: Format) -> Result<()> {
-    let resolution = resolve_path(path)?;
+    let mut resolution = resolve_path(path)?;
+    let python = resolution.activate_python();
     let materialized = &resolution.materialized;
     let lock_path = default_lock_path(&resolution.manifest_path);
     let lock = read_lock_if_present(&lock_path)?;
@@ -218,8 +221,11 @@ fn doctor_command(path: &Utf8Path, format: Format) -> Result<()> {
         None => ("fail", "formation.lock is absent"),
     };
     let environment = materialized.env.resolve_over(&HashMap::new());
-    let command_reachable =
-        formation_command_reachable(&materialized.resolved.command.program, &environment);
+    let launch = formation_launch(
+        &materialized.resolved.command.program,
+        &environment,
+        python.as_deref(),
+    );
     let checks = serde_json::json!([
         {
             "id": "formation.resolution",
@@ -238,11 +244,10 @@ fn doctor_command(path: &Utf8Path, format: Format) -> Result<()> {
         },
         {
             "id": "formation.command",
-            "status": if command_reachable { "pass" } else { "fail" },
-            "detail": if command_reachable {
-                format!("'{}' is reachable in the composed environment", materialized.resolved.command.program)
-            } else {
-                format!("'{}' is not reachable in the composed environment", materialized.resolved.command.program)
+            "status": if launch.is_ok() { "pass" } else { "fail" },
+            "detail": match &launch {
+                Ok(_) => format!("'{}' is reachable in the composed environment", materialized.resolved.command.program),
+                Err(error) => error.to_string(),
             },
         },
     ]);
@@ -281,29 +286,118 @@ fn doctor_command(path: &Utf8Path, format: Format) -> Result<()> {
     Ok(())
 }
 
-fn formation_command_reachable(program: &str, env: &[(String, String)]) -> bool {
+#[derive(Debug)]
+struct FormationLaunch {
+    executable: std::path::PathBuf,
+    script: Option<std::path::PathBuf>,
+}
+
+/// Resolve once for both doctor and run; never let the OS search the parent PATH.
+fn formation_launch(
+    program: &str,
+    env: &[(String, String)],
+    python: Option<&str>,
+) -> Result<FormationLaunch> {
     let path = std::path::Path::new(program);
-    if path.is_absolute() || path.components().count() > 1 {
-        return path.is_file();
+    let bases = if path.is_absolute() || path.components().count() > 1 {
+        vec![path.to_path_buf()]
+    } else {
+        env.iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+            .map(|(_, value)| {
+                std::env::split_paths(value)
+                    .filter(|dir| !dir.as_os_str().is_empty())
+                    .map(|dir| dir.join(program))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for base in bases {
+        let mut candidates = vec![base.clone()];
+        if cfg!(windows) && base.extension().is_none() {
+            candidates.extend(["exe", "com", "cmd", "bat"].map(|ext| base.with_extension(ext)));
+        }
+        for candidate in candidates.into_iter().filter(|path| path.is_file()) {
+            let script = if is_python_script(&candidate) {
+                Some(candidate.clone())
+            } else if candidate.extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat")
+            }) {
+                let sibling = candidate.with_extension("");
+                let expected = format!(
+                    "python \"%~dp0{}\" %*",
+                    sibling.file_name().unwrap_or_default().to_string_lossy()
+                );
+                let shim = std::fs::read_to_string(&candidate).unwrap_or_default();
+                (is_python_script(&sibling)
+                    && shim
+                        .trim()
+                        .trim_start_matches('@')
+                        .eq_ignore_ascii_case(&expected))
+                .then_some(sibling)
+            } else {
+                None
+            };
+            if let Some(script) = script {
+                let executable = python.ok_or_else(|| Error::coded(
+                    "FORMATION_PYTHON_UNAVAILABLE", Category::Precondition,
+                    format!("cannot launch '{program}': no Python matching the runtime ABI was found"),
+                ).with_hint("install the runtime's declared Python major/minor, then run formation doctor again"))?;
+                return Ok(FormationLaunch {
+                    executable: executable.into(),
+                    script: Some(script),
+                });
+            }
+            if native_launchable(&candidate) {
+                return Ok(FormationLaunch {
+                    executable: candidate,
+                    script: None,
+                });
+            }
+        }
     }
-    let Some(path_value) = env
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("PATH"))
-        .map(|(_, value)| value)
-    else {
+    Err(Error::coded("FORMATION_LAUNCH_FAILED", Category::Precondition,
+        format!("cannot launch '{program}': no executable or Python script found in the composed environment")))
+}
+
+fn is_python_script(path: &std::path::Path) -> bool {
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+    {
+        return true;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
         return false;
     };
-    std::env::split_paths(path_value).any(|directory| {
-        let candidate = directory.join(program);
-        if candidate.is_file() {
-            return true;
-        }
-        cfg!(windows) && directory.join(format!("{program}.exe")).is_file()
-    })
+    let mut head = [0u8; 512];
+    let Ok(count) = file.read(&mut head) else {
+        return false;
+    };
+    let first = String::from_utf8_lossy(&head[..count]);
+    let first = first.lines().next().unwrap_or_default();
+    first.starts_with("#!") && first.to_ascii_lowercase().contains("python")
+}
+
+fn native_launchable(path: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        path.extension().is_some_and(|ext| {
+            ["exe", "com", "cmd", "bat"]
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    }
 }
 
 fn run_command(args: &FormationRunArgs, format: Format) -> Result<()> {
-    let resolution = resolve_path(&args.path)?;
+    let mut resolution = resolve_path(&args.path)?;
+    let python = resolution.activate_python();
     let materialized = &resolution.materialized;
     let absolute_path = &resolution.manifest_path;
     let lock_path = default_lock_path(absolute_path);
@@ -355,7 +449,11 @@ fn run_command(args: &FormationRunArgs, format: Format) -> Result<()> {
             Error::Operation(format!("cannot fingerprint environment: {error}"))
         })?);
     let started = now_unix();
-    let mut command = Command::new(&program);
+    let launch = formation_launch(&program, &env, python.as_deref())?;
+    let mut command = Command::new(&launch.executable);
+    if let Some(script) = &launch.script {
+        command.arg(script);
+    }
     command.args(&command_args);
     for key in [
         "PATH",
@@ -409,6 +507,9 @@ fn run_command(args: &FormationRunArgs, format: Format) -> Result<()> {
         "components": materialized.resolved.components,
         "program": program,
         "args": command_args,
+        "executable": launch.executable,
+        "script": launch.script,
+        "python": python,
         "environment_digest": env_fingerprint,
         "started_unix": started,
         "finished_unix": finished,
@@ -448,9 +549,25 @@ struct ResolvedPath {
     materialized: MaterializedFormation,
     manifest_path: Utf8PathBuf,
     staging: StagingRoot,
+    runtime_root: Utf8PathBuf,
+    runtime_python: String,
 }
 
 impl ResolvedPath {
+    /// Machine-local interpreter selection is shared with runtime validation.
+    /// Keep it out of the portable lock, but expose its directory to scripts
+    /// and shims without importing the rest of the parent PATH.
+    fn activate_python(&mut self) -> Option<String> {
+        let argv = ost_build::resolve_run_python(&self.runtime_root, &self.runtime_python)?;
+        let executable = argv.first()?.clone();
+        let directory = Utf8Path::new(&executable).parent()?;
+        self.materialized.env.vars.push(EnvVar {
+            key: "PATH".into(),
+            op: EnvOp::Prepend(directory.to_string().replace('\\', "/")),
+        });
+        Some(executable)
+    }
+
     fn cleanup(&self) {
         self.staging.cleanup();
     }
@@ -487,18 +604,21 @@ fn resolve_path(path: &Utf8Path) -> Result<ResolvedPath> {
         .as_ref()
         .map(|host| super::host::checked_pinned_host(&host.id, &host.fingerprint))
         .transpose()?;
-    let parent = absolute_path.parent().unwrap_or(Utf8Path::new("."));
+    let store = ArtifactStore::discover();
+    // Fresh extraction per invocation prevents modified retained `env` trees
+    // from being trusted. The short root is independent of project/name depth.
+    let nonce = digest::sha256_hex(format!("{}-{}", std::process::id(), now_nanos()).as_bytes());
+    let staging_path = store.root().join("f").join(&nonce[7..23]);
+    std::fs::create_dir_all(staging_path.parent().unwrap().as_std_path())
+        .map_err(|error| Error::io(staging_path.to_string(), error))?;
+    std::fs::create_dir(staging_path.as_std_path())
+        .map_err(|error| Error::io(staging_path.to_string(), error))?;
+    // Own cleanup only after exclusive creation succeeded.
     let staging = StagingRoot {
-        path: parent
-            .join(".strata")
-            .join("formations")
-            .join(&declared.formation.name)
-            .join("materialized")
-            .join(format!("{}-{}", std::process::id(), now_nanos())),
+        path: staging_path,
         retained: false,
     };
     let staging_root = &staging.path;
-    let store = ArtifactStore::discover();
     let runtime_record = checked_record(&store, &declared.runtime.artifact)?;
     if runtime_record.kind != ArtifactKind::Runtime {
         return Err(Error::coded(
@@ -552,12 +672,13 @@ fn resolve_path(path: &Utf8Path) -> Result<ResolvedPath> {
             activation,
         });
     }
+    let runtime_python = runtime_manifest.python.clone();
     let mut materialized = ost_formation::resolve(
         &declared,
         ResolutionInput {
             runtime_record,
             runtime_manifest,
-            runtime_root,
+            runtime_root: runtime_root.clone(),
             components,
         },
     )?;
@@ -568,6 +689,8 @@ fn resolve_path(path: &Utf8Path) -> Result<ResolvedPath> {
         materialized,
         manifest_path: absolute_path,
         staging,
+        runtime_root,
+        runtime_python,
     })
 }
 

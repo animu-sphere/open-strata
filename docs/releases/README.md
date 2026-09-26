@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.23.13 | [v0.23.13.md](v0.23.13.md) | Formation Python launch and short materialization paths |
 | v0.23.12 | [v0.23.12.md](v0.23.12.md) | macOS lookdev Metal producer |
 | v0.23.11 | [v0.23.11.md](v0.23.11.md) | Packaged renderer Formations and lookdev runtime production |
 | v0.23.10 | [v0.23.10.md](v0.23.10.md) | Imaging bundles on locked usd runtimes |

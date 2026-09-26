@@ -528,3 +528,162 @@ args = ["--version"]
     let bypass: serde_json::Value = serde_json::from_slice(&bypass.stdout).unwrap();
     assert_eq!(bypass["error"]["code"], "HOST_NOT_VALIDATED");
 }
+
+#[test]
+fn python_entrypoints_and_deep_projects_use_the_same_launch_contract() {
+    let sandbox = Sandbox::new();
+    let empty = camino::Utf8Path::from_path(&sandbox.base).unwrap();
+    let python = ost_build::resolve_run_python(empty, "").expect("test requires Python");
+    let version = Command::new(&python[0])
+        .args(["-c", "import sys; print('%d.%d' % sys.version_info[:2])"])
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    let minor = String::from_utf8(version.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    json(sandbox.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
+    sandbox.promote_runtime();
+    let prefix = sandbox.runtime_prefix();
+    let manifest_path = prefix.join("runtime.json");
+    let mut runtime: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    runtime["python"] = minor.clone().into();
+    runtime["variant"]["python"] = minor.replace('.', "").into();
+    let typed: ost_runtime::RuntimeManifest = serde_json::from_value(runtime.clone()).unwrap();
+    runtime["digest"] = typed.compute_digest().into();
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&runtime).unwrap()).unwrap();
+    // An extensionless, non-executable script with an unusable producer shebang
+    // must run through the selected host Python on Windows, Linux and macOS.
+    std::fs::write(prefix.join("bin/testusdview"), "#!/missing/producer/python\nimport os, sys, json\nprint(json.dumps({'python': sys.executable, 'path': os.environ['PATH'], 'args': sys.argv[1:]}))\n").unwrap();
+    std::fs::write(
+        prefix.join("bin/testusdview.cmd"),
+        "@python \"%~dp0testusdview\" %*\r\n",
+    )
+    .unwrap();
+    std::fs::write(
+        prefix.join("bin/not-executable"),
+        "plain text, not an executable",
+    )
+    .unwrap();
+    let plugin = "lib/python/PySide6/plugins/platforms/qwindows.dll";
+    std::fs::create_dir_all(prefix.join(plugin).parent().unwrap()).unwrap();
+    std::fs::write(prefix.join(plugin), "Qt path length fixture").unwrap();
+    let exported =
+        json(sandbox.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
+    let digest = exported["data"]["digest"].as_str().unwrap();
+    let project = sandbox.base.join("deep-project-name-".repeat(5));
+    std::fs::create_dir_all(&project).unwrap();
+    let formation = project.join("formation.toml");
+    let manifest = format!("schema = 'openstrata.formation/v1alpha1'\n[formation]\nname = 'python-entrypoints'\n[runtime]\nartifact = '{digest}'\n[command]\nprogram = 'testusdview'\nargs = ['argument with spaces']\n");
+    std::fs::write(&formation, &manifest).unwrap();
+    json(sandbox.ost(&["--json", "formation", "lock", path(&formation)]));
+    let lock = std::fs::read(project.join("formation.lock")).unwrap();
+    assert!(!String::from_utf8_lossy(&lock).contains(&python[0]));
+    json(sandbox.ost(&["--json", "formation", "doctor", path(&formation)]));
+    let environment = json(sandbox.ost(&["--json", "formation", "env", path(&formation)]));
+    let root = PathBuf::from(environment["data"]["materialized"].as_str().unwrap());
+    assert!(root.starts_with(sandbox.home.join("artifacts/f")));
+    assert_eq!(root.file_name().unwrap().len(), 16);
+    assert!(root.join("runtime").join(plugin).is_file());
+    let env_path = environment["data"]["env"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "PATH")
+        .unwrap()["value"]
+        .as_str()
+        .unwrap();
+    assert!(
+        std::env::split_paths(env_path).any(|dir| dir == Path::new(&python[0]).parent().unwrap())
+    );
+    for command in [vec![], vec!["--", "testusdview.cmd"]] {
+        let mut args = vec!["--json", "formation", "run", path(&formation)];
+        args.extend(command);
+        let result = json(sandbox.ost(&args));
+        let run = &result["data"]["run"];
+        assert_eq!(run["success"], true);
+        assert!(run["script"].as_str().unwrap().ends_with("testusdview"));
+        let child: serde_json::Value =
+            serde_json::from_str(run["stdout"].as_str().unwrap()).unwrap();
+        assert_eq!(child["python"], run["executable"]);
+        if args.len() == 4 {
+            assert_eq!(child["args"], serde_json::json!(["argument with spaces"]));
+        }
+        // Each run owns a fresh tree and removes it without invalidating `env`.
+        assert!(!Path::new(run["script"].as_str().unwrap()).exists());
+        assert!(root.is_dir());
+    }
+    assert_eq!(std::fs::read(project.join("formation.lock")).unwrap(), lock);
+    // A retained tree is not a trusted cache; doctor/run must extract anew.
+    std::fs::write(root.join("runtime/bin/testusdview"), "broken retained tree").unwrap();
+    json(sandbox.ost(&["--json", "formation", "run", path(&formation)]));
+    std::fs::write(
+        &formation,
+        manifest.replace("program = 'testusdview'", "program = 'not-executable'"),
+    )
+    .unwrap();
+    json(sandbox.ost(&["--json", "formation", "lock", path(&formation)]));
+    assert!(!sandbox
+        .ost(&["--json", "formation", "doctor", path(&formation)])
+        .status
+        .success());
+    assert!(!sandbox
+        .ost(&["--json", "formation", "run", path(&formation)])
+        .status
+        .success());
+}
+
+#[test]
+fn missing_runtime_python_fails_doctor_and_run_but_not_portable_locking() {
+    let sandbox = Sandbox::new();
+    json(sandbox.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
+    sandbox.promote_runtime();
+    let prefix = sandbox.runtime_prefix();
+    let manifest_path = prefix.join("runtime.json");
+    let mut runtime: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    runtime["python"] = "9.99.x".into();
+    let typed: ost_runtime::RuntimeManifest = serde_json::from_value(runtime.clone()).unwrap();
+    runtime["digest"] = typed.compute_digest().into();
+    std::fs::write(manifest_path, serde_json::to_vec_pretty(&runtime).unwrap()).unwrap();
+    std::fs::write(
+        prefix.join("bin/usdview"),
+        "#!/usr/bin/env python3\nraise Exception('must not execute')\n",
+    )
+    .unwrap();
+    let exported =
+        json(sandbox.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
+    let digest = exported["data"]["digest"].as_str().unwrap();
+    std::fs::write(sandbox.base.join("formation.toml"), format!("schema = 'openstrata.formation/v1alpha1'\n[formation]\nname = 'missing-python'\n[runtime]\nartifact = '{digest}'\n[command]\nprogram = 'usdview'\n")).unwrap();
+    json(sandbox.ost(&["--json", "formation", "lock"]));
+    let doctor = sandbox.ost(&["--json", "formation", "doctor"]);
+    assert!(!doctor.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    let check = report["data"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == "formation.command")
+        .unwrap();
+    assert_eq!(check["status"], "fail");
+    assert!(check["detail"]
+        .as_str()
+        .unwrap()
+        .contains("no Python matching"));
+    let run = sandbox.ost(&["--json", "formation", "run"]);
+    assert!(!run.status.success());
+    assert!(String::from_utf8_lossy(&run.stdout).contains("FORMATION_PYTHON_UNAVAILABLE"));
+    let native = json(sandbox.ost(&[
+        "--json",
+        "formation",
+        "run",
+        "formation.toml",
+        "--",
+        ost_bin(),
+        "--version",
+    ]));
+    assert_eq!(native["data"]["run"]["success"], true);
+    assert!(native["data"]["run"]["python"].is_null());
+}
