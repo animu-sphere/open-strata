@@ -52,7 +52,7 @@ if({{NAME}}_BUILD_TESTS)
 endif()
 
 if(MSVC)
-  add_compile_options(/W4 /permissive- /EHsc)
+  add_compile_options(/W4 /permissive- /EHsc /utf-8)
 else()
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()

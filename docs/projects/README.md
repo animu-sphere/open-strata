@@ -46,6 +46,12 @@ OpenStrata ecosystem
 ├── hydra-merlin
 │   └── reference renderer project
 │
+├── hydra-toon
+│   └── avatar-renderer template bootstrap and validation
+│
+├── usd-physics-plugins
+│   └── backend-neutral physics core and Jolt library workspace
+│
 ├── usd-motion-plugins
 │   └── shared motion values, sampling, recording and USD bridge
 │
@@ -76,6 +82,8 @@ every build unit into an artificial package abstraction.
 | [USD VRM Plugins](usd-vrm-plugins.md) | Plugin workspace | Typed schemas, file formats, resolver, bundle graph | `plugin build` / `test` / `run` / `view` / `package` |
 | [USD Stage Runner](usd-stage-runner.md) | Application workspace | Mixed library/schema/tool graph, named build intent, standalone and usdview host integration | `build` / `test`, `library build` / `test`, `plugin build` / `test` / `view` |
 | [hdMerlin](hydra-merlin.md) | Renderer project | Managed renderer build, evidence, Hydra discovery | `build`, `validate`, `renderer view` |
+| [hydra-toon](hydra-toon.md) | Renderer project | Renderer template bootstrap, OpenUSD 26.08, incremental evidence and viewport isolation | `build` / `test` / `validate`, `renderer viewport` |
+| [USD Physics Plugins](usd-physics-plugins.md) | Library workspace | Backend-neutral physics, Jolt intent, installed consumers and artifact edges | `build` / `test`, `library build` / `test` / `verify-consumer` / `package` |
 | [USD Motion Plugins](usd-motion-plugins.md) | Motion workspace | Shared motion libraries and tools, installed OpenUSD consumer, cross-repository library dependency need | `build` / `test`, `library build` / `test` / `verify-consumer` |
 | [USD MMD Plugins](usd-mmd-plugins.md) | Plugin workspace | PMX/VMD format and motion boundaries, mixed library/tool/bundle graph | `build` / `test`, `plugin build` / `test` |
 | [Motion Connectors](motion-connectors.md) | Connector workspace | Empty-workspace CI boundary today; future optional device/protocol members | `ci generate` after first member; connector lifecycle planned |
@@ -107,8 +115,8 @@ every build unit into an artificial package abstraction.
   transport and file formats.
 - **[USD Raster Plugins](usd-raster-plugins.md)** —
   [`animu-sphere/usd-raster-plugins`](https://github.com/animu-sphere/usd-raster-plugins):
-  an early GeoTIFF/raster workspace with OpenUSD-independent core libraries,
-  explicit georeferencing and windowed reads. Read it for the raster side of the
+  a GeoTIFF/raster workspace with released windowed reads, explicit
+  georeferencing and an initial mesh authoring slice. Read it for the raster side of the
   resolver/file-format boundary and the staged path to packaged USD authoring.
 - **[USD Vector Plugins](usd-vector-plugins.md)** —
   [`animu-sphere/usd-vector-plugins`](https://github.com/animu-sphere/usd-vector-plugins):
@@ -139,6 +147,16 @@ every build unit into an artificial package abstraction.
   the shared motion layer extracted from the VRM workspace. Read it for
   ordinary-library composition, installed OpenUSD consumers and the need for
   declared artifact-backed library dependencies between repositories.
+- **[hydra-toon](hydra-toon.md)** —
+  [`animu-sphere/hydra-toon`](https://github.com/animu-sphere/hydra-toon):
+  a second renderer-template adopter with real Windows GPU, Hydra and viewport
+  bootstrap evidence. Its first report drives the v0.23.7 renderer repairs;
+  avatar-specific rendering remains downstream implementation work.
+- **[USD Physics Plugins](usd-physics-plugins.md)** —
+  [`animu-sphere/usd-physics-plugins`](https://github.com/animu-sphere/usd-physics-plugins):
+  ordinary physics core and Jolt backend libraries, exercising installed
+  package boundaries, named intents and published artifact consumption by
+  Stage Runner. OpenUSD bridge and format policy remain separate boundaries.
 - **[USD MMD Plugins](usd-mmd-plugins.md)** —
   [`animu-sphere/usd-mmd-plugins`](https://github.com/animu-sphere/usd-mmd-plugins):
   PMX stage import and VMD reading/binding through a mixed workspace. Read it
@@ -159,7 +177,8 @@ HTTP resolver owns transport; the raster, vector and point-cloud projects keep
 format behavior independent of transport; USD Motion Plugins owns reusable
 motion values while USD VRM and USD MMD Plugins own avatar-format semantics;
 Motion Connectors is the future live-input boundary; USD Stage Runner exercises
-the application-host and interactive runtime boundary; hdMerlin exercises the
+the application-host and interactive runtime boundary; USD Physics Plugins owns
+backend-neutral simulation mechanics; hdMerlin and hydra-toon exercise the
 renderer boundary; and USD Geospatial Runtime binds selected geospatial
 artifacts into one locked, distributable runtime/SDK. A separate Formation case
 opens VRM through the VRM bundles and renders it with hdMerlin; other stage

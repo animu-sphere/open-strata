@@ -450,6 +450,9 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     let root_output_baseline = RootOutputBaseline {
         outputs,
         previous_completion,
+        renderer_reports: crate::commands::renderer::snapshot_managed_renderer_reports(
+            &root, &build_dir,
+        )?,
     };
     // A file left in the binary tree by an earlier invocation is not evidence
     // that the build below produced it. Tool staging compares this snapshot to
@@ -459,8 +462,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         &build_dir,
         target.os(),
     )?;
-    let renderer_reports_before =
-        crate::commands::renderer::snapshot_managed_renderer_reports(&root, &build_dir)?;
+    let renderer_reports_before = &root_output_baseline.renderer_reports;
     let producer_started_unix = lease
         .owner()
         .filter(|_| !lease.is_read_only())
@@ -574,7 +576,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
             let stamp = stamp_build_renderer_reports(
                 &root,
                 &build_dir,
-                &renderer_reports_before,
+                renderer_reports_before,
                 &id,
                 producer_invocation.as_deref(),
                 producer_started_unix,
@@ -594,7 +596,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         let stamp = stamp_build_renderer_reports(
             &root,
             &build_dir,
-            &renderer_reports_before,
+            renderer_reports_before,
             &id,
             producer_invocation.as_deref(),
             producer_started_unix,
@@ -628,7 +630,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
             let stamp = stamp_build_renderer_reports(
                 &root,
                 &build_dir,
-                &renderer_reports_before,
+                renderer_reports_before,
                 &id,
                 producer_invocation.as_deref(),
                 producer_started_unix,
@@ -645,7 +647,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         let stamp = stamp_build_renderer_reports(
             &root,
             &build_dir,
-            &renderer_reports_before,
+            renderer_reports_before,
             &id,
             producer_invocation.as_deref(),
             producer_started_unix,
@@ -674,7 +676,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         let stamp = stamp_build_renderer_reports(
             &root,
             &build_dir,
-            &renderer_reports_before,
+            renderer_reports_before,
             &id,
             producer_invocation.as_deref(),
             producer_started_unix,
@@ -699,7 +701,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
             let stamp = stamp_build_renderer_reports(
                 &root,
                 &build_dir,
-                &renderer_reports_before,
+                renderer_reports_before,
                 &id,
                 producer_invocation.as_deref(),
                 producer_started_unix,
@@ -719,7 +721,7 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
     let renderer_reports = stamp_build_renderer_reports(
         &root,
         &build_dir,
-        &renderer_reports_before,
+        renderer_reports_before,
         &id,
         producer_invocation.as_deref(),
         producer_started_unix,
@@ -827,6 +829,7 @@ fn read_previous_completion(build_dir: &Utf8Path) -> Option<BuildCompletion> {
 struct RootOutputBaseline {
     outputs: Vec<BuildOutput>,
     previous_completion: Option<BuildCompletion>,
+    renderer_reports: crate::commands::renderer::RendererReportSnapshot,
 }
 
 fn write_completion(
@@ -874,17 +877,27 @@ fn write_completion(
         lock.variant.os,
         Some(&lock.target),
     );
-    let previous_outputs = root_output_baseline
-        .previous_completion
-        .as_ref()
-        .filter(|previous| {
-            previous
-                .validate_against(&lock, &project_name, &project_version, relative_build)
-                .is_ok()
-                && previous.fingerprint() == completion.fingerprint()
-        })
+    let previous_completion =
+        root_output_baseline
+            .previous_completion
+            .as_ref()
+            .filter(|previous| {
+                previous
+                    .validate_against(&lock, &project_name, &project_version, relative_build)
+                    .is_ok()
+                    && previous.fingerprint() == completion.fingerprint()
+            });
+    let previous_outputs = previous_completion
         .map(|previous| previous.outputs.as_slice())
         .unwrap_or_default();
+    let renderer_reports = crate::commands::renderer::retain_unchanged_renderer_bindings(
+        &root.join(relative_build),
+        &root_output_baseline.renderer_reports,
+        previous_completion
+            .map(|previous| previous.renderer_reports.as_slice())
+            .unwrap_or_default(),
+        renderer_reports,
+    );
     let (outputs, binding_warning) = select_root_managed_outputs(
         &root_output_baseline.outputs,
         outputs_after,

@@ -11,17 +11,20 @@ a custom raster schema.
 
 ## Current status
 
-The project is early and has no tagged release. Its repository/CI foundation,
-OpenUSD-independent raster value model, GeoTIFF metadata reader and initial
-uncompressed pixel-window reads are implemented and tested. Compression,
-broader read planning and `UsdGeomMesh` authoring remain downstream work.
+The project has released
+[v0.2.0](https://github.com/animu-sphere/usd-raster-plugins/releases/tag/v0.2.0),
+covering windowed pixel reads. The current tree also implements supported
+compressed windows through libtiff, read planning and I/O statistics, and an
+initial metadata-to-regular-grid `UsdGeomMesh` slice for small/synthetic inputs.
+The full mesh argument/conversion surface and a general GDAL adapter remain
+downstream work. Its capability matrix is authoritative for supported inputs.
 
 ## Why it is an OpenStrata reference project
 
 The repository adds a distinct geospatial plugin shape:
 
 - core raster and GeoTIFF libraries that must build and test without OpenUSD;
-- a metadata-first `SdfFileFormat` bundle for `.tif` / `.tiff`;
+- a `SdfFileFormat` bundle for `.tif` / `.tiff` with an initial mesh slice;
 - explicit CRS, geotransform, pixel-anchor and NoData contracts;
 - a project-wide `cy2026` / `usd` workspace and CI definition; and
 - a transport-neutral `RandomAccessSource` / `ArAsset` boundary designed to
@@ -48,8 +51,8 @@ an architectural dependency check, not an alternative OpenStrata runtime.
 
 Before the first runnable geospatial runtime claim, the raster project must:
 
-- tag and publish an immutable component artifact with provenance and
-  attribution;
+- prove an immutable component artifact with matching provenance and
+  attribution against the selected runtime; a source release alone is insufficient;
 - complete the declared GeoTIFF read/authoring acceptance used by the runtime;
 - prove local fixture opening through the packaged plugin; and
 - prove remote window reads through the resolver without adding transport code

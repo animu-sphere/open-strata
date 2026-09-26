@@ -1720,6 +1720,6 @@ Validate a built/packaged target
 | Option | Description |
 | --- | --- |
 | `--build-dir <BUILD_DIR>` | External/manual build tree whose evidence should be validated without claiming it was produced by `ost build` |
-| `--intent <INTENT>` | Validate the build produced for this project-declared intent |
+| `--intent <INTENT>` | Validate a project-declared intent or the built-in `renderer-viewport` intent |
 | `--profile <PROFILE>` | Profile to validate. Defaults to the project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |

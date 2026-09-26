@@ -74,6 +74,7 @@ or launch the standalone native viewport:
 ```sh
 ost renderer view scene.usda --profile lookdev # managed usdview session
 ost renderer viewport -- --frames 8 --hidden   # standalone native viewport
+ost validate --intent renderer-viewport       # validate that built-in viewport build
 ```
 
 Both managed launch paths use the ordinary build service's phase budgets: 600
@@ -109,6 +110,24 @@ producer session, build-relative path, and SHA-256. `ost validate` recomputes
 that digest, so copying an older report beside a newer completion cannot upgrade
 it into managed PASS evidence. External reports remain available through the
 explicit `external-unverified` attachment path.
+
+An unchanged build carries forward exact, previously bound reports only when
+the previous completion has the same runtime, compiler, project, directory and
+intent fingerprint. It retains the original session, not a new producer claim.
+If an older CLI has already discarded a binding, rerun the report-producing
+target before relying on incremental retention.
+
+Viewport launch records live under
+`.strata/renderer-viewport/<target>/<build-directory-key>/launch.json`.
+Separate intents cannot overwrite one another's launch evidence. Default
+validation skips a legacy target-wide record that belongs to another build;
+the matching build still checks the launch identity, report digests and outcome.
+Use the same `--profile` and project `--intent` as the launch, or the built-in
+`renderer-viewport` intent for the default viewport command.
+
+`frame.contexts` declares independently reusable frame contexts, not the number
+of frames in a smoke run or swapchain images. Template 0.5.2 declares one,
+matching its backend's single frame in flight and explicit completion wait.
 
 Viewport success, build failure, presentation-unavailable, and child failure
 all retain the same launch data shape. In `--json` mode, failures include the
