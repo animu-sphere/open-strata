@@ -661,6 +661,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             builder,
             src.build_args,
         )?;
+        require_profile_viewer(&r.capabilities, builder, &mut selection.args)?;
         let prepared = selection
             .compatibility
             .take()
@@ -786,6 +787,44 @@ fn parse_openusd_variant(value: &str) -> std::result::Result<OpenUsdVariantId, S
 struct OpenUsdBuildSelection {
     compatibility: Option<ResolvedOpenUsdCompatibility>,
     args: Vec<String>,
+}
+
+fn require_profile_viewer(
+    capabilities: &[String],
+    builder: OpenUsdBuilder,
+    args: &mut Vec<String>,
+) -> Result<()> {
+    if !capabilities
+        .iter()
+        .any(|cap| cap == "usdview" || cap == "hydra-preview")
+    {
+        return Ok(());
+    }
+    if args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--no-imaging" | "--no-usdview" | "--no-python"
+        ) || [
+            "-DPXR_BUILD_IMAGING=OFF",
+            "-DPXR_BUILD_USDVIEW=OFF",
+            "-DPXR_BUILD_USD_IMAGING=OFF",
+            "-DPXR_ENABLE_PYTHON_SUPPORT=OFF",
+        ]
+        .iter()
+        .any(|flag| arg.contains(flag))
+    }) {
+        return Err(Error::config("the selected profile requires usdview; core or viewer-disabled builds cannot provide it"));
+    }
+    match builder {
+        OpenUsdBuilder::BuildUsd => {
+            // Upstream --imaging explicitly omits USD imaging and therefore
+            // silently disables usdview, even when CMake later enables the SDK.
+            args.retain(|arg| !matches!(arg.as_str(), "--imaging" | "--usd-imaging" | "--usdview"));
+            args.extend(["--usd-imaging".into(), "--usdview".into()]);
+        }
+        OpenUsdBuilder::Cmake => args.push("-DPXR_BUILD_USDVIEW=ON".into()),
+    }
+    Ok(())
 }
 
 /// Select a declared cell without regressing legacy builds on targets that do
@@ -6144,6 +6183,62 @@ mod tests {
         let brew = parse_host_requirement("brew:openimageio").unwrap();
         assert!(validate_host_requirement_targets(&[brew], Os::Macos).is_ok());
         assert!(parse_host_requirement("brew:python@3.13").is_ok());
+    }
+
+    #[test]
+    fn lookdev_enables_upstream_viewer_and_rejects_disabled_requirements() {
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let capabilities = vec!["usdview".into(), "hydra-preview".into()];
+        for builder in [OpenUsdBuilder::BuildUsd, OpenUsdBuilder::Cmake] {
+            let mut selection = resolve_openusd_build(
+                &platform,
+                Os::Linux,
+                Arch::X86_64,
+                Some("26.08"),
+                Some(OpenUsdVariantId::Gl),
+                builder,
+                Vec::new(),
+            )
+            .unwrap();
+            require_profile_viewer(&capabilities, builder, &mut selection.args).unwrap();
+            match builder {
+                OpenUsdBuilder::BuildUsd => {
+                    assert!(selection.args.iter().any(|arg| arg == "--usd-imaging"));
+                    assert!(selection.args.iter().any(|arg| arg == "--usdview"));
+                    assert!(!selection.args.iter().any(|arg| arg == "--imaging"));
+                }
+                OpenUsdBuilder::Cmake => assert!(selection
+                    .args
+                    .iter()
+                    .any(|arg| arg == "-DPXR_BUILD_USDVIEW=ON")),
+            }
+            let mut core = resolve_openusd_build(
+                &platform,
+                Os::Linux,
+                Arch::X86_64,
+                Some("26.08"),
+                Some(OpenUsdVariantId::Core),
+                builder,
+                Vec::new(),
+            )
+            .unwrap();
+            assert!(require_profile_viewer(&capabilities, builder, &mut core.args).is_err());
+        }
+        for flag in [
+            "--no-usdview",
+            "--no-python",
+            "--build-args=USD,-DPXR_BUILD_USDVIEW=OFF",
+        ] {
+            assert!(require_profile_viewer(
+                &capabilities,
+                OpenUsdBuilder::BuildUsd,
+                &mut vec![flag.into()]
+            )
+            .is_err());
+        }
+        let mut usd_args = vec!["--imaging".into()];
+        require_profile_viewer(&[], OpenUsdBuilder::BuildUsd, &mut usd_args).unwrap();
+        assert_eq!(usd_args, ["--imaging"]);
     }
 
     #[test]
