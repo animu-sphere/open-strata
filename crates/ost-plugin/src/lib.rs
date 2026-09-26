@@ -18,6 +18,7 @@
 
 mod bundle;
 mod doctor;
+mod imaging;
 mod levels;
 mod library;
 mod model;
@@ -32,6 +33,7 @@ mod workspace;
 
 pub use bundle::Bundle;
 pub use doctor::{diagnose, Diagnostic, DoctorReport, RuntimeContext, Status};
+pub use imaging::{imaging_conflicts, imaging_keys, validate_imaging_metadata};
 pub use levels::{fixture_identifier, run_levels, usdview_check, Probe, Session, ToolOutput};
 pub use library::{
     Library, LibraryCmake, LibraryConsumer, LibraryIdentity, LibraryManifest, LibraryPackage,

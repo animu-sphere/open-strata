@@ -7,6 +7,7 @@ and [reference/](../reference/)).
 
 | Document | Purpose |
 | --- | --- |
+| [2026-09-26 UsdImaging verification](2026-09-26-v0.23.9-usd-imaging.md) | Native adapter registration, schema closure, disabled-plugin rejection and package evidence. |
 | [2026-09-26 v0.23.7 renderer bootstrap](2026-09-26-v0.23.7-renderer-bootstrap.md) | Fresh template on Windows/MSVC and RTX A5000: repeated-build evidence, isolated viewport validation and OpenUSD 26.08 Hydra host tests. |
 | [hydra-toon report #1 — v0.23.6 renderer bootstrap](https://github.com/animu-sphere/hydra-toon/blob/main/docs/reports/ost/01-2026-09-26-v0.23.6-renderer-template-bootstrap.md) | Real Windows GPU/Hydra bootstrap, no-op evidence loss, viewport validation and template corrections; primary v0.23.7 intake. |
 | [USD Physics Phase 3 — Linux artifacts](https://github.com/animu-sphere/usd-physics-plugins/blob/main/docs/reports/2026-09-23-phase3-linux-artifacts.md) | Published library artifacts, empty-store verification, Stage Runner consumption and the external SDK consumer gap. |

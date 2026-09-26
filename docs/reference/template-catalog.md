@@ -28,6 +28,7 @@ backwards-compatible default for `usd-schema`.
 | `usd-asset-resolver-cpp` | skeleton | `usd-asset-resolver` | `--scheme <scheme>` |
 | `usd-package-resolver-cpp` | skeleton | `usd-package-resolver` | `--extension <ext>` |
 | `usd-exec-cpp` | skeleton | `usd-exec` | `--schema-bundle <id> --schema-type <CppType>` |
+| `usd-imaging-cpp` | skeleton | `usd-imaging` | `--schema-bundle <id> --schema-type <API-schema-name>` |
 | `usdview-plugin-python` | skeleton | `usdview-plugin` | none |
 
 Skeletons have stable generation and lifecycle seams, but their domain
@@ -105,3 +106,22 @@ The canonical helper lives at `templates/_shared/cmake/OpenStrataPlugin.cmake`.
 Changing it requires a template-version bump for every catalog entry that copies
 the new bytes. Existing generated projects keep their pinned copy; updates are
 reviewed as template migrations rather than applied silently.
+
+## UsdImaging adapters
+
+`usd-imaging-cpp` registers a `UsdImagingAPISchemaAdapter` and declares its schema
+provider through `requires.bundles`. The `--schema-type` value is the registered
+API schema name, not necessarily its C++ type. Implement the adapter's data
+sources and invalidation methods; the skeleton contributes no material data.
+
+Provide `usd-imaging:<apiSchemaName>` or, for a hand-authored prim adapter,
+`usd-imaging-prim:<primTypeName>`. L0 requires matching metadata and unique keys;
+workspace/session composition rejects multiple owners. Select an imaging SDK
+and a profile promising `hydra-preview` (normally `--profile lookdev`).
+
+L2 builds a native registry checker with CMake, Ninja and a C++ compiler, even
+when testing an extracted package. It checks schema presence, registry lookup
+and adapter construction. Disabled external plugins fail. Scene-index behavior
+and rendered images need the plugin's own tests. The skeleton avoids
+`hd/retainedDataSource.h`, whose OpenUSD 26.08 constructor spelling fails under
+GCC 13 with C++20.

@@ -76,6 +76,11 @@ pub trait Probe {
     /// Run `program` with `args`, returning its captured output.
     fn run(&self, program: &str, args: &[&str]) -> ToolOutput;
 
+    /// Execute the native registry check built against the selected SDK.
+    fn run_imaging(&self, args: &[&str]) -> ToolOutput {
+        self.run("ost-usd-imaging-probe", args)
+    }
+
     /// Run a tool that supports `--out <path>` and return its output without
     /// routing the authored payload through stdout.
     ///
@@ -128,6 +133,33 @@ pub struct Session<'a> {
 /// place of the file-format discovery/read levels; both share the upper
 /// (format-agnostic) golden and usdview levels.
 pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnostic> {
+    if bundle.manifest.kind() == PluginKind::UsdImaging {
+        let mut diags = Vec::new();
+        if up_to >= 2 {
+            diags.push(level2_imaging(bundle, session));
+        }
+        if up_to >= 3 {
+            diags.push(level3_usdcat(bundle, session));
+        }
+        if up_to >= 4 {
+            diags.push(level4_stage_open(bundle, session));
+        }
+        if !bundle.manifest.schema_provides().is_empty() {
+            if up_to >= 2 {
+                diags.push(level2_schema_registration(bundle, session));
+            }
+            if up_to >= 4 {
+                diags.push(level4_schema_apply_roundtrip(bundle, session));
+            }
+        }
+        if up_to >= 5 {
+            diags.push(level5_golden(bundle, session));
+        }
+        if up_to >= 6 {
+            diags.push(level6_usdview(bundle, session, None));
+        }
+        return diags;
+    }
     if bundle.manifest.kind() == PluginKind::UsdviewPlugin {
         return run_usdview_plugin_levels(bundle, session, up_to);
     }
@@ -172,6 +204,32 @@ pub fn run_levels(bundle: &Bundle, session: &Session, up_to: u8) -> Vec<Diagnost
         diags.push(level6_usdview(bundle, session, None));
     }
     diags
+}
+
+fn level2_imaging(bundle: &Bundle, session: &Session) -> Diagnostic {
+    const ID: &str = "imaging.registration";
+    let keys = crate::imaging_keys(bundle);
+    if keys.is_empty() {
+        return Diagnostic::fail(ID, 2, "no imaging adapter keys declared", vec![]);
+    }
+    let root = bundle.plug_info_root();
+    let mut args = vec![root.as_str()];
+    args.extend(keys.iter().copied());
+    let out = session.probe.run_imaging(&args);
+    if out.ok() {
+        Diagnostic::pass(
+            ID,
+            2,
+            format!(
+                "UsdImaging registry constructed adapters for {}",
+                keys.join(", ")
+            ),
+        )
+    } else {
+        Diagnostic::fail(ID, 2, format!("UsdImaging registry check failed: {}", tail(&out.stderr)),
+            vec!["check the imaging SDK/compiler, schema bundle dependencies, adapter factories, and USDIMAGING_ENABLE_PLUGINS".into()])
+            .with_probe_output(out.code, &out.stdout, &out.stderr)
+    }
 }
 
 /// A usdview add-on has no file-format/read/round-trip claim. L2 proves that

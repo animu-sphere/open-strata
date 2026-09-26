@@ -190,6 +190,8 @@ pub struct RuntimeContext {
     pub python_abi: Option<String>,
     /// component id -> version the runtime provides (for `dependency.*`).
     pub components: IndexMap<String, String>,
+    /// Selected SDK has usdImaging headers and an installed library (or monolith).
+    pub imaging: bool,
 }
 
 /// A full staged report.
@@ -248,7 +250,12 @@ pub fn diagnose(bundle: &Bundle, ctx: &RuntimeContext, up_to_level: u8) -> Docto
             diags.push(Diagnostic::skip("schema.apply_roundtrip", 4, reason));
             diags.push(Diagnostic::skip("golden.roundtrip", 5, reason));
         } else {
-            diags.push(Diagnostic::skip("plugin.discovery", 2, reason));
+            let id = if crate::imaging::needs_imaging(bundle) {
+                "imaging.registration"
+            } else {
+                "plugin.discovery"
+            };
+            diags.push(Diagnostic::skip(id, 2, reason));
             diags.push(Diagnostic::skip("usdcat.read", 3, reason));
             diags.push(Diagnostic::skip("python.stage_open", 4, reason));
             // A co-hosted schema (another kind that also declares
@@ -311,6 +318,9 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
                         diags.push(check_plug_info_schema_types(&json));
                     } else {
                         diags.push(check_plug_info_library_paths(bundle, &json, target_os));
+                    }
+                    if crate::imaging::needs_imaging(bundle) {
+                        diags.push(crate::validate_imaging_metadata(bundle, &json));
                     }
                 }
                 Err(e) => diags.push(Diagnostic::fail(
@@ -536,10 +546,23 @@ fn level1(bundle: &Bundle, ctx: &RuntimeContext) -> Vec<Diagnostic> {
         diags.push(Diagnostic::skip("runtime.openusd.version", 1, reason));
         diags.push(Diagnostic::skip("runtime.cxx_abi", 1, reason));
         diags.push(Diagnostic::skip("runtime.python_abi", 1, reason));
+        if crate::imaging::needs_imaging(bundle) {
+            diags.push(Diagnostic::skip("runtime.usd_imaging", 1, reason));
+        }
         for comp in m.requires.components.keys() {
             diags.push(Diagnostic::skip(&format!("dependency.{comp}"), 1, reason));
         }
         return diags;
+    }
+
+    if crate::imaging::needs_imaging(bundle) {
+        diags.push(if ctx.imaging && ctx.real {
+            Diagnostic::pass("runtime.usd_imaging", 1, "runtime has the usdImaging SDK")
+        } else {
+            Diagnostic::fail("runtime.usd_imaging", 1,
+                "usd-imaging requires an imaging runtime with usdImaging; a core runtime cannot build or load adapters",
+                vec!["select an imaging runtime (hydra-preview capability)".into()])
+        });
     }
 
     // runtime.source — surface the backend source as an observed fact. Three

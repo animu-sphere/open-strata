@@ -1,10 +1,10 @@
 # Current
 
-The v0.23.8 repair is recorded in the
-[release record](../releases/v0.23.8.md). This page tracks the remaining
+The v0.23.9 delivery is recorded in the
+[release record](../releases/v0.23.9.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.8 evidence
+## Post-release v0.23.9 evidence
 
 - Recheck hydra-toon report 02 after applying renderer template 0.5.3's
   install-tree script: core `ost test` followed by `ost validate` must report
@@ -14,10 +14,10 @@ acceptance and the next feature work.
 - Recheck `usd-mmd-plugins` report 01 against the published target-local bundle
   and tool stages: source tests, packages, and a second target must consume
   their own outputs without source-tree generated files.
-- Recheck `usd-vrm-plugins` report 47 against the published CLI: its root
-  CTest suite passed 38 of 38 with the external bundle, but `vrmSchema` and the
-  product package must pass again with the target-local install-stage repair.
-  Repeat the package cell on Linux and macOS.
+- Adopt `usd-imaging` for `vrmImaging` and repeat native registry/schema closure
+  validation with published v0.23.9, including Linux/macOS. VRM report 48 closes
+  the Windows report 47 packaging regression; repeat those package cells on
+  Linux/macOS. Track its separate producer RUNPATH cleanup request in the intake.
 
 - Confirm the published release assets, checksums and attestations, then run an
   installed CLI smoke test. Fix release defects in v0.23.x.

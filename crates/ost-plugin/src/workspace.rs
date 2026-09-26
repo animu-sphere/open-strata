@@ -346,6 +346,14 @@ pub fn validate_workspace_with_members(
 
     let mut nodes = Vec::new();
     let mut issues = Vec::new();
+    for conflict in crate::imaging_conflicts(&bundles.iter().collect::<Vec<_>>()) {
+        issues.push(issue(
+            "WORKSPACE_IMAGING_CONFLICT",
+            "workspace",
+            None,
+            conflict,
+        ));
+    }
     for (id, matches) in &by_id {
         if matches.len() > 1 {
             issues.push(issue(

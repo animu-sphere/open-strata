@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.23.9 | [v0.23.9.md](v0.23.9.md) | UsdImaging plugin bundles |
 | v0.23.8 | [v0.23.8.md](v0.23.8.md) | Renderer core install-tree evidence |
 | v0.23.7 | [v0.23.7.md](v0.23.7.md) | Renderer bootstrap and durable validation |
 | v0.23.6 | [v0.23.6.md](v0.23.6.md) | Workspace bundle package output consistency |

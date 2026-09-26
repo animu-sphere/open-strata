@@ -177,9 +177,60 @@ pub fn validate(prefix: &Utf8Path, manifest: &RuntimeManifest) -> ValidationRepo
     //    present. Skipped for the mock backend, whose layout is empty stubs.
     if manifest.source.is_real() {
         checks.extend(real_runtime_checks(prefix));
+        if manifest
+            .capabilities
+            .iter()
+            .any(|cap| cap == "hydra-preview" || cap == "usdview")
+        {
+            checks.push(if has_usd_imaging_sdk(prefix) {
+                Check::pass("usd-imaging-sdk")
+            } else {
+                Check::fail("usd-imaging-sdk", "imaging runtime requires usdImaging/adapterRegistry.h and an installed usdImaging library (or usd_ms monolith)")
+            });
+        }
     }
 
     ValidationReport { checks }
+}
+
+/// Structural imaging requirement shared by runtime validation and plugin L1.
+/// A header alone is insufficient: core builds can retain source headers.
+pub fn has_usd_imaging_sdk(prefix: &Utf8Path) -> bool {
+    if !prefix
+        .join("include/pxr/usdImaging/usdImaging/adapterRegistry.h")
+        .is_file()
+    {
+        return false;
+    }
+    ["lib", "bin", "lib64"].iter().any(|dir| {
+        std::fs::read_dir(prefix.join(dir))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let library = [
+                    "usdImaging",
+                    "usd_usdImaging",
+                    "libusdImaging",
+                    "libusd_usdImaging",
+                    "usd_ms",
+                    "libusd_ms",
+                ]
+                .iter()
+                .any(|stem| {
+                    name.strip_prefix(stem).is_some_and(|suffix| {
+                        suffix == ".dll"
+                            || suffix == ".lib"
+                            || suffix == ".so"
+                            || suffix == ".dylib"
+                            || suffix.starts_with(".so.")
+                    })
+                });
+                library && entry.path().is_file()
+            })
+    })
 }
 
 /// Structural checks that only make sense against a real OpenUSD install
@@ -353,6 +404,23 @@ mod tests {
         let mut dir = Utf8PathBuf::from_path_buf(std::env::temp_dir()).unwrap();
         dir.push(format!("ost-validate-{tag}-{}-{nanos}", std::process::id()));
         dir
+    }
+
+    #[test]
+    fn imaging_requires_both_headers_and_a_matching_library() {
+        let dir = tmp_dir("imaging");
+        let header = dir.join("include/pxr/usdImaging/usdImaging/adapterRegistry.h");
+        std::fs::create_dir_all(header.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(&header, "// fixture").unwrap();
+        assert!(!has_usd_imaging_sdk(&dir));
+        std::fs::write(dir.join("lib/libusd_usdImagingGL.so"), "wrong library").unwrap();
+        assert!(!has_usd_imaging_sdk(&dir));
+        std::fs::write(dir.join("lib/libusd_usdImaging.so"), "fixture").unwrap();
+        assert!(has_usd_imaging_sdk(&dir));
+        std::fs::remove_file(&header).unwrap();
+        assert!(!has_usd_imaging_sdk(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Write a runtime `bin/` tool, marking it executable on Unix so it satisfies
