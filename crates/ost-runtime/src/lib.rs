@@ -31,4 +31,4 @@ pub use ost_platform::{
 };
 pub use profile::{Profile, ProfileCatalog, Requires};
 pub use runtime::{python_abi_tag, python_minor, Runtime};
-pub use validate::{validate, Check, ValidationReport};
+pub use validate::{has_usd_imaging_sdk, validate, Check, ValidationReport};

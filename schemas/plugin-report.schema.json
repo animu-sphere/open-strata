@@ -17,6 +17,7 @@
         "usd-asset-resolver",
         "usd-package-resolver",
         "usd-exec",
+        "usd-imaging",
         "usd-schema",
         "usdview-plugin"
       ]

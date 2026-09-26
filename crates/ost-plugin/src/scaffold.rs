@@ -387,6 +387,49 @@ const USD_EXEC_CPP: &[TemplateFile] = &[
 
 const USD_EXEC_CPP_DESCRIPTOR: &str = include_str!("../../../templates/usd-exec-cpp/template.yaml");
 
+const USD_IMAGING_CPP: &[TemplateFile] = &[
+    tf(
+        "openstrata.plugin.yaml",
+        include_str!("../../../templates/usd-imaging-cpp/openstrata.plugin.yaml"),
+    ),
+    tf(
+        "CMakeLists.txt",
+        include_str!("../../../templates/usd-imaging-cpp/CMakeLists.txt"),
+    ),
+    tf(
+        "README.md",
+        include_str!("../../../templates/usd-imaging-cpp/README.md"),
+    ),
+    tf(
+        ".gitignore",
+        include_str!("../../../templates/usd-imaging-cpp/.gitignore"),
+    ),
+    tf(
+        "src/{{Name}}APIAdapter.cpp",
+        include_str!("../../../templates/usd-imaging-cpp/src/{{Name}}APIAdapter.cpp"),
+    ),
+    tf(
+        "plugin/resources/{{name}}/plugInfo.json.in",
+        include_str!(
+            "../../../templates/usd-imaging-cpp/plugin/resources/{{name}}/plugInfo.json.in"
+        ),
+    ),
+    tf(
+        "tests/fixtures/basic.usda",
+        include_str!("../../../templates/usd-imaging-cpp/tests/fixtures/basic.usda"),
+    ),
+    tf(
+        ".clang-format",
+        include_str!("../../../templates/_shared/.clang-format"),
+    ),
+    tf(
+        "cmake/OpenStrataPlugin.cmake",
+        include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake"),
+    ),
+];
+const USD_IMAGING_CPP_DESCRIPTOR: &str =
+    include_str!("../../../templates/usd-imaging-cpp/template.yaml");
+
 /// A truthful usdview host add-on: Python registration and payload, optionally
 /// extended by a project with a native Python module.
 const USDVIEW_PLUGIN_PYTHON: &[TemplateFile] = &[
@@ -648,6 +691,10 @@ pub fn scaffold_with_template_inputs(
             descriptor: USD_PACKAGE_RESOLVER_CPP_DESCRIPTOR,
             files: USD_PACKAGE_RESOLVER_CPP,
         },
+        (PluginKind::UsdImaging, "usd-imaging-cpp") => EmbeddedTemplate {
+            descriptor: USD_IMAGING_CPP_DESCRIPTOR,
+            files: USD_IMAGING_CPP,
+        },
         (PluginKind::UsdExec, "usd-exec-cpp") => EmbeddedTemplate {
             descriptor: USD_EXEC_CPP_DESCRIPTOR,
             files: USD_EXEC_CPP,
@@ -703,7 +750,7 @@ pub fn scaffold_with_template_inputs(
                     .into(),
             ))
         }
-        (PluginKind::UsdExec, None, None, Some(exec)) => {
+        (PluginKind::UsdExec | PluginKind::UsdImaging, None, None, Some(exec)) => {
             validate_name(exec.schema_bundle)?;
             validate_cpp_identifier("schema type", exec.schema_type)?;
             (
@@ -713,9 +760,9 @@ pub fn scaffold_with_template_inputs(
                 exec.schema_type.to_string(),
             )
         }
-        (PluginKind::UsdExec, None, None, None) => {
+        (PluginKind::UsdExec | PluginKind::UsdImaging, None, None, None) => {
             return Err(Error::Operation(
-                "usd-exec needs --schema-bundle <id> and --schema-type <CppSchemaType>".into(),
+                "usd-exec/usd-imaging needs --schema-bundle <id> and --schema-type <SchemaName>".into(),
             ))
         }
         (PluginKind::UsdSchema, None, None, None) => (
@@ -732,7 +779,7 @@ pub fn scaffold_with_template_inputs(
         ),
         (kind, _, _, _) => {
             return Err(Error::Operation(format!(
-                "options do not match plugin kind '{}': use --extension for usd-fileformat or usd-package-resolver, --scheme for usd-asset-resolver, and schema inputs only for usd-exec",
+                "options do not match plugin kind '{}': use --extension for usd-fileformat or usd-package-resolver, --scheme for usd-asset-resolver, and schema inputs only for usd-exec or usd-imaging",
                 kind.as_str()
             )))
         }
@@ -838,6 +885,7 @@ pub const fn default_template_id(kind: PluginKind) -> &'static str {
         PluginKind::UsdAssetResolver => "usd-asset-resolver-cpp",
         PluginKind::UsdPackageResolver => "usd-package-resolver-cpp",
         PluginKind::UsdExec => "usd-exec-cpp",
+        PluginKind::UsdImaging => "usd-imaging-cpp",
         PluginKind::UsdviewPlugin => "usdview-plugin-python",
     }
 }
@@ -850,6 +898,7 @@ pub const fn template_ids(kind: PluginKind) -> &'static [&'static str] {
         PluginKind::UsdAssetResolver => &["usd-asset-resolver-cpp"],
         PluginKind::UsdPackageResolver => &["usd-package-resolver-cpp"],
         PluginKind::UsdExec => &["usd-exec-cpp"],
+        PluginKind::UsdImaging => &["usd-imaging-cpp"],
         PluginKind::UsdviewPlugin => &["usdview-plugin-python"],
     }
 }
@@ -1216,6 +1265,7 @@ mod tests {
             ("usd-asset-resolver-cpp", USD_ASSET_RESOLVER_CPP, true),
             ("usd-package-resolver-cpp", USD_PACKAGE_RESOLVER_CPP, true),
             ("usd-exec-cpp", USD_EXEC_CPP, true),
+            ("usd-imaging-cpp", USD_IMAGING_CPP, true),
             ("usdview-plugin-python", USDVIEW_PLUGIN_PYTHON, false),
         ] {
             let actual_ignore = files

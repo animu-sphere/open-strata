@@ -58,7 +58,7 @@ pub enum PluginCmd {
     /// Scaffold a new plugin bundle from a template.
     New {
         /// Plugin kind: usd-fileformat | usd-asset-resolver |
-        /// usd-package-resolver | usd-exec | usd-schema | usdview-plugin.
+        /// usd-package-resolver | usd-exec | usd-imaging | usd-schema | usdview-plugin.
         kind: String,
         /// Plugin name (becomes the bundle directory), e.g. `toy`.
         name: String,
@@ -69,12 +69,12 @@ pub enum PluginCmd {
         /// URI scheme the resolver handles (required for usd-asset-resolver).
         #[arg(long)]
         scheme: Option<String>,
-        /// Public schema bundle whose contract the OpenExec plugin consumes
-        /// (required for usd-exec).
+        /// Public schema bundle whose contract the computation or imaging plugin consumes
+        /// (required for usd-exec and usd-imaging).
         #[arg(long)]
         schema_bundle: Option<String>,
         /// C++ schema type used by EXEC_REGISTER_COMPUTATIONS_FOR_SCHEMA
-        /// (required for usd-exec), e.g. VrmSchemaContractAPI.
+        /// or API schema name adapted by usd-imaging, e.g. VrmMToonAPI.
         #[arg(long)]
         schema_type: Option<String>,
         /// Catalog template id. usd-schema defaults to usd-schema-codeless;
@@ -1082,8 +1082,14 @@ fn build_one(
 
     // A build needs a concrete runtime to compile against.
     let (platform, profile) =
-        selection_for_capabilities(target, profile, &bundle.manifest.requires.capabilities)?;
+        selection_for_capabilities(target, profile, &bundle.manifest.required_capabilities())?;
     let (tgt, r) = build_target(&platform, &profile)?;
+    if bundle.manifest.kind() == PluginKind::UsdImaging
+        && !ost_runtime::has_usd_imaging_sdk(&r.artifact_prefix)
+    {
+        return Err(Error::coded("PLUGIN_IMAGING_RUNTIME_REQUIRED", Category::Precondition,
+            "usd-imaging requires an imaging runtime with the usdImaging SDK; a core runtime cannot build adapters"));
+    }
     let id = tgt.id();
     let external = if dry_run {
         Vec::new()
@@ -2334,8 +2340,7 @@ fn component_requirements(manifest: &ost_plugin::PluginManifest) -> Vec<serde_js
     })];
     requirements.extend(
         manifest
-            .requires
-            .capabilities
+            .required_capabilities()
             .iter()
             .map(|capability| serde_json::json!({"capability": capability})),
     );
@@ -5783,7 +5788,7 @@ fn publish(
 ) -> Result<()> {
     let bundle = load_bundle(bundle_path)?;
     let (platform, profile) =
-        selection_for_capabilities(target, profile, &bundle.manifest.requires.capabilities)?;
+        selection_for_capabilities(target, profile, &bundle.manifest.required_capabilities())?;
     let (tgt, _r) = build_target(&platform, &profile)?;
     let id = tgt.id();
 
@@ -6417,7 +6422,7 @@ fn test_workspace_from_package(
         required_capabilities.insert("usdview".to_string());
     }
     for bundle in bundles.iter().chain(explicit_bundles.iter()) {
-        required_capabilities.extend(bundle.manifest.requires.capabilities.iter().cloned());
+        required_capabilities.extend(bundle.manifest.required_capabilities());
     }
     let required_capabilities = required_capabilities.into_iter().collect::<Vec<_>>();
     let (platform, profile) = selection_for_capabilities(target, profile, &required_capabilities)?;
@@ -6611,6 +6616,7 @@ fn test_bundle(
     host: &Host,
     up_to: u8,
 ) -> Result<(DoctorReport, Utf8PathBuf)> {
+    check_imaging_conflicts(bundle, with_bundles)?;
     let ctx = resolved.map(runtime_context).unwrap_or_default();
     let session = match resolved {
         Some(r) => {
@@ -6651,7 +6657,21 @@ fn test_bundle(
     let mut report = diagnose(bundle, &ctx, 1);
     if up_to >= 2 {
         if ctx.real {
-            let probe = ProcessProbe::new(session.resolve());
+            let mut probe = ProcessProbe::new(session.resolve());
+            if bundle.manifest.kind() == PluginKind::UsdImaging {
+                probe.imaging_probe = Some(if report.passed() {
+                    resolved
+                        .ok_or_else(|| "no selected imaging runtime".to_string())
+                        .and_then(|r| {
+                            prepare_imaging_probe(bundle, r, &session).map_err(|e| e.to_string())
+                        })
+                } else {
+                    Err(
+                        "L0/L1 failed; repair bundle metadata and the imaging runtime before L2"
+                            .into(),
+                    )
+                });
+            }
             let tools = locate_tools(resolved, &probe);
             let sess = Session {
                 probe: &probe,
@@ -6852,7 +6872,7 @@ fn test_workspace(
         required.insert("usdview".to_string());
     }
     for bundle in bundles.iter().chain(explicit_bundles.iter()) {
-        required.extend(bundle.manifest.requires.capabilities.iter().cloned());
+        required.extend(bundle.manifest.required_capabilities());
     }
     let required = required.into_iter().collect::<Vec<_>>();
     let resolved = resolve_runtime_for_capabilities(target, profile, &required)?;
@@ -9408,6 +9428,7 @@ fn merge_composed_bundles(
         seen.insert(id, actual);
         merged.push(bundle);
     }
+    check_imaging_conflicts(primary, &merged)?;
     Ok(merged)
 }
 
@@ -9549,19 +9570,172 @@ fn test_view(
     finish(&report)
 }
 
+fn check_imaging_conflicts(primary: &Bundle, with: &[Bundle]) -> Result<()> {
+    let bundles = std::iter::once(primary)
+        .chain(with.iter())
+        .collect::<Vec<_>>();
+    let conflicts = ost_plugin::imaging_conflicts(&bundles);
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    Err(Error::coded(
+        "PLUGIN_IMAGING_CONFLICT",
+        Category::Validation,
+        conflicts.join("; "),
+    ))
+}
+
+struct ImagingProbe {
+    root: Utf8PathBuf,
+    program: String,
+}
+
+impl Drop for ImagingProbe {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Build our native checker in an isolated tree against the exact selected SDK.
+/// Fresh trees avoid stale CMake compiler/runtime identities and concurrent writes.
+fn prepare_imaging_probe(
+    bundle: &Bundle,
+    r: &crate::commands::Resolved,
+    session: &EnvSet,
+) -> Result<ImagingProbe> {
+    if session
+        .resolve()
+        .iter()
+        .find(|(key, _)| key == "USDIMAGING_ENABLE_PLUGINS")
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var("USDIMAGING_ENABLE_PLUGINS").ok())
+        .as_deref()
+        == Some("0")
+    {
+        return Err(Error::config(
+            "USDIMAGING_ENABLE_PLUGINS=0 disables external imaging adapters",
+        ));
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    // Package extraction paths can exceed MSVC's path limit. Use a short,
+    // unique host temporary tree and remove only that owned tree on drop.
+    let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
+        .map_err(|_| Error::config("temporary path is not UTF-8"))?
+        .join(format!("ost-imaging-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&dir).map_err(|e| Error::io(dir.to_string(), e))?;
+    let native = ImagingProbe {
+        program: dir
+            .join("build/bin")
+            .join(if cfg!(windows) {
+                "ost-usd-imaging-probe.exe"
+            } else {
+                "ost-usd-imaging-probe"
+            })
+            .to_string(),
+        root: dir.clone(),
+    };
+    let target = ost_build::Target {
+        platform: r.runtime.platform.clone(),
+        profile: r.runtime.profile.clone(),
+        variant: r.runtime.variant.clone(),
+        runtime_id: r.runtime.id(),
+        runtime_digest: String::new(),
+        python_version: r.python_version.clone(),
+        cxx_standard: r.cxx_standard.clone(),
+        capabilities: r.capabilities.clone(),
+        generator: "Ninja".into(),
+    };
+    let compiler = resolve_plugin_compiler(&bundle.root, &CompilerOpts::default())?;
+    let python = ost_build::resolve_for_runtime(&r.artifact_prefix, &r.python_version);
+    let toolchain =
+        ost_build::render_toolchain(&target, &r.artifact_prefix, &compiler, python.as_ref());
+    for (name, text) in [
+        (
+            "main.cpp",
+            include_str!("../../../ost-plugin/src/imaging_probe.cpp"),
+        ),
+        (
+            "CMakeLists.txt",
+            include_str!("../../../ost-plugin/src/imaging_probe.cmake"),
+        ),
+        (
+            "OpenStrataPlugin.cmake",
+            include_str!("../../../../templates/_shared/cmake/OpenStrataPlugin.cmake"),
+        ),
+        ("toolchain.cmake", toolchain.as_str()),
+    ] {
+        std::fs::write(dir.join(name), text)
+            .map_err(|e| Error::io(dir.join(name).to_string(), e))?;
+    }
+    let env = compose_build_env(&maybe_bootstrap_msvc(target.os(), true), session);
+    let probe = ProcessProbe::new(env);
+    let build = dir.join("build");
+    for args in [
+        vec![
+            "-S".into(),
+            cmake_path(&dir),
+            "-B".into(),
+            cmake_path(&build),
+            "-G".into(),
+            "Ninja".into(),
+            format!(
+                "-DCMAKE_TOOLCHAIN_FILE={}",
+                cmake_path(&dir.join("toolchain.cmake"))
+            ),
+            "-DCMAKE_BUILD_TYPE=Release".into(),
+        ],
+        vec![
+            "--build".into(),
+            cmake_path(&build),
+            "--config".into(),
+            "Release".into(),
+        ],
+    ] {
+        let out = probe.run(
+            "cmake",
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        if !out.ok() {
+            return Err(Error::config(format!("could not build native UsdImaging registry probe (requires CMake, Ninja and a C++ compiler): {}\n{}", out.stderr, out.stdout)));
+        }
+    }
+    Ok(native)
+}
+
 /// A [`Probe`] that spawns real processes with the resolved session env applied
 /// on top of the current environment (no global mutation).
 struct ProcessProbe {
     env: Vec<(String, String)>,
+    imaging_probe: Option<std::result::Result<ImagingProbe, String>>,
 }
 
 impl ProcessProbe {
     fn new(env: Vec<(String, String)>) -> ProcessProbe {
-        ProcessProbe { env }
+        ProcessProbe {
+            env,
+            imaging_probe: None,
+        }
     }
 }
 
 impl Probe for ProcessProbe {
+    fn run_imaging(&self, args: &[&str]) -> ToolOutput {
+        match &self.imaging_probe {
+            Some(Ok(native)) => self.run(&native.program, args),
+            result => ToolOutput {
+                code: None,
+                stdout: String::new(),
+                stderr: match result {
+                    Some(Err(message)) => message.clone(),
+                    _ => "native imaging registry probe is unavailable".into(),
+                },
+            },
+        }
+    }
+
     fn run(&self, program: &str, args: &[&str]) -> ToolOutput {
         let mut cmd = Command::new(self.session_program(program));
         cmd.args(args);
@@ -9735,7 +9909,7 @@ fn session_capabilities(primary: &Bundle, with: &[Bundle], needs_usdview: bool) 
         required.insert("usdview".to_string());
     }
     for bundle in std::iter::once(primary).chain(with.iter()) {
-        required.extend(bundle.manifest.requires.capabilities.iter().cloned());
+        required.extend(bundle.manifest.required_capabilities());
     }
     required.into_iter().collect()
 }
@@ -11036,6 +11210,7 @@ fn runtime_context(r: &crate::commands::Resolved) -> RuntimeContext {
         cxx_abi: Some(runtime_cxx_abi(&r.runtime.variant)),
         python_abi: Some(r.runtime.variant.python_abi()),
         pulled: r.pulled,
+        imaging: ost_runtime::has_usd_imaging_sdk(&r.artifact_prefix),
         ..RuntimeContext::default()
     };
     if r.pulled {

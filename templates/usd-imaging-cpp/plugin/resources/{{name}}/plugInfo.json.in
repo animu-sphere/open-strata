@@ -1,0 +1,17 @@
+{
+    "Plugins": [{
+        "Type": "library",
+        "Name": "{{Name}}Imaging",
+        "Root": ".",
+        "LibraryPath": "../../../lib/@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@{{Name}}Imaging@CMAKE_SHARED_LIBRARY_SUFFIX@",
+        "ResourcePath": ".",
+        "Info": {
+            "Types": {
+                "{{Name}}APIAdapter": {
+                    "bases": ["UsdImagingAPISchemaAdapter"],
+                    "apiSchemaName": "{{SchemaType}}"
+                }
+            }
+        }
+    }]
+}

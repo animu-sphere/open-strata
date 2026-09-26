@@ -3367,6 +3367,63 @@ fn generated_openexec_plugin_requires_schema_contract_inputs() {
 }
 
 #[test]
+fn imaging_scaffold_graph_and_explicit_session_conflicts() {
+    let sb = Sandbox::new("imaging-contract");
+    let missing = sb.ost(&["plugin", "new", "usd-imaging", "missing"]);
+    assert!(out_text(&missing).contains("needs --schema-bundle"));
+    for name in ["first", "second"] {
+        let out = sb.ost(&[
+            "plugin",
+            "new",
+            "usd-imaging",
+            name,
+            "--schema-bundle",
+            "schema",
+            "--schema-type",
+            "MaterialAPI",
+        ]);
+        assert!(out.status.success(), "{}", out_text(&out));
+        let root = Utf8PathBuf::from_path_buf(sb.work.join(name)).unwrap();
+        let bundle = ost_plugin::Bundle::load(&root).unwrap();
+        assert_eq!(bundle.manifest.kind(), ost_plugin::PluginKind::UsdImaging);
+        let json =
+            ost_plugin::parse_plug_info(&std::fs::read_to_string(bundle.plug_info()).unwrap())
+                .unwrap();
+        assert_eq!(
+            ost_plugin::validate_imaging_metadata(&bundle, &json).status,
+            ost_plugin::Status::Pass
+        );
+        // Clear only the external schema edge to isolate duplicate ownership.
+        let path = root.join("openstrata.plugin.yaml");
+        let mut manifest = bundle.manifest;
+        manifest.requires.bundles.clear();
+        std::fs::write(path, serde_yaml::to_string(&manifest).unwrap()).unwrap();
+    }
+    let graph = sb.ost(&["plugin", "test", "--workspace", "--graph-only"]);
+    assert!(!graph.status.success());
+    assert!(
+        out_text(&graph).contains("WORKSPACE_IMAGING_CONFLICT"),
+        "{}",
+        out_text(&graph)
+    );
+    let session = sb.ost(&[
+        "plugin",
+        "run",
+        "first",
+        "--with",
+        "second",
+        "--",
+        "unused-command",
+    ]);
+    assert!(!session.status.success());
+    assert!(
+        out_text(&session).contains("IMAGING_CONFLICT"),
+        "{}",
+        out_text(&session)
+    );
+}
+
+#[test]
 fn compiled_schema_template_is_selected_explicitly_and_reported() {
     let sb = Sandbox::new("schema-cpp-scaffold");
     let out = sb.ost(&[

@@ -1002,7 +1002,7 @@ Scaffold a new plugin bundle from a template
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `<KIND>` | yes | Plugin kind: usd-fileformat \| usd-asset-resolver \| usd-package-resolver \| usd-exec \| usd-schema \| usdview-plugin |
+| `<KIND>` | yes | Plugin kind: usd-fileformat \| usd-asset-resolver \| usd-package-resolver \| usd-exec \| usd-imaging \| usd-schema \| usdview-plugin |
 | `<NAME>` | yes | Plugin name (becomes the bundle directory), e.g. `toy` |
 
 **Options:**
@@ -1011,8 +1011,8 @@ Scaffold a new plugin bundle from a template
 | --- | --- |
 | `--dir <DIR>` | Destination directory. Defaults to ./<name> |
 | `--extension <EXTENSION>` | File extension the plugin handles (required for usd-fileformat and usd-package-resolver) |
-| `--schema-bundle <SCHEMA_BUNDLE>` | Public schema bundle whose contract the OpenExec plugin consumes (required for usd-exec) |
-| `--schema-type <SCHEMA_TYPE>` | C++ schema type used by EXEC_REGISTER_COMPUTATIONS_FOR_SCHEMA (required for usd-exec), e.g. VrmSchemaContractAPI |
+| `--schema-bundle <SCHEMA_BUNDLE>` | Public schema bundle whose contract the computation or imaging plugin consumes (required for usd-exec and usd-imaging) |
+| `--schema-type <SCHEMA_TYPE>` | C++ schema type used by EXEC_REGISTER_COMPUTATIONS_FOR_SCHEMA or API schema name adapted by usd-imaging, e.g. VrmMToonAPI |
 | `--scheme <SCHEME>` | URI scheme the resolver handles (required for usd-asset-resolver) |
 | `--template <TEMPLATE>` | Catalog template id. usd-schema defaults to usd-schema-codeless; use usd-schema-cpp for the experimental compiled skeleton |
 

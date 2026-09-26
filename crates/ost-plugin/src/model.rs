@@ -49,6 +49,7 @@ pub enum PluginKind {
     UsdAssetResolver,
     UsdPackageResolver,
     UsdExec,
+    UsdImaging,
     UsdSchema,
     /// A Python (optionally native-backed) extension loaded by usdview.
     ///
@@ -65,6 +66,7 @@ impl PluginKind {
             PluginKind::UsdAssetResolver => "usd-asset-resolver",
             PluginKind::UsdPackageResolver => "usd-package-resolver",
             PluginKind::UsdExec => "usd-exec",
+            PluginKind::UsdImaging => "usd-imaging",
             PluginKind::UsdSchema => "usd-schema",
             PluginKind::UsdviewPlugin => "usdview-plugin",
         }
@@ -76,6 +78,7 @@ impl PluginKind {
             "usd-asset-resolver" => Some(PluginKind::UsdAssetResolver),
             "usd-package-resolver" => Some(PluginKind::UsdPackageResolver),
             "usd-exec" => Some(PluginKind::UsdExec),
+            "usd-imaging" => Some(PluginKind::UsdImaging),
             "usd-schema" => Some(PluginKind::UsdSchema),
             "usdview-plugin" => Some(PluginKind::UsdviewPlugin),
             _ => None,
@@ -83,11 +86,12 @@ impl PluginKind {
     }
 
     /// Every kind, for help text and validation messages.
-    pub const ALL: [PluginKind; 6] = [
+    pub const ALL: [PluginKind; 7] = [
         PluginKind::UsdFileformat,
         PluginKind::UsdAssetResolver,
         PluginKind::UsdPackageResolver,
         PluginKind::UsdExec,
+        PluginKind::UsdImaging,
         PluginKind::UsdSchema,
         PluginKind::UsdviewPlugin,
     ];
@@ -407,6 +411,17 @@ impl PluginManifest {
 
     pub fn kind(&self) -> PluginKind {
         self.plugin.kind
+    }
+
+    /// Include requirements intrinsic to a kind even in hand-authored bundles.
+    pub fn required_capabilities(&self) -> Vec<String> {
+        let mut capabilities = self.requires.capabilities.clone();
+        if self.kind() == PluginKind::UsdImaging {
+            capabilities.push("hydra-preview".into());
+        }
+        capabilities.sort();
+        capabilities.dedup();
+        capabilities
     }
 
     /// The schema type identifiers this bundle *declares* via `provides`
