@@ -46,6 +46,8 @@ pub struct RenderProducts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameContract {
+    /// Independently reusable frame contexts supported by the backend, not
+    /// swapchain image count or the number of frames in a validation run.
     pub contexts: u32,
     /// Ownership/completion contract label. The schema does not prescribe a
     /// semaphore, fence, queue, or frame-graph implementation.

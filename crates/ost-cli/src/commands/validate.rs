@@ -30,7 +30,7 @@ pub struct ValidateArgs {
     #[arg(long)]
     profile: Option<String>,
 
-    /// Validate the build produced for this project-declared intent.
+    /// Validate a project-declared intent or the built-in `renderer-viewport` intent.
     #[arg(long, conflicts_with = "build_dir")]
     intent: Option<String>,
 
@@ -100,7 +100,7 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     let project_version = project.effective_version(&root)?;
     let (target, r) = build_target(&platform, &profile)?;
     let id = target.id();
-    let intent = crate::commands::build::resolve_declared_intent(&root, args.intent.as_deref())?;
+    let intent = resolve_validation_intent(&root, args.intent.as_deref())?;
 
     let mut checks = Vec::new();
 
@@ -404,6 +404,31 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
     Ok(())
 }
 
+fn resolve_validation_intent(
+    root: &camino::Utf8Path,
+    selected: Option<&str>,
+) -> Result<ost_build::BuildIntent> {
+    let project = load_project(root)?;
+    if selected == Some("renderer-viewport")
+        && !project
+            .build
+            .as_ref()
+            .is_some_and(|build| build.intents.contains_key("renderer-viewport"))
+    {
+        let manifest = RendererManifest::load(root)?;
+        if !manifest.composition.adapters.contains_key("viewport") {
+            return Err(Error::config(
+                "renderer composition has no viewport adapter",
+            ));
+        }
+        return Ok(ost_build::BuildIntent {
+            name: "renderer-viewport".into(),
+            cache: Default::default(),
+        });
+    }
+    crate::commands::build::resolve_declared_intent(root, selected)
+}
+
 fn viewport_launch_check(
     root: &camino::Utf8Path,
     target_id: &str,
@@ -411,11 +436,8 @@ fn viewport_launch_check(
     expected_intent: &ost_build::BuildIntent,
     build: Option<&BuildCompletion>,
 ) -> Check {
-    let path = root
-        .join(STATE_DIR)
-        .join("renderer-viewport")
-        .join(target_id)
-        .join("launch.json");
+    let path =
+        crate::commands::renderer::existing_viewport_launch_record_path(root, target_id, build_dir);
     let source = match std::fs::read_to_string(path.as_std_path()) {
         Ok(source) => source,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -441,6 +463,15 @@ fn viewport_launch_check(
         );
     }
     let recorded_build_dir = value.get("build_dir").and_then(|item| item.as_str());
+    if recorded_build_dir.is_some_and(|recorded| !same_path(recorded, build_dir.as_str()))
+        && path
+            != crate::commands::renderer::viewport_launch_record_path(root, target_id, build_dir)
+    {
+        return Check::skip(
+            "renderer-viewport",
+            "legacy viewport launch belongs to another build directory",
+        );
+    }
     if recorded_build_dir.is_none_or(|recorded| !same_path(recorded, build_dir.as_str())) {
         return Check::fail(
             "renderer-viewport",
@@ -595,11 +626,9 @@ fn verify_managed_renderer_binding(
             .map(|completion| completion.renderer_reports.clone())
             .unwrap_or_default(),
         "ost-renderer-viewport" => {
-            let path = root
-                .join(STATE_DIR)
-                .join("renderer-viewport")
-                .join(target_id)
-                .join("launch.json");
+            let path = crate::commands::renderer::existing_viewport_launch_record_path(
+                root, target_id, build_dir,
+            );
             let source = std::fs::read_to_string(path.as_std_path()).map_err(|error| {
                 format!(
                     "managed producer '{}' has no durable viewport record at {} ({error})",
@@ -808,11 +837,8 @@ mod tests {
         let root = camino::Utf8PathBuf::from_path_buf(root).unwrap();
         let target = "cy2026-windows-x86_64-py313-usd";
         let build = root.join("build").join(target);
-        let record_path = root
-            .join(STATE_DIR)
-            .join("renderer-viewport")
-            .join(target)
-            .join("launch.json");
+        let record_path =
+            crate::commands::renderer::viewport_launch_record_path(&root, target, &build);
         std::fs::create_dir_all(record_path.parent().unwrap().as_std_path()).unwrap();
         std::fs::create_dir_all(build.as_std_path()).unwrap();
         let mut record = serde_json::json!({
@@ -835,6 +861,25 @@ mod tests {
         assert_eq!(
             viewport_launch_check(&root, target, &build, &expected_intent, None).status,
             Status::Pass
+        );
+
+        // A separate viewport tree cannot affect default-target validation.
+        let other_build = root
+            .join("build")
+            .join(format!("{target}--renderer-viewport"));
+        assert_eq!(
+            viewport_launch_check(&root, target, &other_build, &expected_intent, None).status,
+            Status::Skip
+        );
+        let legacy = root
+            .join(STATE_DIR)
+            .join("renderer-viewport")
+            .join(target)
+            .join("launch.json");
+        std::fs::write(&legacy, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert_eq!(
+            viewport_launch_check(&root, target, &other_build, &expected_intent, None).status,
+            Status::Skip
         );
 
         record["build_dir"] = root.join("other-build").to_string().into();
@@ -874,5 +919,32 @@ mod tests {
             Status::Fail
         );
         std::fs::remove_dir_all(root.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn validation_resolves_the_builtin_viewport_without_hiding_declared_intents() {
+        let root = std::env::temp_dir().join(format!("ost-viewport-intent-{}", std::process::id()));
+        let root = camino::Utf8PathBuf::from_path_buf(root).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        crate::project_template::scaffold(
+            crate::project_template::Template::Renderer,
+            "sample",
+            &root,
+            false,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("openstrata.toml"),
+            "[project]\nname = 'sample'\nversion = '0.1.0'\n[requires]\nplatform = 'cy2026'\nprofile = 'core'\n",
+        )
+        .unwrap();
+        let builtin = resolve_validation_intent(&root, Some("renderer-viewport")).unwrap();
+        assert_eq!(builtin.name, "renderer-viewport");
+        assert!(builtin.cache.is_empty());
+        assert!(resolve_validation_intent(&root, Some("missing")).is_err());
+        std::fs::write(root.join("openstrata.toml"), "[project]\nname = 'sample'\nversion = '0.1.0'\n[requires]\nplatform = 'cy2026'\nprofile = 'core'\n[build.intents.renderer-viewport.cache]\nSAMPLE_MODE = { type = 'STRING', value = 'custom' }\n").unwrap();
+        let declared = resolve_validation_intent(&root, Some("renderer-viewport")).unwrap();
+        assert_eq!(declared.cache["SAMPLE_MODE"].value, "custom");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

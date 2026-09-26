@@ -790,6 +790,30 @@ fn renderer_report_file_state(path: &Utf8Path) -> Result<RendererReportFileState
     Ok(RendererReportFileState { bytes, modified })
 }
 
+/// Retain only previously bound bytes untouched by this operation. The caller
+/// must first verify that the previous completion has the same build identity.
+pub(crate) fn retain_unchanged_renderer_bindings(
+    build_dir: &Utf8Path,
+    before: &RendererReportSnapshot,
+    previous: &[RendererEvidenceBinding],
+    mut changed: Vec<RendererEvidenceBinding>,
+) -> Vec<RendererEvidenceBinding> {
+    for binding in previous {
+        if changed.iter().any(|item| item.path == binding.path) {
+            continue;
+        }
+        let path = build_dir.join(&binding.path);
+        if let Some(state) = before.files.get(&path) {
+            if ost_core::digest::sha256_hex(&state.bytes) == binding.sha256
+                && renderer_report_file_state(&path).ok().as_ref() == Some(state)
+            {
+                changed.push(binding.clone());
+            }
+        }
+    }
+    changed
+}
+
 /// Stamp every renderer report created or rewritten by this managed operation.
 /// A no-op incremental build therefore preserves the earlier producer instead
 /// of laundering old evidence through the new invocation.
@@ -1324,8 +1348,8 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
     }
     // A failed run must not leave a previous successful launch record looking
     // current to `ost validate`.
-    invalidate_viewport_launch_record(&root, &target.id())?;
     let build_dir = root.join(build::build_dir_for_intent(&target.id(), &intent));
+    invalidate_viewport_launch_record(&root, &target.id(), &build_dir)?;
     if !fmt.is_json() {
         println!("==> preparing managed viewport build: {build_dir}");
     }
@@ -1462,11 +1486,7 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
             .any(|arg| arg.eq_ignore_ascii_case("--hidden"))
             .then(|| "hidden".to_string())
     });
-    let record_path = root
-        .join(STATE_DIR)
-        .join("renderer-viewport")
-        .join(target.id())
-        .join("launch.json");
+    let record_path = viewport_launch_record_path(&root, &target.id(), &build_dir);
     let record = viewport_launch_record(
         &executable,
         &platform,
@@ -1606,11 +1626,7 @@ fn write_viewport_build_failure_record(
     build_timeout: u64,
     started_unix: u64,
 ) -> Result<Value> {
-    let record_path = root
-        .join(STATE_DIR)
-        .join("renderer-viewport")
-        .join(target_id)
-        .join("launch.json");
+    let record_path = viewport_launch_record_path(root, target_id, build_dir);
     let record = serde_json::json!({
         "schema": "openstrata.renderer-launch/v1",
         "kind": "renderer-viewport",
@@ -1657,12 +1673,46 @@ fn write_viewport_build_failure_record(
     }))
 }
 
-fn invalidate_viewport_launch_record(root: &Utf8Path, target_id: &str) -> Result<()> {
-    let path = root
-        .join(STATE_DIR)
+pub(crate) fn viewport_launch_record_path(
+    root: &Utf8Path,
+    target_id: &str,
+    build_dir: &Utf8Path,
+) -> Utf8PathBuf {
+    let relative = build_dir.strip_prefix(root).unwrap_or(build_dir);
+    let mut key = relative.as_str().replace('\\', "/");
+    if cfg!(windows) {
+        key.make_ascii_lowercase();
+    }
+    root.join(STATE_DIR)
         .join("renderer-viewport")
         .join(target_id)
-        .join("launch.json");
+        .join(ost_core::digest::sha256_hex(key.trim_end_matches('/').as_bytes()).replace(':', "-"))
+        .join("launch.json")
+}
+
+/// Read old target-wide records only when no build-scoped record exists.
+pub(crate) fn existing_viewport_launch_record_path(
+    root: &Utf8Path,
+    target_id: &str,
+    build_dir: &Utf8Path,
+) -> Utf8PathBuf {
+    let path = viewport_launch_record_path(root, target_id, build_dir);
+    if path.exists() {
+        path
+    } else {
+        root.join(STATE_DIR)
+            .join("renderer-viewport")
+            .join(target_id)
+            .join("launch.json")
+    }
+}
+
+fn invalidate_viewport_launch_record(
+    root: &Utf8Path,
+    target_id: &str,
+    build_dir: &Utf8Path,
+) -> Result<()> {
+    let path = viewport_launch_record_path(root, target_id, build_dir);
     match std::fs::remove_file(path.as_std_path()) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -2647,6 +2697,25 @@ validation:
         );
         let report = RendererReport::load(&report_path).unwrap();
         assert_eq!(report.producer.as_ref().unwrap().id, "ost-build-0123abcd");
+        let retained = retain_unchanged_renderer_bindings(&build, &unchanged, &bindings, vec![]);
+        assert_eq!(retained, bindings);
+        // No validated previous completion means there is nothing to retain.
+        assert!(retain_unchanged_renderer_bindings(&build, &unchanged, &[], vec![]).is_empty());
+        let mut modified = std::fs::read(&report_path).unwrap();
+        modified.push(b'\n');
+        std::fs::write(&report_path, modified).unwrap();
+        assert!(
+            retain_unchanged_renderer_bindings(&build, &unchanged, &bindings, vec![]).is_empty()
+        );
+        let modified_before = snapshot_managed_renderer_reports(&root, &build).unwrap();
+        assert!(
+            retain_unchanged_renderer_bindings(&build, &modified_before, &bindings, vec![])
+                .is_empty()
+        );
+        std::fs::remove_file(&report_path).unwrap();
+        assert!(
+            retain_unchanged_renderer_bindings(&build, &unchanged, &bindings, vec![]).is_empty()
+        );
         std::fs::remove_dir_all(root.as_std_path()).unwrap();
     }
 

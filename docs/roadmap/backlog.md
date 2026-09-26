@@ -39,7 +39,8 @@ active milestone into those systems.
   [component-package-contracts.md](../design/proposed/component-package-contracts.md);
   staged work: [component-package-contracts.md](component-package-contracts.md).
 - ⬜ **Renderer skeleton promotion.** Complete the hosted OS/OpenUSD matrix and
-  apply the contract to a second independent renderer. Instancing, materials,
+  extend the [hydra-toon](../projects/hydra-toon.md) bootstrap to independently
+  implemented renderer acceptance. Instancing, materials,
   upload policy and zero-copy interop remain renderer-owned. Direction:
   [renderer-templates.md](../design/proposed/renderer-templates.md).
 - ⬜ **Sessions / sandbox.** Add `ost session start|fork|diff|discard|promote`,

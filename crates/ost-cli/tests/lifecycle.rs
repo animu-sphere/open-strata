@@ -2006,6 +2006,13 @@ fn renderer_managed_build_and_test_stamp_the_owning_sessions() {
     );
 
     let pristine_report = std::fs::read(&report_path).unwrap();
+    for _ in 0..2 {
+        let incremental = sb.ost(&["build", "--progress", "plain"]);
+        assert!(incremental.status.success(), "{}", out_text(&incremental));
+        assert_eq!(std::fs::read(&report_path).unwrap(), pristine_report);
+        let validate = sb.ost(&["--json", "validate"]);
+        assert!(validate.status.success(), "{}", out_text(&validate));
+    }
     let validate = sb.ost(&["--json", "validate"]);
     assert!(
         validate.status.success(),
@@ -2060,6 +2067,42 @@ fn renderer_managed_build_and_test_stamp_the_owning_sessions() {
     assert!(test_completion.renderer_reports.iter().any(|binding| {
         binding.path == "renderer-ctest-report.json" && binding.session == test_producer.id
     }));
+    let incremental = sb.ost(&["build", "--progress", "plain"]);
+    assert!(incremental.status.success(), "{}", out_text(&incremental));
+    let validate = sb.ost(&["--json", "validate"]);
+    assert!(validate.status.success(), "{}", out_text(&validate));
+
+    // A prior completion from another configuration cannot carry evidence
+    // forward even when the report itself has not changed.
+    let completion_path = report_path
+        .parent()
+        .unwrap()
+        .join(ost_build::BUILD_COMPLETION_FILE);
+    let completion_bytes = std::fs::read(&completion_path).unwrap();
+    let mut incompatible: ost_build::BuildCompletion =
+        serde_json::from_slice(&completion_bytes).unwrap();
+    incompatible.intent.cache.insert(
+        "CMAKE_BUILD_TYPE".into(),
+        ost_build::CMakeCacheEntry::string("Debug"),
+    );
+    std::fs::write(&completion_path, incompatible.to_json().unwrap()).unwrap();
+    let incremental = sb.ost(&["build", "--progress", "plain"]);
+    assert!(incremental.status.success(), "{}", out_text(&incremental));
+    let validate = sb.ost(&["--json", "validate"]);
+    assert!(!validate.status.success());
+    assert!(out_text(&validate).contains("does not bind renderer report"));
+    std::fs::write(&completion_path, completion_bytes).unwrap();
+
+    // Bytes modified before the incremental build must not be adopted as its
+    // evidence, even when the build itself succeeds without rewriting them.
+    let mut tampered = std::fs::read(&report_path).unwrap();
+    tampered.extend_from_slice(b"\n");
+    std::fs::write(&report_path, tampered).unwrap();
+    let incremental = sb.ost(&["build", "--progress", "plain"]);
+    assert!(incremental.status.success(), "{}", out_text(&incremental));
+    let validate = sb.ost(&["--json", "validate"]);
+    assert!(!validate.status.success());
+    assert!(out_text(&validate).contains("does not bind renderer report"));
 }
 
 #[test]

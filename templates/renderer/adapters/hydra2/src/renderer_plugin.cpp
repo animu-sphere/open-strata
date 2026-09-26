@@ -4,6 +4,7 @@
 #include <pxr/pxr.h>
 
 #include <pxr/base/tf/registryManager.h>
+#include <pxr/imaging/hd/version.h>
 #include <pxr/imaging/hd/rendererCreateArgs.h>
 #include <pxr/imaging/hd/rendererPlugin.h>
 #include <pxr/imaging/hd/rendererPluginRegistry.h>
@@ -16,7 +17,15 @@ class Hd{{Name}}RendererPlugin final : public HdRendererPlugin {
 public:
   bool IsSupported(const HdRendererCreateArgs& args,
       std::string* reason_why_not) const override {
-    if (!args.gpuEnabled) {
+    // OpenUSD 26.08 uses a container schema; an absent source means enabled.
+#if HD_API_VERSION >= 98
+    const auto gpu_enabled_source = args.GetGpuEnabled();
+    const bool gpu_enabled =
+        !gpu_enabled_source || gpu_enabled_source->GetTypedValue(0.0F);
+#else
+    const bool gpu_enabled = args.gpuEnabled;
+#endif
+    if (!gpu_enabled) {
       if (reason_why_not != nullptr) {
         *reason_why_not = "{{Name}} requires a Vulkan-capable GPU";
       }

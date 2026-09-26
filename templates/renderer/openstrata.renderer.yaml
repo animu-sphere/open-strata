@@ -15,7 +15,8 @@ composition:
 render_products:
   required: [color, depth]
 frame:
-  contexts: 3
+  # Independently reusable frame contexts; this backend has one frame in flight.
+  contexts: 1
   completion: explicit
 validation:
   gpu_smoke: true

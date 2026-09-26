@@ -40,9 +40,10 @@ and needs no OpenUSD runtime:
 ```bash
 ost renderer viewport
 ost renderer viewport -- --frames 8 --hidden --vsync off
+ost validate --intent renderer-viewport
 ```
 
-The command requests the `viewport` intent (`OST_RENDERER_ADAPTERS=viewport`)
+The command requests the `renderer-viewport` intent (`OST_RENDERER_ADAPTERS=viewport`)
 from the ordinary managed build service and launches the built executable;
 everything after `--` is passed through. GLFW resolves via `find_package` or a
 pinned FetchContent fallback, so the first configure may download it. Direct
@@ -51,6 +52,10 @@ inside the adapter: the backend receives instance extensions plus a
 surface-creation callback and owns the `VkSurfaceKHR` and every swapchain
 object, which is the boundary a real renderer should keep as input handling,
 camera control, and scene hosting grow project-owned.
+
+The manifest's `frame.contexts: 1` describes one reusable frame context,
+matching the backend's one frame in flight. It does not count swapchain images
+or the frames rendered by a smoke test.
 
 ## Build and view the Hydra 2 adapter
 

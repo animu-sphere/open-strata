@@ -106,8 +106,8 @@ compatibility. The assertions remained bound to the completed managed producer.
 
 ## Current limitations
 
-- Renderer skeleton promotion and applying the contract to a second independent
-  renderer are still ahead (tracked in the
+- Renderer skeleton promotion and the full hosted matrix are still ahead.
+  [hydra-toon](hydra-toon.md) now exercises a second renderer bootstrap (tracked in the
   [roadmap backlog](../roadmap/backlog.md); direction in
   [renderer-templates.md](../design/proposed/renderer-templates.md)).
 - Full hosted OS/OpenUSD renderer acceptance is environment-dependent and

@@ -31,7 +31,9 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.23.6** — workspace-installed bundles now record
+The current release is **v0.23.7** — unchanged builds preserve renderer evidence,
+viewport launches have build-scoped validation, and renderer template 0.5.2
+supports OpenUSD 26.08 and Japanese Windows hosts. Workspace-installed bundles record
 their target-local installed outputs for packaging, so platform linker by-products
 absent from the install stage do not break product releases. The root build
 materializes digest-pinned external bundles and tools and exports their paths to
@@ -49,7 +51,7 @@ Post-release work covers hosted consumer and macOS evidence, downstream package
 loadability and external-library adoption, and the full DCC host
 matrix. Release defects will be fixed in v0.23.x.
 See the [composition guide](docs/guides/compose-a-runtime.md),
-[v0.23.6 record](docs/releases/v0.23.6.md),
+[v0.23.7 record](docs/releases/v0.23.7.md),
 [current roadmap](docs/roadmap/current.md) and
 [downstream report intake](docs/roadmap/downstream-report-intake.md).
 
@@ -77,8 +79,8 @@ across repository boundaries:
   stable asset identity and measured transfer evidence. It demonstrates the
   transport provider boundary consumed by independently released file formats.
 - [**USD Raster Plugins**](https://github.com/animu-sphere/usd-raster-plugins) —
-  an early GeoTIFF/raster plugin workspace with OpenUSD-independent core
-  libraries, explicit georeferencing and windowed reads. It demonstrates the
+  a GeoTIFF/raster plugin workspace with OpenUSD-independent core libraries,
+  released windowed reads and an initial regular-grid mesh slice. It demonstrates the
   raster side of transport-neutral runtime composition.
 - [**USD VRM Plugins**](https://github.com/animu-sphere/usd-vrm-plugins) — a
   multi-bundle OpenUSD plugin workspace (typed schemas, a VRM file-format plugin,
@@ -93,6 +95,12 @@ across repository boundaries:
 - [**USD Motion Plugins**](https://github.com/animu-sphere/usd-motion-plugins) —
   shared motion values, sampling, recording and USD authoring libraries; its
   installed consumer and VRM migration expose cross-repository package needs.
+- [**hydra-toon**](https://github.com/animu-sphere/hydra-toon) — an avatar-renderer
+  bootstrap exercising the renderer template, OpenUSD 26.08 Hydra integration,
+  incremental evidence and standalone viewport validation.
+- [**USD Physics Plugins**](https://github.com/animu-sphere/usd-physics-plugins) —
+  backend-neutral physics libraries with Jolt, installed-consumer evidence,
+  named build intents and published cross-repository library artifacts.
 - [**USD MMD Plugins**](https://github.com/animu-sphere/usd-mmd-plugins) — a
   PMX/VMD workspace that separates MMD format semantics from shared motion.
 - [**Motion Connectors**](https://github.com/animu-sphere/motion-connectors) —
@@ -100,7 +108,7 @@ across repository boundaries:
   a test of the empty-workspace CI boundary.
 
 Together they exercise plugin, ordinary-library, resolver, transport, raster,
-point-cloud, motion and renderer boundaries, with connector adoption planned.
+point-cloud, motion, physics and renderer boundaries, with connector adoption planned.
 They also exercise cross-repository **Formation** composition and the planned
 distributable geospatial runtime. See
 [docs/projects/](docs/projects/README.md).

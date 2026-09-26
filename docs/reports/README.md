@@ -7,6 +7,9 @@ and [reference/](../reference/)).
 
 | Document | Purpose |
 | --- | --- |
+| [2026-09-26 v0.23.7 renderer bootstrap](2026-09-26-v0.23.7-renderer-bootstrap.md) | Fresh template on Windows/MSVC and RTX A5000: repeated-build evidence, isolated viewport validation and OpenUSD 26.08 Hydra host tests. |
+| [hydra-toon report #1 — v0.23.6 renderer bootstrap](https://github.com/animu-sphere/hydra-toon/blob/main/docs/reports/ost/01-2026-09-26-v0.23.6-renderer-template-bootstrap.md) | Real Windows GPU/Hydra bootstrap, no-op evidence loss, viewport validation and template corrections; primary v0.23.7 intake. |
+| [USD Physics Phase 3 — Linux artifacts](https://github.com/animu-sphere/usd-physics-plugins/blob/main/docs/reports/2026-09-23-phase3-linux-artifacts.md) | Published library artifacts, empty-store verification, Stage Runner consumption and the external SDK consumer gap. |
 | [2026-08-26 USD VRM CI render prerequisites](2026-08-26-usd-vrm-ci-render-prerequisites.md) | OST 0.22.5 hosted Windows/macOS failures, Qt prerequisite skips, legacy WGL fallback, and local before/after evidence. |
 | [2026-07-14 v0.17.0 managed renderer view acceptance](2026-07-14-v0.17.0-managed-renderer-view-hydra-merlin.md) | Windows hdMerlin dogfooding of managed view, Hydra host tests, external builds, and report conflict policy. |
 | [USD 3DGS report #1 — bootstrap](https://github.com/animu-sphere/usd-3dgs-plugins/blob/main/docs/reports/ost/01-2026-07-18-v0.18.0-bootstrap.md) | Empty repository through scaffold, ordinary-library composition, source L5, package, and package-origin verification. |
@@ -30,7 +33,7 @@ and `22-2026-07-17-v0.17.0-evidence-gate-v0.18.0-asks.md`
 
 Reference repositories retain their own dated evidence; the
 [downstream report intake](../roadmap/downstream-report-intake.md#audit-coverage)
-lists every audited OST report series and the three new repositories with none.
+lists every audited OST report series and repositories with no numbered series.
 Open upstream findings are summarized in the [reference-project pages](../projects/)
 and tracked in the active [roadmap](../roadmap/current.md), rather than copied
 into a second normative source. The full report count and deduplicated
