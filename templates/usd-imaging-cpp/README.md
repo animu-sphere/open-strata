@@ -14,7 +14,12 @@ for your schema's data and invalidation locators. API-schema adapters require
 Update the version/contract of `requires.bundles` to your schema provider.
 `--schema-type` is the **registered API schema name**, which may differ from its
 C++ class name. The provider must be discoverable in the session; it is not linked
-into this plugin. Use a runtime with imaging (`hydra-preview` capability).
+into this plugin. Use a runtime with the usdImaging development headers and
+library, including the canonical imaging variants of the `usd` profile. The
+resolved SDK is checked at build preflight and L1; no viewer is required.
+When migrating a 0.1.0 scaffold, remove `hydra-preview` from
+`requires.capabilities` unless your plugin independently needs that capability.
+Explicitly declared capabilities still have to be promised by the profile.
 
 `ost plugin test --up-to 2` builds a small native registry checker with the
 selected SDK, CMake, Ninja and a C++ compiler. It checks the schema definition,

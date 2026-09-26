@@ -11,7 +11,7 @@ runtime:
 provides:
   - usd-imaging:{{SchemaType}}
 requires:
-  capabilities: [usd-stage-read, hydra-preview]
+  capabilities: [usd-stage-read]
   bundles:
     # Update the version range and contract if the schema bundle uses a
     # different public contract. The imaging adapter depends on that contract, not

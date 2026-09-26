@@ -413,12 +413,10 @@ impl PluginManifest {
         self.plugin.kind
     }
 
-    /// Include requirements intrinsic to a kind even in hand-authored bundles.
+    /// Declared profile capabilities. Kind-specific SDK requirements are checked
+    /// against the resolved runtime, not inferred from the profile's name.
     pub fn required_capabilities(&self) -> Vec<String> {
         let mut capabilities = self.requires.capabilities.clone();
-        if self.kind() == PluginKind::UsdImaging {
-            capabilities.push("hydra-preview".into());
-        }
         capabilities.sort();
         capabilities.dedup();
         capabilities

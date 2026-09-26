@@ -1,7 +1,7 @@
 schema: openstrata.template/v1alpha1
 template:
   id: usd-imaging-cpp
-  version: 0.1.0
+  version: 0.1.1
   maturity: skeleton
   artifact_kind: plugin
 plugin_kind: usd-imaging
@@ -32,5 +32,5 @@ verification:
   levels: [0, 1, 2]
   assertions: [deterministic-generation, imaging-adapter-registration, install-tree-discovery]
 compatibility:
-  ost: ">=0.23.9,<1.0"
+  ost: ">=0.23.10,<1.0"
   openusd: ">=26.05,<27.0"
