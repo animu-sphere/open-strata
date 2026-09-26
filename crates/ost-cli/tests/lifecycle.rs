@@ -1126,6 +1126,23 @@ fn distinct_profiles_get_separate_target_trees() {
         out_text(&c2)
     );
 
+    // The project lock deliberately follows the last configured runtime;
+    // per-target locks keep the other target's identity independently.
+    let lock_path = sb.work_file("strata.lock");
+    let lock: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lock_path).unwrap()).unwrap();
+    assert_eq!(lock["runtime"]["profile"], "core");
+    assert!(sb
+        .ost(&["lock", "--check", "--profile", "core"])
+        .status
+        .success());
+    assert!(!sb.ost(&["lock", "--check"]).status.success());
+    assert!(sb.ost(&["lock"]).status.success());
+    assert!(sb.ost(&["lock", "--check"]).status.success());
+    let lock: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&lock_path).unwrap()).unwrap();
+    assert_eq!(lock["runtime"]["profile"], "usd");
+
     // Two distinct target dirs exist — neither can reuse the other's build tree.
     let targets = sb.work.join(".strata").join("targets");
     let ids: Vec<String> = std::fs::read_dir(&targets)
@@ -2032,7 +2049,42 @@ fn renderer_managed_build_and_test_stamp_the_owning_sessions() {
         "{}",
         out_text(&stale)
     );
-    std::fs::write(&report_path, pristine_report).unwrap();
+    std::fs::write(&report_path, &pristine_report).unwrap();
+
+    // A prior completion from another configuration cannot carry evidence
+    // forward even when the report itself has not changed.
+    let completion_path = report_path
+        .parent()
+        .unwrap()
+        .join(ost_build::BUILD_COMPLETION_FILE);
+    let completion_bytes = std::fs::read(&completion_path).unwrap();
+    let mut incompatible: ost_build::BuildCompletion =
+        serde_json::from_slice(&completion_bytes).unwrap();
+    incompatible.intent.cache.insert(
+        "CMAKE_BUILD_TYPE".into(),
+        ost_build::CMakeCacheEntry::string("Debug"),
+    );
+    std::fs::write(&completion_path, incompatible.to_json().unwrap()).unwrap();
+    let incremental = sb.ost(&["build", "--progress", "plain"]);
+    assert!(incremental.status.success(), "{}", out_text(&incremental));
+    let validate = sb.ost(&["--json", "validate"]);
+    assert!(!validate.status.success());
+    assert!(out_text(&validate).contains("does not bind renderer report"));
+    std::fs::write(&completion_path, &completion_bytes).unwrap();
+
+    // Bytes modified before the incremental build must not be adopted as its
+    // evidence, even when the build itself succeeds without rewriting them.
+    let mut tampered = std::fs::read(&report_path).unwrap();
+    tampered.extend_from_slice(b"\n");
+    std::fs::write(&report_path, tampered).unwrap();
+    let incremental = sb.ost(&["build", "--progress", "plain"]);
+    assert!(incremental.status.success(), "{}", out_text(&incremental));
+    let validate = sb.ost(&["--json", "validate"]);
+    assert!(!validate.status.success());
+    assert!(out_text(&validate).contains("does not bind renderer report"));
+
+    std::fs::write(&report_path, &pristine_report).unwrap();
+    std::fs::write(&completion_path, &completion_bytes).unwrap();
 
     let test = sb.ost(&["test", "--progress", "plain"]);
     assert!(
@@ -2067,42 +2119,74 @@ fn renderer_managed_build_and_test_stamp_the_owning_sessions() {
     assert!(test_completion.renderer_reports.iter().any(|binding| {
         binding.path == "renderer-ctest-report.json" && binding.session == test_producer.id
     }));
+    let primary = ost_manifest::RendererReport::load(
+        camino::Utf8Path::from_path(report_path.as_path()).unwrap(),
+    )
+    .unwrap();
+    let installed = primary
+        .checks
+        .iter()
+        .find(|check| check.id == "renderer.install_tree")
+        .unwrap();
+    assert_eq!(installed.status, ost_manifest::RendererCheckStatus::Pass);
+    assert!(installed.detail.is_none());
+    assert_eq!(primary.producer.as_ref().unwrap().id, test_producer.id);
+    let before_test: ost_manifest::RendererReport =
+        serde_json::from_slice(&pristine_report).unwrap();
+    for original in &before_test.checks {
+        if original.id != "renderer.install_tree" {
+            let after = primary
+                .checks
+                .iter()
+                .find(|check| check.id == original.id)
+                .unwrap();
+            assert_eq!(after.status, original.status, "{} changed", original.id);
+            assert_eq!(
+                after.detail, original.detail,
+                "{} detail changed",
+                original.id
+            );
+        }
+    }
+    assert!(test_completion.renderer_reports.iter().any(|binding| {
+        binding.path == "renderer-report.json" && binding.session == test_producer.id
+    }));
+    // Re-run in parallel mode to exercise idempotence and serial report writes.
+    let repeated = sb.ost_env(
+        &["test", "--progress", "plain"],
+        &[("CTEST_PARALLEL_LEVEL", "4")],
+    );
+    assert!(repeated.status.success(), "{}", out_text(&repeated));
     let incremental = sb.ost(&["build", "--progress", "plain"]);
     assert!(incremental.status.success(), "{}", out_text(&incremental));
     let validate = sb.ost(&["--json", "validate"]);
     assert!(validate.status.success(), "{}", out_text(&validate));
 
-    // A prior completion from another configuration cannot carry evidence
-    // forward even when the report itself has not changed.
-    let completion_path = report_path
-        .parent()
+    let validated: serde_json::Value = serde_json::from_slice(&validate.stdout).unwrap();
+    let installed = validated["data"]["checks"]
+        .as_array()
         .unwrap()
-        .join(ost_build::BUILD_COMPLETION_FILE);
-    let completion_bytes = std::fs::read(&completion_path).unwrap();
-    let mut incompatible: ost_build::BuildCompletion =
-        serde_json::from_slice(&completion_bytes).unwrap();
-    incompatible.intent.cache.insert(
-        "CMAKE_BUILD_TYPE".into(),
-        ost_build::CMakeCacheEntry::string("Debug"),
-    );
-    std::fs::write(&completion_path, incompatible.to_json().unwrap()).unwrap();
-    let incremental = sb.ost(&["build", "--progress", "plain"]);
-    assert!(incremental.status.success(), "{}", out_text(&incremental));
-    let validate = sb.ost(&["--json", "validate"]);
-    assert!(!validate.status.success());
-    assert!(out_text(&validate).contains("does not bind renderer report"));
-    std::fs::write(&completion_path, completion_bytes).unwrap();
+        .iter()
+        .find(|check| check["name"] == "renderer.install_tree")
+        .unwrap();
+    assert_eq!(installed["status"], "pass", "{validated}");
 
-    // Bytes modified before the incremental build must not be adopted as its
-    // evidence, even when the build itself succeeds without rewriting them.
-    let mut tampered = std::fs::read(&report_path).unwrap();
-    tampered.extend_from_slice(b"\n");
-    std::fs::write(&report_path, tampered).unwrap();
-    let incremental = sb.ost(&["build", "--progress", "plain"]);
-    assert!(incremental.status.success(), "{}", out_text(&incremental));
-    let validate = sb.ost(&["--json", "validate"]);
-    assert!(!validate.status.success());
-    assert!(out_text(&validate).contains("does not bind renderer report"));
+    // A later failed install must not be published as new successful evidence.
+    let recover = sb.ost(&["test", "--progress", "plain"]);
+    assert!(recover.status.success(), "{}", out_text(&recover));
+    let successful_report = std::fs::read(&report_path).unwrap();
+    let install_script = report_path.parent().unwrap().join("cmake_install.cmake");
+    std::fs::write(
+        &install_script,
+        "message(FATAL_ERROR \"injected install failure\")\n",
+    )
+    .unwrap();
+    let failed = sb.ost(&["test", "--progress", "plain"]);
+    assert!(!failed.status.success(), "{}", out_text(&failed));
+    assert!(out_text(&failed).contains("injected install failure"));
+    assert_eq!(std::fs::read(&report_path).unwrap(), successful_report);
+    let invalid = sb.ost(&["--json", "validate"]);
+    assert!(!invalid.status.success(), "{}", out_text(&invalid));
 }
 
 #[test]
