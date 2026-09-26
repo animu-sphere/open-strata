@@ -120,6 +120,37 @@ fn formation_resolves_real_renderer_and_plugin_package_outputs() {
     json(sb.ost(&["--json", "init", "--name", "toon", "--platform", "cy2026"]));
     json(sb.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
     sb.promote_runtime();
+    // The fixture models an imaging SDK structurally; actual DLL loading is
+    // covered by the native release smoke test, not by these placeholder bytes.
+    let prefix = sb.runtime_prefix();
+    let header = prefix.join("include/pxr/usdImaging/usdImaging/adapterRegistry.h");
+    std::fs::create_dir_all(header.parent().unwrap()).unwrap();
+    std::fs::write(header, "// imaging SDK fixture\n").unwrap();
+    std::fs::write(
+        prefix.join(format!(
+            "lib/libusd_usdImaging{}",
+            std::env::consts::DLL_SUFFIX
+        )),
+        "fixture",
+    )
+    .unwrap();
+    let manifest_path = prefix.join("runtime.json");
+    let mut runtime_manifest =
+        ost_runtime::RuntimeManifest::from_json(&std::fs::read_to_string(&manifest_path).unwrap())
+            .unwrap();
+    runtime_manifest
+        .extensions
+        .iter_mut()
+        .find(|e| e.id == "openusd")
+        .unwrap()
+        .version = "26.08".into();
+    runtime_manifest.digest = runtime_manifest.compute_digest();
+    std::fs::write(manifest_path, runtime_manifest.to_json().unwrap()).unwrap();
+    std::fs::write(
+        prefix.join("include/pxr/pxr.h"),
+        "#define PXR_MAJOR_VERSION 0\n#define PXR_MINOR_VERSION 26\n#define PXR_PATCH_VERSION 8\n",
+    )
+    .unwrap();
     let exported = json(sb.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
     let runtime = exported["data"]["digest"].as_str().unwrap();
     // A tiny install fixture tests the packaging contract without needing a
@@ -154,7 +185,44 @@ fn formation_resolves_real_renderer_and_plugin_package_outputs() {
     let renderer = json(sb.ost(&["--json", "artifact", "import", path(dist)]));
 
     json(sb.ost(&["--json", "plugin", "new", "usd-schema", "schema"]));
-    let plugin = json(sb.ost(&["--json", "plugin", "package", "schema"]));
+    json(sb.ost(&[
+        "--json",
+        "plugin",
+        "new",
+        "usd-imaging",
+        "imaging",
+        "--schema-bundle",
+        "schema",
+        "--schema-type",
+        "API",
+    ]));
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(sb.base.join("openstrata.toml"))
+        .unwrap()
+        .write_all(b"\n[workspace]\nmembers = ['.', 'schema', 'imaging']\n")
+        .unwrap();
+    let info = sb
+        .base
+        .join("imaging/plugin/resources/imaging/plugInfo.json");
+    let source = std::fs::read_to_string(info.with_extension("json.in"))
+        .unwrap()
+        .replace("@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@", "lib")
+        .replace(
+            "@CMAKE_SHARED_LIBRARY_SUFFIX@",
+            std::env::consts::DLL_SUFFIX,
+        );
+    std::fs::write(info, source).unwrap();
+    std::fs::create_dir_all(sb.base.join("imaging/lib")).unwrap();
+    std::fs::write(
+        sb.base.join(format!(
+            "imaging/lib/libImagingImaging{}",
+            std::env::consts::DLL_SUFFIX
+        )),
+        "fixture",
+    )
+    .unwrap();
+    let plugin = json(sb.ost(&["--json", "plugin", "package", "imaging"]));
     let plugin_archive = PathBuf::from(plugin["data"]["archive"].as_str().unwrap());
     let plugin = json(sb.ost(&[
         "--json",
@@ -162,7 +230,7 @@ fn formation_resolves_real_renderer_and_plugin_package_outputs() {
         "import",
         path(plugin_archive.parent().unwrap()),
     ]));
-    std::fs::write(sb.base.join("formation.toml"), format!("schema = 'openstrata.formation/v1alpha1'\n[formation]\nname = 'packaged-components'\n[runtime]\nartifact = '{runtime}'\n[[components]]\nid = 'toon'\nkind = 'renderer'\nartifact = '{}'\n[[components]]\nid = 'schema'\nkind = 'plugin'\nartifact = '{}'\n[command]\nprogram = 'usdview'\n", renderer["data"]["artifact"]["digest"].as_str().unwrap(), plugin["data"]["artifact"]["digest"].as_str().unwrap())).unwrap();
+    std::fs::write(sb.base.join("formation.toml"), format!("schema = 'openstrata.formation/v1alpha1'\n[formation]\nname = 'packaged-components'\n[runtime]\nartifact = '{runtime}'\n[[components]]\nid = 'toon'\nkind = 'renderer'\nartifact = '{}'\n[[components]]\nid = 'imaging'\nkind = 'plugin'\nartifact = '{}'\n[command]\nprogram = 'usdview'\n", renderer["data"]["artifact"]["digest"].as_str().unwrap(), plugin["data"]["artifact"]["digest"].as_str().unwrap())).unwrap();
     let resolved = json(sb.ost(&["--json", "formation", "resolve", "formation.toml"]));
     assert!(resolved.to_string().contains("lib/usd/hdToon/resources"));
     json(sb.ost(&["--json", "formation", "lock", "formation.toml"]));

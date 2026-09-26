@@ -5712,7 +5712,8 @@ fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
             } else if ext.uncertified {
                 let feats: Vec<_> = ext.features.iter().cloned().collect();
                 println!(
-                    "    certified: NONE — no certified build covers [{}] (UNCERTIFIED)",
+                    "    certified: NONE — no certified build matches {} [{}] (UNCERTIFIED)",
+                    ext.version,
                     feats.join(", ")
                 );
             }

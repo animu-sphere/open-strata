@@ -679,7 +679,22 @@ fn materialize(
             "Formation materialization path '{root}' is not a directory"
         )));
     }
-    Ok(root.to_path_buf())
+    // Bundle::load canonicalizes roots. Use the same identity here so Windows
+    // short TEMP aliases (RUNNER~1) and their long names compare as one root.
+    let canonical = std::fs::canonicalize(root.as_std_path())
+        .map_err(|error| Error::io(root.to_string(), error))?;
+    let canonical = Utf8PathBuf::from_path_buf(canonical)
+        .map_err(|path| Error::config(format!("non-UTF-8 artifact path: {}", path.display())))?;
+    #[cfg(windows)]
+    {
+        if let Some(rest) = canonical.as_str().strip_prefix(r"\\?\UNC\") {
+            return Ok(Utf8PathBuf::from(format!(r"\\{rest}")));
+        }
+        if let Some(rest) = canonical.as_str().strip_prefix(r"\\?\") {
+            return Ok(Utf8PathBuf::from(rest));
+        }
+    }
+    Ok(canonical)
 }
 
 fn component_payload(

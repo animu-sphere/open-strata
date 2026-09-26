@@ -414,7 +414,8 @@ pub fn resolve(
     let runtime_env = EnvSet::for_usd_install(&input.runtime_root, host.os);
     let mut env_vars = runtime_env.vars.clone();
     let mut environment = portable_runtime_environment(host.os);
-    let runtime_context = runtime_context(&input.runtime_manifest);
+    let mut runtime_context = runtime_context(&input.runtime_manifest);
+    runtime_context.imaging = ost_runtime::has_usd_imaging_sdk(&input.runtime_root);
     let runtime_id = &input.runtime_manifest.id;
     let runtime_digest = &input.runtime_manifest.digest;
     let mut resolved_components = Vec::new();
@@ -1024,6 +1025,22 @@ args = ["avatar.vrm"]
             let mut packaged = record.clone();
             packaged.target = format!("cy2026-{}-usd", runtime.variant.short_slug());
             assert!(validate_target(component, &packaged, &runtime).is_ok());
+            packaged.component = Some(
+                serde_json::from_value(serde_json::json!({
+                    "schema": ost_artifact::COMPONENT_SCHEMA,
+                    "id": "renderer", "kind": "renderer", "version": "1.0.0",
+                    "compatibility": {"abi": runtime_context(&runtime).cxx_abi}
+                }))
+                .unwrap(),
+            );
+            assert!(validate_component_abi(component, &packaged, &runtime).is_ok());
+            packaged.component.as_mut().unwrap().compatibility.abi = Some("wrong-abi".into());
+            assert_eq!(
+                validate_component_abi(component, &packaged, &runtime)
+                    .unwrap_err()
+                    .code(),
+                "FORMATION_INCOMPATIBLE_COMPONENT"
+            );
             for wrong in [
                 format!("{}-extra", packaged.target),
                 packaged.target.replace("-usd", "-lookdev"),

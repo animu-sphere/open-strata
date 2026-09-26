@@ -302,6 +302,17 @@ fn run_resolved(args: BuildArgs, fmt: Format, domain_intent: Option<BuildIntent>
         let configure_cmd = render_cmd(&cmake_prog, &configure_args);
         let build_cmd = render_cmd(&cmake_prog, &build_args);
         let mut files = target_output_paths(&id);
+        if target.uses_runtime() {
+            let selected_lock = super::lock::path_for_runtime(&root, &target.runtime_id)?;
+            for path in &mut files {
+                if path == "strata.lock" {
+                    *path = selected_lock
+                        .file_name()
+                        .unwrap_or("strata.lock")
+                        .to_string();
+                }
+            }
+        }
         if args.without_runtime {
             files.retain(|path| path != "strata.lock");
         }
