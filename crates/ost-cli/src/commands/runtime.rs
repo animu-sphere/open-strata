@@ -5591,7 +5591,35 @@ fn repair(platform: &str, profile: &str, fmt: Format) -> Result<()> {
 fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     let r = resolve(platform, profile)?;
     let catalog = ost_extension::load_all()?;
-    let resolution = ost_extension::resolve(&catalog, &r.capabilities);
+    let mut resolution = ost_extension::resolve(&catalog, &r.capabilities);
+    // The installed manifest is the same source of truth used by runtime show
+    // and lock. A catalogue certification for another version is not evidence
+    // for an adopted or newly built runtime.
+    let installed = if r.pulled {
+        let path = r.prefix.join(MANIFEST_FILE);
+        let source = std::fs::read_to_string(&path).map_err(|e| Error::io(path.to_string(), e))?;
+        Some(
+            RuntimeManifest::from_json(&source)
+                .map_err(|e| Error::parse(path.to_string(), anyhow::Error::new(e)))?,
+        )
+    } else {
+        None
+    };
+    if let Some(manifest) = &installed {
+        for extension in &mut resolution.extensions {
+            if let Some(observed) = manifest.extensions.iter().find(|e| e.id == extension.id) {
+                extension.version.clone_from(&observed.version);
+                if extension
+                    .certified
+                    .as_ref()
+                    .is_some_and(|c| c.version != observed.version)
+                {
+                    extension.certified = None;
+                    extension.uncertified = true;
+                }
+            }
+        }
+    }
 
     if fmt.is_json() {
         let caps: Vec<_> = resolution
@@ -5631,6 +5659,8 @@ fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
             "capabilities": caps,
             "extensions": exts,
             "runtime_provided": resolution.runtime_provided,
+            "version_source": if installed.is_some() { "installed-runtime" } else { "catalogue" },
+            "validation": installed.as_ref().map(|m| m.validation),
         }));
         return Ok(());
     }

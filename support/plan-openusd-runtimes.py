@@ -46,20 +46,27 @@ CANONICAL_LEAF_COUNT = len(VERSIONS) * sum(len(cell["variants"]) for cell in CAN
 
 
 def expand(document: dict[str, object]) -> list[dict[str, object]]:
-    if document.get("schema") != 1 or document.get("profile") != "usd":
-        raise ValueError("matrix must use schema 1 and profile 'usd'")
+    profile = document.get("profile")
+    if document.get("schema") != 1 or profile not in ("usd", "lookdev"):
+        raise ValueError("matrix must use schema 1 and profile 'usd' or 'lookdev'")
+    canonical = CANONICAL if profile == "usd" else {
+        os_name: {**CANONICAL[os_name], "variants": ["gl"]}
+        for os_name in ("linux", "windows")
+    }
+    expected_versions = VERSIONS if profile == "usd" else ["26.08"]
+    repository = REPOSITORY if profile == "usd" else REPOSITORY.removesuffix("usd") + "lookdev"
     versions = document.get("versions")
     cells = document.get("cells")
-    if versions != VERSIONS or not isinstance(cells, list):
-        raise ValueError("matrix must declare OpenUSD 26.05 and 26.08 in order")
-    if document.get("repository") != REPOSITORY:
-        raise ValueError(f"matrix repository must be {REPOSITORY!r}")
+    if versions != expected_versions or not isinstance(cells, list):
+        raise ValueError(f"matrix must declare OpenUSD {expected_versions!r} in order")
+    if document.get("repository") != repository:
+        raise ValueError(f"matrix repository must be {repository!r}")
     if document.get("gates") != GATES:
         raise ValueError(f"matrix gates must be {GATES!r} in order")
     if document.get("publication") != PUBLICATION:
         raise ValueError("matrix publication policy is not canonical")
-    if len(cells) != len(CANONICAL):
-        raise ValueError("matrix must declare exactly the three primary producer cells")
+    if len(cells) != len(canonical):
+        raise ValueError("matrix must declare exactly its primary producer cells")
 
     jobs: list[dict[str, object]] = []
     seen_operating_systems: set[str] = set()
@@ -67,7 +74,7 @@ def expand(document: dict[str, object]) -> list[dict[str, object]]:
         if not isinstance(cell, dict):
             raise ValueError("each matrix cell must be an object")
         os_name = str(cell.get("os"))
-        expected = CANONICAL.get(os_name)
+        expected = canonical.get(os_name)
         if expected is None:
             raise ValueError(f"unsupported producer cell: {cell}")
         if os_name in seen_operating_systems:
@@ -82,7 +89,8 @@ def expand(document: dict[str, object]) -> list[dict[str, object]]:
                 jobs.append(
                     {
                         "openusd": version,
-                        "profile": "usd",
+                        "profile": profile,
+                        "repository": repository,
                         "variant": variant,
                         "os": os_name,
                         "arch": expected["arch"],
@@ -94,9 +102,10 @@ def expand(document: dict[str, object]) -> list[dict[str, object]]:
                         "deployment_target": expected.get("deployment_target"),
                     }
                 )
-    if len(jobs) != CANONICAL_LEAF_COUNT:
+    expected_count = len(expected_versions) * sum(len(cell["variants"]) for cell in canonical.values())
+    if len(jobs) != expected_count:
         raise ValueError(
-            f"primary matrix must expand to {CANONICAL_LEAF_COUNT} leaves, got {len(jobs)}"
+            f"primary matrix must expand to {expected_count} leaves, got {len(jobs)}"
         )
     if len({job["tag"] for job in jobs}) != len(jobs):
         raise ValueError("canonical leaf tags are not unique")

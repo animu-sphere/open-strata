@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import stat
 import subprocess
@@ -134,7 +135,7 @@ def validate_relocation(root: Path, platform: str) -> None:
             )
 
 
-def validate(root: Path, version: str, variant: str, platform: str, arch: str) -> dict[str, object]:
+def validate(root: Path, version: str, variant: str, platform: str, arch: str, profile: str = "usd") -> dict[str, object]:
     root = root.resolve()
     actual = version_from_header(require_file(root, "include/pxr/pxr.h"))
     if actual != version:
@@ -142,6 +143,26 @@ def validate(root: Path, version: str, variant: str, platform: str, arch: str) -
 
     imaging = variant != "core"
     features: dict[str, object] = {"examples_required": imaging}
+    if profile == "lookdev":
+        require_file(root, "bin/usdview")
+        python_root = next((root / directory for directory in ("lib/python", "lib/site-packages", "Lib/site-packages", "lib/python3.13/site-packages") if (root / directory / "pxr").is_dir()), None)
+        if python_root is None:
+            raise RuntimeError("lookdev runtime has no CPython 3.13 package directory")
+        require_file(python_root, "pxr/Usdviewq/__init__.py")
+        require_file(python_root, "PySide6/__init__.py")
+        require_file(python_root, "OpenGL/__init__.py")
+        manifest = json.loads(require_file(root, "runtime.json").read_text(encoding="utf-8"))
+        if manifest.get("profile") != profile or not {"usdview", "hydra-preview"}.issubset(manifest.get("capabilities", [])):
+            raise RuntimeError("lookdev runtime must declare usdview and hydra-preview")
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(python_root)
+        environment["PYTHONNOUSERSITE"] = "1"
+        environment["PATH"] = os.pathsep.join((str(root / "bin"), str(root / "lib"), environment.get("PATH", "")))
+        environment["LD_LIBRARY_PATH"] = str(root / "lib")
+        probe = subprocess.run([sys.executable, "-c", "from pxr import Usd, Usdviewq; from PySide6 import QtWidgets; import OpenGL.GL; print(Usd.GetVersion())"], env=environment, capture_output=True, text=True)
+        if probe.returncode:
+            raise RuntimeError(f"lookdev Python import failed: {probe.stderr}")
+        features["usdview"] = {"imports": "passed", "version": probe.stdout.strip()}
     libraries: list[Path] = []
     if imaging:
         examples = require_glob(root, ("share/usd/examples/**/*",))
@@ -176,7 +197,7 @@ def validate(root: Path, version: str, variant: str, platform: str, arch: str) -
         "status": "passed",
         "runtime_root": str(root),
         "openusd": actual,
-        "profile": "usd",
+        "profile": profile,
         "variant": variant,
         "platform": platform,
         "arch": arch,
@@ -191,9 +212,10 @@ def main() -> int:
     parser.add_argument("--variant", required=True, choices=("core", "gl", "vulkan", "metal"))
     parser.add_argument("--platform", required=True, choices=("windows", "linux", "macos"))
     parser.add_argument("--arch", required=True, choices=("x86_64", "arm64"))
+    parser.add_argument("--profile", default="usd", choices=("usd", "lookdev"))
     args = parser.parse_args()
     try:
-        result = validate(args.runtime_root, args.version, args.variant, args.platform, args.arch)
+        result = validate(args.runtime_root, args.version, args.variant, args.platform, args.arch, args.profile)
     except RuntimeError as error:
         print(f"validation failed: {error}", file=sys.stderr)
         return 1

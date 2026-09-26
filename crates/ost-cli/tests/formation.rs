@@ -98,11 +98,81 @@ fn json(output: Output) -> serde_json::Value {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    let source = String::from_utf8_lossy(&output.stdout);
+    let start = source.find('{').unwrap_or(0);
+    serde_json::from_str(&source[start..]).unwrap_or_else(|e| panic!("{e}: {source}"))
 }
 
 fn path(path: &Path) -> &str {
     path.to_str().unwrap()
+}
+
+#[test]
+fn formation_resolves_real_renderer_and_plugin_package_outputs() {
+    if ost_core::tools::which("cmake").is_none() || ost_core::tools::which("ninja").is_none() {
+        assert!(
+            std::env::var_os("OST_TEST_REQUIRE_SDK_TOOLS").is_none(),
+            "SDK tools required"
+        );
+        return;
+    }
+    let sb = Sandbox::new();
+    json(sb.ost(&["--json", "init", "--name", "toon", "--platform", "cy2026"]));
+    json(sb.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]));
+    sb.promote_runtime();
+    let exported = json(sb.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
+    let runtime = exported["data"]["digest"].as_str().unwrap();
+    // A tiny install fixture tests the packaging contract without needing a
+    // full OpenUSD SDK or claiming to exercise a renderer implementation.
+    std::fs::write(sb.base.join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.23)\nproject(toon NONE)\nif(NOT ENABLE_HYDRA)\nmessage(FATAL_ERROR \"intent was lost\")\nendif()\ninstall(FILES plugInfo.json DESTINATION lib/usd/hdToon/resources)\n").unwrap();
+    std::fs::write(sb.base.join("plugInfo.json"), "{\"Plugins\": []}").unwrap();
+    std::fs::OpenOptions::new().append(true).open(sb.base.join("openstrata.toml")).unwrap().write_all(b"\n[build.intents.hydra]\ncache = { ENABLE_HYDRA = { type = 'BOOL', value = true } }\n").unwrap();
+    std::fs::write(sb.base.join("openstrata.renderer.yaml"), "schema: openstrata.renderer/v1alpha1\nrenderer: { name: toon }\ncomposition:\n  backend: vulkan\n  scene_inputs: [headless]\n  units: { core: toon-core }\nrender_products: { required: [color] }\nframe: { contexts: 1, completion: explicit }\nvalidation:\n  gpu_smoke: false\n  validation_messages_are_errors: true\n  assertions: [renderer.install_tree]\n").unwrap();
+    let build = sb.ost(&["build", "--intent", "hydra", "--progress", "plain"]);
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stdout)
+    );
+    let packaged = json(sb.ost(&["--json", "package", "--intent", "hydra"]));
+    let archive = PathBuf::from(packaged["data"]["archive"].as_str().unwrap());
+    let dist = archive.parent().unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dist.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["provenance"]["build_intent"]["name"], "hydra");
+    assert!(manifest["target"].as_str().unwrap().ends_with("-usd"));
+    let contribution = manifest["component"]["environment"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["variable"] == "PXR_PLUGINPATH_NAME")
+        .unwrap();
+    assert_eq!(
+        contribution["values"],
+        serde_json::json!(["lib/usd/hdToon/resources"])
+    );
+    let renderer = json(sb.ost(&["--json", "artifact", "import", path(dist)]));
+
+    json(sb.ost(&["--json", "plugin", "new", "usd-schema", "schema"]));
+    let plugin = json(sb.ost(&["--json", "plugin", "package", "schema"]));
+    let plugin_archive = PathBuf::from(plugin["data"]["archive"].as_str().unwrap());
+    let plugin = json(sb.ost(&[
+        "--json",
+        "artifact",
+        "import",
+        path(plugin_archive.parent().unwrap()),
+    ]));
+    std::fs::write(sb.base.join("formation.toml"), format!("schema = 'openstrata.formation/v1alpha1'\n[formation]\nname = 'packaged-components'\n[runtime]\nartifact = '{runtime}'\n[[components]]\nid = 'toon'\nkind = 'renderer'\nartifact = '{}'\n[[components]]\nid = 'schema'\nkind = 'plugin'\nartifact = '{}'\n[command]\nprogram = 'usdview'\n", renderer["data"]["artifact"]["digest"].as_str().unwrap(), plugin["data"]["artifact"]["digest"].as_str().unwrap())).unwrap();
+    let resolved = json(sb.ost(&["--json", "formation", "resolve", "formation.toml"]));
+    assert!(resolved.to_string().contains("lib/usd/hdToon/resources"));
+    json(sb.ost(&["--json", "formation", "lock", "formation.toml"]));
+    // Changing the declaration cannot package a stale intent completion.
+    let project = sb.base.join("openstrata.toml");
+    let source = std::fs::read_to_string(&project)
+        .unwrap()
+        .replace("value = true", "value = false");
+    std::fs::write(project, source).unwrap();
+    assert!(!sb.ost(&["package", "--intent", "hydra"]).status.success());
 }
 
 #[test]

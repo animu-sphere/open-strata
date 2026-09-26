@@ -1,15 +1,15 @@
 # Current
 
-The v0.23.10 delivery is recorded in the
-[release record](../releases/v0.23.10.md). This page tracks the remaining
+The v0.23.11 delivery is recorded in the
+[release record](../releases/v0.23.11.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.10 evidence
+## Post-release v0.23.11 evidence
 
-- Recheck hydra-toon report 02 after applying renderer template 0.5.3's
-  install-tree script: core `ost test` followed by `ost validate` must report
-  `renderer.install_tree` PASS, including after an unchanged build. Expand the
-  renderer's hosted OS/OpenUSD matrix beyond its local Windows evidence.
+- Re-run hydra-toon's combined VRM/renderer Formation against v0.23.11 and
+  the published lookdev runtime. Expand renderer acceptance beyond local
+  Windows evidence; record macOS usdview/Metal evidence before adding a
+  canonical macOS lookdev leaf.
 
 - Recheck `usd-mmd-plugins` report 01 against the published target-local bundle
   and tool stages: source tests, packages, and a second target must consume

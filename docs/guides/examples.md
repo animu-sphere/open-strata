@@ -966,18 +966,29 @@ ost lock                               # write strata.lock for the resolved runt
 ost lock --check                       # verify it's up to date (exit 1 if not) — gate CI
 ```
 
-`strata.lock` pins one resolved runtime, not a map of profiles and not a copy
-of the manifest's default. Runtime-backed `ost configure` and `ost build`
-refresh it for the selected platform/profile, including explicit overrides.
-Thus a renderer's `--profile lookdev` build replaces its `core` pin; a later
-default build restores it. `ost test` and `ost validate` do not refresh it.
-Each configured target also keeps its own `.strata/targets/<id>/target.lock.json`.
+`strata.lock` pins the default platform/profile from `openstrata.toml`.
+Runtime-backed `ost configure`, `ost build` and successful `ost plugin build`
+refresh the selected lock. A different selection writes
+`strata.<runtime-id>.lock`, for example
+`strata.openstrata-cy2026-windows-x86_64-py313-lookdev.lock`, preserving the
+default pin. `ost test` and `ost validate` do not refresh locks.
+Each configured target also keeps `.strata/targets/<id>/target.lock.json`.
 
-After alternate-profile work, run `ost lock` to restore the project's default
-pin before committing; use `ost lock --check` to verify it. To deliberately pin
-another profile, use `ost lock --profile lookdev` and check with the same selector.
-Packaging must still use the runtime pinned by `strata.lock`; restore the lock
-only after finishing the alternate profile's package work.
+Use `ost lock --profile lookdev` and `ost lock --profile lookdev --check` to
+manage a secondary pin. Packaging reads that same lock and still rejects runtime
+identity drift. Commit secondary locks when CI should enforce them. To change
+the default pin, update `openstrata.toml` and run `ost lock`.
+
+Named renderer build intents also remain separate during packaging:
+
+```bash
+ost build --profile lookdev --intent hydra
+ost package --profile lookdev --intent hydra
+```
+
+This installs `build/<target>--hydra`, records the completed intent in manifest
+provenance, and writes to `dist/<name>/<version>/<target>--hydra`. Changing the
+intent declaration requires a rebuild before packaging.
 
 ## uv — Python pinned to the runtime
 

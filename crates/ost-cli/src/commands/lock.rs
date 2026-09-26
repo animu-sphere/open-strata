@@ -37,7 +37,8 @@ pub struct LockArgs {
 pub fn run(args: LockArgs, fmt: Format) -> Result<()> {
     let (root, platform, profile) = resolve_selection(args.target, args.profile)?;
     let lock = build_lock(&root, &platform, &profile)?;
-    let path = root.join(LOCK_FILE);
+    let path = path_for_runtime(&root, &lock.runtime.id)?;
+    let lock_file = path.file_name().unwrap_or(LOCK_FILE);
 
     if args.check {
         let on_disk = std::fs::read_to_string(path.as_std_path())
@@ -50,12 +51,14 @@ pub fn run(args: LockArgs, fmt: Format) -> Result<()> {
         if fmt.is_json() {
             output::report(
                 up_to_date,
-                &serde_json::json!({ "lock": LOCK_FILE, "up_to_date": up_to_date }),
+                &serde_json::json!({ "lock": lock_file, "up_to_date": up_to_date }),
             );
         } else if up_to_date {
-            println!("{LOCK_FILE} is up to date.");
+            println!("{lock_file} is up to date.");
         } else {
-            println!("{LOCK_FILE} is out of date or missing — run `ost lock`.");
+            println!(
+                "{lock_file} is out of date or missing — run `ost lock` with the same selection."
+            );
         }
         // A stale lock is a validation mismatch (§14.4); the report above is this
         // command's own output, so exit with the category code directly.
@@ -69,7 +72,7 @@ pub fn run(args: LockArgs, fmt: Format) -> Result<()> {
 
     if fmt.is_json() {
         output::success(&serde_json::json!({
-            "lock": LOCK_FILE,
+            "lock": lock_file,
             "runtime": lock.runtime.id,
             "digest": lock.runtime.digest,
             "validation": lock.validation,
@@ -169,10 +172,29 @@ pub(crate) fn build_lock(root: &Utf8Path, platform: &str, profile: &str) -> Resu
     })
 }
 
-/// Write the lock to `<root>/strata.lock`.
+/// Keep the project default pin separate from additional runtime selections.
+pub(crate) fn path_for_runtime(root: &Utf8Path, runtime_id: &str) -> Result<camino::Utf8PathBuf> {
+    let project = super::configure::load_project(root)?;
+    let (default, _) = build_target(&project.requires.platform, &project.requires.profile)?;
+    if runtime_id == default.runtime_id {
+        return Ok(root.join(LOCK_FILE));
+    }
+    if runtime_id.is_empty()
+        || !runtime_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err(Error::validation(
+            "invalid runtime identity for profile lock",
+        ));
+    }
+    Ok(root.join(format!("strata.{runtime_id}.lock")))
+}
+
+/// Write the default or selection-specific project lock.
 pub(crate) fn write_lock(root: &Utf8Path, lock: &Lock) -> Result<()> {
-    let path = root.join(LOCK_FILE);
-    std::fs::write(path.as_std_path(), render(lock)?).map_err(|e| Error::io(path.to_string(), e))
+    let path = path_for_runtime(root, &lock.runtime.id)?;
+    ost_core::fs::write_atomic(path.as_std_path(), render(lock)?.as_bytes())
 }
 
 fn render(lock: &Lock) -> Result<String> {

@@ -693,7 +693,29 @@ fn component_payload(
             Ok((vec![bundle], activation))
         }
         ArtifactKind::Product => product_payload(root),
-        ArtifactKind::Package => Ok((Vec::new(), activation_for_root(root)?)),
+        ArtifactKind::Package => {
+            let mut activation = activation_for_root(root)?;
+            if let Some(contract) = &record.component {
+                for contribution in &contract.environment {
+                    if contribution.operation != ost_artifact::EnvironmentOperation::Prepend {
+                        return Err(Error::validation(
+                            "Formation component paths require prepend environment contributions",
+                        ));
+                    }
+                    let paths = match contribution.variable.as_str() {
+                        "PXR_PLUGINPATH_NAME" => &mut activation.plugin_paths,
+                        "PYTHONPATH" => &mut activation.python_paths,
+                        "LD_LIBRARY_PATH" | "DYLD_LIBRARY_PATH" => &mut activation.library_paths,
+                        "PATH" => &mut activation.bin_paths,
+                        _ => continue,
+                    };
+                    for relative in &contribution.values {
+                        paths.push(safe_join(root, relative, "component environment path")?);
+                    }
+                }
+            }
+            Ok((Vec::new(), activation))
+        }
         ArtifactKind::Runtime | ArtifactKind::ComposedRuntime => Err(Error::validation(
             "runtime artifact cannot be a Formation component",
         )),

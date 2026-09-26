@@ -34,6 +34,10 @@ pub struct PackageArgs {
     #[arg(long)]
     profile: Option<String>,
 
+    /// Package a project-declared build intent from its isolated build tree.
+    #[arg(long)]
+    intent: Option<String>,
+
     /// Allow an empty install tree (a metadata-only artifact). By default an
     /// empty tree is an error.
     #[arg(long)]
@@ -52,8 +56,10 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     let project_version = project.effective_version(&root)?;
     let (target, r) = build_target(&platform, &profile)?;
     let id = target.id();
-
-    let build_dir = root.join("build").join(&id);
+    let intent = super::build::resolve_declared_intent(&root, args.intent.as_deref())?;
+    let relative_build = super::build::build_dir_for_intent(&id, &intent);
+    let package_id = relative_build.file_name().expect("build tree has a name");
+    let build_dir = root.join(&relative_build);
     if !build_dir.as_std_path().is_dir() {
         return Err(Error::Operation(format!(
             "target '{id}' is not built — run `ost build` first"
@@ -66,13 +72,26 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         .join("target.lock.json");
     let completion_path = build_dir.join(BUILD_COMPLETION_FILE);
     let lock: TargetLock = read_json(&lock_path)?;
+    if lock.runtime.id != target.runtime_id || lock.runtime.digest != target.runtime_digest {
+        return Err(
+            Error::precondition("the selected runtime differs from the completed build")
+                .with_hint("rebuild against the selected runtime before packaging"),
+        );
+    }
+    let runtime_manifest: RuntimeManifest = read_json(&r.prefix.join(MANIFEST_FILE))?;
+    super::plugin::validate_runtime_against_project_lock(
+        &root,
+        Some(&target.runtime_id),
+        Some(&target.runtime_digest),
+        Some(runtime_manifest.source.as_str()),
+    )?;
     let completion: BuildCompletion = read_json(&completion_path)?;
     completion
         .validate_against(
             &lock,
             &project.project.name,
             &project_version,
-            &Utf8PathBuf::from(format!("build/{id}")),
+            &relative_build,
         )
         .map_err(|detail| {
             Error::precondition(format!(
@@ -80,6 +99,8 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
             ))
             .with_hint("rerun `ost build` before packaging")
         })?;
+    super::build::validate_completed_intent(&completion.intent, &intent)
+        .map_err(Error::precondition)?;
     let configuration = completed_configuration(&completion.intent)?;
 
     let cmake = tools::which("cmake").ok_or_else(|| {
@@ -94,7 +115,11 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     // previous run left temporarily undeletable (scanner-held handles,
     // dogfooding report #9): stage into a fresh sibling instead, and surface
     // that as an actionable warning (`--clean-stage` reclaims the stable name).
-    let preferred_stage = root.join(STATE_DIR).join("targets").join(&id).join("stage");
+    let preferred_stage = root
+        .join(STATE_DIR)
+        .join("targets")
+        .join(package_id)
+        .join("stage");
     let (stage, stage_warnings) = super::prepare_package_stage(&preferred_stage, args.clean_stage)?;
 
     // Apply the runtime environment to `cmake --install` for the same reason
@@ -102,7 +127,7 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     // that needs PATH, PYTHONPATH and the loader path set consistently.
     let mut install = Command::new(&cmake);
     install
-        .args(["--install", &format!("build/{id}"), "--config"])
+        .args(["--install", relative_build.as_str(), "--config"])
         .arg(configuration)
         .arg("--prefix")
         .arg(stage.as_std_path())
@@ -142,8 +167,8 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
     // Pack the stage tree.
     let name = &project.project.name;
     let version = project_version;
-    let archive_name = format!("{name}-{version}-{id}.tar.zst");
-    let dist_dir = root.join("dist").join(name).join(&version).join(&id);
+    let archive_name = format!("{name}-{version}-{package_id}.tar.zst");
+    let dist_dir = root.join("dist").join(name).join(&version).join(package_id);
     let archive_path = dist_dir.join(&archive_name);
 
     let packed = pack_dir(&stage, &archive_path, &staged)
@@ -168,6 +193,7 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
 
     // manifest.json
     let files_json: Vec<_> = packed.files.iter().map(|f| f.manifest_json()).collect();
+    let plugin_paths = installed_plugin_paths(&files_json);
     let renderer_component = if root.join(RENDERER_MANIFEST).as_std_path().is_file() {
         let renderer = RendererManifest::load(&root)?;
         if renderer.renderer.name.as_str() != name.as_str() {
@@ -204,6 +230,14 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
                 other => other.describe(),
             },
         };
+        let mut environment = vec![
+            serde_json::json!({"variable": "PATH", "operation": "prepend", "values": ["bin"]}),
+            serde_json::json!({"variable": loader_variable, "operation": "prepend", "values": ["lib"]}),
+            serde_json::json!({"variable": "CMAKE_PREFIX_PATH", "operation": "prepend", "values": ["."]}),
+        ];
+        if !plugin_paths.is_empty() {
+            environment.push(serde_json::json!({"variable": "PXR_PLUGINPATH_NAME", "operation": "prepend", "values": plugin_paths}));
+        }
         Some(serde_json::json!({
             "schema": ost_artifact::COMPONENT_SCHEMA,
             "id": name,
@@ -214,12 +248,7 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
                 {"capability": format!("renderer.backend:{}", renderer.composition.backend), "version": version, "singleton": true}
             ],
             "requires": requirements,
-            "environment": [
-                {"variable": "PATH", "operation": "prepend", "values": ["bin"]},
-                {"variable": loader_variable, "operation": "prepend", "values": ["lib"]},
-                {"variable": "PXR_PLUGINPATH_NAME", "operation": "prepend", "values": ["plugin/usd"]},
-                {"variable": "CMAKE_PREFIX_PATH", "operation": "prepend", "values": ["."]}
-            ],
+            "environment": environment,
             "install": files_json.iter().filter_map(|file| file.get("path").and_then(|path| path.as_str())).map(|path| serde_json::json!({
                 "source": path,
                 "destination": path,
@@ -251,6 +280,7 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
             "variant": lock.variant.slug(),
             "cxx_standard": lock.cxx_standard,
             "generator": lock.generator,
+            "build_intent": completion.intent,
             "runtime": { "id": lock.runtime.id, "digest": lock.runtime.digest },
             "validation": validation,
         },
@@ -290,6 +320,25 @@ pub fn run(args: PackageArgs, fmt: Format) -> Result<()> {
         fmt,
     );
     Ok(())
+}
+
+fn installed_plugin_paths(files: &[serde_json::Value]) -> Vec<String> {
+    files
+        .iter()
+        .filter_map(|file| {
+            let path = camino::Utf8Path::new(file.get("path")?.as_str()?);
+            (path.file_name() == Some("plugInfo.json")).then(|| {
+                let parent = path.parent().map(|p| p.as_str()).unwrap_or("");
+                if parent.is_empty() {
+                    ".".to_string()
+                } else {
+                    parent.to_string()
+                }
+            })
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn completed_configuration(intent: &BuildIntent) -> Result<&str> {
@@ -371,6 +420,20 @@ fn report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_paths_follow_installed_resource_layouts() {
+        let files = serde_json::json!([
+            {"path": "lib/usd/hdToon/resources/plugInfo.json"},
+            {"path": "plugin/usd/schema/plugInfo.json"},
+            {"path": "lib/usd/hdToon/hdToon.dll"}
+        ]);
+        assert_eq!(
+            installed_plugin_paths(files.as_array().unwrap()),
+            vec!["lib/usd/hdToon/resources", "plugin/usd/schema"]
+        );
+        assert!(installed_plugin_paths(&[]).is_empty());
+    }
 
     #[test]
     fn completed_configuration_is_required_for_packaging() {

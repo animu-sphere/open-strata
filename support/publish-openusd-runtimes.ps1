@@ -2,11 +2,12 @@
 
 [CmdletBinding()]
 param(
+    [ValidateSet('usd', 'lookdev')][string] $Profile = 'usd',
     [ValidateSet('26.05', '26.08')][string[]] $Version = @('26.05', '26.08'),
     [ValidateSet('core', 'gl', 'vulkan', 'metal')][string[]] $Variant = @('core', 'gl', 'vulkan', 'metal'),
     [ValidateRange(1, 256)][int] $Jobs = [Environment]::ProcessorCount,
     [string] $WorkRoot = (Join-Path $PSScriptRoot '.openusd-runtime-work'),
-    [string] $Registry = 'oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd',
+    [string] $Registry,
     [switch] $Publish,
     [switch] $VerifyPublished,
     [switch] $PlanOnly
@@ -15,6 +16,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $matrixPath = Join-Path $PSScriptRoot 'openusd-runtime-matrix.json'
+if ($Profile -eq 'lookdev') {
+    $matrixPath = Join-Path $PSScriptRoot 'openusd-lookdev-runtime-matrix.json'
+    if (-not $PSBoundParameters.ContainsKey('Version')) { $Version = @('26.08') }
+    if (-not $PSBoundParameters.ContainsKey('Variant')) { $Variant = @('gl') }
+}
+if (-not $Registry) { $Registry = "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-$Profile" }
 $planner = Join-Path $PSScriptRoot 'plan-openusd-runtimes.py'
 $validator = Join-Path $PSScriptRoot 'validate-openusd-runtime.py'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
@@ -52,7 +59,7 @@ function Invoke-Checked([string] $File, [string[]] $Arguments) {
 
 $results = foreach ($job in $plannedLeaves) {
     $slug = $job.tag
-    $runRoot = Join-Path $WorkRoot $slug
+    $runRoot = Join-Path (Join-Path $WorkRoot $Profile) $slug
     $source = Join-Path $WorkRoot "OpenUSD-$($job.openusd.Replace('.', ''))"
     $ostHome = Join-Path $runRoot 'ost-home'
     $dist = Join-Path $runRoot 'dist'
@@ -70,30 +77,42 @@ $results = foreach ($job in $plannedLeaves) {
     Invoke-Checked $git @('-C', $source, 'clean', '-xfdq')
     if ((& $git -C $source status --porcelain)) { throw "OpenUSD source checkout is dirty: $source" }
     $env:OST_HOME = $ostHome
-    $pull = @('runtime', 'pull', 'cy2026', '--profile', 'usd', '--build', $source, '--openusd-variant', $job.variant, '--jobs', "$Jobs", '--force')
+    $pull = @('runtime', 'pull', 'cy2026', '--profile', $Profile, '--build', $source, '--openusd-variant', $job.variant, '--jobs', "$Jobs", '--force')
     if ($hostOs -eq 'macos') {
         $pull += @('--sdk', "$($job.sdk)", '--deployment-target', "$($job.deployment_target)")
     }
     Invoke-Checked $ost $pull
-    Invoke-Checked $ost @('runtime', 'validate', 'cy2026', '--profile', 'usd')
     $runtimeName = Get-ChildItem -LiteralPath (Join-Path $ostHome 'runtimes') -Directory | Select-Object -First 1
     if (-not $runtimeName) { throw "runtime output was not created for $slug" }
-    Invoke-Checked $python @($validator, $runtimeName.FullName, '--version', $job.openusd, '--variant', $job.variant, '--platform', $hostOs, '--arch', $hostArch)
+    if ($Profile -eq 'lookdev') {
+        # USD's installer does not carry its UI Python dependencies. Ship them
+        # with the runtime so a clean consumer needs only platform CPython.
+        $pythonDirectory = @('lib/python', 'lib/site-packages', 'Lib/site-packages', 'lib/python3.13/site-packages') | ForEach-Object { Join-Path $runtimeName.FullName $_ } | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'pxr') -PathType Container } | Select-Object -First 1
+        if (-not $pythonDirectory) { throw 'lookdev runtime has no CPython 3.13 package directory' }
+        Invoke-Checked $python @('-m', 'pip', 'install', '--target', $pythonDirectory, 'PySide6==6.8.3', 'PyOpenGL==3.1.9')
+    }
+    Invoke-Checked $ost @('runtime', 'validate', 'cy2026', '--profile', $Profile)
+    Invoke-Checked $python @($validator, $runtimeName.FullName, '--version', $job.openusd, '--variant', $job.variant, '--platform', $hostOs, '--arch', $hostArch, '--profile', $Profile)
     $sourceRevision = ((& $git -C $source rev-parse HEAD) -join '').Trim()
     $metadata = [ordered]@{
         source = [ordered]@{ repository = 'https://github.com/PixarAnimationStudios/OpenUSD'; revision = $sourceRevision }
         builder = [ordered]@{
             id = "https://github.com/animu-sphere/open-strata/blob/$openStrataRevision/support/publish-openusd-runtimes.ps1"
-            identity = [ordered]@{ matrix = 'support/openusd-runtime-matrix.json'; leaf = $slug; host = "$hostOs-$hostArch" }
+            identity = [ordered]@{ matrix = "support/$(Split-Path -Leaf $matrixPath)"; profile = $Profile; leaf = $slug; host = "$hostOs-$hostArch" }
         }
     }
     # `runtime pull --force` above rebuilds this leaf unconditionally, so the
     # export has to be repeatable too; `runtime export` refuses a non-empty
     # --dist, which made every re-run fail on the first already-exported leaf.
-    if (Test-Path -LiteralPath $dist) { Remove-Item -LiteralPath $dist -Recurse -Force }
+    if (Test-Path -LiteralPath $dist) {
+        $resolvedDist = [IO.Path]::GetFullPath($dist)
+        $resolvedWork = [IO.Path]::GetFullPath($WorkRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        if (-not $resolvedDist.StartsWith($resolvedWork, [StringComparison]::OrdinalIgnoreCase)) { throw 'dist must remain inside WorkRoot' }
+        Remove-Item -LiteralPath $resolvedDist -Recurse -Force
+    }
     $metadataPath = Join-Path $runRoot 'build-metadata.json'
     [IO.File]::WriteAllText($metadataPath, (($metadata | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
-    $exportText = (& $ost runtime export cy2026 --profile usd --dist $dist --build-metadata $metadataPath --slim --jobs $Jobs --json) -join [Environment]::NewLine
+    $exportText = (& $ost runtime export cy2026 --profile $Profile --dist $dist --build-metadata $metadataPath --slim --jobs $Jobs --json) -join [Environment]::NewLine
     if ($LASTEXITCODE -ne 0) { throw "runtime export failed for $slug" }
     $export = $exportText | ConvertFrom-Json
     $artifactDigest = $export.data.digest
@@ -128,7 +147,7 @@ $results = foreach ($job in $plannedLeaves) {
 
 [ordered]@{
     schema = 1
-    matrix = 'support/openusd-runtime-matrix.json'
+    matrix = "support/$(Split-Path -Leaf $matrixPath)"
     openstrata_revision = $openStrataRevision
     runtimes = @($results)
 } | ConvertTo-Json -Depth 8
