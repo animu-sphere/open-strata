@@ -1,10 +1,10 @@
 # Current
 
-The v0.23.11 delivery is recorded in the
-[release record](../releases/v0.23.11.md). This page tracks the remaining
+The v0.23.12 delivery is recorded in the
+[release record](../releases/v0.23.12.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.11 evidence
+## Post-release v0.23.12 evidence
 
 - Re-run hydra-toon's combined VRM/renderer Formation against v0.23.11 and
   the published lookdev runtime. Expand renderer acceptance beyond local
