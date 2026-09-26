@@ -31,7 +31,9 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.23.10** — `usd-imaging` bundles use the resolved
+The current release is **v0.23.11** — Formation accepts packaged renderer and
+plugin targets, renderer packages preserve named build intents and installed
+plugin paths, and secondary profiles have separate runtime locks. `usd-imaging` bundles use the resolved
 usdImaging SDK, including published imaging variants of the `usd` profile,
 without requiring a viewer profile. Native registry verification and product
 packaging retain the project's locked runtime. Renderer template 0.5.3 publishes the core install-tree verdict to

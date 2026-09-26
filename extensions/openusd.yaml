@@ -5,7 +5,7 @@ id: openusd
 type: solution.openusd
 tier: strata-certified-extension
 version: "25.05.01"
-allowed_range: ">=25.05,<26.08"
+allowed_range: ">=25.05,<27.0"
 
 # capability -> the feature that must be enabled to provide it.
 provides:

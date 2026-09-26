@@ -414,7 +414,8 @@ pub fn resolve(
     let runtime_env = EnvSet::for_usd_install(&input.runtime_root, host.os);
     let mut env_vars = runtime_env.vars.clone();
     let mut environment = portable_runtime_environment(host.os);
-    let runtime_context = runtime_context(&input.runtime_manifest);
+    let mut runtime_context = runtime_context(&input.runtime_manifest);
+    runtime_context.imaging = ost_runtime::has_usd_imaging_sdk(&input.runtime_root);
     let runtime_id = &input.runtime_manifest.id;
     let runtime_digest = &input.runtime_manifest.digest;
     let mut resolved_components = Vec::new();
@@ -447,6 +448,7 @@ pub fn resolve(
             ));
         }
         validate_target(expected, &component.record, &input.runtime_manifest)?;
+        validate_component_abi(expected, &component.record, &input.runtime_manifest)?;
         if let Some(id) = &component.record.runtime_id {
             if id != runtime_id {
                 return Err(compatibility_error(
@@ -601,8 +603,15 @@ fn validate_target(
     runtime: &RuntimeManifest,
 ) -> Result<()> {
     let variant = runtime.variant.slug();
-    let platform_variant = format!("{}-{variant}", runtime.platform);
-    if record.target != variant && !record.target.starts_with(&platform_variant) {
+    let package_target = format!(
+        "{}-{}-{}",
+        runtime.platform,
+        runtime.variant.short_slug(),
+        runtime.profile
+    );
+    let legacy_target = format!("{}-{variant}-{}", runtime.platform, runtime.profile);
+    if record.target != variant && record.target != package_target && record.target != legacy_target
+    {
         return Err(compatibility_error(
             &component.id,
             format!(
@@ -610,6 +619,28 @@ fn validate_target(
                 record.target, runtime.platform, variant
             ),
         ));
+    }
+    Ok(())
+}
+
+fn validate_component_abi(
+    component: &ComponentRef,
+    record: &ArtifactRecord,
+    runtime: &RuntimeManifest,
+) -> Result<()> {
+    if let Some(contract) = &record.component {
+        let context = runtime_context(runtime);
+        if let Some(abi) = &contract.compatibility.abi {
+            if context.cxx_abi.as_ref() != Some(abi) {
+                return Err(compatibility_error(
+                    &component.id,
+                    format!(
+                        "component ABI '{abi}' does not match runtime ABI {:?}",
+                        context.cxx_abi
+                    ),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -984,6 +1015,44 @@ args = ["avatar.vrm"]
             dependency_identities: Vec::new(),
             component: None,
         };
+        // Package targets omit the ABI. Check the complete identity, including
+        // the profile, without accepting prefix collisions or another host.
+        let component = &FormationManifest::parse(&manifest()).unwrap().components[0];
+        for os in [Os::Windows, Os::Linux, Os::Macos] {
+            let mut runtime = runtime_manifest.clone();
+            runtime.variant.os = os;
+            runtime.variant.abi = Abi::default_for(os);
+            let mut packaged = record.clone();
+            packaged.target = format!("cy2026-{}-usd", runtime.variant.short_slug());
+            assert!(validate_target(component, &packaged, &runtime).is_ok());
+            packaged.component = Some(
+                serde_json::from_value(serde_json::json!({
+                    "schema": ost_artifact::COMPONENT_SCHEMA,
+                    "id": "renderer", "kind": "renderer", "version": "1.0.0",
+                    "compatibility": {"abi": runtime_context(&runtime).cxx_abi}
+                }))
+                .unwrap(),
+            );
+            assert!(validate_component_abi(component, &packaged, &runtime).is_ok());
+            packaged.component.as_mut().unwrap().compatibility.abi = Some("wrong-abi".into());
+            assert_eq!(
+                validate_component_abi(component, &packaged, &runtime)
+                    .unwrap_err()
+                    .code(),
+                "FORMATION_INCOMPATIBLE_COMPONENT"
+            );
+            for wrong in [
+                format!("{}-extra", packaged.target),
+                packaged.target.replace("-usd", "-lookdev"),
+                packaged.target.replace("cy2026", "cy2025"),
+                packaged.target.replace("x86_64", "arm64"),
+                packaged.target.replace("py313", "py311"),
+            ] {
+                let mut rejected = packaged.clone();
+                rejected.target = wrong;
+                assert!(validate_target(component, &rejected, &runtime).is_err());
+            }
+        }
         let resolved = resolve(
             &declared,
             ResolutionInput {

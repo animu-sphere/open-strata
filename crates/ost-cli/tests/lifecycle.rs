@@ -1126,17 +1126,16 @@ fn distinct_profiles_get_separate_target_trees() {
         out_text(&c2)
     );
 
-    // The project lock deliberately follows the last configured runtime;
-    // per-target locks keep the other target's identity independently.
+    // Secondary selections cannot replace the workspace's default pin.
     let lock_path = sb.work_file("strata.lock");
     let lock: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&lock_path).unwrap()).unwrap();
-    assert_eq!(lock["runtime"]["profile"], "core");
+    assert_eq!(lock["runtime"]["profile"], "usd");
     assert!(sb
         .ost(&["lock", "--check", "--profile", "core"])
         .status
         .success());
-    assert!(!sb.ost(&["lock", "--check"]).status.success());
+    assert!(sb.ost(&["lock", "--check"]).status.success());
     assert!(sb.ost(&["lock"]).status.success());
     assert!(sb.ost(&["lock", "--check"]).status.success());
     let lock: serde_json::Value =
@@ -5088,6 +5087,19 @@ fn lock_pins_extensions_from_the_runtime_manifest() {
     ext["version"] = "99.99".into();
     std::fs::write(&manifest_path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
 
+    let explained = sb.ost(&["--json", "runtime", "explain", "cy2026", "--profile", "usd"]);
+    assert!(explained.status.success(), "{}", out_text(&explained));
+    let explained: serde_json::Value = serde_json::from_slice(&explained.stdout).unwrap();
+    let extension = explained["data"]["extensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == "openusd")
+        .unwrap();
+    assert_eq!(extension["version"], "99.99");
+    assert!(extension["certified"].is_null());
+    assert_eq!(explained["data"]["version_source"], "installed-runtime");
+
     // The drift is visible to --check ...
     let check = sb.ost(&["lock", "--check"]);
     assert!(
@@ -5136,6 +5148,68 @@ fn lock_check_compares_the_normalized_contract() {
     std::fs::write(&path, serde_json::to_string_pretty(&changed).unwrap()).unwrap();
     let check = sb.ost(&["--json", "lock", "--check"]);
     assert_eq!(check.status.code(), Some(5), "{}", out_text(&check));
+}
+
+#[test]
+fn alternate_profile_locks_preserve_the_workspace_pin_and_gate_packages() {
+    let sb = Sandbox::new("profile-lock");
+    init_and_pull(&sb);
+    for args in [
+        vec!["configure"],
+        vec!["runtime", "pull", "cy2026", "--profile", "lookdev"],
+    ] {
+        let out = sb.ost(&args);
+        assert!(out.status.success(), "{}", out_text(&out));
+    }
+    let original = std::fs::read(sb.work_file("strata.lock")).unwrap();
+    for args in [
+        vec!["configure", "--profile", "lookdev"],
+        vec!["lock", "--profile", "lookdev"],
+        vec!["lock", "--profile", "lookdev", "--check"],
+        vec!["lock", "--check"],
+    ] {
+        let out = sb.ost(&args);
+        assert!(out.status.success(), "{}", out_text(&out));
+        assert_eq!(
+            std::fs::read(sb.work_file("strata.lock")).unwrap(),
+            original
+        );
+    }
+    let alternate = std::fs::read_dir(&sb.work)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("strata.openstrata-")
+        })
+        .unwrap();
+    let mut lock: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&alternate).unwrap()).unwrap();
+    assert_eq!(lock["runtime"]["profile"], "lookdev");
+    lock["runtime"]["digest"] = format!("sha256:{}", "ab".repeat(32)).into();
+    std::fs::write(&alternate, serde_json::to_vec(&lock).unwrap()).unwrap();
+    let new = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-fileformat",
+        "toy",
+        "--extension",
+        "toy",
+    ]);
+    assert!(new.status.success(), "{}", out_text(&new));
+    let package = sb.ost(&["--json", "plugin", "package", "toy", "--profile", "lookdev"]);
+    assert!(
+        out_text(&package).contains("PACKAGE_RUNTIME_LOCK_MISMATCH"),
+        "{}",
+        out_text(&package)
+    );
+    assert_eq!(
+        std::fs::read(sb.work_file("strata.lock")).unwrap(),
+        original
+    );
 }
 
 /// Find the first file under `dir` whose name ends with `suffix`.

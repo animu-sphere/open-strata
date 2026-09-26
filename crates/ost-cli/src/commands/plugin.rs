@@ -1400,6 +1400,12 @@ fn build_one(
         build_intent,
         lease.invocation(),
     )?;
+    if let Some(root) = find_project_root(bundle.root.as_std_path())
+        .and_then(|root| Utf8PathBuf::from_path_buf(root).ok())
+    {
+        let lock = super::lock::build_lock(&root, &platform, &profile)?;
+        super::lock::write_lock(&root, &lock)?;
+    }
     if installed {
         write_atomic(
             bundle_stage.join(".openstrata-bundle-stage").as_std_path(),
@@ -11002,7 +11008,7 @@ pub(crate) fn selection(
 /// When a project lock exists, prevent package/validation from blessing bytes
 /// produced against another runtime. Older projects without a lock retain their
 /// existing workflow; malformed locks and identity drift fail closed.
-fn validate_runtime_against_project_lock(
+pub(crate) fn validate_runtime_against_project_lock(
     hint: &Utf8Path,
     runtime_id: Option<&str>,
     runtime_digest: Option<&str>,
@@ -11023,7 +11029,12 @@ fn validate_runtime_against_project_lock(
     else {
         return Ok(());
     };
-    let path = root.join(crate::commands::lock::LOCK_FILE);
+    let selected = runtime_id
+        .map(|id| super::lock::path_for_runtime(&root, id))
+        .transpose()?;
+    let path = selected
+        .filter(|path| path.as_std_path().is_file())
+        .unwrap_or_else(|| root.join(crate::commands::lock::LOCK_FILE));
     if !path.as_std_path().is_file() {
         return Ok(());
     }
@@ -11069,7 +11080,7 @@ fn validate_runtime_against_project_lock(
         ),
     )
     .with_hint(
-        "restore/pull the runtime pinned by strata.lock; run `ost lock` only after deliberately changing the project runtime identity",
+        "restore/pull the pinned runtime, or run `ost lock --profile <profile>` to create the selected profile lock",
     ))
 }
 

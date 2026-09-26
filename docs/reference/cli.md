@@ -863,6 +863,7 @@ Install and pack a built target into a tar.zst artifact
 | --- | --- |
 | `--allow-empty` | Allow an empty install tree (a metadata-only artifact). By default an empty tree is an error |
 | `--clean-stage` | Reclaim the stable package stage harder and sweep stale fallback stages a previous locked run left behind, instead of quietly staging into yet another sibling. Use once the process holding the old stage has exited |
+| `--intent <INTENT>` | Package a project-declared build intent from its isolated build tree |
 | `--profile <PROFILE>` | Profile to package. Defaults to the project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
 

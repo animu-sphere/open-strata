@@ -5,6 +5,28 @@ The canonical producer expands
 into 16 immutable leaves: OpenUSD 26.05 and 26.08; Linux x86_64 and Windows
 x86_64 `core`/`gl`/`vulkan`; and macOS arm64 `core`/`metal`.
 
+The separate [lookdev matrix](../../support/openusd-lookdev-runtime-matrix.json)
+adds OpenUSD 26.08 GL leaves for Linux and Windows x86_64. These build usdview,
+bundle PySide6 6.8.3 and PyOpenGL 3.1.9 alongside the runtime's `pxr` package,
+and validate the viewer imports and `hydra-preview`/`usdview` capabilities.
+Install those same Python UI packages on the build host before starting.
+Viewer-capable profiles select upstream `--usd-imaging --usdview`; they reject
+core or explicitly disabled viewer/Python builds. A physical GPU and a usable
+display connection are required for the imaging export gate. A software-only
+Xvfb/llvmpipe session cannot provide physical-device evidence.
+
+```powershell
+pwsh ./support/publish-openusd-runtimes.ps1 -Profile lookdev -PlanOnly
+pwsh ./support/publish-openusd-runtimes.ps1 -Profile lookdev -Jobs 16 -Publish -VerifyPublished
+```
+
+The lookdev repository is
+`oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-lookdev`, with tags
+`26.08-gl-linux-x86_64` and `26.08-gl-windows-x86_64`. Source and dependency
+identity come from the managed build, including CY2026 oneTBB 2022.1.0.
+Build/export work directories are separated by profile. macOS lookdev is not
+declared until its usdview and Metal evidence has been measured.
+
 macOS declares no `gl` lane. OpenStrata observes no physical OpenGL device on
 macOS, so such a leaf could never carry the device and render evidence that
 `check_exportable` requires of an imaging cell: it would build and validate,

@@ -661,6 +661,7 @@ fn pull(platform: &str, profile: &str, force: bool, src: PullSource, fmt: Format
             builder,
             src.build_args,
         )?;
+        require_profile_viewer(&r.capabilities, builder, &mut selection.args)?;
         let prepared = selection
             .compatibility
             .take()
@@ -786,6 +787,44 @@ fn parse_openusd_variant(value: &str) -> std::result::Result<OpenUsdVariantId, S
 struct OpenUsdBuildSelection {
     compatibility: Option<ResolvedOpenUsdCompatibility>,
     args: Vec<String>,
+}
+
+fn require_profile_viewer(
+    capabilities: &[String],
+    builder: OpenUsdBuilder,
+    args: &mut Vec<String>,
+) -> Result<()> {
+    if !capabilities
+        .iter()
+        .any(|cap| cap == "usdview" || cap == "hydra-preview")
+    {
+        return Ok(());
+    }
+    if args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--no-imaging" | "--no-usdview" | "--no-python"
+        ) || [
+            "-DPXR_BUILD_IMAGING=OFF",
+            "-DPXR_BUILD_USDVIEW=OFF",
+            "-DPXR_BUILD_USD_IMAGING=OFF",
+            "-DPXR_ENABLE_PYTHON_SUPPORT=OFF",
+        ]
+        .iter()
+        .any(|flag| arg.contains(flag))
+    }) {
+        return Err(Error::config("the selected profile requires usdview; core or viewer-disabled builds cannot provide it"));
+    }
+    match builder {
+        OpenUsdBuilder::BuildUsd => {
+            // Upstream --imaging explicitly omits USD imaging and therefore
+            // silently disables usdview, even when CMake later enables the SDK.
+            args.retain(|arg| !matches!(arg.as_str(), "--imaging" | "--usd-imaging" | "--usdview"));
+            args.extend(["--usd-imaging".into(), "--usdview".into()]);
+        }
+        OpenUsdBuilder::Cmake => args.push("-DPXR_BUILD_USDVIEW=ON".into()),
+    }
+    Ok(())
 }
 
 /// Select a declared cell without regressing legacy builds on targets that do
@@ -5591,7 +5630,35 @@ fn repair(platform: &str, profile: &str, fmt: Format) -> Result<()> {
 fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
     let r = resolve(platform, profile)?;
     let catalog = ost_extension::load_all()?;
-    let resolution = ost_extension::resolve(&catalog, &r.capabilities);
+    let mut resolution = ost_extension::resolve(&catalog, &r.capabilities);
+    // The installed manifest is the same source of truth used by runtime show
+    // and lock. A catalogue certification for another version is not evidence
+    // for an adopted or newly built runtime.
+    let installed = if r.pulled {
+        let path = r.prefix.join(MANIFEST_FILE);
+        let source = std::fs::read_to_string(&path).map_err(|e| Error::io(path.to_string(), e))?;
+        Some(
+            RuntimeManifest::from_json(&source)
+                .map_err(|e| Error::parse(path.to_string(), anyhow::Error::new(e)))?,
+        )
+    } else {
+        None
+    };
+    if let Some(manifest) = &installed {
+        for extension in &mut resolution.extensions {
+            if let Some(observed) = manifest.extensions.iter().find(|e| e.id == extension.id) {
+                extension.version.clone_from(&observed.version);
+                if extension
+                    .certified
+                    .as_ref()
+                    .is_some_and(|c| c.version != observed.version)
+                {
+                    extension.certified = None;
+                    extension.uncertified = true;
+                }
+            }
+        }
+    }
 
     if fmt.is_json() {
         let caps: Vec<_> = resolution
@@ -5631,6 +5698,8 @@ fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
             "capabilities": caps,
             "extensions": exts,
             "runtime_provided": resolution.runtime_provided,
+            "version_source": if installed.is_some() { "installed-runtime" } else { "catalogue" },
+            "validation": installed.as_ref().map(|m| m.validation),
         }));
         return Ok(());
     }
@@ -5682,7 +5751,8 @@ fn explain(platform: &str, profile: &str, fmt: Format) -> Result<()> {
             } else if ext.uncertified {
                 let feats: Vec<_> = ext.features.iter().cloned().collect();
                 println!(
-                    "    certified: NONE — no certified build covers [{}] (UNCERTIFIED)",
+                    "    certified: NONE — no certified build matches {} [{}] (UNCERTIFIED)",
+                    ext.version,
                     feats.join(", ")
                 );
             }
@@ -6113,6 +6183,62 @@ mod tests {
         let brew = parse_host_requirement("brew:openimageio").unwrap();
         assert!(validate_host_requirement_targets(&[brew], Os::Macos).is_ok());
         assert!(parse_host_requirement("brew:python@3.13").is_ok());
+    }
+
+    #[test]
+    fn lookdev_enables_upstream_viewer_and_rejects_disabled_requirements() {
+        let platform = ost_platform::load_one("cy2026").unwrap();
+        let capabilities = vec!["usdview".into(), "hydra-preview".into()];
+        for builder in [OpenUsdBuilder::BuildUsd, OpenUsdBuilder::Cmake] {
+            let mut selection = resolve_openusd_build(
+                &platform,
+                Os::Linux,
+                Arch::X86_64,
+                Some("26.08"),
+                Some(OpenUsdVariantId::Gl),
+                builder,
+                Vec::new(),
+            )
+            .unwrap();
+            require_profile_viewer(&capabilities, builder, &mut selection.args).unwrap();
+            match builder {
+                OpenUsdBuilder::BuildUsd => {
+                    assert!(selection.args.iter().any(|arg| arg == "--usd-imaging"));
+                    assert!(selection.args.iter().any(|arg| arg == "--usdview"));
+                    assert!(!selection.args.iter().any(|arg| arg == "--imaging"));
+                }
+                OpenUsdBuilder::Cmake => assert!(selection
+                    .args
+                    .iter()
+                    .any(|arg| arg == "-DPXR_BUILD_USDVIEW=ON")),
+            }
+            let mut core = resolve_openusd_build(
+                &platform,
+                Os::Linux,
+                Arch::X86_64,
+                Some("26.08"),
+                Some(OpenUsdVariantId::Core),
+                builder,
+                Vec::new(),
+            )
+            .unwrap();
+            assert!(require_profile_viewer(&capabilities, builder, &mut core.args).is_err());
+        }
+        for flag in [
+            "--no-usdview",
+            "--no-python",
+            "--build-args=USD,-DPXR_BUILD_USDVIEW=OFF",
+        ] {
+            assert!(require_profile_viewer(
+                &capabilities,
+                OpenUsdBuilder::BuildUsd,
+                &mut vec![flag.into()]
+            )
+            .is_err());
+        }
+        let mut usd_args = vec!["--imaging".into()];
+        require_profile_viewer(&[], OpenUsdBuilder::BuildUsd, &mut usd_args).unwrap();
+        assert_eq!(usd_args, ["--imaging"]);
     }
 
     #[test]

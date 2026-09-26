@@ -31,9 +31,14 @@ jobs:
       - name: Expand canonical runtime matrix
         run: python support/plan-openusd-runtimes.py --github
 
+      - name: Expand canonical lookdev runtime matrix
+        run: python support/plan-openusd-runtimes.py support/openusd-lookdev-runtime-matrix.json --github
+
       - name: Exercise publisher planning integration
         shell: pwsh
-        run: ./support/publish-openusd-runtimes.ps1 -PlanOnly
+        run: |
+          ./support/publish-openusd-runtimes.ps1 -PlanOnly
+          ./support/publish-openusd-runtimes.ps1 -Profile lookdev -PlanOnly
 
   fmt:
     runs-on: ubuntu-22.04

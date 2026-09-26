@@ -2382,18 +2382,18 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- ost-artifact 0.23.10
-- ost-build 0.23.10
-- ost-ci 0.23.10
-- ost-cli 0.23.10 — https://github.com/animu-sphere/open-strata
-- ost-core 0.23.10
-- ost-extension 0.23.10
-- ost-formation 0.23.10 — https://github.com/animu-sphere/open-strata
-- ost-host 0.23.10 — https://github.com/animu-sphere/open-strata
-- ost-manifest 0.23.10
-- ost-platform 0.23.10
-- ost-plugin 0.23.10
-- ost-runtime 0.23.10
+- ost-artifact 0.23.11
+- ost-build 0.23.11
+- ost-ci 0.23.11
+- ost-cli 0.23.11 — https://github.com/animu-sphere/open-strata
+- ost-core 0.23.11
+- ost-extension 0.23.11
+- ost-formation 0.23.11 — https://github.com/animu-sphere/open-strata
+- ost-host 0.23.11 — https://github.com/animu-sphere/open-strata
+- ost-manifest 0.23.11
+- ost-platform 0.23.11
+- ost-plugin 0.23.11
+- ost-runtime 0.23.11
 - anyhow 1.0.104 — https://github.com/dtolnay/anyhow
 - directories 6.0.0 — https://github.com/soc/directories-rs
 - dirs-sys 0.5.0 — https://github.com/dirs-dev/dirs-sys-rs

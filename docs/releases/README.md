@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.23.11 | [v0.23.11.md](v0.23.11.md) | Packaged renderer Formations and lookdev runtime production |
 | v0.23.10 | [v0.23.10.md](v0.23.10.md) | Imaging bundles on locked usd runtimes |
 | v0.23.9 | [v0.23.9.md](v0.23.9.md) | UsdImaging plugin bundles |
 | v0.23.8 | [v0.23.8.md](v0.23.8.md) | Renderer core install-tree evidence |

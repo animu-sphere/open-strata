@@ -685,7 +685,9 @@ fn report(g: &Generated, fmt: Format) {
     for stale in &g.presets.stale_root {
         eprintln!("{}", stale_root_include_warning(stale));
     }
-    println!("  refreshed strata.lock");
+    if let Ok(path) = super::lock::path_for_runtime(&g.root, &g.target.runtime_id) {
+        println!("  refreshed {}", path.file_name().unwrap_or("strata.lock"));
+    }
     println!("\nNext:");
     println!("  cmake --preset {id}    (or `ost build`)");
     println!("  to wire presets into your committed CMakePresets.json: `ost presets install`");
