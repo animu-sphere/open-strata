@@ -19,7 +19,7 @@ $matrixPath = Join-Path $PSScriptRoot 'openusd-runtime-matrix.json'
 if ($Profile -eq 'lookdev') {
     $matrixPath = Join-Path $PSScriptRoot 'openusd-lookdev-runtime-matrix.json'
     if (-not $PSBoundParameters.ContainsKey('Version')) { $Version = @('26.08') }
-    if (-not $PSBoundParameters.ContainsKey('Variant')) { $Variant = @('gl') }
+    if (-not $PSBoundParameters.ContainsKey('Variant')) { $Variant = if ($IsMacOS) { @('metal') } else { @('gl') } }
 }
 if (-not $Registry) { $Registry = "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-$Profile" }
 $planner = Join-Path $PSScriptRoot 'plan-openusd-runtimes.py'

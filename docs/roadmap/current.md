@@ -8,8 +8,8 @@ acceptance and the next feature work.
 
 - Re-run hydra-toon's combined VRM/renderer Formation against v0.23.11 and
   the published lookdev runtime. Expand renderer acceptance beyond local
-  Windows evidence; record macOS usdview/Metal evidence before adding a
-  canonical macOS lookdev leaf.
+  Windows evidence; record macOS usdview/Metal evidence and verify the digest
+  pull before publishing the declared canonical macOS lookdev leaf.
 
 - Recheck `usd-mmd-plugins` report 01 against the published target-local bundle
   and tool stages: source tests, packages, and a second target must consume

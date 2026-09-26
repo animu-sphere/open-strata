@@ -19,12 +19,15 @@ def declaration():
 
 
 class CanonicalRuntimePlannerTests(unittest.TestCase):
-    def test_lookdev_has_two_usdview_producer_leaves(self):
+    def test_lookdev_has_three_usdview_producer_leaves(self):
         document = json.loads((SUPPORT / "openusd-lookdev-runtime-matrix.json").read_text(encoding="utf-8"))
         jobs = PLANNER.expand(document)
-        self.assertEqual([job["tag"] for job in jobs], ["26.08-gl-linux-x86_64", "26.08-gl-windows-x86_64"])
+        self.assertEqual([job["tag"] for job in jobs], ["26.08-gl-linux-x86_64", "26.08-gl-windows-x86_64", "26.08-metal-macos-arm64"])
         self.assertTrue(all(job["profile"] == "lookdev" for job in jobs))
         self.assertTrue(all(job["repository"].endswith("-lookdev") for job in jobs))
+        self.assertEqual(jobs[-1]["sdk"], "15.5")
+        self.assertEqual(jobs[-1]["deployment_target"], "13.0")
+        self.assertTrue(jobs[-1]["examples_required"])
         document["cells"][0]["variants"] = ["core"]
         with self.assertRaisesRegex(ValueError, "not canonical"):
             PLANNER.expand(document)
