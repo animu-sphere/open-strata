@@ -26,9 +26,14 @@ pwsh ./support/publish-openusd-runtimes.ps1 -Profile lookdev -Jobs 16 -Publish -
 The lookdev repository is
 `oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-lookdev`, with tags
 `26.08-gl-linux-x86_64`, `26.08-gl-windows-x86_64`, and
-`26.08-metal-macos-arm64`. The macOS tag is the planned leaf; publish it only
-after the usdview and physical Metal gates pass. Source and dependency
-identity come from the managed build, including CY2026 oneTBB 2022.1.0.
+`26.08-metal-macos-arm64`. The macOS leaf is published with OCI digest
+`sha256:0aa6c3b28c3f326b2a439cf1df19b9aa87c8d8d80506b61598b01840cfb6a8b9`
+and artifact digest
+`sha256:f727e7f75d80a596d94b15a8ae94ee641506c75a641953a353ed815a75be7521`.
+It passed viewer imports, physical Metal device and render checks, and an
+anonymous digest-pinned pull into a clean store with SBOM and provenance checks.
+Source and dependency identity come from the managed build, including CY2026
+oneTBB 2022.1.0.
 Build/export work directories are separated by profile. On macOS arm64,
 `-Profile lookdev` selects the Metal leaf by default; other hosts select GL.
 
