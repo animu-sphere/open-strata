@@ -120,8 +120,8 @@ def validate_relocation(root: Path, platform: str) -> None:
             raise RuntimeError(f"otool failed for {binary}: {result.stderr.strip()}")
         dependencies = [
             line.strip().split(" (compatibility version", 1)[0]
-            for line in result.stdout.splitlines()[1:]
-            if line.strip()
+            for line in result.stdout.splitlines()
+            if line[:1].isspace()
         ]
         forbidden = [
             dependency

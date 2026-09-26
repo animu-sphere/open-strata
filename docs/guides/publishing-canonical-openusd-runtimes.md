@@ -11,6 +11,8 @@ macOS arm64. These build usdview,
 bundle PySide6 6.8.3 and PyOpenGL 3.1.9 alongside the runtime's `pxr` package,
 and validate the viewer imports and `hydra-preview`/`usdview` capabilities.
 Install those same Python UI packages on the build host before starting.
+On macOS the publisher omits the PySide6 Mimer, ODBC, and PostgreSQL SQL
+drivers, whose wheels link to external host libraries not used by usdview.
 Viewer-capable profiles select upstream `--usd-imaging --usdview`; they reject
 core or explicitly disabled viewer/Python builds. A physical GPU and a usable
 display connection are required for the imaging export gate. A software-only

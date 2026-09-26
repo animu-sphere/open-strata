@@ -90,6 +90,12 @@ $results = foreach ($job in $plannedLeaves) {
         $pythonDirectory = @('lib/python', 'lib/site-packages', 'Lib/site-packages', 'lib/python3.13/site-packages') | ForEach-Object { Join-Path $runtimeName.FullName $_ } | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'pxr') -PathType Container } | Select-Object -First 1
         if (-not $pythonDirectory) { throw 'lookdev runtime has no CPython 3.13 package directory' }
         Invoke-Checked $python @('-m', 'pip', 'install', '--target', $pythonDirectory, 'PySide6==6.8.3', 'PyOpenGL==3.1.9')
+        if ($hostOs -eq 'macos') {
+            foreach ($driver in @('libqsqlmimer.dylib', 'libqsqlodbc.dylib', 'libqsqlpsql.dylib')) {
+                $path = Join-Path $pythonDirectory "PySide6/Qt/plugins/sqldrivers/$driver"
+                if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path }
+            }
+        }
     }
     Invoke-Checked $ost @('runtime', 'validate', 'cy2026', '--profile', $Profile)
     Invoke-Checked $python @($validator, $runtimeName.FullName, '--version', $job.openusd, '--variant', $job.variant, '--platform', $hostOs, '--arch', $hostArch, '--profile', $Profile)
