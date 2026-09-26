@@ -107,6 +107,16 @@ fn path(path: &Path) -> &str {
     path.to_str().unwrap()
 }
 
+fn executable_fixture(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 #[test]
 fn formation_resolves_real_renderer_and_plugin_package_outputs() {
     if ost_core::tools::which("cmake").is_none() || ost_core::tools::which("ninja").is_none() {
@@ -554,7 +564,7 @@ fn python_entrypoints_and_deep_projects_use_the_same_launch_contract() {
     let typed: ost_runtime::RuntimeManifest = serde_json::from_value(runtime.clone()).unwrap();
     runtime["digest"] = typed.compute_digest().into();
     std::fs::write(&manifest_path, serde_json::to_vec_pretty(&runtime).unwrap()).unwrap();
-    // An extensionless, non-executable script with an unusable producer shebang
+    // An extensionless script with an unusable producer shebang
     // must run through the selected host Python on Windows, Linux and macOS.
     std::fs::write(prefix.join("bin/testusdview"), "#!/missing/producer/python\nimport os, sys, json\nprint(json.dumps({'python': sys.executable, 'path': os.environ['PATH'], 'args': sys.argv[1:]}))\n").unwrap();
     std::fs::write(
@@ -562,11 +572,8 @@ fn python_entrypoints_and_deep_projects_use_the_same_launch_contract() {
         "@python \"%~dp0testusdview\" %*\r\n",
     )
     .unwrap();
-    std::fs::write(
-        prefix.join("bin/not-executable"),
-        "plain text, not an executable",
-    )
-    .unwrap();
+    executable_fixture(&prefix.join("bin/testusdview"));
+    executable_fixture(&prefix.join("bin/testusdview.cmd"));
     let plugin = "lib/python/PySide6/plugins/platforms/qwindows.dll";
     std::fs::create_dir_all(prefix.join(plugin).parent().unwrap()).unwrap();
     std::fs::write(prefix.join(plugin), "Qt path length fixture").unwrap();
@@ -619,9 +626,19 @@ fn python_entrypoints_and_deep_projects_use_the_same_launch_contract() {
     // A retained tree is not a trusted cache; doctor/run must extract anew.
     std::fs::write(root.join("runtime/bin/testusdview"), "broken retained tree").unwrap();
     json(sandbox.ost(&["--json", "formation", "run", path(&formation)]));
+    // Runtime export rejects non-executable bin entries on Unix, so exercise
+    // command rejection with an explicit project-local file instead.
+    let non_executable = project.join("not-executable");
+    std::fs::write(&non_executable, "plain text, not an executable").unwrap();
     std::fs::write(
         &formation,
-        manifest.replace("program = 'testusdview'", "program = 'not-executable'"),
+        manifest.replace(
+            "program = 'testusdview'",
+            &format!(
+                "program = {}",
+                serde_json::to_string(path(&non_executable)).unwrap()
+            ),
+        ),
     )
     .unwrap();
     json(sandbox.ost(&["--json", "formation", "lock", path(&formation)]));
@@ -653,6 +670,7 @@ fn missing_runtime_python_fails_doctor_and_run_but_not_portable_locking() {
         "#!/usr/bin/env python3\nraise Exception('must not execute')\n",
     )
     .unwrap();
+    executable_fixture(&prefix.join("bin/usdview"));
     let exported =
         json(sandbox.ost(&["--json", "runtime", "export", "cy2026", "--profile", "usd"]));
     let digest = exported["data"]["digest"].as_str().unwrap();
