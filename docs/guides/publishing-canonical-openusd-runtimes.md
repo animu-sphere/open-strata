@@ -10,6 +10,10 @@ adds OpenUSD 26.08 GL leaves for Linux and Windows x86_64. These build usdview,
 bundle PySide6 6.8.3 and PyOpenGL 3.1.9 alongside the runtime's `pxr` package,
 and validate the viewer imports and `hydra-preview`/`usdview` capabilities.
 Install those same Python UI packages on the build host before starting.
+Viewer-capable profiles select upstream `--usd-imaging --usdview`; they reject
+core or explicitly disabled viewer/Python builds. A physical GPU and a usable
+display connection are required for the imaging export gate. A software-only
+Xvfb/llvmpipe session cannot provide physical-device evidence.
 
 ```powershell
 pwsh ./support/publish-openusd-runtimes.ps1 -Profile lookdev -PlanOnly
