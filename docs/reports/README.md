@@ -7,6 +7,7 @@ and [reference/](../reference/)).
 
 | Document | Purpose |
 | --- | --- |
+| [2026-09-27 Formation launch verification](2026-09-27-v0.23.13-formation-launch.md) | hydra-toon report 05: real Python/Qt startup, short Windows paths, regression coverage and offscreen rendering limitation. |
 | [2026-09-26 Imaging on the usd profile](2026-09-26-v0.23.10-imaging-usd-profile.md) | Locked published usd runtime: native SDK checks, workspace product and extracted-package verification. |
 | [2026-09-26 UsdImaging verification](2026-09-26-v0.23.9-usd-imaging.md) | Native adapter registration, schema closure, disabled-plugin rejection and package evidence. |
 | [2026-09-26 v0.23.7 renderer bootstrap](2026-09-26-v0.23.7-renderer-bootstrap.md) | Fresh template on Windows/MSVC and RTX A5000: repeated-build evidence, isolated viewport validation and OpenUSD 26.08 Hydra host tests. |

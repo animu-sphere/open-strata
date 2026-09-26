@@ -71,8 +71,26 @@ contract. `env` materializes the verified artifacts, retains that
 materialization so the exported paths remain usable by the caller, and prints
 either evaluable shell or ordered JSON variables. `doctor` checks resolution,
 lock freshness, environment conflicts, and command reachability. Duplicate
-plugin identities are rejected instead of allowing two ambiguous discovery
-roots.
+plugin identities in the resolved component list are rejected. Comparison with
+transitive bundles embedded inside another component remains in the
+[downstream intake](../roadmap/downstream-report-intake.md).
+
+Since v0.23.13, materialization lives under
+`$OST_HOME/artifacts/f/<16-character-id>/`, so a deeply nested project or long
+Formation name does not lengthen runtime/plugin paths. Each invocation extracts
+a fresh verified tree. `env` retains its tree for the caller; other commands
+remove theirs on completion. Retained trees are not trusted caches and may be
+removed when no shell or process uses them. On Windows, choose a short
+`OST_HOME` if the store itself makes paths too long for legacy DLL loaders.
+
+`env`, `doctor` and `run` select Python the same way runtime validation does:
+prefer a bundled interpreter, then discover a host interpreter matching the
+runtime's required Python major/minor ABI. Its directory is added to the
+composed `PATH`, without inheriting the whole parent `PATH`. Extensionless
+Python scripts such as `usdview` and `testusdview` are launched with that
+interpreter directly, including the standard OpenUSD `.cmd`/`.bat` shim form.
+`doctor` applies the same command resolution as `run` and fails when a Python
+entry point has no compatible interpreter. Native commands need no Python.
 
 ## 4. Lock for reproducibility
 
@@ -85,6 +103,10 @@ ost formation lock formation.toml            # writes formation.lock
 
 The lock contains no machine-local materialization paths. `run` refuses a stale
 or drifting lock.
+
+Interpreter discovery is machine-local and does not alter the portable lock.
+Run evidence records `executable`, `script` and `python` alongside the declared
+program and arguments, identifying what actually launched on that host.
 
 ## 5. Run and record evidence
 

@@ -1,13 +1,13 @@
 # Current
 
-The v0.23.12 delivery is recorded in the
-[release record](../releases/v0.23.12.md). This page tracks the remaining
+The v0.23.13 delivery is recorded in the
+[release record](../releases/v0.23.13.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.12 evidence
+## Post-release v0.23.13 evidence
 
-- Re-run hydra-toon's combined VRM/renderer Formation against v0.23.11 and
-  the published lookdev runtime. Expand renderer acceptance beyond local
+- Re-run hydra-toon's avatar Formation with the published v0.23.13 CLI and
+  declared viewer command. Expand renderer acceptance beyond local
   Windows evidence; record macOS usdview/Metal evidence and verify the digest
   pull before publishing the declared canonical macOS lookdev leaf.
 
