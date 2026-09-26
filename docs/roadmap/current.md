@@ -1,10 +1,10 @@
 # Current
 
-The v0.23.9 delivery is recorded in the
-[release record](../releases/v0.23.9.md). This page tracks the remaining
+The v0.23.10 delivery is recorded in the
+[release record](../releases/v0.23.10.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.9 evidence
+## Post-release v0.23.10 evidence
 
 - Recheck hydra-toon report 02 after applying renderer template 0.5.3's
   install-tree script: core `ost test` followed by `ost validate` must report
@@ -15,7 +15,10 @@ acceptance and the next feature work.
   and tool stages: source tests, packages, and a second target must consume
   their own outputs without source-tree generated files.
 - Adopt `usd-imaging` for `vrmImaging` and repeat native registry/schema closure
-  validation with published v0.23.9, including Linux/macOS. VRM report 48 closes
+  validation with published v0.23.10 under the locked `usd` imaging runtime,
+  including Linux/macOS. Report 50 confirms native registration on Windows;
+  remove the old explicit `hydra-preview` requirement and update the downstream
+  baseline session when adopting. VRM report 48 closes
   the Windows report 47 packaging regression; repeat those package cells on
   Linux/macOS. Track its separate producer RUNPATH cleanup request in the intake.
 

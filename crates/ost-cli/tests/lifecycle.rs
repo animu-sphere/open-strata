@@ -3367,6 +3367,66 @@ fn generated_openexec_plugin_requires_schema_contract_inputs() {
 }
 
 #[test]
+fn imaging_usd_profile_reaches_sdk_checks_and_preserves_explicit_requirements() {
+    let sb = Sandbox::new("imaging-usd-profile");
+    init_and_pull(&sb);
+    let out = sb.ost(&[
+        "plugin",
+        "new",
+        "usd-imaging",
+        "adapter",
+        "--schema-bundle",
+        "schema",
+        "--schema-type",
+        "MaterialAPI",
+    ]);
+    assert!(out.status.success(), "{}", out_text(&out));
+    let root = Utf8PathBuf::from_path_buf(sb.work.join("adapter")).unwrap();
+    let mut bundle = ost_plugin::Bundle::load(&root).unwrap();
+    assert_eq!(
+        bundle.manifest.required_capabilities(),
+        vec!["usd-stage-read"]
+    );
+    // Isolate runtime selection from the separate schema dependency contract.
+    bundle.manifest.requires.bundles.clear();
+    let path = root.join("openstrata.plugin.yaml");
+    std::fs::write(&path, serde_yaml::to_string(&bundle.manifest).unwrap()).unwrap();
+    let build = sb.ost(&["plugin", "build", "adapter", "--dry-run"]);
+    assert!(!build.status.success());
+    assert!(
+        out_text(&build).contains("PLUGIN_IMAGING_RUNTIME_REQUIRED"),
+        "{}",
+        out_text(&build)
+    );
+    for args in [
+        vec!["--json", "plugin", "test", "adapter", "--up-to", "1"],
+        vec!["--json", "plugin", "test", "--workspace", "--up-to", "1"],
+    ] {
+        let out = sb.ost(&args);
+        assert!(!out.status.success());
+        let text = out_text(&out);
+        assert!(!text.contains("PROFILE_CAPABILITY_UNSATISFIED"), "{text}");
+        assert!(text.contains("runtime.usd_imaging"), "{text}");
+        assert!(
+            text.contains("core runtime cannot build or load adapters"),
+            "{text}"
+        );
+    }
+    bundle
+        .manifest
+        .requires
+        .capabilities
+        .push("hydra-preview".into());
+    std::fs::write(path, serde_yaml::to_string(&bundle.manifest).unwrap()).unwrap();
+    let explicit = sb.ost(&["plugin", "build", "adapter", "--dry-run"]);
+    assert!(
+        out_text(&explicit).contains("PROFILE_CAPABILITY_UNSATISFIED"),
+        "{}",
+        out_text(&explicit)
+    );
+}
+
+#[test]
 fn imaging_scaffold_graph_and_explicit_session_conflicts() {
     let sb = Sandbox::new("imaging-contract");
     let missing = sb.ost(&["plugin", "new", "usd-imaging", "missing"]);

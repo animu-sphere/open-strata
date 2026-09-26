@@ -172,12 +172,9 @@ mod tests {
     }
 
     #[test]
-    fn imaging_is_intrinsic_and_core_runtime_fails_l1() {
-        let b = bundle("vrmImaging", "usd-imaging:VrmMToonAPI");
-        assert!(b
-            .manifest
-            .required_capabilities()
-            .contains(&"hydra-preview".into()));
+    fn imaging_sdk_is_intrinsic_without_requiring_a_viewer_profile() {
+        let mut b = bundle("vrmImaging", "usd-imaging:VrmMToonAPI");
+        assert!(b.manifest.required_capabilities().is_empty());
         for (pulled, real, imaging, expected) in [
             (false, false, false, Status::Skip),
             (true, false, true, Status::Fail),
@@ -204,6 +201,10 @@ mod tests {
                 expected
             );
         }
+        // Removing the intrinsic viewer requirement must not discard an
+        // author's explicit capability requirements.
+        b.manifest.requires.capabilities = vec!["hydra-preview".into()];
+        assert_eq!(b.manifest.required_capabilities(), vec!["hydra-preview"]);
     }
 
     #[test]

@@ -561,7 +561,7 @@ fn level1(bundle: &Bundle, ctx: &RuntimeContext) -> Vec<Diagnostic> {
         } else {
             Diagnostic::fail("runtime.usd_imaging", 1,
                 "usd-imaging requires an imaging runtime with usdImaging; a core runtime cannot build or load adapters",
-                vec!["select an imaging runtime (hydra-preview capability)".into()])
+                vec!["select a runtime with the usdImaging headers and library (including an imaging variant of the usd profile)".into()])
         });
     }
 

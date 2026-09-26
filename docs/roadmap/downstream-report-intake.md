@@ -5,7 +5,7 @@ owners:
   - openstrata-maintainers
 created: 2026-09-12
 updated: 2026-09-26
-applies_to: post-v0.23.9
+applies_to: post-v0.23.10
 ---
 
 # Downstream OST report intake
@@ -26,7 +26,9 @@ hydra-toon report 01, received on 2026-09-26, brings this OST-series intake to
 80 reports and drives the v0.23.7 renderer fixes. Report 02 brings the total
 to 81, confirms those fixes and requests the core install-tree evidence repair
 shipped in v0.23.8. VRM reports 48–49 bring the total to 83: Windows
-packaging is confirmed, and UsdImaging bundle support ships in v0.23.9. Physics has no numbered OST
+packaging is confirmed, and UsdImaging bundle support ships in v0.23.9.
+Report 50 brings the total to 84, confirms native registration on Windows and
+exposes the profile gate repaired in v0.23.10. Physics has no numbered OST
 series; its separate dated adoption and artifact reports are linked below.
 MMD's dated model and motion reports test its own format behavior and are not
 counted as OST reports. A request was treated as
@@ -39,7 +41,7 @@ superseded failures are not carried forward.
 
 | Repository | Reports | Result |
 | --- | ---: | --- |
-| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 49 | Reports 40–41 expose per-bundle packaging and cross-repository library dependencies; report 42's early consumer claim is repaired in v0.23.1; report 44's tool edges shipped in v0.23.3; report 45's cache repair and external bundle/tool pins ship in v0.23.4; report 46's root CTest paths ship in v0.23.5; report 48 confirms the v0.23.6 Windows package repair; report 49's imaging kind ships in v0.23.9. |
+| [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 50 | Reports 40–41 expose per-bundle packaging and cross-repository library dependencies; report 42's early consumer claim is repaired in v0.23.1; report 44's tool edges shipped in v0.23.3; report 45's cache repair and external bundle/tool pins ship in v0.23.4; report 46's root CTest paths ship in v0.23.5; report 48 confirms the v0.23.6 Windows package repair; report 49's imaging kind ships in v0.23.9; report 50's usd profile gate is repaired in v0.23.10. |
 | [hdMerlin](https://github.com/animu-sphere/hydra-merlin/tree/main/docs/reports/ost) | 12 | No open carryover: managed renderer diagnostics and resilient OCI transfer shipped in v0.22.0, with idle-timeout semantics hardened again in v0.22.9. |
 | [USD Point Cloud Plugins](https://github.com/animu-sphere/usd-pointcloud-plugins/tree/main/docs/reports/ost) | 4 | No open carryover: structured file-format arguments and managed-output provenance are implemented; the preimplementation report requested no change. |
 | [USD 3DGS Plugins](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost) | 4 | New report 04 finds a generated Bash empty-array failure on macOS when optional OpenUSD selectors are absent. |
@@ -54,7 +56,7 @@ superseded failures are not carried forward.
 | [hydra-toon](https://github.com/animu-sphere/hydra-toon/tree/main/docs/reports/ost) | 2 | Report 02 confirms all five report 01 fixes in published v0.23.7. Its core install-tree verdict repair ships in v0.23.8; downstream rerun remains. |
 | [USD Physics Plugins](https://github.com/animu-sphere/usd-physics-plugins/tree/main/docs/reports) | 0 | No numbered OST series. Dated reports prove library packaging and Stage Runner consumption, and expose the external Jolt SDK consumer gap below. |
 
-## Post-v0.23.9 - downstream acceptance
+## Post-v0.23.10 - downstream acceptance
 
 - **P3 — verify core renderer install-tree evidence downstream.**
   [Report 02](https://github.com/animu-sphere/hydra-toon/blob/main/docs/reports/ost/02-2026-09-26-v0.23.7-report-01-reverified.md)
@@ -86,6 +88,12 @@ superseded failures are not carried forward.
   registry verification in [v0.23.9](../releases/v0.23.9.md). Add the descriptor
   and product membership downstream, then verify the real adapter's scene-index
   behavior and the native Linux/macOS lanes.
+  [Report 50](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/50-2026-09-26-v0.23.9-the-imaging-kind-arrives-and-the-usd-profile-cannot-select-it.md)
+  confirms Windows native registry construction but finds the intrinsic
+  `hydra-preview` requirement blocks canonical `usd` runtimes.
+  [v0.23.10](../releases/v0.23.10.md) checks the resolved SDK instead. Remove the
+  old explicit capability requirement and update the downstream baseline session
+  before repeating the locked workspace product lane.
 - **P3 — remove producer-local ELF RUNPATH entries.**
   [VRM report 48](https://github.com/animu-sphere/usd-vrm-plugins/blob/main/docs/reports/ost/48-2026-09-24-v0.23.6-the-product-packages-again.md)
   confirms the Windows product-packaging repair and repeatable digests. Its new

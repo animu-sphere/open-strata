@@ -117,7 +117,10 @@ sources and invalidation methods; the skeleton contributes no material data.
 Provide `usd-imaging:<apiSchemaName>` or, for a hand-authored prim adapter,
 `usd-imaging-prim:<primTypeName>`. L0 requires matching metadata and unique keys;
 workspace/session composition rejects multiple owners. Select an imaging SDK
-and a profile promising `hydra-preview` (normally `--profile lookdev`).
+with usdImaging headers and library; the canonical imaging variants of the
+`usd` profile work without a viewer or a `lookdev` runtime. Template 0.1.1
+requires only `usd-stage-read`; remove the old template's explicit
+`hydra-preview` requirement when migrating, unless your plugin needs it.
 
 L2 builds a native registry checker with CMake, Ninja and a C++ compiler, even
 when testing an extracted package. It checks schema presence, registry lookup

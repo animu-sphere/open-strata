@@ -31,9 +31,10 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.23.9** — `usd-imaging` bundles bring UsdImaging
-adapters into dependency composition, native registry verification and product
-packaging. Renderer template 0.5.3 publishes the core install-tree verdict to
+The current release is **v0.23.10** — `usd-imaging` bundles use the resolved
+usdImaging SDK, including published imaging variants of the `usd` profile,
+without requiring a viewer profile. Native registry verification and product
+packaging retain the project's locked runtime. Renderer template 0.5.3 publishes the core install-tree verdict to
 managed validation. Unchanged builds preserve renderer
 evidence, viewport launches have build-scoped validation, and the template
 supports OpenUSD 26.08 and Japanese Windows hosts. Workspace-installed bundles record
