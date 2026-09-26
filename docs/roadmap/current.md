@@ -8,8 +8,8 @@ acceptance and the next feature work.
 
 - Re-run hydra-toon's avatar Formation with the published v0.23.13 CLI and
   declared viewer command. Expand renderer acceptance beyond local
-  Windows evidence; record macOS usdview/Metal evidence and verify the digest
-  pull before publishing the declared canonical macOS lookdev leaf.
+  Windows evidence; exercise usdview launch and downstream rendering against
+  the published, digest-pinned macOS Metal lookdev leaf.
 
 - Recheck `usd-mmd-plugins` report 01 against the published target-local bundle
   and tool stages: source tests, packages, and a second target must consume
