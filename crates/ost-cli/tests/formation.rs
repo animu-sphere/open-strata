@@ -20,8 +20,7 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
-        let base =
-            std::env::temp_dir().join(format!("ost-formation-{}-{nanos}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("of-{}-{nanos}", std::process::id()));
         let home = base.join("home");
         std::fs::create_dir_all(&home).unwrap();
         Self { base, home }
