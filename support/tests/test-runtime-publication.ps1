@@ -53,3 +53,5 @@ try {
     Remove-Item -LiteralPath $testRoot -Recurse -Force
     Remove-Variable PublicationTestMode -Scope Global
 }
+# Expected fake CLI failures must not leak into the CI shell's exit status.
+$global:LASTEXITCODE = 0
