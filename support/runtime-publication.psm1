@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 Set-StrictMode -Version Latest
 
+function Assert-RuntimePublicationCli {
+    param([Parameter(Mandatory)][object] $Ost)
+    & $Ost artifact retain --help | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Runtime publication requires ost v0.23.14 or later with artifact retain support' }
+}
+
 function Write-RuntimeMigrationJournal {
     param([string] $Path, [object[]] $Migrations)
     $fullPath = [IO.Path]::GetFullPath($Path)
@@ -71,4 +77,4 @@ function Complete-RuntimePublication {
     }
     Write-RuntimeMigrationJournal -Path $Publication.journal -Migrations @($Publication.history + $Publication.current)
 }
-Export-ModuleMember -Function Protect-RuntimePublication, Complete-RuntimePublication
+Export-ModuleMember -Function Assert-RuntimePublicationCli, Protect-RuntimePublication, Complete-RuntimePublication

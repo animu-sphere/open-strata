@@ -166,11 +166,10 @@ function Initialize-VsDevEnvironment {
 
 function Assert-CommonPrerequisites {
     $ostVersion = (& $script:Ost --version) -join ''
-    # The v0.22 implementation is exercised from a 0.21-versioned release
-    # branch before the workspace version bump, then by the final 0.22 binary.
-    if ($LASTEXITCODE -ne 0 -or $ostVersion -notmatch '^ost 0\.(21|22)\.') {
-        throw "ost 0.21.x or 0.22.x is required; found '$ostVersion'"
+    if ($LASTEXITCODE -ne 0 -or $ostVersion -notmatch '^ost (\d+\.\d+\.\d+)' -or [version]$Matches[1] -lt [version]'0.21.0') {
+        throw "ost 0.21.0 or later is required; found '$ostVersion'"
     }
+    if ($Publish -or $PublishFrom) { Assert-RuntimePublicationCli -Ost $script:Ost }
 
     $pythonCommand = if (Test-Path -LiteralPath $PythonExecutable) {
         (Resolve-Path -LiteralPath $PythonExecutable).Path

@@ -8,6 +8,10 @@ $global:PublicationTestMode = 'existing'
 $fakeOst = {
     $action = $args[1]
     $global:LASTEXITCODE = 0
+    if ($args[-1] -eq '--help') {
+        if ($global:PublicationTestMode -eq 'old-cli') { $global:LASTEXITCODE = 2 }
+        return
+    }
     if ($action -eq 'resolve') {
         if ($global:PublicationTestMode -eq 'missing' -or $global:PublicationTestMode -eq 'denied') {
             $global:LASTEXITCODE = 4
@@ -24,6 +28,12 @@ $fakeOst = {
 }
 function Assert([bool] $Condition, [string] $Message) { if (-not $Condition) { throw $Message } }
 try {
+    Assert-RuntimePublicationCli -Ost $fakeOst
+    $global:PublicationTestMode = 'old-cli'
+    $failed = $false
+    try { Assert-RuntimePublicationCli -Ost $fakeOst } catch { $failed = $true }
+    Assert $failed 'an old CLI must be rejected before starting a runtime publication'
+    $global:PublicationTestMode = 'existing'
     $journal = Join-Path $testRoot 'migrations.json'
     $publication = Protect-RuntimePublication -Ost $fakeOst -Reference 'oci://fixture/owner/runtime:new' -Journal $journal -Reason 'variant tags' -PreviousReferences @('oci://fixture/owner/runtime:old')
     $pending = Get-Content -LiteralPath $journal -Raw | ConvertFrom-Json

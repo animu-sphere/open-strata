@@ -45,6 +45,7 @@ if ($PlanOnly) {
 }
 
 $ost = (Get-Command ost -ErrorAction Stop).Source
+if ($Publish) { Assert-RuntimePublicationCli -Ost $ost }
 $git = (Get-Command git -ErrorAction Stop).Source
 $producerStatus = @(& $git -C $repositoryRoot status --porcelain --untracked-files=all)
 if ($LASTEXITCODE -ne 0) { throw 'could not inspect the OpenStrata producer checkout' }

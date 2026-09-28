@@ -28,7 +28,7 @@ OpenUSD 26.08's Exec examples, while excluding the source and build trees.
 ## Prerequisites
 
 - Windows x86_64 with Visual Studio's C++ workload.
-- PowerShell 7, Python 3.13.14, and `ost` 0.21.x or 0.22.x on `PATH`.
+- PowerShell 7, Python 3.13.14, and `ost` 0.23.14 or later on `PATH` when publishing. Build-only runs also accept 0.21.x and later.
 - A Windows Vulkan SDK with `VULKAN_SDK` set.
 - WSL2 with a working Docker engine for the Linux builds.
 - Enough free space for two OpenUSD source builds per operating system.

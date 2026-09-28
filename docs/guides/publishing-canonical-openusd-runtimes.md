@@ -141,3 +141,6 @@ consumers must revalidate and update both the OCI and artifact pins deliberately
 Manual retention uses ost artifact retain oci://<registry>/<repository>@sha256:<digest>.
 It uses the same publisher authorization policy as artifact push and does not
 download or rebuild the runtime archive.
+
+Publishing requires ost v0.23.14 or later with artifact retain support; both
+publishers check this capability before starting build or publication work.
