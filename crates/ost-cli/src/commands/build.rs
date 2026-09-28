@@ -1057,13 +1057,31 @@ pub(crate) fn validate_completed_intent_for_command(
 ) -> std::result::Result<(), String> {
     let mut completed_cache = completed.cache.clone();
     completed_cache.remove("CMAKE_BUILD_TYPE");
-    // Domain workflows may add reserved OpenStrata cache entries around a
-    // project-declared intent. They remain recorded in completion/preflight
-    // evidence but are not authored in `[build.intents.*]`, so comparing them
-    // to the declaration would make every `renderer viewport --intent ...`
-    // completion look stale.
-    completed_cache.remove("OST_RENDERER_ADAPTERS");
-    if completed.name != declared.name || completed_cache != declared.cache {
+    let declared_cache = declared.cache.clone();
+    let workflow_adapter = if declared.name == "renderer-viewport"
+        || declared.name.ends_with("--renderer-viewport")
+    {
+        Some("VIEWPORT")
+    } else if declared.name == "renderer-hydra2" || declared.name.ends_with("--renderer-hydra2") {
+        Some("HYDRA2")
+    } else {
+        None
+    };
+    if let Some(adapter) = workflow_adapter {
+        // Runtime bindings are separately checked against the current target.
+        for key in ["OST_RUNTIME_ROOT", "OST_RUNTIME_ID", "OST_RUNTIME_DIGEST"] {
+            if !declared_cache.contains_key(key) {
+                completed_cache.remove(key);
+            }
+        }
+        // The adopted-project fallback enables one discovered project option.
+        completed_cache.retain(|key, entry| {
+            declared_cache.contains_key(key)
+                || !key.ends_with(&format!("_ENABLE_{adapter}"))
+                || entry != &CMakeCacheEntry::bool(true)
+        });
+    }
+    if completed.name != declared.name || completed_cache != declared_cache {
         return Err(format!(
             "completion build intent '{}' no longer matches the declared '{}' intent; rerun `{command}`",
             completed.name, declared.name,
@@ -1495,14 +1513,18 @@ mod tests {
     }
 
     #[test]
-    fn declared_intent_validation_accepts_the_renderer_domain_cache() {
+    fn declared_intent_validation_requires_the_resolved_renderer_domain_cache() {
         let mut declared = BuildIntent {
-            name: "viewport-usd".into(),
+            name: "viewport-usd--renderer-viewport".into(),
             cache: std::collections::BTreeMap::from([(
                 "MERLIN_ENABLE_HYDRA2".into(),
                 CMakeCacheEntry::bool(true),
             )]),
         };
+        declared.cache.insert(
+            "OST_RENDERER_ADAPTERS".into(),
+            CMakeCacheEntry::string("viewport"),
+        );
         let mut completed = declared.clone();
         completed.cache.insert(
             "OST_RENDERER_ADAPTERS".into(),

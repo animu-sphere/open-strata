@@ -8,6 +8,9 @@ param(
     [ValidateRange(1, 256)][int] $Jobs = [Environment]::ProcessorCount,
     [string] $WorkRoot = (Join-Path $PSScriptRoot '.openusd-runtime-work'),
     [string] $Registry,
+    [string] $PublicationReason = 'Runtime leaf republished',
+    # Optional JSON array of previous_tag and replacement_tag mappings.
+    [string] $MigrationMap,
     [switch] $Publish,
     [switch] $VerifyPublished,
     [switch] $PlanOnly
@@ -15,6 +18,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'runtime-publication.psm1') -Force
 $matrixPath = Join-Path $PSScriptRoot 'openusd-runtime-matrix.json'
 if ($Profile -eq 'lookdev') {
     $matrixPath = Join-Path $PSScriptRoot 'openusd-lookdev-runtime-matrix.json'
@@ -41,6 +45,7 @@ if ($PlanOnly) {
 }
 
 $ost = (Get-Command ost -ErrorAction Stop).Source
+if ($Publish) { Assert-RuntimePublicationCli -Ost $ost }
 $git = (Get-Command git -ErrorAction Stop).Source
 $producerStatus = @(& $git -C $repositoryRoot status --porcelain --untracked-files=all)
 if ($LASTEXITCODE -ne 0) { throw 'could not inspect the OpenStrata producer checkout' }
@@ -124,9 +129,17 @@ $results = foreach ($job in $plannedLeaves) {
     $artifactDigest = $export.data.digest
     $ociDigest = $null
     if ($Publish) {
+        $reference = $Registry + ':' + $slug
+        $previousReferences = @()
+        if ($MigrationMap) {
+            $previousReferences = @(Get-Content -LiteralPath $MigrationMap -Raw | ConvertFrom-Json |
+                Where-Object replacement_tag -eq $reference | ForEach-Object previous_tag)
+        }
+        $publication = Protect-RuntimePublication -Ost $ost -Reference $reference -Journal (Join-Path $runRoot 'runtime-migrations.json') -Reason $PublicationReason -PreviousReferences $previousReferences
         $pushText = (& $ost artifact push $artifactDigest "$Registry`:$slug" --json) -join [Environment]::NewLine
         if ($LASTEXITCODE -ne 0) { throw "artifact push failed for $slug" }
         $ociDigest = ($pushText | ConvertFrom-Json).data.oci_digest
+        Complete-RuntimePublication -Publication $publication -OciDigest $ociDigest -ArtifactDigest $artifactDigest
     }
     if ($VerifyPublished) {
         if (-not $ociDigest) { throw '-VerifyPublished requires -Publish in the same run' }
@@ -148,7 +161,7 @@ $results = foreach ($job in $plannedLeaves) {
             $env:OST_HOME = $ostHome
         }
     }
-    [ordered]@{ tag = $slug; artifact_digest = $artifactDigest; oci_digest = $ociDigest; source_revision = $sourceRevision }
+    [ordered]@{ tag = $slug; artifact_digest = $artifactDigest; oci_digest = $ociDigest; source_revision = $sourceRevision; migration_record = if ($Publish) { $publication.journal } else { $null } }
 }
 
 [ordered]@{

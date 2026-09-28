@@ -58,6 +58,7 @@ Import, inspect, verify, export, and pull artifacts (local registry + remote OCI
 - [`ost artifact pull`](#ost-artifact-pull) — Pull a digest-pinned artifact from a remote source, verify it, and import it into the local registry
 - [`ost artifact push`](#ost-artifact-push) — Push a stored artifact to a remote OCI registry (the producer verb)
 - [`ost artifact resolve`](#ost-artifact-resolve) — Resolve a remote reference (tag) to its immutable digest
+- [`ost artifact retain`](#ost-artifact-retain) — Preserve a remote manifest under a digest-derived retention tag
 - [`ost artifact rm`](#ost-artifact-rm) — Remove an artifact from the local registry so it can be re-imported
 - [`ost artifact show`](#ost-artifact-show) — Show the full identity record for one artifact
 - [`ost artifact verify`](#ost-artifact-verify) — Verify a stored artifact's integrity (archive digest + per-file hashes)
@@ -189,6 +190,25 @@ Resolve a remote reference (tag) to its immutable digest
 | Option | Description |
 | --- | --- |
 | `--plain-http` | Use plain http:// instead of https:// (fixture registries and air-gapped mirrors only) |
+
+#### `ost artifact retain`
+
+Preserve a remote manifest under a digest-derived retention tag
+
+**Usage:** `ost artifact retain [OPTIONS] <REFERENCE>`
+
+**Arguments:**
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `<REFERENCE>` | yes | Existing OCI tag or digest reference in the repository to retain |
+
+**Options:**
+
+| Option | Description |
+| --- | --- |
+| `--plain-http` |  |
+| `--policy <FILE>` |  |
 
 #### `ost artifact rm`
 
@@ -1374,6 +1394,7 @@ Open a scene in usdview with the built Hydra renderer selected
 | `--profile <PROFILE>` | Runtime profile. Auto-selects a unique pulled usdview runtime |
 | `--renderer <RENDERER>` | Override the renderer display name read from installed plugInfo.json |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
+| `--with <WITH>` | Compose a plugin bundle, packaged workspace product, or local artifact digest |
 
 #### `ost renderer viewport`
 
@@ -1399,6 +1420,7 @@ Build and launch the standalone native viewport adapter
 | `--preflight` | Resolve the intent, runtime profile, adapter, and scene capabilities, then stop before configuring or building |
 | `--profile <PROFILE>` | Profile for the managed build. Defaults to the project's profile; the standalone viewport needs no OpenUSD runtime |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |
+| `--with <WITH>` | Compose a plugin bundle, packaged workspace product, or local artifact digest |
 
 ### `ost runtime`
 
@@ -1721,6 +1743,7 @@ Validate a built/packaged target
 | Option | Description |
 | --- | --- |
 | `--build-dir <BUILD_DIR>` | External/manual build tree whose evidence should be validated without claiming it was produced by `ost build` |
-| `--intent <INTENT>` | Validate a project-declared intent or the built-in `renderer-viewport` intent |
+| `--intent <INTENT>` | Validate a project intent or a renderer workflow intent (e.g. hydra--renderer-viewport) |
 | `--profile <PROFILE>` | Profile to validate. Defaults to the project's profile |
+| `--strict-renderer-evidence` | Fail when the primary renderer report has no verified OST completion binding |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the project's platform |

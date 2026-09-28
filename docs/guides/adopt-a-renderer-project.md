@@ -122,7 +122,7 @@ Viewport launch records live under
 Separate intents cannot overwrite one another's launch evidence. Default
 validation skips a legacy target-wide record that belongs to another build;
 the matching build still checks the launch identity, report digests and outcome.
-Use the same `--profile` and project `--intent` as the launch, or the built-in
+Use the same profile and the workflow intent as the launch, or the built-in
 `renderer-viewport` intent for the default viewport command.
 
 `frame.contexts` declares independently reusable frame contexts, not the number
@@ -153,3 +153,33 @@ depend on the selected profile and the capability exercised.
   hdMerlin) uses the shipped [Formation](../design/proposed/formations.md)
   model. See [compose a formation](compose-a-formation.md) and the retained
   [combined-formations.md](../projects/combined-formations.md).
+
+
+## Local renderer sessions with plugins
+
+Renderer view and viewport accept repeatable --with bundle directories, packaged
+workspace product directories/archives, or imported sha256: plugin/product pins.
+Source bundles use their selected target stage and dependency closure. Packaged
+inputs must match the renderer runtime, platform and profile; corrupt artifacts
+and conflicting plugin identities fail before a build starts. The launch record
+includes the input pins, resolved bundle identities and environment contributions.
+
+```sh
+ost renderer viewport --intent hydra --profile lookdev --with path/to/vrmImaging -- --usd avatar.usda
+ost validate --intent hydra--renderer-viewport --profile lookdev
+ost renderer view avatar.usda --intent hydra --profile lookdev --with sha256:<plugin-or-product-digest>
+```
+
+A workflow adds its required adapter to the declared semicolon-separated list.
+Named viewport trees use build/<target>--<intent>--renderer-viewport, separate
+from ordinary build/test/package intent trees. The Hydra view suffix is
+--renderer-hydra2. Renderer template 0.5.4 preserves explicit adapter options;
+updating OST alone does not rewrite an existing project's CMake.
+
+Each renderer assertion reports producer_kind and verification_class. A verified
+OST completion is completion-bound; an attach-session report is attached-external;
+a harness or an assertion whose original producer metadata is unavailable is
+unbound. The primary report in a managed tree produces a warning when unbound.
+Use ost validate --strict-renderer-evidence to make that condition fail CI.
+Kinds managed and managed-* are reserved; external harnesses must use honest
+producer kinds such as renderer-harness.

@@ -31,10 +31,11 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.23.13** — Formation launches runtime Python entry
-points with an ABI-matched interpreter and uses short store-backed extraction
-paths independent of the project directory. The CY2026 OpenUSD 26.08 lookdev producer
-includes a macOS arm64 Metal leaf alongside the Linux and Windows GL leaves.
+The current release is **v0.23.14** — renderer view/viewport sessions compose
+additional plugins, preserve explicit adapter options, and isolate named workflow
+builds. Renderer validation distinguishes completion-bound and external evidence.
+Runtime publishers retain previous manifest pins and journal replacements; see the
+[release record](docs/releases/v0.23.14.md).
 Formation accepts packaged renderer and
 plugin targets, renderer packages preserve named build intents and installed
 plugin paths, and secondary profiles have separate runtime locks. `usd-imaging` bundles use the resolved

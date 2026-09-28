@@ -30,7 +30,7 @@ pub struct ValidateArgs {
     #[arg(long)]
     profile: Option<String>,
 
-    /// Validate a project-declared intent or the built-in `renderer-viewport` intent.
+    /// Validate a project intent or a renderer workflow intent (e.g. hydra--renderer-viewport).
     #[arg(long, conflicts_with = "build_dir")]
     intent: Option<String>,
 
@@ -38,6 +38,9 @@ pub struct ValidateArgs {
     /// claiming it was produced by `ost build`.
     #[arg(long)]
     build_dir: Option<Utf8PathBuf>,
+    /// Fail when the primary renderer report has no verified OST completion binding.
+    #[arg(long)]
+    strict_renderer_evidence: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +48,7 @@ enum Status {
     Pass,
     Fail,
     Skip,
+    Warn,
 }
 
 impl Status {
@@ -53,6 +57,7 @@ impl Status {
             Status::Pass => "ok  ",
             Status::Fail => "FAIL",
             Status::Skip => "skip",
+            Status::Warn => "WARN",
         }
     }
     fn word(self) -> &'static str {
@@ -60,6 +65,7 @@ impl Status {
             Status::Pass => "pass",
             Status::Fail => "fail",
             Status::Skip => "skip",
+            Status::Warn => "warn",
         }
     }
 }
@@ -68,6 +74,8 @@ struct Check {
     name: String,
     status: Status,
     detail: Option<String>,
+    producer_kind: Option<String>,
+    verification_class: Option<String>,
 }
 
 impl Check {
@@ -76,6 +84,8 @@ impl Check {
             name: name.into(),
             status: Status::Pass,
             detail: None,
+            producer_kind: None,
+            verification_class: None,
         }
     }
     fn fail(name: impl Into<String>, detail: impl Into<String>) -> Check {
@@ -83,6 +93,8 @@ impl Check {
             name: name.into(),
             status: Status::Fail,
             detail: Some(detail.into()),
+            producer_kind: None,
+            verification_class: None,
         }
     }
     fn skip(name: impl Into<String>, detail: impl Into<String>) -> Check {
@@ -90,6 +102,8 @@ impl Check {
             name: name.into(),
             status: Status::Skip,
             detail: Some(detail.into()),
+            producer_kind: None,
+            verification_class: None,
         }
     }
 }
@@ -276,24 +290,43 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                     }) {
                         Ok(report) => {
                             checks.push(Check::pass("renderer-evidence"));
-                            for renderer_check in report.checks {
-                                // Name the producer behind the assertion. A
-                                // merged report is several producers' evidence;
-                                // presenting it as one anonymous verdict is how
-                                // an unowned PASS goes unnoticed.
-                                let detail = match (
-                                    renderer_check.detail,
-                                    renderer_check
+                            let primary_class =
+                                renderer_verification_class(report.producer.as_ref());
+                            if external_build.is_none() && primary_class != "completion-bound" {
+                                let mut warning = Check::fail("renderer-evidence-binding",
+                                    "primary renderer report is unbound to the current OST completion; rerun ost test or ost build to produce fresh evidence");
+                                if !args.strict_renderer_evidence {
+                                    warning.status = Status::Warn;
+                                }
+                                warning.producer_kind = Some(
+                                    report
                                         .producer
-                                        .or_else(|| report.producer.as_ref().map(|s| s.id.clone())),
-                                ) {
-                                    (Some(detail), Some(producer)) => {
-                                        Some(format!("{detail} (producer {producer})"))
-                                    }
-                                    (Some(detail), None) => Some(detail),
-                                    (None, Some(producer)) => Some(format!("producer {producer}")),
-                                    (None, None) => None,
-                                };
+                                        .as_ref()
+                                        .map(|p| p.kind.clone())
+                                        .unwrap_or_else(|| "unknown".into()),
+                                );
+                                warning.verification_class = Some(primary_class.into());
+                                checks.push(warning);
+                            }
+                            for renderer_check in report.checks {
+                                let owner = renderer_check
+                                    .producer
+                                    .as_deref()
+                                    .or_else(|| report.producer.as_ref().map(|p| p.id.as_str()));
+                                let producer = report
+                                    .producer
+                                    .as_ref()
+                                    .filter(|p| Some(p.id.as_str()) == owner);
+                                let class = renderer_verification_class(producer);
+                                let kind = producer.map(|p| p.kind.as_str()).unwrap_or("unknown");
+                                let provenance = format!(
+                                    "producer {} ({kind}, {class})",
+                                    owner.unwrap_or("unknown")
+                                );
+                                let detail = Some(match renderer_check.detail {
+                                    Some(detail) => format!("{detail} ({provenance})"),
+                                    None => provenance,
+                                });
                                 checks.push(Check {
                                     name: renderer_check.id,
                                     status: match renderer_check.status {
@@ -302,6 +335,8 @@ pub fn run(args: ValidateArgs, fmt: Format) -> Result<()> {
                                         RendererCheckStatus::Skip => Status::Skip,
                                     },
                                     detail,
+                                    producer_kind: Some(kind.into()),
+                                    verification_class: Some(class.into()),
                                 });
                             }
                         }
@@ -409,22 +444,32 @@ fn resolve_validation_intent(
     selected: Option<&str>,
 ) -> Result<ost_build::BuildIntent> {
     let project = load_project(root)?;
-    if selected == Some("renderer-viewport")
-        && !project
+    if !selected.is_some_and(|name| {
+        project
             .build
             .as_ref()
-            .is_some_and(|build| build.intents.contains_key("renderer-viewport"))
-    {
-        let manifest = RendererManifest::load(root)?;
-        if !manifest.composition.adapters.contains_key("viewport") {
-            return Err(Error::config(
-                "renderer composition has no viewport adapter",
-            ));
+            .is_some_and(|build| build.intents.contains_key(name))
+    }) {
+        if let Some(name) = selected {
+            for adapter in ["viewport", "hydra2"] {
+                let builtin = format!("renderer-{adapter}");
+                let suffix = format!("--{builtin}");
+                let base = if name == builtin {
+                    Some(None)
+                } else {
+                    name.strip_suffix(&suffix).map(Some)
+                };
+                if let Some(base) = base {
+                    let manifest = RendererManifest::load(root)?;
+                    if !manifest.composition.adapters.contains_key(adapter) {
+                        return Err(Error::config(format!(
+                            "renderer composition has no {adapter} adapter"
+                        )));
+                    }
+                    return super::renderer::workflow_intent(root, base, adapter);
+                }
+            }
         }
-        return Ok(ost_build::BuildIntent {
-            name: "renderer-viewport".into(),
-            cache: Default::default(),
-        });
     }
     crate::commands::build::resolve_declared_intent(root, selected)
 }
@@ -600,6 +645,15 @@ fn same_path(left: &str, right: &str) -> bool {
     }
 }
 
+// Called only after the report's claimed OST binding has been verified.
+fn renderer_verification_class(producer: Option<&ost_manifest::ProducerSession>) -> &'static str {
+    match producer.map(|p| p.kind.as_str()) {
+        Some("ost-build" | "ost-test" | "ost-renderer-viewport") => "completion-bound",
+        Some("external-unverified") => "attached-external",
+        _ => "unbound",
+    }
+}
+
 fn verify_managed_renderer_binding(
     root: &camino::Utf8Path,
     target_id: &str,
@@ -734,6 +788,8 @@ fn external_runtime_check(
             name: "runtime-compatible".into(),
             status: Status::Pass,
             detail: Some(record.describe()),
+            producer_kind: None,
+            verification_class: None,
         },
         Err(detail) => Check::fail("runtime-compatible", detail),
     }
@@ -788,6 +844,8 @@ fn emit(id: &str, checks: &[Check], fmt: Format) {
                     "name": c.name,
                     "status": c.status.word(),
                     "detail": c.detail,
+                    "producer_kind": c.producer_kind,
+                    "verification_class": c.verification_class,
                 })
             })
             .collect();
@@ -940,7 +998,7 @@ mod tests {
         .unwrap();
         let builtin = resolve_validation_intent(&root, Some("renderer-viewport")).unwrap();
         assert_eq!(builtin.name, "renderer-viewport");
-        assert!(builtin.cache.is_empty());
+        assert_eq!(builtin.cache["OST_RENDERER_ADAPTERS"].value, "viewport");
         assert!(resolve_validation_intent(&root, Some("missing")).is_err());
         std::fs::write(root.join("openstrata.toml"), "[project]\nname = 'sample'\nversion = '0.1.0'\n[requires]\nplatform = 'cy2026'\nprofile = 'core'\n[build.intents.renderer-viewport.cache]\nSAMPLE_MODE = { type = 'STRING', value = 'custom' }\n").unwrap();
         let declared = resolve_validation_intent(&root, Some("renderer-viewport")).unwrap();

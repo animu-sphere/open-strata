@@ -104,3 +104,43 @@ Windows keep their platform-local OpenGL/Vulkan loader and device policies.
 The older
 [`publish-openusd-vulkan-runtimes.ps1`](../../support/publish-openusd-vulkan-runtimes.ps1)
 and its legacy tags remain only for v0.22.0-v0.22.2 artifact maintenance.
+
+
+## Retention and runtime-family migrations
+
+Superseded runtime manifests and their reachable archive/evidence blobs remain
+pullable for **at least 180 days after each republish**. Both publisher scripts
+preserve exact previous manifest bytes under retain-sha256-<manifest-hex> before
+moving a leaf tag. They verify that tag, write a pending migration journal, then
+record the replacement OCI/artifact pins after a successful push. A retention
+or authentication failure stops publication. Retention tags have no automatic
+expiry; registry cleanup must honor each journal's retain_until value and must
+keep the reachable blob closure. Do not delete a retained package version merely
+because its original leaf tag moved.
+
+The canonical publisher writes runtime-migrations.json beside each leaf's build
+results and includes migration_record in its output. The legacy publisher writes
+<results-path>.migrations.json. Supply -PublicationReason for the rebuild reason.
+For tag-family changes, -MigrationMap accepts a JSON array of previous_tag and
+replacement_tag OCI locators; old references are retained before publishing the
+matching replacement. Missing explicitly mapped old references stop publication.
+
+Commit the generated entries to
+[the migration catalogue](../../support/runtime-migrations.json) and link them
+from the publication announcement. That catalogue maps the two legacy Windows
+pins reported missing by hydra-merlin to the current Vulkan-tag family. Their old
+bytes were already unavailable before this policy; the catalogue is a migration
+record, not a claim that the originals were recovered.
+
+Artifact pull preserves the stable ARTIFACT_REMOTE_NOT_FOUND code. A known lost
+pin reports previously-published-missing with a replacement and catalogue link.
+An unrecorded 404 reports unknown: registry absence alone cannot establish that a
+digest never existed. OST never substitutes replacement bytes for a requested pin;
+consumers must revalidate and update both the OCI and artifact pins deliberately.
+
+Manual retention uses ost artifact retain oci://<registry>/<repository>@sha256:<digest>.
+It uses the same publisher authorization policy as artifact push and does not
+download or rebuild the runtime archive.
+
+Publishing requires ost v0.23.14 or later with artifact retain support; both
+publishers check this capability before starting build or publication work.

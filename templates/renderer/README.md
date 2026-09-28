@@ -141,3 +141,13 @@ Public core headers must remain free of OpenUSD, Hydra, Vulkan, Qt, and DCC SDK
 types. Host translation belongs in adapters. Rendering, extraction policy,
 materials, residency, batching, and GPU synchronization become project-owned
 source as soon as the scaffold is generated.
+
+
+## Workflow intent composition
+
+Renderer template 0.5.4 treats OST_RENDERER_ADAPTERS as additional adapters and
+preserves explicit project options. A hydra2;viewport list enables both. Named
+viewport workflows use build/<target>--<intent>--renderer-viewport; validate with
+the matching suffixed intent. Both renderer view and viewport accept --with for
+additional bundle directories, packaged workspace products or local plugin/product
+artifact pins. Launch records retain the composed plugin identities and paths.
