@@ -224,6 +224,9 @@ impl ProducerSession {
     pub fn validate(&self) -> Result<()> {
         validate_portable_id("renderer producer session id", &self.id)?;
         validate_portable_id("renderer producer session kind", &self.kind)?;
+        if self.kind == "managed" || self.kind.starts_with("managed-") {
+            return Err(invalid("renderer producer kind 'managed' is reserved; use renderer-harness or attach-session for external evidence"));
+        }
         if self.target.trim().is_empty() {
             return Err(invalid(
                 "renderer producer session target must not be empty",

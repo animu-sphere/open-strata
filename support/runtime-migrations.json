@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "migrations": [
+    {
+      "previous_tag": "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd:26.05-windows-x86_64",
+      "previous_reference": "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd@sha256:6408e31c1906105e1523af6aa9f597286e5328bc7dc6e6d25e2a41ade7e082b5",
+      "replacement_tag": "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd:26.05-vulkan-windows-x86_64",
+      "replacement_reference": "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd@sha256:44471d4b66caebc61af2ad69225102a01fc611056136fbffe6bc8e1a38dc1eda",
+      "replacement_artifact_digest": "sha256:e6944385f7b53e5c029c258503b053a9ab1cab2ad7e0f676b403f3d79b17b4fd",
+      "availability": "previously-published-missing",
+      "observed_at": "2026-09-26",
+      "reason": "Runtime family rebuilt with explicit graphics-variant tags; old digest was already missing before the retention policy.",
+      "evidence": "https://github.com/animu-sphere/hydra-merlin/blob/main/docs/reports/ost/13-2026-09-26-v0.23.8-recheck-v0.24.0-asks.md"
+    },
+    {
+      "previous_tag": "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd:26.08-windows-x86_64",
+      "previous_reference": "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd@sha256:0f8129aa905cb6db85895de36c5dfd1fc8e89c6d9de434d5ff55e6b32055ed54",
+      "replacement_tag": "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd:26.08-vulkan-windows-x86_64",
+      "replacement_reference": "oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd@sha256:29118734a8048313cf7bd8774e23e3cc8477226eae7cdd85002f73af286f109a",
+      "replacement_artifact_digest": "sha256:baa53948498586283d4ad0ee94d9b00357f885fe022b972d627de8ec6367592e",
+      "availability": "previously-published-missing",
+      "observed_at": "2026-09-26",
+      "reason": "Runtime family rebuilt with explicit graphics-variant tags; old digest was already missing before the retention policy.",
+      "evidence": "https://github.com/animu-sphere/hydra-merlin/blob/main/docs/reports/ost/13-2026-09-26-v0.23.8-recheck-v0.24.0-asks.md"
+    }
+  ]
+}

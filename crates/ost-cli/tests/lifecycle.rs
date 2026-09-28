@@ -2497,6 +2497,29 @@ fn validate_surfaces_renderer_pass_fail_skip_evidence() {
         "a surfaced check must name its producer: {checks:#?}"
     );
 
+    assert!(checks
+        .iter()
+        .filter(|check| check["name"].as_str().unwrap().starts_with("renderer."))
+        .all(|check| check["producer_kind"] == "renderer-harness"
+            && check["verification_class"] == "unbound"));
+    assert!(checks
+        .iter()
+        .any(|check| check["name"] == "renderer-evidence-binding" && check["status"] == "warn"));
+    let strict = sb.ost(&["--json", "validate", "--strict-renderer-evidence"]);
+    assert!(
+        !strict.status.success(),
+        "unbound primary evidence must fail strict validation"
+    );
+    let strict: serde_json::Value = serde_json::from_slice(&strict.stdout).unwrap();
+    assert!(strict["data"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| check["name"] == "renderer-evidence-binding" && check["status"] == "fail"));
+    let human = sb.ost(&["validate"]);
+    assert!(out_text(&human).contains("renderer-harness, unbound"));
+    assert!(out_text(&human).contains("[WARN]"));
+
     let external_dir = format!("build/{id}");
     let external = sb.ost(&["--json", "validate", "--build-dir", &external_dir]);
     assert!(
@@ -4470,6 +4493,62 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
     );
     let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
     assert_eq!(imported["data"]["artifact"]["kind"], "product");
+    std::fs::write(
+        sb.work_file("openstrata.renderer.yaml"),
+        include_str!("../../../templates/renderer/openstrata.renderer.yaml")
+            .replace("{{name}}", "sample")
+            .replace("{{Name}}", "Sample"),
+    )
+    .unwrap();
+    let digest = imported["data"]["artifact"]["digest"].as_str().unwrap();
+    for input in [product_dist, digest] {
+        let preflight = sb.ost(&[
+            "--json",
+            "renderer",
+            "viewport",
+            "--preflight",
+            "--with",
+            input,
+        ]);
+        assert!(preflight.status.success(), "{}", out_text(&preflight));
+        let value: serde_json::Value = serde_json::from_slice(&preflight.stdout).unwrap();
+        assert_eq!(
+            value["data"]["preflight"]["plugins"]["bundles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            value["data"]["preflight"]["plugins"]["inputs"][0]["artifact_digest"]
+                .as_str()
+                .is_some()
+        );
+    }
+    // A corrupt stored product must be refused before a renderer build starts.
+    let object_dir = sb
+        .home
+        .join("artifacts/objects/sha256")
+        .join(digest.strip_prefix("sha256:").unwrap());
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(object_dir.join("record.json")).unwrap()).unwrap();
+    std::fs::write(
+        object_dir.join(record["archive"].as_str().unwrap()),
+        b"corrupt",
+    )
+    .unwrap();
+    let rejected = sb.ost(&[
+        "--json",
+        "renderer",
+        "viewport",
+        "--preflight",
+        "--with",
+        digest,
+    ]);
+    assert!(
+        !rejected.status.success(),
+        "corrupt --with product must be refused"
+    );
 }
 
 /// usd-vrm-plugins report 28 §3: a workspace-built CLI tool is a user-facing
@@ -5233,4 +5312,232 @@ fn find_first(dir: &Path, suffix: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[test]
+fn renderer_viewport_preflight_preserves_intent_adapters_and_isolates_its_tree() {
+    let sb = Sandbox::new("vp");
+    let init = sb.ost(&[
+        "init",
+        "--platform",
+        "cy2026",
+        "--template",
+        "renderer",
+        "--name",
+        "sample-renderer",
+    ]);
+    assert!(init.status.success(), "{}", out_text(&init));
+    let pull = sb.ost(&["runtime", "pull", "cy2026", "--profile", "usd"]);
+    assert!(pull.status.success(), "{}", out_text(&pull));
+    let project = sb.work_file("openstrata.toml");
+    let original = std::fs::read_to_string(&project).unwrap();
+    let declarations = "\n[build.intents.hydra.cache]\nSAMPLERENDERER_ENABLE_HYDRA2 = { type = 'BOOL', value = true }\n";
+    std::fs::write(&project, format!("{original}{declarations}")).unwrap();
+    let schema = sb.ost(&["plugin", "new", "usd-schema", "schema"]);
+    assert!(schema.status.success(), "{}", out_text(&schema));
+    for declared in [
+        "",
+        "OST_RENDERER_ADAPTERS = { type = 'STRING', value = 'hydra2' }\n",
+        "OST_RENDERER_ADAPTERS = { type = 'STRING', value = 'hydra2;viewport' }\n",
+    ] {
+        std::fs::write(&project, format!("{original}{declarations}{declared}")).unwrap();
+        let preflight = sb.ost(&[
+            "--json",
+            "renderer",
+            "viewport",
+            "--preflight",
+            "--intent",
+            "hydra",
+            "--profile",
+            "usd",
+            "--with",
+            "schema",
+            "--",
+            "--stage",
+            "scene",
+        ]);
+        assert!(preflight.status.success(), "{}", out_text(&preflight));
+        let value: serde_json::Value = serde_json::from_slice(&preflight.stdout).unwrap();
+        let data = &value["data"]["preflight"];
+        assert_eq!(data["intent"]["name"], "hydra--renderer-viewport");
+        assert_eq!(
+            data["intent"]["cache"]["SAMPLERENDERER_ENABLE_HYDRA2"]["value"],
+            "ON"
+        );
+        assert!(data["intent"]["cache"]["OST_RENDERER_ADAPTERS"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("viewport"));
+        if !declared.is_empty() {
+            assert_eq!(
+                data["intent"]["cache"]["OST_RENDERER_ADAPTERS"]["value"],
+                "hydra2;viewport"
+            );
+        }
+        assert!(data["build_dir"]
+            .as_str()
+            .unwrap()
+            .ends_with("--hydra--renderer-viewport"));
+        assert_eq!(data["plugins"]["bundles"][0]["name"], "schema");
+        assert!(
+            !sb.work_file("build").exists(),
+            "preflight must not configure a build tree"
+        );
+    }
+    // Execute the actual template adapter option block: an explicit Hydra ON
+    // must survive a viewport-only workflow request.
+    if ost_core::tools::which("cmake").is_some() {
+        let cmake = include_str!("../../../templates/renderer/CMakeLists.txt");
+        let start = cmake.find("set(OST_RENDERER_ADAPTERS").unwrap();
+        let end = cmake.find("option({{NAME}}_BUILD_TESTS").unwrap();
+        let block = cmake[start..end].replace("{{NAME}}", "SAMPLE");
+        let script = format!("cmake_minimum_required(VERSION 3.23)\nset(SAMPLE_ENABLE_HYDRA2 ON CACHE BOOL \"\")\nset(OST_RENDERER_ADAPTERS viewport CACHE STRING \"\")\n{block}\nif(NOT SAMPLE_ENABLE_HYDRA2 OR NOT SAMPLE_ENABLE_VIEWPORT)\nmessage(FATAL_ERROR \"adapter option lost\")\nendif()\n");
+        let path = sb.work_file("adapter-options.cmake");
+        std::fs::write(&path, script).unwrap();
+        let configured = Command::new("cmake").arg("-P").arg(path).output().unwrap();
+        assert!(configured.status.success(), "{}", out_text(&configured));
+    }
+}
+
+#[test]
+fn renderer_viewport_launch_keeps_the_ordinary_tree_and_composes_plugins() {
+    if cfg!(windows) && std::env::var_os(NATIVE_LIFECYCLE_ENV).is_none() {
+        eprintln!("skipping native viewport fixture: set {NATIVE_LIFECYCLE_ENV}=1");
+        return;
+    }
+    let Some(cmake) = ost_core::tools::which("cmake") else {
+        return;
+    };
+    let generator = if cfg!(windows) {
+        let capabilities = Command::new(&cmake)
+            .args(["-E", "capabilities"])
+            .output()
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&capabilities.stdout).unwrap();
+        let Some(generator) = value["generators"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|g| g["name"].as_str())
+            .filter(|g| g.starts_with("Visual Studio "))
+            .max()
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        generator
+    } else {
+        if native_lifecycle_ready().is_err() {
+            return;
+        }
+        "Ninja".into()
+    };
+    let sb = Sandbox::new("vp-run");
+    let init = sb.ost(&[
+        "init",
+        "--platform",
+        "cy2026",
+        "--template",
+        "renderer",
+        "--name",
+        "sample-renderer",
+    ]);
+    assert!(init.status.success(), "{}", out_text(&init));
+    let pull = sb.ost(&["runtime", "pull", "cy2026", "--profile", "usd"]);
+    assert!(pull.status.success(), "{}", out_text(&pull));
+    let schema = sb.ost(&["plugin", "new", "usd-schema", "schema"]);
+    assert!(schema.status.success(), "{}", out_text(&schema));
+    let project = sb.work_file("openstrata.toml");
+    let original = std::fs::read_to_string(&project).unwrap();
+    std::fs::write(&project, format!("{original}\n[build.intents.hydra.cache]\nSAMPLERENDERER_ENABLE_HYDRA2 = {{ type = 'BOOL', value = true }}\n")).unwrap();
+    let template = include_str!("../../../templates/renderer/CMakeLists.txt");
+    let start = template.find("set(OST_RENDERER_ADAPTERS").unwrap();
+    let end = template.find("option({{NAME}}_BUILD_TESTS").unwrap();
+    let options = template[start..end].replace("{{NAME}}", "SAMPLERENDERER");
+    let cmake_source = format!(
+        r#"cmake_minimum_required(VERSION 3.24)
+project(sample LANGUAGES CXX)
+{options}
+add_executable(sample-renderer-headless main.cpp)
+if(SAMPLERENDERER_ENABLE_VIEWPORT)
+  add_executable(sample-renderer-viewport main.cpp)
+endif()
+"#
+    );
+    std::fs::write(sb.work_file("CMakeLists.txt"), cmake_source).unwrap();
+    std::fs::write(
+        sb.work_file("main.cpp"),
+        r#"#include <cstdlib>
+#include <iostream>
+int main() {
+    const char* path = std::getenv("PXR_PLUGINPATH_NAME");
+    std::cout << "PXR_PLUGINPATH_NAME:" << (path ? path : "") << std::endl;
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    let normal = sb.ost(&[
+        "build",
+        "--intent",
+        "hydra",
+        "--profile",
+        "usd",
+        "--generator",
+        &generator,
+    ]);
+    assert!(normal.status.success(), "{}", out_text(&normal));
+    let target = single_target_dir(&sb.work);
+    let id = target.file_name().unwrap().to_str().unwrap();
+    let ordinary = sb.work_file(&format!("build/{id}--hydra"));
+    let before = snapshot(&ordinary);
+    let launched = sb.ost(&[
+        "--json",
+        "renderer",
+        "viewport",
+        "--intent",
+        "hydra",
+        "--profile",
+        "usd",
+        "--generator",
+        &generator,
+        "--with",
+        "schema",
+    ]);
+    assert!(launched.status.success(), "{}", out_text(&launched));
+    assert_eq!(
+        snapshot(&ordinary),
+        before,
+        "viewport must preserve the ordinary build tree byte-for-byte"
+    );
+    let value: serde_json::Value = serde_json::from_slice(&launched.stdout).unwrap();
+    let launch = &value["data"]["launch"];
+    assert!(launch["stdout"].as_str().unwrap().contains("schema"));
+    assert_eq!(launch["plugins"]["bundles"][0]["name"], "schema");
+    let tree = PathBuf::from(launch["build_dir"].as_str().unwrap());
+    let cache = std::fs::read_to_string(tree.join("CMakeCache.txt")).unwrap();
+    assert!(cache.contains("SAMPLERENDERER_ENABLE_HYDRA2:BOOL=ON"));
+    assert!(cache.contains("SAMPLERENDERER_ENABLE_VIEWPORT:BOOL=ON"));
+    let validate = sb.ost(&[
+        "--json",
+        "validate",
+        "--intent",
+        "hydra--renderer-viewport",
+        "--profile",
+        "usd",
+    ]);
+    assert!(validate.status.success(), "{}", out_text(&validate));
+    let normal_again = sb.ost(&[
+        "build",
+        "--intent",
+        "hydra",
+        "--profile",
+        "usd",
+        "--generator",
+        &generator,
+    ]);
+    assert!(normal_again.status.success(), "{}", out_text(&normal_again));
+    assert!(std::fs::read_to_string(ordinary.join("CMakeCache.txt"))
+        .unwrap()
+        .contains("SAMPLERENDERER_ENABLE_VIEWPORT:BOOL=OFF"));
 }

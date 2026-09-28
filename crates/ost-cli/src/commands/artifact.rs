@@ -115,6 +115,15 @@ pub enum ArtifactCmd {
         #[arg(long)]
         plain_http: bool,
     },
+    /// Preserve a remote manifest under a digest-derived retention tag.
+    Retain {
+        /// Existing OCI tag or digest reference in the repository to retain.
+        reference: String,
+        #[arg(long, value_name = "FILE")]
+        policy: Option<Utf8PathBuf>,
+        #[arg(long)]
+        plain_http: bool,
+    },
     /// Push a stored artifact to a remote OCI registry (the producer verb).
     Push {
         /// Digest reference of a stored artifact: sha256:<hex> or a unique hex
@@ -241,6 +250,11 @@ pub fn run(cmd: ArtifactCmd, fmt: Format) -> Result<()> {
             reference,
             plain_http,
         } => resolve_remote(&reference, plain_http, fmt),
+        ArtifactCmd::Retain {
+            reference,
+            policy,
+            plain_http,
+        } => retain_remote(&reference, policy.as_deref(), plain_http, fmt),
         ArtifactCmd::Push {
             digest,
             destination,
@@ -375,6 +389,28 @@ fn resolve_remote(reference: &str, plain_http: bool, fmt: Format) -> Result<()> 
     println!();
     println!("Pin this in CI / the lockfile and pull it with:");
     println!("  ost artifact pull {}", resolved.locator);
+    Ok(())
+}
+
+fn retain_remote(
+    reference: &str,
+    policy: Option<&Utf8Path>,
+    plain_http: bool,
+    fmt: Format,
+) -> Result<()> {
+    let parsed = RemoteReference::parse(reference)?;
+    let RemoteReference::Oci(oci) = &parsed else {
+        return Err(Error::usage("retain requires an OCI reference"));
+    };
+    authorize_push(oci, policy, false)?;
+    let (digest, tag) = OciTransport::new(plain_http).retain(oci)?;
+    let data =
+        serde_json::json!({ "reference": reference, "oci_digest": digest, "retention_tag": tag });
+    if fmt.is_json() {
+        output::success(&data);
+    } else {
+        println!("Retained {digest} at {tag}");
+    }
     Ok(())
 }
 

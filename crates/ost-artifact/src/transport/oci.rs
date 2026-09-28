@@ -376,16 +376,7 @@ impl OciTransport {
         failure: RequestFailure,
     ) -> Error {
         match failure {
-            RequestFailure::Status(404, _) => Error::coded(
-                "ARTIFACT_REMOTE_NOT_FOUND",
-                Category::Precondition,
-                format!(
-                    "'{}' does not exist on {} (404 at {url})",
-                    reference.locator(),
-                    reference.registry
-                ),
-            )
-            .with_hint("check the repository path and that the artifact was published"),
+            RequestFailure::Status(404, _) => missing_remote(reference, url),
             RequestFailure::Status(code @ (401 | 403), _) => {
                 let hint = if write {
                     self.write_auth_hint(reference)
@@ -565,6 +556,33 @@ impl OciTransport {
             .borrow_mut()
             .insert(reference.registry.clone(), token.clone());
         Ok(token)
+    }
+
+    /// Keep the exact current manifest reachable by a digest-derived tag before
+    /// a producer moves its mutable leaf tag. No archive download or rewrite.
+    pub fn retain(&self, reference: &OciReference) -> Result<(String, String)> {
+        let (bytes, digest) = self.fetch_manifest(reference)?;
+        parse_oci_manifest(&bytes, &reference.locator())?;
+        let tag = format!("retain-sha256-{}", digest.strip_prefix("sha256:").unwrap());
+        // Use a fresh write session so a cached anonymous pull-only token
+        // cannot prevent acquiring the publisher's pull,push scope.
+        let writer = OciTransport::with_transfer_policy(self.plain_http, self.transfer.clone());
+        writer.put_manifest(reference, &tag, &bytes)?;
+        let tag_only = OciReference {
+            registry: reference.registry.clone(),
+            repository: reference.repository.clone(),
+            tag: Some(tag),
+            digest: None,
+        };
+        let (_, observed) = self.fetch_manifest(&tag_only)?;
+        if observed != digest {
+            return Err(Error::coded(
+                "ARTIFACT_OCI_DIGEST_MISMATCH",
+                Category::Validation,
+                "registry did not preserve the retained manifest bytes",
+            ));
+        }
+        Ok((digest, tag_only.locator()))
     }
 
     /// Fetch the OCI manifest for a tag or digest reference, verified against
@@ -1125,6 +1143,38 @@ impl OciTransport {
         }
         Ok(())
     }
+}
+
+fn missing_remote(reference: &OciReference, url: &str) -> Error {
+    let catalogue: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../support/runtime-migrations.json"))
+            .expect("bundled runtime migration catalogue");
+    let locator = reference.locator();
+    let repository = format!("oci://{}/{}", reference.registry, reference.repository);
+    let pinned = reference
+        .digest
+        .as_ref()
+        .map(|digest| format!("{repository}@{digest}"));
+    let migration = catalogue["migrations"].as_array().and_then(|entries| {
+        entries.iter().find(|entry| {
+            entry["previous_reference"].as_str() == pinned.as_deref()
+                || entry["previous_tag"].as_str() == Some(locator.as_str())
+        })
+    });
+    let (message, hint, availability) = if let Some(migration) = migration {
+        (format!("previously published reference '{locator}' is now missing from the registry (404 at {url})"),
+         format!("migration record: https://github.com/animu-sphere/open-strata/blob/main/support/runtime-migrations.json; replacement {} (artifact {}). Revalidate before updating your pins.",
+            migration["replacement_reference"].as_str().unwrap_or_default(),
+            migration["replacement_artifact_digest"].as_str().unwrap_or_default()),
+         "previously-published-missing")
+    } else {
+        (format!("registry cannot serve '{locator}' (404 at {url}); a 404 does not establish whether this reference ever existed"),
+         "check the repository and publication record; runtime migrations: https://github.com/animu-sphere/open-strata/blob/main/support/runtime-migrations.json".into(),
+         "unknown")
+    };
+    Error::coded("ARTIFACT_REMOTE_NOT_FOUND", Category::Precondition, message)
+        .with_hint(hint)
+        .with_data(serde_json::json!({ "availability": availability, "migration": migration }))
 }
 
 #[derive(Debug)]
@@ -2734,6 +2784,7 @@ mod tests {
         blobs: HashSet<String>,
         manifests: HashSet<String>,
         put_manifests: usize,
+        manifest_bytes: HashMap<String, Vec<u8>>,
     }
 
     /// A minimal anonymous OCI registry: enough of the push surface (HEAD blob /
@@ -2771,13 +2822,13 @@ mod tests {
                         content_length = v.trim().parse().unwrap_or(0);
                     }
                 }
+                let mut body = vec![0u8; content_length];
                 if content_length > 0 {
-                    let mut body = vec![0u8; content_length];
                     let _ = reader.read_exact(&mut body);
                 }
 
                 let addr_str = format!("{addr}");
-                let response = handle_mock(&method, &path, &addr_str, &st);
+                let response = handle_mock(&method, &path, &addr_str, &st, &body);
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.flush();
             }
@@ -2785,7 +2836,13 @@ mod tests {
         (format!("{addr}"), state)
     }
 
-    fn handle_mock(method: &str, path: &str, addr: &str, state: &Arc<Mutex<MockState>>) -> String {
+    fn handle_mock(
+        method: &str,
+        path: &str,
+        addr: &str,
+        state: &Arc<Mutex<MockState>>,
+        body: &[u8],
+    ) -> String {
         let ok = |code: &str, extra: &str| {
             format!("HTTP/1.1 {code}\r\nContent-Length: 0\r\nConnection: close\r\n{extra}\r\n")
         };
@@ -2799,6 +2856,12 @@ mod tests {
             .split('?')
             .next()
             .unwrap_or("");
+        if method == "GET" && path.contains("/manifests/") {
+            return match st.manifest_bytes.get(reference) {
+                Some(bytes) => format!("HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.manifest.v1+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", bytes.len(), String::from_utf8_lossy(bytes)),
+                None => ok("404 Not Found", ""),
+            };
+        }
         if method == "HEAD" && path.contains("/blobs/") {
             return if st.blobs.contains(reference) {
                 ok("200 OK", "")
@@ -2826,6 +2889,11 @@ mod tests {
         }
         if method == "PUT" && path.contains("/manifests/") {
             st.manifests.insert(reference.to_string());
+            st.manifests.insert(digest::sha256_hex(body));
+            st.manifest_bytes
+                .insert(reference.to_string(), body.to_vec());
+            st.manifest_bytes
+                .insert(digest::sha256_hex(body), body.to_vec());
             st.put_manifests += 1;
             return ok("201 Created", "");
         }
@@ -2987,6 +3055,83 @@ mod tests {
         }
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn retained_manifest_survives_republishing_its_leaf() {
+        let (addr, _) = spawn_mock_registry();
+        let dir = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir().join(format!("ost-retain-{}", std::process::id())),
+        )
+        .unwrap();
+        let (archive_path, manifest_path, mut record) = push_fixture(&dir);
+        let dest = RemoteReference::parse(&format!("oci://{addr}/owner/rt:leaf")).unwrap();
+        let transport = OciTransport::new(true);
+        let first = transport
+            .push(
+                &crate::transport::PushSource {
+                    archive_path: archive_path.clone(),
+                    manifest_path: manifest_path.clone(),
+                    record: &record,
+                },
+                &dest,
+            )
+            .unwrap();
+        let RemoteReference::Oci(reference) = &dest else {
+            unreachable!()
+        };
+        let (digest, retained) = transport.retain(reference).unwrap();
+        assert_eq!(digest, first.oci_digest);
+        let changed = b"replacement runtime bytes";
+        std::fs::write(&archive_path, changed).unwrap();
+        record.digest = digest::sha256_hex(changed);
+        record.archive_size = changed.len() as u64;
+        let second = transport
+            .push(
+                &crate::transport::PushSource {
+                    archive_path,
+                    manifest_path,
+                    record: &record,
+                },
+                &dest,
+            )
+            .unwrap();
+        assert_ne!(second.oci_digest, first.oci_digest);
+        let preserved = transport
+            .resolve(&RemoteReference::parse(&retained).unwrap())
+            .unwrap();
+        assert_eq!(
+            preserved.oci_digest.as_deref(),
+            Some(first.oci_digest.as_str())
+        );
+        assert_eq!(
+            transport.resolve(&dest).unwrap().oci_digest.as_deref(),
+            Some(second.oci_digest.as_str())
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_digest_diagnostics_distinguish_known_history_from_unknown() {
+        let known = RemoteReference::parse("oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-usd@sha256:6408e31c1906105e1523af6aa9f597286e5328bc7dc6e6d25e2a41ade7e082b5").unwrap();
+        let RemoteReference::Oci(known) = known else {
+            unreachable!()
+        };
+        let error = missing_remote(&known, "https://fixture/manifests/missing");
+        assert_eq!(error.code(), "ARTIFACT_REMOTE_NOT_FOUND");
+        assert_eq!(
+            error.data().unwrap()["availability"],
+            "previously-published-missing"
+        );
+        assert!(error.hint().unwrap().contains("replacement"));
+        let RemoteReference::Oci(unknown) =
+            RemoteReference::parse("oci://fixture/owner/runtime:unknown").unwrap()
+        else {
+            unreachable!()
+        };
+        let error = missing_remote(&unknown, "https://fixture/manifests/missing");
+        assert_eq!(error.data().unwrap()["availability"], "unknown");
+        assert!(error.to_string().contains("does not establish"));
     }
 
     #[test]

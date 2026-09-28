@@ -9903,6 +9903,241 @@ fn runtime_target_id(runtime: &crate::commands::Resolved) -> String {
     )
 }
 
+/// The extracted products/bundles must outlive the launched renderer child.
+pub(crate) struct RendererPlugins {
+    pub env: EnvSet,
+    pub evidence: serde_json::Value,
+    _trees: Vec<TemporaryProductTree>,
+}
+
+pub(crate) fn renderer_plugins(
+    inputs: &[String],
+    runtime: &crate::commands::Resolved,
+) -> Result<RendererPlugins> {
+    let mut trees = Vec::new();
+    let mut bundles = Vec::new();
+    let mut evidence = Vec::new();
+    let mut library_dirs = Vec::new();
+    for input in inputs {
+        let mut source = Utf8PathBuf::from(input);
+        let mut artifact_digest = None;
+        if input.starts_with("sha256:") {
+            let store = ost_artifact::ArtifactStore::discover();
+            let record = store.resolve(input)?;
+            if !matches!(
+                record.kind,
+                ost_artifact::ArtifactKind::Plugin | ost_artifact::ArtifactKind::Product
+            ) {
+                return Err(Error::config(
+                    "--with requires a plugin bundle or plugin product artifact",
+                ));
+            }
+            if !store.verify(&record.digest)?.passed() {
+                return Err(Error::validation(format!(
+                    "--with artifact {} failed integrity verification",
+                    record.digest
+                )));
+            }
+            source = store.object_dir(record.digest_hex());
+            artifact_digest = Some(record.digest);
+        }
+        if source.join(ost_plugin::PLUGIN_MANIFEST).is_file() {
+            let primary = load_bundle(source.as_str())?;
+            let local = selected_workspace_dependencies(&primary)?;
+            let external = selected_external_bundles(&primary, runtime)?
+                .into_iter()
+                .map(|(bundle, _)| bundle)
+                .collect();
+            let companions = merge_composed_bundles(&primary, local, external)?;
+            library_dirs.extend(selected_workspace_library_runtime_dirs(
+                &primary, runtime, true,
+            )?);
+            bundles.push(managed_bundle_stage(primary, &runtime_target_id(runtime))?);
+            for bundle in companions {
+                bundles.push(managed_bundle_stage(bundle, &runtime_target_id(runtime))?);
+            }
+        } else {
+            let manifest_path = if source.is_dir() {
+                source.join("manifest.json")
+            } else {
+                source.clone()
+            };
+            let manifest = if manifest_path.extension() == Some("json") && manifest_path.is_file() {
+                Some(
+                    serde_json::from_str::<serde_json::Value>(
+                        &std::fs::read_to_string(&manifest_path)
+                            .map_err(|error| Error::io(manifest_path.to_string(), error))?,
+                    )
+                    .map_err(|error| {
+                        Error::parse(manifest_path.to_string(), anyhow::Error::new(error))
+                    })?,
+                )
+            } else {
+                None
+            };
+            if let Some(manifest) = manifest.as_ref() {
+                if manifest["target"] != runtime_target_id(runtime) {
+                    return Err(Error::validation(format!(
+                        "--with target does not match {}",
+                        runtime_target_id(runtime)
+                    )));
+                }
+                // Producer provenance must identify the runtime used to link these bytes.
+                let runtime_path = runtime.prefix.join(MANIFEST_FILE);
+                let selected = RuntimeManifest::from_json(
+                    &std::fs::read_to_string(&runtime_path)
+                        .map_err(|error| Error::io(runtime_path.to_string(), error))?,
+                )
+                .map_err(|error| {
+                    Error::parse(runtime_path.to_string(), anyhow::Error::new(error))
+                })?;
+                if manifest
+                    .pointer("/provenance/runtime/id")
+                    .and_then(|v| v.as_str())
+                    != Some(selected.id.as_str())
+                    || manifest
+                        .pointer("/provenance/runtime/digest")
+                        .and_then(|v| v.as_str())
+                        != Some(selected.digest.as_str())
+                {
+                    return Err(Error::validation(
+                        "--with package was produced against a different or unspecified runtime",
+                    ));
+                }
+            }
+            if manifest
+                .as_ref()
+                .is_some_and(|m| m["kind"] == ost_artifact::PLUGIN_BUNDLE_KIND)
+            {
+                let manifest = manifest.as_ref().unwrap();
+                let archive = safe_product_join(
+                    manifest_path.parent().unwrap(),
+                    manifest["archive"]
+                        .as_str()
+                        .ok_or_else(|| Error::config("--with bundle manifest has no archive"))?,
+                    "bundle archive",
+                )?;
+                let digest = manifest["archive_digest"]
+                    .as_str()
+                    .ok_or_else(|| Error::config("--with bundle manifest has no archive_digest"))?;
+                let tree = temporary_product_tree(std::env::temp_dir().as_path(), "renderer")?;
+                ost_artifact::extract_archive(&archive, digest, &tree.path)?;
+                verify_member_manifest_files(&tree.path, manifest)?;
+                verify_member_library_files(&tree.path, manifest)?;
+                bundles.push(Bundle::load(&tree.path)?);
+                artifact_digest = Some(digest.to_string());
+                trees.push(tree);
+            } else {
+                let product = verify_plugin_product(source.as_str(), artifact_digest.as_deref())?;
+                if product.contract.target != runtime_target_id(runtime) {
+                    return Err(Error::validation(
+                        "--with product targets a different runtime platform/profile",
+                    ));
+                }
+                let runtime_path = runtime.prefix.join(MANIFEST_FILE);
+                let selected = RuntimeManifest::from_json(
+                    &std::fs::read_to_string(&runtime_path)
+                        .map_err(|error| Error::io(runtime_path.to_string(), error))?,
+                )
+                .map_err(|error| {
+                    Error::parse(runtime_path.to_string(), anyhow::Error::new(error))
+                })?;
+                let internal = internal_product_bundle_dependencies(&product.contract, |member| {
+                    product.tree.path.join("expanded").join(&member.id)
+                })?;
+                for member in &product.contract.members {
+                    let path = safe_product_join(
+                        &product.tree.path,
+                        &member.manifest,
+                        "product member manifest",
+                    )?;
+                    let manifest: serde_json::Value = serde_json::from_str(
+                        &std::fs::read_to_string(&path)
+                            .map_err(|error| Error::io(path.to_string(), error))?,
+                    )
+                    .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
+                    if manifest
+                        .pointer("/provenance/runtime/id")
+                        .and_then(|v| v.as_str())
+                        != Some(selected.id.as_str())
+                        || manifest
+                            .pointer("/provenance/runtime/digest")
+                            .and_then(|v| v.as_str())
+                            != Some(selected.digest.as_str())
+                    {
+                        return Err(Error::validation("--with product member was produced against a different or unspecified runtime"));
+                    }
+                    let member_root = product.tree.path.join("expanded").join(&member.id);
+                    if !member.is_tool() {
+                        let mut bundle = Bundle::load(&member_root)?;
+                        bundle.manifest.requires.runtime_plugin_paths =
+                            without_internal_bundle_paths(
+                                &bundle.manifest.requires.runtime_plugin_paths,
+                                internal.get(&member.id),
+                            );
+                        bundle.manifest.requires.runtime_libs = without_internal_bundle_paths(
+                            &bundle.manifest.requires.runtime_libs,
+                            internal.get(&member.id),
+                        );
+                        bundles.push(bundle);
+                    } else {
+                        for path in &member.paths {
+                            library_dirs.push(safe_product_join(
+                                &member_root,
+                                path,
+                                "product tool loader path",
+                            )?);
+                        }
+                    }
+                }
+                artifact_digest = Some(product.source.digest);
+                trees.push(product.tree);
+            }
+        }
+        evidence.push(serde_json::json!({ "input": input, "artifact_digest": artifact_digest }));
+    }
+    // Reuse the plugin session's identity and imaging conflict rules.
+    if let Some(primary) = bundles.first().cloned() {
+        let rest =
+            merge_composed_bundles(&primary, Vec::new(), bundles.into_iter().skip(1).collect())?;
+        bundles = std::iter::once(primary).chain(rest).collect();
+    }
+    for bundle in &bundles {
+        for capability in bundle.manifest.required_capabilities() {
+            if !runtime.capabilities.contains(&capability) {
+                return Err(Error::config(format!("--with bundle '{}' requires capability '{capability}' missing from profile '{}'",
+                    bundle.manifest.name(), runtime.runtime.profile)));
+            }
+        }
+    }
+    let refs = bundles.iter().collect::<Vec<_>>();
+    let dirs = library_dirs
+        .iter()
+        .map(Utf8PathBuf::as_path)
+        .collect::<Vec<_>>();
+    let env = ost_plugin::session_env_from_with_library_dirs(
+        &runtime.env,
+        &refs,
+        &dirs,
+        Host::detect().os,
+    );
+    let identities = bundles
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "name": b.manifest.name(), "version": b.manifest.plugin.version,
+                "kind": b.manifest.kind().as_str(), "root": b.root,
+                "output_root": b.output_root,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(RendererPlugins {
+        env,
+        evidence: serde_json::json!({ "inputs": evidence, "bundles": identities }),
+        _trees: trees,
+    })
+}
+
 fn load_with_bundles(paths: &[String]) -> Result<Vec<Bundle>> {
     paths.iter().map(|path| load_bundle(path)).collect()
 }

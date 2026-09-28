@@ -1,10 +1,16 @@
 # Current
 
-The v0.23.13 delivery is recorded in the
-[release record](../releases/v0.23.13.md). This page tracks the remaining
+The v0.23.14 delivery is recorded in the
+[release record](../releases/v0.23.14.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.13 evidence
+## Post-release v0.23.14 evidence
+
+- Re-run hydra-merlin's renderer evidence checks with the published strict flag,
+  and hydra-toon's Hydra-fed viewport with additional plugin bundles. Retain
+  actual GPU/host evidence separately from the synthetic regression fixtures.
+- Commit runtime publisher migration journals on each republish and keep
+  retained manifest tags/blob closures for their stated 180-day minimum.
 
 - Re-run hydra-toon's avatar Formation with the published v0.23.13 CLI and
   declared viewer command. Expand renderer acceptance beyond local

@@ -85,6 +85,10 @@ pub enum RendererCmd {
         #[arg(long)]
         renderer: Option<String>,
 
+        /// Compose a plugin bundle, packaged workspace product, or local artifact digest.
+        #[arg(long = "with")]
+        with: Vec<String>,
+
         /// Managed configure timeout in seconds; 0 disables it.
         #[arg(long, default_value_t = 600)]
         configure_timeout: u64,
@@ -121,6 +125,10 @@ pub enum RendererCmd {
         /// then stop before configuring or building.
         #[arg(long)]
         preflight: bool,
+
+        /// Compose a plugin bundle, packaged workspace product, or local artifact digest.
+        #[arg(long = "with")]
+        with: Vec<String>,
 
         /// Managed configure timeout in seconds; 0 disables it.
         #[arg(long, default_value_t = 600)]
@@ -261,6 +269,7 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
             profile,
             camera,
             renderer,
+            with,
             configure_timeout,
             build_timeout,
         } => view(
@@ -274,6 +283,7 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
                 profile,
                 camera,
                 renderer,
+                with,
                 configure_timeout,
                 build_timeout,
             },
@@ -286,6 +296,7 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
             target,
             profile,
             preflight,
+            with,
             configure_timeout,
             build_timeout,
             args,
@@ -297,6 +308,7 @@ pub fn run(cmd: RendererCmd, fmt: Format) -> Result<()> {
                 target,
                 profile,
                 preflight,
+                with,
                 configure_timeout,
                 build_timeout,
                 args,
@@ -387,6 +399,7 @@ struct ViewportArgs {
     target: Option<String>,
     profile: Option<String>,
     preflight: bool,
+    with: Vec<String>,
     configure_timeout: u64,
     build_timeout: u64,
     args: Vec<String>,
@@ -402,6 +415,7 @@ struct ViewArgs {
     profile: Option<String>,
     camera: Option<String>,
     renderer: Option<String>,
+    with: Vec<String>,
     configure_timeout: u64,
     build_timeout: u64,
 }
@@ -970,6 +984,7 @@ fn view(args: ViewArgs, fmt: Format) -> Result<()> {
     })?;
     let (runtime, runtime_manifest) = require_real_runtime(&platform, &profile)?;
 
+    let plugins = super::plugin::renderer_plugins(&args.with, &runtime)?;
     let explicit_scene = args.scene.map(|scene| rooted(&root, &scene));
     if let Some(scene) = &explicit_scene {
         if !scene.as_std_path().is_file() {
@@ -1091,7 +1106,7 @@ fn view(args: ViewArgs, fmt: Format) -> Result<()> {
         })?;
 
     let mut session = with_host_python_on_path(
-        runtime.env.clone(),
+        plugins.env.clone(),
         &runtime.artifact_prefix,
         &runtime.python_version,
         Host::detect().os,
@@ -1127,7 +1142,7 @@ fn view(args: ViewArgs, fmt: Format) -> Result<()> {
     let (status, child_stdout, child_stderr) =
         run_renderer_child(&mut command, fmt.is_json(), usdview.as_str())?;
     let completed_unix = unix_now();
-    let record = view_launch_record(
+    let mut record = view_launch_record(
         &usdview,
         &platform,
         &profile,
@@ -1147,6 +1162,8 @@ fn view(args: ViewArgs, fmt: Format) -> Result<()> {
         &install_stdout,
         &install_stderr,
     );
+    record["plugins"] = plugins.evidence.clone();
+    record["environment"] = serde_json::json!(session.pairs());
     let record_path = root
         .join(STATE_DIR)
         .join("renderer-view")
@@ -1300,19 +1317,9 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
     // viewport may use `core`; a scene workflow must select a profile carrying
     // the capabilities implied by its passthrough arguments.
     let (target, resolved) = build_target(&platform, &profile)?;
-    let mut intent = match args.intent.as_deref() {
-        Some(_) => build::resolve_declared_intent(&root, args.intent.as_deref())?,
-        None => BuildIntent {
-            name: "renderer-viewport".into(),
-            cache: BTreeMap::new(),
-        },
-    };
-    insert_domain_cache(
-        &mut intent,
-        "OST_RENDERER_ADAPTERS",
-        CMakeCacheEntry::string("viewport"),
-    )?;
-    let preflight = viewport_capability_preflight(
+    let plugins = super::plugin::renderer_plugins(&args.with, &resolved)?;
+    let mut intent = workflow_intent(&root, args.intent.as_deref(), "viewport")?;
+    let mut preflight = viewport_capability_preflight(
         &adapter,
         &target.id(),
         &platform,
@@ -1321,6 +1328,9 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         &args.args,
         &target.capabilities,
     )?;
+    preflight["plugins"] = plugins.evidence.clone();
+    preflight["build_dir"] =
+        serde_json::json!(root.join(build::build_dir_for_intent(&target.id(), &intent)));
     if args.preflight {
         if fmt.is_json() {
             output::success(&serde_json::json!({ "preflight": preflight }));
@@ -1457,7 +1467,7 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
     // build; launch it in that same activation environment. On Windows this is
     // load-bearing because OpenUSD and dependency DLL directories are carried
     // on PATH rather than encoded in the executable.
-    command.envs(resolved.env.resolve());
+    plugins.env.apply(&mut command);
     let (status, child_stdout, child_stderr) =
         run_renderer_child(&mut command, fmt.is_json(), executable.as_str())?;
     let outcome = viewport_session_outcome(status.code());
@@ -1487,7 +1497,7 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
             .then(|| "hidden".to_string())
     });
     let record_path = viewport_launch_record_path(&root, &target.id(), &build_dir);
-    let record = viewport_launch_record(
+    let mut record = viewport_launch_record(
         &executable,
         &platform,
         &profile,
@@ -1514,6 +1524,8 @@ fn viewport(args: ViewportArgs, fmt: Format) -> Result<()> {
         &child_stdout,
         &child_stderr,
     );
+    record["plugins"] = plugins.evidence.clone();
+    record["environment"] = serde_json::json!(plugins.env.pairs());
     write_launch_record(&record_path, &record)?;
     let evidence = serde_json::json!({
         "launch": record,
@@ -1731,9 +1743,10 @@ fn viewport_capability_preflight(
 ) -> Result<serde_json::Value> {
     let usd_scene = args.iter().any(|arg| {
         let lower = arg.to_ascii_lowercase();
-        matches!(lower.as_str(), "--usd" | "--scene")
+        matches!(lower.as_str(), "--usd" | "--scene" | "--stage")
             || lower.starts_with("--usd=")
             || lower.starts_with("--scene=")
+            || lower.starts_with("--stage=")
             || [".usd", ".usda", ".usdc", ".usdz"]
                 .iter()
                 .any(|extension| lower.ends_with(extension))
@@ -1923,18 +1936,7 @@ fn managed_hydra_build(
     fmt: Format,
 ) -> Result<Utf8PathBuf> {
     let (target, _) = build_target(platform, profile)?;
-    let mut intent = match selected_intent.as_deref() {
-        Some(_) => build::resolve_declared_intent(root, selected_intent.as_deref())?,
-        None => BuildIntent {
-            name: "renderer-hydra2".into(),
-            cache: BTreeMap::new(),
-        },
-    };
-    insert_domain_cache(
-        &mut intent,
-        "OST_RENDERER_ADAPTERS",
-        CMakeCacheEntry::string("hydra2"),
-    )?;
+    let mut intent = workflow_intent(root, selected_intent.as_deref(), "hydra2")?;
     insert_domain_cache(
         &mut intent,
         "OST_RUNTIME_ROOT",
@@ -2006,6 +2008,45 @@ fn managed_hydra_build(
         runtime_digest,
     )?;
     Ok(build_dir)
+}
+
+/// Add the workflow adapter while preserving project options and keeping its
+/// CMake cache separate from an ordinary build of the selected intent.
+pub(crate) fn workflow_intent(
+    root: &Utf8Path,
+    selected: Option<&str>,
+    adapter: &str,
+) -> Result<BuildIntent> {
+    let mut intent = build::resolve_declared_intent(root, selected)?;
+    intent.name = match selected {
+        Some(name) => format!("{name}--renderer-{adapter}"),
+        None => format!("renderer-{adapter}"),
+    };
+    request_adapter(&mut intent, adapter)?;
+    Ok(intent)
+}
+
+fn request_adapter(intent: &mut BuildIntent, adapter: &str) -> Result<()> {
+    let entry = intent
+        .cache
+        .entry("OST_RENDERER_ADAPTERS".into())
+        .or_insert_with(|| CMakeCacheEntry::string(""));
+    if entry.kind != CMakeCacheType::String {
+        return Err(Error::config(
+            "OST_RENDERER_ADAPTERS must be a STRING CMake list",
+        ));
+    }
+    let mut adapters = entry
+        .value
+        .split(';')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if !adapters.iter().any(|part| part == adapter) {
+        adapters.push(adapter.into());
+    }
+    entry.value = adapters.join(";");
+    Ok(())
 }
 
 fn insert_domain_cache(

@@ -33,6 +33,9 @@ param(
     [ValidatePattern('^3\.13\.\d+$')]
     [string] $LinuxPythonVersion = '3.13.15',
 
+    [string] $PublicationReason = 'Runtime leaf republished',
+    # Optional JSON array of previous_tag and replacement_tag mappings.
+    [string] $MigrationMap,
     [switch] $Publish,
 
     [string] $PublishFrom,
@@ -42,6 +45,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'runtime-publication.psm1') -Force
 
 $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $script:Validator = Join-Path $PSScriptRoot 'validate-openusd-vulkan-runtime.py'
@@ -489,10 +493,17 @@ function Publish-Results {
         if ($result.platform -eq 'linux') {
             Invoke-Checked $script:Ost @('artifact', 'import', $result.dist)
         }
+        $previousReferences = @()
+        if ($MigrationMap) {
+            $previousReferences = @(Get-Content -LiteralPath $MigrationMap -Raw | ConvertFrom-Json |
+                Where-Object replacement_tag -eq $result.tag | ForEach-Object previous_tag)
+        }
+        $publication = Protect-RuntimePublication -Ost $script:Ost -Reference $result.tag -Journal "$ResultsPath.migrations.json" -Reason $PublicationReason -PreviousReferences $previousReferences
         $push = Invoke-OstJson @(
             'artifact', 'push', $result.artifact_digest, $result.tag, '--json'
         )
         $result.oci_digest = $push.data.oci_digest
+        Complete-RuntimePublication -Publication $publication -OciDigest $result.oci_digest -ArtifactDigest $result.artifact_digest
         $ResultsDocument['published_at'] = [DateTime]::UtcNow.ToString('o')
         # A later tag may fail after this one has already moved. Journal each
         # successful push so the durable record never lags the public registry.

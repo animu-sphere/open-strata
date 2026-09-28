@@ -28,6 +28,10 @@ jobs:
       - name: Test canonical runtime planner
         run: python -m unittest discover -s support/tests -p 'test_*.py'
 
+      - name: Test runtime publication retention and migration journal
+        shell: pwsh
+        run: ./support/tests/test-runtime-publication.ps1
+
       - name: Expand canonical runtime matrix
         run: python support/plan-openusd-runtimes.py --github
 

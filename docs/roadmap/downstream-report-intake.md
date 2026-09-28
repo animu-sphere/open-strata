@@ -4,8 +4,8 @@ status: active
 owners:
   - openstrata-maintainers
 created: 2026-09-12
-updated: 2026-09-27
-applies_to: post-v0.23.13
+updated: 2026-09-28
+applies_to: post-v0.23.14
 ---
 
 # Downstream OST report intake
@@ -47,7 +47,7 @@ superseded failures are not carried forward.
 | Repository | Reports | Result |
 | --- | ---: | --- |
 | [USD VRM Plugins](https://github.com/animu-sphere/usd-vrm-plugins/tree/main/docs/reports/ost) | 50 | Reports 40–41 expose per-bundle packaging and cross-repository library dependencies; report 42's early consumer claim is repaired in v0.23.1; report 44's tool edges shipped in v0.23.3; report 45's cache repair and external bundle/tool pins ship in v0.23.4; report 46's root CTest paths ship in v0.23.5; report 48 confirms the v0.23.6 Windows package repair; report 49's imaging kind ships in v0.23.9; report 50's usd profile gate is repaired in v0.23.10. |
-| [hdMerlin](https://github.com/animu-sphere/hydra-merlin/tree/main/docs/reports/ost) | 12 | No open carryover: managed renderer diagnostics and resilient OCI transfer shipped in v0.22.0, with idle-timeout semantics hardened again in v0.22.9. |
+| [hdMerlin](https://github.com/animu-sphere/hydra-merlin/tree/main/docs/reports/ost) | 14 | Reports 13–14 confirm transport and managed lifecycle repair. Report 13 retention/migration and evidence classification ship in [v0.23.14](../releases/v0.23.14.md); report 14 proposes no OST generator change. |
 | [USD Point Cloud Plugins](https://github.com/animu-sphere/usd-pointcloud-plugins/tree/main/docs/reports/ost) | 4 | No open carryover: structured file-format arguments and managed-output provenance are implemented; the preimplementation report requested no change. |
 | [USD 3DGS Plugins](https://github.com/animu-sphere/usd-3dgs-plugins/tree/main/docs/reports/ost) | 4 | New report 04 finds a generated Bash empty-array failure on macOS when optional OpenUSD selectors are absent. |
 | [USD HTTP Resolver](https://github.com/animu-sphere/usd-http-resolver/tree/main/docs/reports/ost) | 3 | Offline resolver probing and shared external inputs shipped in v0.22.10; runtime-free CI and externally managed lane alignment are complete during v0.23.0 development. |
@@ -58,10 +58,14 @@ superseded failures are not carried forward.
 | [USD Motion Plugins](https://github.com/animu-sphere/usd-motion-plugins) | 0 | No OST report series; VRM report 41 covers its installed-consumer result and dependency need. |
 | [USD MMD Plugins](https://github.com/animu-sphere/usd-mmd-plugins/tree/main/docs/reports/ost) | 1 | Report 01 finds that bundle registration/libraries and tool directories are read from the source tree. Target-local staging ships in v0.23.5 and awaits a downstream rerun. |
 | [Motion Connectors](https://github.com/animu-sphere/motion-connectors) | 0 | Empty scaffold; VRM report 41 records the generated-CI blockage. |
-| [hydra-toon](https://github.com/animu-sphere/hydra-toon/tree/main/docs/reports/ost) | 5 | Report 05 confirms the report 04 repairs and Windows rendering with a manual interpreter override. Its declared Python command and short extraction-root fixes ship in v0.23.13; published-CLI avatar acceptance remains. |
+| [hydra-toon](https://github.com/animu-sphere/hydra-toon/tree/main/docs/reports/ost) | 7 | Reports 06–07 extend published Formation and local viewport acceptance; report 07 workflow repairs ship in v0.23.14. Report 05 confirms the report 04 repairs and Windows rendering with a manual interpreter override. Its declared Python command and short extraction-root fixes ship in v0.23.13; published-CLI avatar acceptance remains. |
 | [USD Physics Plugins](https://github.com/animu-sphere/usd-physics-plugins/tree/main/docs/reports) | 0 | No numbered OST series. Dated reports prove library packaging and Stage Runner consumption, and expose the external Jolt SDK consumer gap below. |
 
-## Post-v0.23.13 - downstream acceptance
+Hydra-merlin reports 13–14 and hydra-toon reports 06–07 extend the intake to
+91 OST reports. The Merlin retention/evidence requests and Toon report 07's
+local renderer workflow requests ship in [v0.23.14](../releases/v0.23.14.md).
+
+## Post-v0.23.14 - downstream acceptance
 
 - **P3 — record combined renderer Formation acceptance downstream.**
   Repeat report 05's avatar session with the published v0.23.13 CLI and the

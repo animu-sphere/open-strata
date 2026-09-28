@@ -150,3 +150,11 @@ recorded outputs without rebuilding:
 OCI tag movement changes `expected_oci_digest`, and a changed runtime changes
 `runtime_artifact`. Update both pins in consumer `openstrata.ci.yaml` files from
 the resulting `results.json`; do not pin the mutable tag.
+
+
+## Retention
+
+Before republishing, this producer retains the previous manifest and journals
+the old/new digest mapping beside the result document. Follow the canonical
+[retention and migration policy](publishing-canonical-openusd-runtimes.md#retention-and-runtime-family-migrations),
+including its 180-day minimum and migration-catalogue announcement.
