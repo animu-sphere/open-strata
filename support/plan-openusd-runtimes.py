@@ -50,7 +50,7 @@ def expand(document: dict[str, object]) -> list[dict[str, object]]:
     if document.get("schema") != 1 or profile not in ("usd", "lookdev"):
         raise ValueError("matrix must use schema 1 and profile 'usd' or 'lookdev'")
     canonical = CANONICAL if profile == "usd" else {
-        os_name: {**cell, "variants": ["metal" if os_name == "macos" else "gl"]}
+        os_name: {**cell, "variants": ["metal"] if os_name == "macos" else ["gl", "vulkan"]}
         for os_name, cell in CANONICAL.items()
     }
     expected_versions = VERSIONS if profile == "usd" else ["26.08"]

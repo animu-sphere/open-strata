@@ -6,8 +6,8 @@ into 16 immutable leaves: OpenUSD 26.05 and 26.08; Linux x86_64 and Windows
 x86_64 `core`/`gl`/`vulkan`; and macOS arm64 `core`/`metal`.
 
 The separate [lookdev matrix](../../support/openusd-lookdev-runtime-matrix.json)
-adds OpenUSD 26.08 GL leaves for Linux and Windows x86_64 and a Metal leaf for
-macOS arm64. These build usdview,
+adds OpenUSD 26.08 GL and Vulkan leaves for Linux and Windows x86_64 and a
+Metal leaf for macOS arm64. These build usdview,
 bundle PySide6 6.8.3 and PyOpenGL 3.1.9 alongside the runtime's `pxr` package,
 and validate the viewer imports and `hydra-preview`/`usdview` capabilities.
 Install those same Python UI packages on the build host before starting.
@@ -24,9 +24,12 @@ pwsh ./support/publish-openusd-runtimes.ps1 -Profile lookdev -Jobs 16 -Publish -
 ```
 
 The lookdev repository is
-`oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-lookdev`, with tags
+`oci://ghcr.io/animu-sphere/openstrata-runtime-cy2026-lookdev`. Its published
+tags include
 `26.08-gl-linux-x86_64`, `26.08-gl-windows-x86_64`, and
-`26.08-metal-macos-arm64`. The macOS leaf is published with OCI digest
+`26.08-metal-macos-arm64`. The matrix also declares the Vulkan tags
+`26.08-vulkan-linux-x86_64` and `26.08-vulkan-windows-x86_64`; declaring
+them does not publish artifacts. The macOS leaf is published with OCI digest
 `sha256:0aa6c3b28c3f326b2a439cf1df19b9aa87c8d8d80506b61598b01840cfb6a8b9`
 and artifact digest
 `sha256:f727e7f75d80a596d94b15a8ae94ee641506c75a641953a353ed815a75be7521`.
@@ -36,6 +39,25 @@ Source and dependency identity come from the managed build, including CY2026
 oneTBB 2022.1.0.
 Build/export work directories are separated by profile. On macOS arm64,
 `-Profile lookdev` selects the Metal leaf by default; other hosts select GL.
+Select `-Variant vulkan` explicitly on a Linux x86_64 or Windows x86_64
+producer host. The Vulkan build requires a working Vulkan SDK and the graphics
+gate requires a physical Vulkan device and a render-capable display. Provide
+`OST_REGISTRY_USER` and `OST_REGISTRY_PASSWORD` (a GitHub PAT with
+`write:packages` and package write access) before publishing. Unset
+`OST_REGISTRY_TOKEN`: it is pull-only and takes precedence over those
+credentials during push.
+
+To build and publish only the Vulkan lookdev leaf for the current host from a
+clean producer checkout:
+
+```powershell
+pwsh ./support/publish-openusd-runtimes.ps1 -Profile lookdev -Version 26.08 -Variant vulkan -PlanOnly
+pwsh ./support/publish-openusd-runtimes.ps1 -Profile lookdev -Version 26.08 -Variant vulkan -Jobs 16 -Publish -VerifyPublished
+```
+
+Run the same commands on both Linux x86_64 and Windows x86_64 to publish both
+tags; the publisher selects only the current host's leaf. Record the OCI and
+artifact digests returned by each producer run for consumers to pin.
 
 To build and publish only the macOS lookdev leaf from a clean producer checkout:
 
