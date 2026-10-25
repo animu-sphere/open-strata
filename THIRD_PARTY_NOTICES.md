@@ -663,7 +663,7 @@ Used by:
 - anstyle 1.0.14 — https://github.com/rust-cli/anstyle.git
 - clap_lex 1.1.0 — https://github.com/clap-rs/clap
 - colorchoice 1.0.5 — https://github.com/rust-cli/anstyle.git
-- crc32fast 1.5.2 — https://github.com/srijs/rust-crc32fast
+- crc32fast 1.5.3 — https://github.com/srijs/rust-crc32fast
 - is_terminal_polyfill 1.70.2 — https://github.com/polyfill-rs/is_terminal_polyfill
 - once_cell_polyfill 1.70.2 — https://github.com/polyfill-rs/once_cell_polyfill
 - serde_spanned 1.1.1 — https://github.com/toml-rs/toml
@@ -1533,7 +1533,7 @@ Used by:
 - pkg-config 0.3.33 — https://github.com/rust-lang/pkg-config-rs
 - ring 0.17.14 — https://github.com/briansmith/ring
 - rustix 1.1.4 — https://github.com/bytecodealliance/rustix
-- rustls 0.23.45 — https://github.com/rustls/rustls
+- rustls 0.23.46 — https://github.com/rustls/rustls
 - tar 0.4.46 — https://github.com/composefs/tar-rs
 - xattr 1.6.1 — https://github.com/Stebalien/xattr
 
@@ -1751,7 +1751,7 @@ Used by:
 - crypto-common 0.2.2 — https://github.com/RustCrypto/traits
 - digest 0.11.3 — https://github.com/RustCrypto/traits
 - hybrid-array 0.4.13 — https://github.com/RustCrypto/hybrid-array
-- sha2 0.11.0 — https://github.com/RustCrypto/hashes
+- sha2 0.11.1 — https://github.com/RustCrypto/hashes
 
 ```
                               Apache License
@@ -2406,15 +2406,15 @@ Used by:
 - serde 1.0.229 — https://github.com/serde-rs/serde
 - serde_core 1.0.229 — https://github.com/serde-rs/serde
 - serde_derive 1.0.229 — https://github.com/serde-rs/serde
-- serde_json 1.0.151 — https://github.com/serde-rs/json
-- serde_yaml 0.9.34+deprecated — https://github.com/dtolnay/serde-yaml
+- serde_json 1.0.154 — https://github.com/serde-rs/json
 - shlex 2.0.1 — https://github.com/comex/rust-shlex
 - syn 3.0.3 — https://github.com/dtolnay/syn
-- thiserror-impl 2.0.20 — https://github.com/dtolnay/thiserror
-- thiserror 2.0.20 — https://github.com/dtolnay/thiserror
+- thiserror-impl 2.0.21 — https://github.com/dtolnay/thiserror
+- thiserror 2.0.21 — https://github.com/dtolnay/thiserror
 - unicode-ident 1.0.24 — https://github.com/dtolnay/unicode-ident
 - utf8-zero 0.8.1 — https://github.com/algesten/utf8-zero
 - utf8parse 0.2.2 — https://github.com/alacritty/vte
+- yaml_serde 0.10.7 — https://github.com/yaml/yaml-serde
 
 ```
 Apache License
@@ -2496,9 +2496,9 @@ limitations under the License.
 ## BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License
 
 Used by:
-- zstd-safe 8.0.0 — https://github.com/gyscos/zstd-rs
-- zstd-sys 2.1.0+zstd.1.5.7 — https://github.com/gyscos/zstd-rs
-- zstd 0.14.0 — https://github.com/gyscos/zstd-rs
+- zstd-safe 8.2.0 — https://github.com/gyscos/zstd-rs
+- zstd-sys 2.1.2+zstd.1.5.7 — https://github.com/gyscos/zstd-rs
+- zstd 0.14.3 — https://github.com/gyscos/zstd-rs
 
 ```
 BSD 3-Clause License
@@ -2573,7 +2573,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## Community Data License Agreement Permissive 2.0
 
 Used by:
-- webpki-roots 1.0.8 — https://github.com/rustls/webpki-roots
+- webpki-roots 1.0.11 — https://github.com/rustls/webpki-roots
 
 ```
 # Community Data License Agreement - Permissive - Version 2.0
@@ -2687,7 +2687,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## ISC License
 
 Used by:
-- rustls-webpki 0.103.15 — https://github.com/rustls/webpki
+- rustls-webpki 0.103.16 — https://github.com/rustls/webpki
 
 ```
 Except as otherwise noted, this project is licensed under the following
@@ -2809,7 +2809,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- unsafe-libyaml 0.2.11 — https://github.com/dtolnay/unsafe-libyaml
+- libyaml-rs 0.3.0 — https://github.com/yaml/libyaml-rs
 - zmij 1.0.21 — https://github.com/dtolnay/zmij
 
 ```
