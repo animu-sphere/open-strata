@@ -382,6 +382,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libyaml-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -468,8 +474,8 @@ dependencies = [
  "ost-platform",
  "ost-runtime",
  "serde",
- "serde_yaml",
  "toml",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -492,8 +498,8 @@ dependencies = [
  "ost-runtime",
  "serde",
  "serde_json",
- "serde_yaml",
  "toml",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -505,9 +511,9 @@ dependencies = [
  "directories",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2",
  "thiserror",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -518,8 +524,8 @@ dependencies = [
  "indexmap",
  "ost-core",
  "serde",
- "serde_yaml",
  "thiserror",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -558,10 +564,10 @@ dependencies = [
  "ost-core",
  "serde",
  "serde_json",
- "serde_yaml",
  "thiserror",
  "toml",
  "toml_edit",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -573,8 +579,8 @@ dependencies = [
  "ost-core",
  "serde",
  "serde_json",
- "serde_yaml",
  "thiserror",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -588,8 +594,8 @@ dependencies = [
  "ost-runtime",
  "serde",
  "serde_json",
- "serde_yaml",
  "thiserror",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -602,8 +608,8 @@ dependencies = [
  "ost-platform",
  "serde",
  "serde_json",
- "serde_yaml",
  "thiserror",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -682,9 +688,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -706,9 +712,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -771,19 +777,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
 ]
 
 [[package]]
@@ -928,12 +921,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -997,9 +984,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.8"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -1115,6 +1102,19 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix",
+]
+
+[[package]]
+name = "yaml_serde"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33b729a08a9a6be689bbad3e2bf8015926db54b6622cc89c3a5f7dc174b9e918"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "libyaml-rs",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
