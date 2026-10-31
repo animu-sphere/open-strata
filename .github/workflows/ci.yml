@@ -107,7 +107,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-2022, macos-14, macos-15-intel]
+        os: [ubuntu-22.04, windows-2022, macos-15, macos-15-intel]
     env:
       OST_TEST_REQUIRE_SDK_TOOLS: "1"
     steps:

@@ -4,6 +4,9 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_SANDBOX: AtomicU64 = AtomicU64::new(0);
 
 fn ost_bin() -> &'static str {
     env!("CARGO_BIN_EXE_ost")
@@ -20,9 +23,16 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
-        let base = std::env::temp_dir().join(format!("of-{}-{nanos}", std::process::id()));
+        Self::with_timestamp(nanos)
+    }
+
+    fn with_timestamp(nanos: u128) -> Self {
+        // Concurrent tests can observe the same wall-clock timestamp on macOS.
+        let serial = NEXT_SANDBOX.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("of-{}-{nanos}-{serial}", std::process::id()));
+        std::fs::create_dir(&base).expect("claim a unique test sandbox");
         let home = base.join("home");
-        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir(&home).unwrap();
         Self { base, home }
     }
 
@@ -114,6 +124,32 @@ fn executable_fixture(path: &Path) {
     }
     #[cfg(not(unix))]
     let _ = path;
+}
+
+#[test]
+fn sandboxes_with_identical_timestamps_have_independent_lifetimes() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let sandboxes = std::thread::scope(|scope| {
+        (0..32)
+            .map(|_| scope.spawn(|| Sandbox::with_timestamp(nanos)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let paths = sandboxes
+        .iter()
+        .map(|sandbox| sandbox.base.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(paths.len(), sandboxes.len());
+    let mut remaining = sandboxes.into_iter();
+    let survivor = remaining.next().unwrap();
+    drop(remaining);
+    assert!(survivor.home.is_dir());
+    assert_eq!(paths.iter().filter(|path| path.exists()).count(), 1);
 }
 
 #[test]

@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.23.15 | [v0.23.15.md](v0.23.15.md) | Scoped library dependencies, tool packaging and reusable source CI |
 | v0.23.14 | [v0.23.14.md](v0.23.14.md) | Renderer sessions and runtime publication retention |
 | v0.23.13 | [v0.23.13.md](v0.23.13.md) | Formation Python launch and short materialization paths |
 | v0.23.12 | [v0.23.12.md](v0.23.12.md) | macOS lookdev Metal producer |

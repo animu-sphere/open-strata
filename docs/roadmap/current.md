@@ -1,10 +1,17 @@
 # Current
 
-The v0.23.14 delivery is recorded in the
-[release record](../releases/v0.23.14.md). This page tracks the remaining
+The v0.23.15 delivery is recorded in the
+[release record](../releases/v0.23.15.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.14 evidence
+## Post-release v0.23.15 evidence
+
+- Re-run downstream library builds, tests and installed consumers with the
+  published scoped dependency support; verify bundle-free tool artifacts through
+  import and a pinned consumer. Adopt regenerated workspace CI and exercise
+  reusable source workflows through downstream dispatchers.
+- Publish and validate the planned OpenUSD 26.08 Vulkan lookdev leaves on Linux
+  and Windows, retaining digest pins and physical-device rendering evidence.
 
 - Re-run hydra-merlin's renderer evidence checks with the published strict flag,
   and hydra-toon's Hydra-fed viewport with additional plugin bundles. Retain
