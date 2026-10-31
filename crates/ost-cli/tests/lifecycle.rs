@@ -1565,8 +1565,11 @@ fn library_consumer_allows_declared_host_x11_without_opening_system_prefixes() {
         std::fs::write(runtime.join("pxrConfig.cmake"), format!("{pxr}\n{extra}\n")).unwrap();
         let refused = sb.ost(&["--json", "library", "verify-consumer", "."]);
         assert!(!refused.status.success(), "escaped host path passed: {extra}");
-        assert!(out_text(&refused).contains("outside the declared closure"), "{}", out_text(&refused));
         let failed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+        assert_eq!(failed["error"]["code"], "LIBRARY_CONSUMER_CONFIGURE_FAILED");
+        let diagnostic = failed["data"]["checks"]["configure"]["stderr"]
+            .as_str().unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(diagnostic.contains("outside the declared closure"), "{diagnostic}");
         assert!(!failed["data"]["runtime_host_paths"].as_array().unwrap().is_empty());
     }
     std::fs::write(runtime.join("pxrConfig.cmake"), pxr).unwrap();
