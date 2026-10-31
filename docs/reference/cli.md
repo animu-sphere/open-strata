@@ -1060,7 +1060,7 @@ Pack a built plugin bundle into a target-specific tar.zst artifact
 | `--profile <PROFILE>` | Profile to package against. Defaults to the enclosing project's |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
 | `--with-debug` | Ship debug symbols (`.pdb`, `.dwo`) *inside* the main package instead of the default lean package. By default the main archive is lean and any debug symbols are split into a sibling `*-debug` package |
-| `--workspace` | Package every discovered bundle, in dependency order, using the same validated graph `plugin test --workspace` checks |
+| `--workspace` | Package every discovered bundle and tool, using the validated workspace graph. A workspace may contain tools without any bundles |
 
 #### `ost plugin product`
 

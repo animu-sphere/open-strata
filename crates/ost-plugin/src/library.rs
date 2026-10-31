@@ -75,6 +75,22 @@ pub struct LibraryPackageContract {
 pub struct LibraryRequires {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub libraries: Vec<LibraryDependency>,
+    /// Needed to build this library, but not by its installed consumers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_libraries: Vec<LibraryDependency>,
+    /// Needed only when this library is the selected build/test subject.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_libraries: Vec<LibraryDependency>,
+}
+
+impl LibraryRequires {
+    pub fn build_dependencies(&self) -> impl Iterator<Item = &LibraryDependency> {
+        self.libraries.iter().chain(&self.build_libraries)
+    }
+
+    pub fn all_dependencies(&self) -> impl Iterator<Item = &LibraryDependency> {
+        self.build_dependencies().chain(&self.test_libraries)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

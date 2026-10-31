@@ -287,7 +287,11 @@ graph rather than asking each caller to restate it:
   install tree;
 - `library verify-consumer <library>` rebuilds the closure, excludes ambient
   CMake package registries and prefixes, then configures and links a generated
-  external consumer using only the declared installed package closure;
+  external consumer using only the declared installed package closure and the
+  selected runtime prefix (including its OpenUSD package when provided by the
+  profile). Imported paths must remain under those prefixes; configure and link
+  processes receive the runtime's loader environment. The verification report
+  records `runtime_prefix` separately from the library `closure`;
 - plain-library runtime directories materialized below that prefix are added to
   the loader environment for selected test/run/view sessions;
 - `plugin inspect --json` and test report `dependencies.json` expose selected
@@ -297,6 +301,53 @@ graph rather than asking each caller to restate it:
   do not gain a second, manually maintained `with:` list;
 - explicit `--with` remains additive for external or ad-hoc bundles and keeps
   its existing caller-defined ordering.
+
+Plain-library descriptors distinguish installed consumer requirements from
+build and test requirements:
+
+```yaml
+requires:
+  libraries:
+    - { id: motionCore, version: '>=1.0,<2.0' }
+  build_libraries:
+    - { id: embeddedConnector, version: '>=1.0,<2.0' }
+  test_libraries:
+    - id: motionRecording
+      version: '>=1.0,<2.0'
+      artifact:
+        digest: 'sha256:<64 hex digits>'
+```
+
+Each list accepts the same library identity, version, and optional artifact pin
+(including target-specific pins). An id must appear in only one list. Graph
+validation checks every scope for missing providers, incompatible versions,
+invalid pins, duplicates, and cycles, and reports the scope of each library edge.
+
+`libraries` remains the transitive installed consumer closure. `build_libraries`
+is required when building a library, including when it is a prerequisite, but
+does not enter the package's component requirements or consumer closure. Its
+identity and evidence digests are recorded under
+`provenance.build_dependencies` instead. `test_libraries` is materialized only
+for a directly selected `library build` and available to `library test`, including
+its external pins and prerequisites. It is absent from published dependency
+closures and the generated installed consumer. A prerequisite's own test edges
+are never inherited.
+
+Scoped builds set `BUILD_TESTING=ON` for the selected `library build` subject and
+`OFF` for prerequisites and `verify-consumer` builds. CMake projects should guard
+their test-only package discovery and targets with `if(BUILD_TESTING)`. Test
+evidence records the test dependency closure and refuses a stale dependency or
+a prior build with testing disabled. Packaging does not require test-only
+dependencies to remain installed.
+
+`ost plugin package --workspace --json` also accepts a workspace containing tools
+and libraries with no plugin bundles. Each declared tool produces its own
+archive, manifest, checksums, and evidence; the JSON `packages` entries include
+`member: "tool"`, `archive`, and `archive_digest`. Tool descriptors and their
+library requirements (including artifact pins), declared executables, and
+materialized runtime directories travel with the artifact. Import the tool's
+dist directory with `ost artifact import <dist-dir>` and publish it with
+`ost artifact push` using the same digest as a consumer's `requires.tools` pin.
 
 A selected primary bundle that declares neither `requires.bundles` nor
 `requires.libraries` has an empty

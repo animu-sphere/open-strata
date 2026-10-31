@@ -1416,6 +1416,88 @@ fn workspace_test_json_attributes_cases_and_warns_on_an_empty_member() {
 }
 
 #[test]
+fn library_consumer_allows_selected_runtime_and_rejects_ambient_packages() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping library_consumer_runtime: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("library-consumer-runtime");
+    let init = sb.ost(&["init", "--platform", "cy2026"]);
+    assert!(init.status.success(), "{}", out_text(&init));
+    let pull = sb.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]);
+    assert!(pull.status.success(), "{}", out_text(&pull));
+    let pulled: serde_json::Value = serde_json::from_slice(&pull.stdout).unwrap();
+    let runtime = PathBuf::from(pulled["data"]["prefix"].as_str().unwrap());
+    let runtime_path = runtime.to_string_lossy().replace('\\', "/");
+    std::fs::create_dir_all(runtime.join("include/pxr")).unwrap();
+    std::fs::write(runtime.join("include/pxr/probe.h"), "#pragma once\n").unwrap();
+    let pxr_dir = runtime.join("lib/cmake/pxr");
+    std::fs::create_dir_all(&pxr_dir).unwrap();
+    let pxr_config = pxr_dir.join("pxrConfig.cmake");
+    let loader_variable = match std::env::consts::OS {
+        "windows" => "PATH",
+        "macos" => "DYLD_LIBRARY_PATH",
+        _ => "LD_LIBRARY_PATH",
+    };
+    std::fs::write(
+        &pxr_config,
+        format!(
+            "string(FIND \"$ENV{{{loader_variable}}}\" \"{runtime_path}/lib\" _runtime_loader_path)\nif(_runtime_loader_path EQUAL -1)\n  message(FATAL_ERROR \"selected runtime loader path is missing\")\nendif()\nadd_library(gf INTERFACE IMPORTED)\nset_target_properties(gf PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \"{runtime_path}/include\")\n"
+        ),
+    )
+    .unwrap();
+    let config_path = sb.work_file("cmake/WorkConfig.cmake.in");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    let config = format!(
+        "{config}\ninclude(CMakeFindDependencyMacro)\nfind_dependency(pxr CONFIG)\nset_property(TARGET Work::work APPEND PROPERTY INTERFACE_LINK_LIBRARIES gf)\n"
+    );
+    std::fs::write(&config_path, &config).unwrap();
+
+    let consumer = sb.ost(&["--json", "library", "verify-consumer", "."]);
+    assert!(consumer.status.success(), "{}", out_text(&consumer));
+    let value: serde_json::Value = serde_json::from_slice(&consumer.stdout).unwrap();
+    assert_eq!(value["data"]["runtime_prefix"], runtime.to_str().unwrap());
+    assert_eq!(value["data"]["closure"].as_array().unwrap().len(), 1);
+
+    // A runtime config must not expose a path outside the allowed prefixes.
+    let ambient = sb.work_file("ambient");
+    std::fs::create_dir_all(ambient.join("include")).unwrap();
+    let ambient_path = ambient.to_string_lossy().replace('\\', "/");
+    let valid_pxr = std::fs::read_to_string(&pxr_config).unwrap();
+    std::fs::write(
+        &pxr_config,
+        valid_pxr.replace(
+            &format!("{runtime_path}/include"),
+            &format!("{ambient_path}/include"),
+        ),
+    )
+    .unwrap();
+    let escaped = sb.ost(&["--json", "library", "verify-consumer", "."]);
+    assert!(!escaped.status.success(), "escaped runtime target passed");
+    assert!(
+        out_text(&escaped).contains("outside the declared closure"),
+        "{}",
+        out_text(&escaped)
+    );
+
+    // Ambient package hints still cannot satisfy a missing runtime dependency.
+    let ambient_pxr = ambient.join("lib/cmake/pxr");
+    std::fs::create_dir_all(&ambient_pxr).unwrap();
+    std::fs::write(ambient_pxr.join("pxrConfig.cmake"), valid_pxr).unwrap();
+    std::fs::remove_file(&pxr_config).unwrap();
+    let refused = sb.ost_env(
+        &["--json", "library", "verify-consumer", "."],
+        &[
+            ("CMAKE_PREFIX_PATH", ambient.to_str().unwrap()),
+            ("pxr_DIR", ambient_pxr.to_str().unwrap()),
+        ],
+    );
+    assert!(!refused.status.success(), "ambient pxr package passed");
+    let value: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "LIBRARY_CONSUMER_CONFIGURE_FAILED");
+}
+
+#[test]
 fn library_scoped_build_test_package_uses_only_its_install_tree() {
     if let Err(reason) = native_lifecycle_ready() {
         eprintln!("skipping library_scoped_lifecycle: {reason}");
@@ -1619,6 +1701,138 @@ fn library_scoped_build_test_package_uses_only_its_install_tree() {
         "drift diagnostic should be actionable:\n{}",
         out_text(&refused)
     );
+}
+
+#[test]
+fn library_scopes_separate_build_test_and_installed_consumer_closures() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping library_scopes: {reason}");
+        return;
+    }
+    fn write_library(sb: &Sandbox, directory: &str, id: &str, requires: &str, configure: &str) {
+        let root = sb.work_file(directory);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("openstrata.library.yaml"), format!(
+            "schema: openstrata.library/v1alpha1\nlibrary: {{ id: {id}, version: 1.0.0 }}\ncmake: {{ package: {id}, target: '{id}::{id}' }}\npackage: {{ standalone: true, aggregate_member: false }}\npackage_contract:\n  package_name: {id}\n  exported_targets: ['{id}::{id}']\n{requires}"
+        )).unwrap();
+        std::fs::write(
+            root.join(format!("{id}Config.cmake")),
+            format!("add_library({id}::{id} INTERFACE IMPORTED)\n"),
+        )
+        .unwrap();
+        std::fs::write(root.join("CMakeLists.txt"), format!(
+            "cmake_minimum_required(VERSION 3.23)\nproject({id} NONE)\n{configure}\ninstall(FILES {id}Config.cmake DESTINATION lib/cmake/{id})\n"
+        )).unwrap();
+    }
+    let sb = Sandbox::new("library-scopes");
+    init_and_pull(&sb);
+    // Publish an independent external test dependency before declaring the
+    // workspace members, so it is resolved solely through its artifact pin.
+    write_library(&sb, "producer", "externalTest", "", "");
+    let built = sb.ost(&["library", "build", "producer"]);
+    assert!(built.status.success(), "{}", out_text(&built));
+    let packaged = sb.ost(&["--json", "library", "package", "producer"]);
+    assert!(packaged.status.success(), "{}", out_text(&packaged));
+    let value: serde_json::Value = serde_json::from_slice(&packaged.stdout).unwrap();
+    let archive = PathBuf::from(value["data"]["archive"].as_str().unwrap());
+    let imported = sb.ost(&[
+        "artifact",
+        "import",
+        archive.parent().unwrap().to_str().unwrap(),
+    ]);
+    assert!(imported.status.success(), "{}", out_text(&imported));
+    let pin = value["data"]["archive_digest"].as_str().unwrap();
+    std::fs::remove_file(sb.work_file("producer/openstrata.library.yaml")).unwrap();
+    let project = sb.work_file("openstrata.toml");
+    let source = std::fs::read_to_string(&project).unwrap();
+    std::fs::write(
+        &project,
+        format!("{source}\n[workspace]\nmembers = ['.', 'libs/*']\n"),
+    )
+    .unwrap();
+    write_library(&sb, "libs/runtime", "runtime", "", "");
+    write_library(&sb, "libs/builddep", "builddep", "", "");
+    // A prerequisite's test-only artifact is deliberately unavailable. It must
+    // never be materialized while building that prerequisite for another root.
+    write_library(&sb, "libs/test", "test", &format!(
+        "requires:\n  test_libraries:\n    - id: unavailable\n      version: '1.0.0'\n      artifact: {{ digest: 'sha256:{}' }}\n", "cd".repeat(32)
+    ), "if(BUILD_TESTING)\n  message(FATAL_ERROR \"prerequisite testing must be disabled\")\nendif()");
+    write_library(&sb, "libs/adapter", "adapter", &format!(
+        "requires:\n  libraries: [{{ id: runtime, version: '1.0.0' }}]\n  build_libraries: [{{ id: builddep, version: '1.0.0' }}]\n  test_libraries:\n    - {{ id: test, version: '1.0.0' }}\n    - id: externalTest\n      version: '1.0.0'\n      artifact: {{ digest: '{pin}' }}\n"
+    ), "find_package(runtime CONFIG REQUIRED)\nfind_package(builddep CONFIG REQUIRED)\nif(BUILD_TESTING)\n  find_package(test CONFIG REQUIRED)\n  find_package(externalTest CONFIG REQUIRED)\n  enable_testing()\n  add_test(NAME scoped-test COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/test-env.cmake)\nendif()");
+    std::fs::write(sb.work_file("libs/adapter/test-env.cmake"),
+        "find_file(EXTERNAL_TEST_CONFIG externalTestConfig.cmake PATH_SUFFIXES lib/cmake/externalTest REQUIRED)\nfind_file(LOCAL_TEST_CONFIG testConfig.cmake PATH_SUFFIXES lib/cmake/test REQUIRED)\n"
+    ).unwrap();
+    write_library(
+        &sb,
+        "libs/app",
+        "app",
+        "requires:\n  libraries: [{ id: adapter, version: '1.0.0' }]\n",
+        "find_package(adapter CONFIG REQUIRED)",
+    );
+
+    let build = sb.ost(&["library", "build", "libs/adapter"]);
+    assert!(build.status.success(), "{}", out_text(&build));
+    let test = sb.ost(&["library", "test", "libs/adapter"]);
+    assert!(test.status.success(), "{}", out_text(&test));
+    let adapter_target = single_target_dir(&sb.work_file("libs/adapter"));
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(adapter_target.join("library-build.json")).unwrap())
+            .unwrap();
+    assert_eq!(record["test_dependencies"][0]["id"], "test");
+    assert_eq!(
+        record["test_external_dependencies"][0]["archive_digest"],
+        pin
+    );
+    let package = sb.ost(&["--json", "library", "package", "libs/adapter"]);
+    assert!(package.status.success(), "{}", out_text(&package));
+    let value: serde_json::Value = serde_json::from_slice(&package.stdout).unwrap();
+    assert_eq!(value["data"]["dependencies"].as_array().unwrap().len(), 1);
+    assert_eq!(value["data"]["dependencies"][0]["id"], "runtime");
+    assert_eq!(
+        value["data"]["external_dependencies"],
+        serde_json::json!([])
+    );
+    let archive = PathBuf::from(value["data"]["archive"].as_str().unwrap());
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(archive.parent().unwrap().join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        manifest["component"]["requires"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        manifest["provenance"]["build_dependencies"]["libraries"][0]["id"],
+        "builddep"
+    );
+    assert!(!manifest.to_string().contains("externalTest"));
+
+    // Test dependency drift invalidates a test run but not distribution.
+    let test_target = single_target_dir(&sb.work_file("libs/test"));
+    let test_prefix = test_target.join("library-prefix/lib/cmake/test/testConfig.cmake");
+    std::fs::write(&test_prefix, "# drift\n").unwrap();
+    let stale_test = sb.ost(&["library", "test", "libs/adapter"]);
+    assert!(!stale_test.status.success(), "stale test dependency passed");
+    let package = sb.ost(&["library", "package", "libs/adapter"]);
+    assert!(package.status.success(), "{}", out_text(&package));
+
+    let app = sb.ost(&["library", "build", "libs/app"]);
+    assert!(app.status.success(), "{}", out_text(&app));
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(adapter_target.join("library-build.json")).unwrap())
+            .unwrap();
+    assert_eq!(record["tests_enabled"], false);
+    assert!(record["test_dependencies"].is_null());
+    let consumer = sb.ost(&["--json", "library", "verify-consumer", "libs/adapter"]);
+    assert!(consumer.status.success(), "{}", out_text(&consumer));
+    let value: serde_json::Value = serde_json::from_slice(&consumer.stdout).unwrap();
+    let closure = value["data"]["closure"].as_array().unwrap();
+    assert_eq!(closure.len(), 2);
+    assert!(closure.iter().any(|entry| entry["id"] == "runtime"));
+    assert!(closure.iter().all(|entry| entry["id"] != "builddep"
+        && entry["id"] != "test"
+        && entry["id"] != "externalTest"));
 }
 
 #[test]
@@ -4555,6 +4769,65 @@ fn workspace_packaging_records_the_bundle_closure_in_dependency_order() {
 /// deliverable that no bundle requires, so the aggregate product had no member
 /// archive that could carry it — a release either omitted the tool or the
 /// repository hand-rolled a second packaging path.
+#[test]
+fn bundle_free_workspace_packages_tools_with_pins_and_json_digests() {
+    let sb = Sandbox::new("tool-only-package");
+    init_and_pull(&sb);
+    let project = sb.work_file("openstrata.toml");
+    let source = std::fs::read_to_string(&project).unwrap();
+    std::fs::write(
+        &project,
+        format!("{source}\n[workspace]\nmembers = ['.', 'tools/*']\n"),
+    )
+    .unwrap();
+    let pin = format!("sha256:{}", "ab".repeat(32));
+    let tool = sb.work_file("tools/recorder");
+    std::fs::create_dir_all(tool.join("bin")).unwrap();
+    std::fs::create_dir_all(tool.join("lib")).unwrap();
+    std::fs::write(tool.join("openstrata.tool.yaml"), format!(
+        "schema: openstrata.tool/v1alpha1\ntool: {{ id: recorder, version: 1.0.0 }}\nexecutables: [recorder]\ndirectories: [bin, lib]\nrequires:\n  libraries:\n    - {{ id: work, version: '>=0.1,<0.2' }}\n    - id: motionRecording\n      version: '1.0.0'\n      artifact: {{ digest: '{pin}' }}\n"
+    )).unwrap();
+    let executable = format!("recorder{}", std::env::consts::EXE_SUFFIX);
+    std::fs::write(tool.join("bin").join(&executable), b"recorder executable").unwrap();
+    std::fs::write(tool.join("lib/runtime.bin"), b"runtime library").unwrap();
+    let output = sb.ost(&["--json", "plugin", "package", "--workspace"]);
+    assert!(output.status.success(), "{}", out_text(&output));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["data"]["order"], serde_json::json!([]));
+    let packages = value["data"]["packages"].as_array().unwrap();
+    assert_eq!(packages.len(), 1);
+    assert_eq!(packages[0]["member"], "tool");
+    let archive = PathBuf::from(packages[0]["archive"].as_str().unwrap());
+    assert!(archive.is_file());
+    let digest = packages[0]["archive_digest"].as_str().unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(archive.parent().unwrap().join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["archive_digest"], digest);
+    assert_eq!(manifest["kind"], "openstrata.tool");
+    assert_eq!(
+        manifest["dependencies"]["libraries"][1]["artifact"]["digest"],
+        pin
+    );
+    assert!(manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file["path"] == "lib/runtime.bin"));
+    let imported = sb.ost(&[
+        "artifact",
+        "import",
+        archive.parent().unwrap().to_str().unwrap(),
+    ]);
+    assert!(imported.status.success(), "{}", out_text(&imported));
+    let verified = sb.ost(&["artifact", "verify", digest]);
+    assert!(verified.status.success(), "{}", out_text(&verified));
+    std::fs::remove_file(tool.join("bin").join(executable)).unwrap();
+    let missing = sb.ost(&["--json", "plugin", "package", "--workspace"]);
+    assert!(!missing.status.success(), "empty tool package passed");
+}
+
 #[test]
 fn a_workspace_tool_ships_as_a_product_member() {
     let sb = Sandbox::new("wstool");

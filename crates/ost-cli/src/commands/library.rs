@@ -24,6 +24,7 @@ use ost_runtime::{RuntimeManifest, MANIFEST_FILE};
 use crate::commands::compiler::CompilerOpts;
 use crate::commands::configure::build_target;
 use crate::commands::plugin;
+use crate::commands::plugin::LibraryClosure;
 use crate::output::{self, Format};
 
 const LIBRARY_BUILD_SCHEMA: &str = "openstrata.library-build/v1";
@@ -158,6 +159,12 @@ struct LibraryBuildRecord {
     dependencies: Vec<LibraryDependencyRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     external_dependencies: Vec<ExternalLibraryRecord>,
+    #[serde(default)]
+    tests_enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    test_dependencies: Vec<LibraryDependencyRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    test_external_dependencies: Vec<ExternalLibraryRecord>,
     files: Vec<LibraryFile>,
 }
 
@@ -245,7 +252,9 @@ fn build(
     compiler: CompilerOpts,
     fmt: Format,
 ) -> Result<()> {
-    build_inner(root, target, profile, dry_run, ninja, compiler, fmt, true)
+    build_inner(
+        root, target, profile, dry_run, ninja, compiler, fmt, true, true,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -258,9 +267,17 @@ fn build_inner(
     compiler: CompilerOpts,
     fmt: Format,
     emit_output: bool,
+    tests: bool,
 ) -> Result<()> {
     let library = Library::load(root)?;
-    let dependencies = plugin::selected_workspace_libraries_for_library(&library)?;
+    let dependencies = plugin::selected_workspace_libraries_for_library_mode(
+        &library,
+        if tests {
+            LibraryClosure::Test
+        } else {
+            LibraryClosure::Build
+        },
+    )?;
     let (platform, profile) = selection(target, profile)?;
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
@@ -271,7 +288,15 @@ fn build_inner(
     };
     let mut record = None;
     for member in dependencies.iter().chain(std::iter::once(&library)) {
-        let prerequisites = plugin::selected_workspace_libraries_for_library(member)?;
+        let member_tests = tests && member.id() == library.id();
+        let prerequisites = plugin::selected_workspace_libraries_for_library_mode(
+            member,
+            if member_tests {
+                LibraryClosure::Test
+            } else {
+                LibraryClosure::Build
+            },
+        )?;
         let prerequisite_prefixes = prerequisites
             .iter()
             .map(|dependency| isolated_prefix(dependency, &id))
@@ -292,6 +317,7 @@ fn build_inner(
             ninja.clone(),
             compiler.clone(),
             !emit_output || fmt.is_json(),
+            member_tests,
         )?;
         if member.id() == library.id() {
             record = built;
@@ -343,6 +369,7 @@ fn build_library_member(
     ninja: Option<String>,
     compiler: CompilerOpts,
     quiet: bool,
+    tests: bool,
 ) -> Result<Option<LibraryBuildRecord>> {
     let prefix = isolated_prefix(library, target_id);
     if !dry_run {
@@ -358,6 +385,7 @@ fn build_library_member(
         &prefix,
         prerequisite_prefixes,
         quiet,
+        tests,
     )?;
     if dry_run {
         return Ok(None);
@@ -373,6 +401,30 @@ fn build_library_member(
         .with_hint("add CMake install rules for the library target, headers, and config package"));
     }
     verify_required_install_files(library, os, &files)?;
+    let build_prerequisites = plugin::selected_workspace_libraries_for_library(library)?;
+    let build_ids = build_prerequisites
+        .iter()
+        .map(|library| library.id())
+        .collect::<std::collections::BTreeSet<_>>();
+    let test_prerequisites = prerequisites
+        .iter()
+        .filter(|library| !build_ids.contains(library.id()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let external_dependencies =
+        external_dependency_records(library, target_id, runtime, LibraryClosure::Build)?;
+    let test_external_dependencies = if tests {
+        external_dependency_records(library, target_id, runtime, LibraryClosure::Test)?
+            .into_iter()
+            .filter(|dependency| {
+                !external_dependencies
+                    .iter()
+                    .any(|build| build.id == dependency.id)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let record = LibraryBuildRecord {
         schema: LIBRARY_BUILD_SCHEMA.into(),
         library: LibraryIdentity {
@@ -384,8 +436,11 @@ fn build_library_member(
         descriptor_sha256: descriptor_digest(library)?,
         build_dir: portable(&plugin::target_build_dir(&library.root, target_id)),
         install_prefix: portable(&prefix),
-        dependencies: dependency_records(prerequisites, target_id)?,
-        external_dependencies: external_dependency_records(library, target_id, runtime)?,
+        dependencies: dependency_records(&build_prerequisites, target_id)?,
+        external_dependencies,
+        tests_enabled: tests,
+        test_dependencies: dependency_records(&test_prerequisites, target_id)?,
+        test_external_dependencies,
         files,
     };
     write_json(&build_record_path(library, target_id), &record)?;
@@ -407,20 +462,73 @@ fn test(
     let (platform, profile) = selection(target, profile)?;
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
-    validated_build_record(
+    let record = validated_build_record(
         &library,
         &id,
         target.os(),
         &target.runtime_id,
         &resolved.prefix,
     )?;
-    let prerequisites = plugin::selected_workspace_libraries_for_library(&library)?;
-    let external = plugin::selected_external_libraries_for_library(
+    if !record.tests_enabled {
+        return Err(Error::precondition(
+            "library was built as a prerequisite with testing disabled",
+        )
+        .with_hint(format!(
+            "run `ost library build {}` before testing",
+            library.root
+        )));
+    }
+    let prerequisites =
+        plugin::selected_workspace_libraries_for_library_mode(&library, LibraryClosure::Test)?;
+    let build_prerequisites = plugin::selected_workspace_libraries_for_library(&library)?;
+    let test_prerequisites = prerequisites
+        .iter()
+        .filter(|dependency| {
+            !build_prerequisites
+                .iter()
+                .any(|build| build.id() == dependency.id())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for prerequisite in &test_prerequisites {
+        validated_build_record(
+            prerequisite,
+            &id,
+            target.os(),
+            &target.runtime_id,
+            &resolved.prefix,
+        )?;
+    }
+    let external = plugin::selected_external_libraries_for_library_mode(
         &library,
         &id,
         &target.runtime_id,
         &target.runtime_digest,
+        LibraryClosure::Test,
     )?;
+    let expected_test_external = external
+        .iter()
+        .filter(|dependency| {
+            !record
+                .external_dependencies
+                .iter()
+                .any(|build| build.id == dependency.id)
+        })
+        .map(|dependency| ExternalLibraryRecord {
+            id: dependency.id.clone(),
+            version: dependency.version.clone(),
+            archive_digest: dependency.digest.clone(),
+            install_prefix: portable(&dependency.prefix),
+        })
+        .collect::<Vec<_>>();
+    if record.test_dependencies != dependency_records(&test_prerequisites, &id)?
+        || record.test_external_dependencies != expected_test_external
+    {
+        return Err(
+            Error::precondition("library test dependency evidence is stale")
+                .with_hint(format!("rerun `ost library build {}`", library.root)),
+        );
+    }
     let mut runtime_directories = library.installed_runtime_dirs(&isolated_prefix(&library, &id));
     runtime_directories.extend(prerequisites.iter().flat_map(|prerequisite| {
         prerequisite.installed_runtime_dirs(&isolated_prefix(prerequisite, &id))
@@ -434,12 +542,23 @@ fn test(
         .iter()
         .map(Utf8PathBuf::as_path)
         .collect::<Vec<_>>();
-    let test_env = ost_plugin::session_env_from_with_library_dirs(
+    let mut test_env = ost_plugin::session_env_from_with_library_dirs(
         &resolved.env,
         &[],
         &runtime_directory_refs,
         target.os(),
     );
+    for prefix in prerequisites
+        .iter()
+        .map(|dependency| isolated_prefix(dependency, &id))
+        .chain(external.iter().map(|dependency| dependency.prefix.clone()))
+        .chain(std::iter::once(isolated_prefix(&library, &id)))
+    {
+        test_env.vars.push(ost_runtime::EnvVar {
+            key: "CMAKE_PREFIX_PATH".into(),
+            op: ost_runtime::EnvOp::Prepend(portable(&prefix)),
+        });
+    }
     let ctest = ctest
         .map(Utf8PathBuf::from)
         .or_else(|| tools::which("ctest").and_then(|path| Utf8PathBuf::from_path_buf(path).ok()))
@@ -547,13 +666,43 @@ fn package(
     let (platform, profile) = selection(target, profile)?;
     let (target, resolved) = build_target(&platform, &profile)?;
     let id = target.id();
-    let record = validated_build_record(
+    let mut record = validated_build_record(
         &library,
         &id,
         target.os(),
         &target.runtime_id,
         &resolved.prefix,
     )?;
+    let consumer_libraries =
+        plugin::selected_workspace_libraries_for_library_mode(&library, LibraryClosure::Consumer)?;
+    let build_dependencies = record
+        .dependencies
+        .iter()
+        .filter(|dependency| {
+            !consumer_libraries
+                .iter()
+                .any(|consumer| consumer.id() == dependency.id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    record.dependencies.retain(|dependency| {
+        consumer_libraries
+            .iter()
+            .any(|consumer| consumer.id() == dependency.id)
+    });
+    let consumer_external =
+        external_dependency_records(&library, &id, &record.runtime, LibraryClosure::Consumer)?;
+    let build_external_dependencies = record
+        .external_dependencies
+        .iter()
+        .filter(|dependency| {
+            !consumer_external
+                .iter()
+                .any(|consumer| consumer.id == dependency.id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    record.external_dependencies = consumer_external;
     let prefix = isolated_prefix(&library, &id);
     let staged = stage_files(&prefix).map_err(stage_error(&prefix))?;
     let dist = library
@@ -658,6 +807,10 @@ fn package(
         },
         "provenance": {
             "runtime": record.runtime,
+            "build_dependencies": {
+                "libraries": build_dependencies,
+                "external_libraries": build_external_dependencies,
+            },
             "build_record_sha256": file_digest(&build_record_path(&library, &target.id()))?.0,
         },
         "files": packed.files.iter().map(|file| file.manifest_json()).collect::<Vec<_>>(),
@@ -750,6 +903,7 @@ fn verify_consumer(
         compiler,
         fmt,
         false,
+        false,
     )?;
 
     let (platform, profile) = selection(target, profile)?;
@@ -763,7 +917,8 @@ fn verify_consumer(
         &resolved.prefix,
     )?;
     let compiler_record = library_compiler_record(&library, &target_id)?;
-    let prerequisites = plugin::selected_workspace_libraries_for_library(&library)?;
+    let prerequisites =
+        plugin::selected_workspace_libraries_for_library_mode(&library, LibraryClosure::Consumer)?;
     let mut closure = prerequisites
         .iter()
         .map(|dependency| {
@@ -774,11 +929,12 @@ fn verify_consumer(
         })
         .collect::<Vec<_>>();
     closure.extend(
-        plugin::selected_external_libraries_for_library(
+        plugin::selected_external_libraries_for_library_mode(
             &library,
             &target_id,
             &target.runtime_id,
             &target.runtime_digest,
+            LibraryClosure::Consumer,
         )?
         .into_iter()
         .map(|dependency| (dependency.id, dependency.prefix)),
@@ -790,6 +946,7 @@ fn verify_consumer(
     if closure
         .iter()
         .any(|(_, prefix)| prefix.as_str().contains(';'))
+        || resolved.prefix.as_str().contains(';')
     {
         return Err(Error::precondition(
             "library consumer prefixes containing ';' are not supported by CMake list arguments",
@@ -856,6 +1013,10 @@ fn verify_consumer(
             format!("-DOST_CONSUMER_PREFIX_{index}={}", portable(prefix))
         }),
     );
+    configure_args.push(format!(
+        "-DOST_CONSUMER_RUNTIME_PREFIX={}",
+        portable(&resolved.prefix)
+    ));
     if let Some(cxx) = &compiler_record.cxx {
         configure_args.push(format!("-DCMAKE_CXX_COMPILER={cxx}"));
     }
@@ -867,12 +1028,14 @@ fn verify_consumer(
         "Release".to_string(),
     ];
     let msvc_env = consumer_msvc_env(target.os());
-    let configure = run_consumer_step(&cmake, &configure_args, &source_dir, &msvc_env)?;
+    let consumer_env = plugin::compose_build_env(&msvc_env, &resolved.env);
+    let configure = run_consumer_step(&cmake, &configure_args, &source_dir, &consumer_env)?;
     let mut report = consumer_report(
         &library,
         &target_id,
         contract,
         &closure,
+        &resolved.prefix,
         &compiler_record,
         &matched_public_headers,
         &source_dir,
@@ -897,12 +1060,13 @@ fn verify_consumer(
         .with_data(report));
     }
 
-    let linked = run_consumer_step(&cmake, &build_args, &source_dir, &msvc_env)?;
+    let linked = run_consumer_step(&cmake, &build_args, &source_dir, &consumer_env)?;
     report = consumer_report(
         &library,
         &target_id,
         contract,
         &closure,
+        &resolved.prefix,
         &compiler_record,
         &matched_public_headers,
         &source_dir,
@@ -956,13 +1120,20 @@ fn consumer_cmake(contract: &ost_plugin::LibraryPackageContract, closure_len: us
 project(OpenStrataLibraryConsumer LANGUAGES CXX)
 
 # Compiler discovery has completed. Package discovery from this point forward,
-# including find_dependency() calls in imported configs, is closure-only.
+# including find_dependency() calls in imported configs, uses only the declared
+# library closure and the selected runtime.
 set(CMAKE_FIND_USE_PACKAGE_REGISTRY FALSE)
 set(CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY FALSE)
 set(CMAKE_FIND_USE_CMAKE_SYSTEM_PATH FALSE)
 set(CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH FALSE)
+set(CMAKE_PREFIX_PATH)
 set(_ost_allowed_prefixes)
 {prefix_variables}
+if(DEFINED OST_CONSUMER_RUNTIME_PREFIX)
+  file(REAL_PATH "${{OST_CONSUMER_RUNTIME_PREFIX}}" _ost_runtime_prefix)
+  list(APPEND CMAKE_PREFIX_PATH "${{_ost_runtime_prefix}}")
+  list(APPEND _ost_allowed_prefixes "${{_ost_runtime_prefix}}")
+endif()
 
 function(_ost_assert_allowed_path owner value)
   if("${{value}}" MATCHES "\\$<BUILD_INTERFACE:")
@@ -984,7 +1155,7 @@ function(_ost_assert_allowed_path owner value)
       return()
     endif()
   endforeach()
-  message(FATAL_ERROR "${{owner}} exposes path outside the declared closure: ${{value}}")
+  message(FATAL_ERROR "${{owner}} exposes path outside the declared closure and selected runtime: ${{value}}")
 endfunction()
 
 function(_ost_verify_target requested_target)
@@ -1089,7 +1260,11 @@ fn run_consumer_step(
     }
     command.env_remove("CMAKE_PREFIX_PATH");
     for (key, value) in environment {
-        command.env(key, value);
+        // Runtime activation also carries CMake prefixes. Keep discovery tied
+        // to the explicit prefix arguments while retaining its loader paths.
+        if !key.starts_with("CMAKE_") && !key.ends_with("_ROOT") && !key.ends_with("_DIR") {
+            command.env(key, value);
+        }
     }
     command
         .output()
@@ -1113,6 +1288,7 @@ fn consumer_report(
     target_id: &str,
     contract: &ost_plugin::LibraryPackageContract,
     closure: &[(String, Utf8PathBuf)],
+    runtime_prefix: &Utf8Path,
     compiler: &ost_build::LockCompiler,
     matched_public_headers: &[String],
     source_dir: &Utf8Path,
@@ -1138,6 +1314,7 @@ fn consumer_report(
         "matched_public_headers": matched_public_headers,
         "compiler": compiler,
         "closure": closure.iter().map(|(id, prefix)| serde_json::json!({"id": id, "prefix": prefix})).collect::<Vec<_>>(),
+        "runtime_prefix": runtime_prefix,
         "build_record_sha256": file_digest(&build_record_path(library, target_id)).ok().map(|value| value.0),
         "source_dir": source_dir,
         "build_dir": build_dir,
@@ -1338,7 +1515,8 @@ fn validated_build_record(
         validated_build_record(prerequisite, target_id, os, runtime_id, runtime_prefix)?;
     }
     let expected_dependencies = dependency_records(&prerequisites, target_id)?;
-    let expected_external = external_dependency_records(library, target_id, &runtime)?;
+    let expected_external =
+        external_dependency_records(library, target_id, &runtime, LibraryClosure::Build)?;
     let expected_descriptor = descriptor_digest(library)?;
     let expected_build_dir = plugin::target_build_dir(&library.root, target_id);
     let expected_prefix = isolated_prefix(library, target_id);
@@ -1399,12 +1577,14 @@ fn external_dependency_records(
     library: &Library,
     target_id: &str,
     runtime: &RuntimeIdentity,
+    mode: LibraryClosure,
 ) -> Result<Vec<ExternalLibraryRecord>> {
-    Ok(plugin::selected_external_libraries_for_library(
+    Ok(plugin::selected_external_libraries_for_library_mode(
         library,
         target_id,
         &runtime.id,
         &runtime.digest,
+        mode,
     )?
     .into_iter()
     .map(|dependency| ExternalLibraryRecord {

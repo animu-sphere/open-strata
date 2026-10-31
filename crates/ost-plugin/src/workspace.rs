@@ -47,6 +47,8 @@ pub struct WorkspaceLibraryEdge {
     pub from_kind: String,
     pub to: String,
     pub version: String,
+    /// `runtime` (the default), `build`, or `test`.
+    pub scope: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub external: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -199,7 +201,7 @@ impl WorkspaceValidation {
             .map(|library| (library.id.as_str(), Vec::new()))
             .collect();
         for edge in &self.library_edges {
-            if edge.from_kind == "library" && !edge.external {
+            if edge.from_kind == "library" && !edge.external && edge.scope == "runtime" {
                 library_adjacency
                     .entry(edge.from.as_str())
                     .or_default()
@@ -262,6 +264,21 @@ impl WorkspaceValidation {
     /// both queries on the validated graph prevents `ost library` from
     /// accepting one dependency graph and executing a separately inferred one.
     pub fn library_prerequisite_order(&self, library_id: &str) -> Option<Vec<String>> {
+        self.library_build_order(library_id, false)
+    }
+
+    /// Build dependencies are transitive; test dependencies belong only to the
+    /// selected root, never to a library being built as a prerequisite.
+    pub fn library_build_order(&self, library_id: &str, tests: bool) -> Option<Vec<String>> {
+        self.library_order(library_id, false, tests)
+    }
+
+    /// Installed consumers resolve only runtime edges, at every depth.
+    pub fn library_consumer_order(&self, library_id: &str) -> Option<Vec<String>> {
+        self.library_order(library_id, true, false)
+    }
+
+    fn library_order(&self, library_id: &str, consumer: bool, tests: bool) -> Option<Vec<String>> {
         if !self.passed
             || !self
                 .libraries
@@ -276,11 +293,13 @@ impl WorkspaceValidation {
             .iter()
             .map(|library| (library.id.as_str(), Vec::new()))
             .collect();
-        for edge in self
-            .library_edges
-            .iter()
-            .filter(|edge| edge.from_kind == "library" && !edge.external)
-        {
+        for edge in self.library_edges.iter().filter(|edge| {
+            edge.from_kind == "library"
+                && !edge.external
+                && (edge.scope == "runtime"
+                    || (!consumer && edge.scope == "build")
+                    || (tests && edge.from == library_id && edge.scope == "test"))
+        }) {
             adjacency
                 .entry(edge.from.as_str())
                 .or_default()
@@ -622,6 +641,7 @@ pub fn validate_workspace_with_members(
                 id,
                 "bundle",
                 dependency,
+                "runtime",
                 &unique_libraries,
                 &mut issues,
                 &mut library_edges,
@@ -682,7 +702,29 @@ pub fn validate_workspace_with_members(
 
     for (id, library) in &unique_libraries {
         let mut dependencies = BTreeSet::new();
-        for dependency in &library.manifest.requires.libraries {
+        for (dependency, scope) in library
+            .manifest
+            .requires
+            .libraries
+            .iter()
+            .map(|dep| (dep, "runtime"))
+            .chain(
+                library
+                    .manifest
+                    .requires
+                    .build_libraries
+                    .iter()
+                    .map(|dep| (dep, "build")),
+            )
+            .chain(
+                library
+                    .manifest
+                    .requires
+                    .test_libraries
+                    .iter()
+                    .map(|dep| (dep, "test")),
+            )
+        {
             if !dependencies.insert(dependency.id.as_str()) {
                 issues.push(issue(
                     "WORKSPACE_DUPLICATE_LIBRARY_DEPENDENCY",
@@ -699,6 +741,7 @@ pub fn validate_workspace_with_members(
                 id,
                 "library",
                 dependency,
+                scope,
                 &unique_libraries,
                 &mut issues,
                 &mut library_edges,
@@ -738,6 +781,7 @@ pub fn validate_workspace_with_members(
                 id,
                 "tool",
                 dependency,
+                "runtime",
                 &unique_libraries,
                 &mut issues,
                 &mut library_edges,
@@ -814,10 +858,12 @@ fn valid_artifact_pin(artifact: &LibraryArtifactPin) -> bool {
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_library_dependency(
     consumer_id: &str,
     consumer_kind: &str,
     dependency: &LibraryDependency,
+    scope: &str,
     providers: &BTreeMap<&str, &Library>,
     issues: &mut Vec<WorkspaceIssue>,
     edges: &mut Vec<WorkspaceLibraryEdge>,
@@ -868,6 +914,7 @@ fn validate_library_dependency(
             from_kind: consumer_kind.to_string(),
             to: dependency.id.clone(),
             version: dependency.version.clone(),
+            scope: scope.to_string(),
             external: true,
             artifact_digest: artifact.targets.is_empty().then(|| artifact.digest.clone()),
             artifact_targets: (!artifact.targets.is_empty()).then(|| {
@@ -897,6 +944,7 @@ fn validate_library_dependency(
         from_kind: consumer_kind.to_string(),
         to: dependency.id.clone(),
         version: dependency.version.clone(),
+        scope: scope.to_string(),
         external: false,
         artifact_digest: None,
         artifact_targets: None,
@@ -1210,6 +1258,63 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "WORKSPACE_BUNDLE_PROVIDER_AMBIGUOUS"));
+    }
+
+    #[test]
+    fn library_scopes_keep_tests_local_and_build_edges_out_of_consumers() {
+        let libraries = vec![
+            library("runtime", "1.0.0", ""),
+            library("build", "1.0.0", ""),
+            library("test", "1.0.0", "requires:\n  test_libraries: [{ id: hidden, version: '1.0.0' }]\n"),
+            library("hidden", "1.0.0", ""),
+            library("adapter", "1.0.0", "requires:\n  libraries: [{ id: runtime, version: '1.0.0' }]\n  build_libraries: [{ id: build, version: '1.0.0' }]\n  test_libraries: [{ id: test, version: '1.0.0' }]\n"),
+            library("app", "1.0.0", "requires:\n  libraries: [{ id: adapter, version: '1.0.0' }]\n"),
+        ];
+        let bundle = bundle(&manifest(
+            "consumer",
+            "1.0.0",
+            "usd-fileformat",
+            "requires:\n  libraries: [{ id: adapter, version: '1.0.0' }]\n",
+        ));
+        let graph = validate_workspace_with_libraries(&[bundle], &libraries);
+        assert!(graph.passed, "{:?}", graph.issues);
+        assert_eq!(
+            graph.library_build_order("adapter", true).unwrap(),
+            vec!["build", "runtime", "test"]
+        );
+        assert_eq!(
+            graph.library_prerequisite_order("adapter").unwrap(),
+            vec!["build", "runtime"]
+        );
+        assert_eq!(
+            graph.library_build_order("app", true).unwrap(),
+            vec!["build", "runtime", "adapter"]
+        );
+        assert_eq!(
+            graph.library_consumer_order("app").unwrap(),
+            vec!["runtime", "adapter"]
+        );
+        assert_eq!(
+            graph.library_dependency_order("consumer").unwrap(),
+            vec!["runtime", "adapter"]
+        );
+        assert!(graph
+            .library_edges
+            .iter()
+            .any(|edge| edge.from == "adapter" && edge.to == "test" && edge.scope == "test"));
+
+        let duplicate = library("duplicate", "1.0.0", "requires:\n  libraries: [{ id: runtime, version: '1.0.0' }]\n  test_libraries: [{ id: runtime, version: '1.0.0' }]\n");
+        let graph = validate_workspace_with_libraries(&[], &[libraries[0].clone(), duplicate]);
+        assert!(graph
+            .issues
+            .iter()
+            .any(|issue| issue.code == "WORKSPACE_DUPLICATE_LIBRARY_DEPENDENCY"));
+        let missing = library(
+            "missing",
+            "1.0.0",
+            "requires:\n  test_libraries: [{ id: absent, version: '1.0.0' }]\n",
+        );
+        assert!(!validate_workspace_with_libraries(&[], &[missing]).passed);
     }
 
     #[test]
