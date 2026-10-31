@@ -293,12 +293,22 @@ graph rather than asking each caller to restate it:
   pinned for CMake discovery: its include tree, exact library file and matching
   Windows runtime DLL are allowed. Its library directory may be an
   `INTERFACE_LINK_DIRECTORIES` entry, without permitting unrelated files beneath
-  it. Other imported paths must remain under the declared prefixes; configure
+  it. Linux runtimes declaring both `apt:libx11-dev` and `apt:libxt-dev` also
+  resolve X11/Xt through CMake's built-in FindX11 before loading installed
+  package configs. System search is enabled only for this host probe. The
+  resolved X11/Xt targets and their transitive target dependencies receive
+  exact target/property/path allowances; their system include roots and library
+  directories do not become package prefixes or allowances for library targets.
+  Other imported paths must remain under the declared prefixes; configure
   and link processes receive the runtime's loader environment. The report
   records `runtime_prefix` and `runtime_python` separately from the library
   `closure`. `runtime_python` contains the resolved version, source, executable,
   include directory, library and optional runtime DLL, or is `null` when Python
-  development artifacts cannot be resolved;
+  development artifacts cannot be resolved. `runtime_host_requirements` records
+  the runtime's host package declarations, and `runtime_host_paths` records
+  the resolved X11 target property paths (each entry has `owner` and `path`),
+  including when a later consumer configuration fails. Other host packages do
+  not automatically gain discovery or imported-path allowances;
 - plain-library runtime directories materialized below that prefix are added to
   the loader environment for selected test/run/view sessions;
 - `plugin inspect --json` and test report `dependencies.json` expose selected
