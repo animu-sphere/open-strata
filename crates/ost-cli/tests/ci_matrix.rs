@@ -406,6 +406,158 @@ fn runner_profiles_and_lanes_render_source_and_support_workflows() {
     }
 }
 
+/// CI supplies a checksum-pinned actionlint binary. Local runs still exercise
+/// the CLI/renderer assertions without requiring a separately installed tool.
+fn actionlint_if_configured(path: &Path) {
+    let Some(binary) = std::env::var_os("OST_TEST_ACTIONLINT") else {
+        return;
+    };
+    let output = Command::new(binary)
+        .args(["-shellcheck=", "-pyflakes="])
+        .arg(path)
+        .output()
+        .expect("run OST_TEST_ACTIONLINT");
+    assert!(
+        output.status.success(),
+        "actionlint failed for {}:\n{}\n{}",
+        path.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn generated_workspace_workflows_pass_expression_checks() {
+    use ost_ci::{CellKind, SupportMatrix, WorkspaceVerify};
+    for rungs in [
+        vec![WorkspaceVerify::Test],
+        vec![WorkspaceVerify::Build],
+        vec![
+            WorkspaceVerify::Test,
+            WorkspaceVerify::Pyramid,
+            WorkspaceVerify::Package,
+        ],
+    ] {
+        let sb = Sandbox::new("workspace-expressions");
+        let mut matrix = SupportMatrix::from_yaml(&linux_pr_lanes_yaml()).unwrap();
+        let template = matrix.cells[0].clone();
+        matrix.cells = rungs
+            .iter()
+            .map(|&verify| {
+                let mut cell = template.clone();
+                cell.name = format!("workspace-{}", verify.as_str());
+                cell.kind = CellKind::Workspace;
+                cell.bundle = None;
+                cell.verify = Some(verify);
+                cell.up_to = match verify {
+                    WorkspaceVerify::Pyramid => Some(4),
+                    WorkspaceVerify::Package => Some(6),
+                    _ => None,
+                };
+                cell
+            })
+            .collect();
+        std::fs::write(
+            sb.base.join("openstrata.ci.yaml"),
+            serde_yaml::to_string(&matrix).unwrap(),
+        )
+        .unwrap();
+        for reusable in [false, true] {
+            let mut args = vec!["ci", "generate", "github", "--stdout"];
+            if reusable {
+                args.push("--reusable-source");
+            }
+            let out = sb.ost(&args);
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let workflow = sb.base.join("generated.yml");
+            std::fs::write(&workflow, &out.stdout).unwrap();
+            actionlint_if_configured(&workflow);
+            let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).unwrap();
+            let entries = doc["jobs"]["pr-workspace"]["strategy"]["matrix"]["include"]
+                .as_sequence()
+                .unwrap();
+            assert_eq!(entries.len(), rungs.len());
+            assert!(entries.iter().all(|entry| entry.get("up_to").is_some()));
+        }
+    }
+}
+
+#[test]
+fn reusable_source_generation_is_opt_in_and_matches_stdout_and_files() {
+    let sb = Sandbox::new("reusable-source");
+    let mut matrix = ost_ci::SupportMatrix::from_yaml(&linux_pr_lanes_yaml()).unwrap();
+    let mut main = matrix.cells[0].clone();
+    main.name = "main-linux".into();
+    main.lane = ost_ci::Lane::Main;
+    matrix.cells.push(main);
+    std::fs::write(
+        sb.base.join("openstrata.ci.yaml"),
+        serde_yaml::to_string(&matrix).unwrap(),
+    )
+    .unwrap();
+
+    stdout_json(&sb.ost(&["--json", "ci", "generate", "github"]));
+    let source_path = sb.base.join(".github/workflows/ost-source-ci.yml");
+    let direct = std::fs::read_to_string(&source_path).unwrap();
+    let support =
+        std::fs::read_to_string(sb.base.join(".github/workflows/ost-support-matrix.yml")).unwrap();
+    let args = ["ci", "generate", "github", "--reusable-source", "--stdout"];
+    let first = sb.ost(&args);
+    let second = sb.ost(&args);
+    assert!(first.status.success());
+    assert_eq!(first.stdout, second.stdout, "deterministic stdout");
+    let stream = String::from_utf8(first.stdout).unwrap();
+    let documents: Vec<&str> = stream.split("\n---\n").collect();
+    assert_eq!(documents.len(), 2);
+    assert_eq!(documents[0], support.trim_end_matches('\n'));
+
+    stdout_json(&sb.ost(&[
+        "--json",
+        "ci",
+        "generate",
+        "github",
+        "--reusable-source",
+        "--force",
+    ]));
+    let callable = std::fs::read_to_string(&source_path).unwrap();
+    assert_eq!(documents[1], callable);
+    let document: serde_yaml::Value = serde_yaml::from_str(&callable).unwrap();
+    assert!(document["on"].get("workflow_call").is_some());
+    assert!(document["on"].get("pull_request").is_none());
+    assert!(document["on"].get("push").is_none());
+    actionlint_if_configured(&source_path);
+
+    // Returning to the default restores direct triggers with identical jobs.
+    stdout_json(&sb.ost(&["--json", "ci", "generate", "github", "--force"]));
+    assert_eq!(std::fs::read_to_string(&source_path).unwrap(), direct);
+
+    // A generation-only flag cannot silently produce no callable workflow.
+    matrix.cells.retain(|cell| !cell.lane.is_source());
+    std::fs::write(
+        sb.base.join("openstrata.ci.yaml"),
+        serde_yaml::to_string(&matrix).unwrap(),
+    )
+    .unwrap();
+    let out = sb.ost(&[
+        "--json",
+        "ci",
+        "generate",
+        "github",
+        "--reusable-source",
+        "--force",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        std::fs::read_to_string(&source_path).unwrap(),
+        direct,
+        "failure writes nothing"
+    );
+}
+
 /// `ost ci plan` reports execution facts (lanes, runner classes, billing)
 /// without rendering workflows or estimating money.
 #[test]

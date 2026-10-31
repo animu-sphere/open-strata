@@ -139,6 +139,58 @@ ost ci validate                 # check the openstrata.ci.yaml matrix
 ost ci generate github          # render the runtime × bundle workflow
 ```
 
+To let a downstream dispatcher decide whether source CI is needed, generate
+the source workflow in reusable mode:
+
+```sh
+ost ci generate github --reusable-source
+ost ci generate github --reusable-source --stdout  # deterministic drift check
+```
+
+This replaces the source workflow's direct triggers with `on: workflow_call`.
+Support and trusted-release workflows keep their triggers. Use the same flag
+each time you regenerate; omitting it selects the default direct-trigger mode.
+For a matrix with multiple workflow families, stdout remains a `---`-separated
+YAML stream; file generation writes each family to its usual path.
+
+The reusable workflow uses the caller's event, as described in the
+[GitHub reusable-workflow context contract](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#github-context):
+
+| Caller event | Source cells run |
+| --- | --- |
+| `pull_request` | `lane: pull_request` |
+| `push` to `refs/heads/main` | `lane: main` |
+| `workflow_dispatch` on any ref | All declared source lanes |
+
+A caller event without a matching lane fails explicitly, including a PR caller
+when only main cells exist, a push outside main, or an unsupported event such as
+`schedule` or `pull_request_target`. The rejection job uses the first source
+cell's declared runner. Generation requires at least one source cell. Build,
+test, package, runtime, trust, and evidence steps stay the same as direct mode;
+source job failures fail the calling workflow. No publishing secrets are needed
+for fork PRs.
+
+A minimal caller that always runs full source CI is:
+
+```yaml
+name: source dispatcher
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source:
+    uses: ./.github/workflows/ost-source-ci.yml
+```
+
+A downstream path classifier can add `needs:` and `if:` to that calling job and
+own a stable required-result aggregator. For docs-only changes it can skip the
+call entirely; for manual full CI it should always make the call. Classification
+exceptions and required-check policy belong in the dispatcher. See
+[GitHub's reusable workflow guide](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)
+for caller syntax and permissions.
+
 Pinning a `runtime_artifact` by digest keeps every runtime-consuming cell
 reproducible. If a cell
 pins a runtime that lacks the evidence a generated gate demands, `ost ci

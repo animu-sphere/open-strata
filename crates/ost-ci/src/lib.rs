@@ -13,8 +13,9 @@ pub mod matrix;
 pub mod support;
 
 pub use github::{
-    generate_github, generate_release, generate_source, generate_support, GeneratedWorkflow,
-    RELEASE_WORKFLOW_PATH, SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
+    generate_github, generate_github_with_source_mode, generate_release, generate_source,
+    generate_support, GeneratedWorkflow, SourceWorkflowMode, RELEASE_WORKFLOW_PATH,
+    SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
 };
 pub use matrix::{
     is_placeholder_digest, starter_matrix, Acknowledgement, Billing, Bootstrap, CellKind,
