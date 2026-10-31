@@ -289,9 +289,16 @@ graph rather than asking each caller to restate it:
   CMake package registries and prefixes, then configures and links a generated
   external consumer using only the declared installed package closure and the
   selected runtime prefix (including its OpenUSD package when provided by the
-  profile). Imported paths must remain under those prefixes; configure and link
-  processes receive the runtime's loader environment. The verification report
-  records `runtime_prefix` separately from the library `closure`;
+  profile). Python development artifacts resolved for that runtime are also
+  pinned for CMake discovery: its include tree, exact library file and matching
+  Windows runtime DLL are allowed. Its library directory may be an
+  `INTERFACE_LINK_DIRECTORIES` entry, without permitting unrelated files beneath
+  it. Other imported paths must remain under the declared prefixes; configure
+  and link processes receive the runtime's loader environment. The report
+  records `runtime_prefix` and `runtime_python` separately from the library
+  `closure`. `runtime_python` contains the resolved version, source, executable,
+  include directory, library and optional runtime DLL, or is `null` when Python
+  development artifacts cannot be resolved;
 - plain-library runtime directories materialized below that prefix are added to
   the loader environment for selected test/run/view sessions;
 - `plugin inspect --json` and test report `dependencies.json` expose selected
