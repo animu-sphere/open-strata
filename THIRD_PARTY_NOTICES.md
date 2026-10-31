@@ -20,7 +20,7 @@ not edit by hand.
 ## Apache License 2.0
 
 Used by:
-- ureq-proto 0.6.4 — https://github.com/algesten/ureq-proto
+- ureq-proto 0.6.5 — https://github.com/algesten/ureq-proto
 - zeroize 1.9.0 — https://github.com/RustCrypto/utils
 
 ```
@@ -2749,7 +2749,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- ureq 3.4.2 — https://github.com/algesten/ureq
+- ureq 3.5.0 — https://github.com/algesten/ureq
 
 ```
 MIT License
