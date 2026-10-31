@@ -33,3 +33,8 @@ github-attestations = true
 # Trade-off: a dist version bump needs the workflow regenerated and re-pinned by
 # hand (see docs/roadmap/README.md → Security baseline).
 allow-dirty = ["ci"]
+
+# Keep release builds off the retired macOS 14 image.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15-intel"
