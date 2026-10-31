@@ -1,14 +1,15 @@
 # Current
 
-The v0.23.16 delivery is recorded in the
-[release record](../releases/v0.23.16.md). This page tracks the remaining
+The v0.23.17 delivery is recorded in the
+[release record](../releases/v0.23.17.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.16 evidence
+## Post-release v0.23.17 evidence
 
 - Restore the downstream `avatarVrmSession` package contract and run hosted
   installed consumers with the locked OpenUSD runtime and its resolved host
-  Python development artifacts, including Linux and Windows evidence.
+  Python development artifacts and declared Linux X11/Xt host dependencies,
+  including Linux and Windows evidence.
 
 - Re-run downstream library builds, tests and installed consumers with the
   published scoped dependency support; verify bundle-free tool artifacts through

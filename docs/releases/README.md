@@ -9,6 +9,7 @@ retained in the [delivery history](../reports/delivery-history.md).
 
 | Version | Record | Theme |
 | --- | --- | --- |
+| v0.23.17 | [v0.23.17.md](v0.23.17.md) | Declared X11 host dependencies in installed library consumers |
 | v0.23.16 | [v0.23.16.md](v0.23.16.md) | Runtime Python paths in installed library consumers |
 | v0.23.15 | [v0.23.15.md](v0.23.15.md) | Scoped library dependencies, tool packaging and reusable source CI |
 | v0.23.14 | [v0.23.14.md](v0.23.14.md) | Renderer sessions and runtime publication retention |
