@@ -435,7 +435,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "ost-artifact"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "camino",
@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "ost-build"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "camino",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "ost-ci"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "ost-artifact",
  "ost-core",
@@ -480,7 +480,7 @@ dependencies = [
 
 [[package]]
 name = "ost-cli"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "camino",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "ost-core"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "camino",
@@ -518,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "ost-extension"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "indexmap",
@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "ost-formation"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "camino",
@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "ost-host"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "camino",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "ost-manifest"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "camino",
@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "ost-platform"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "indexmap",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "ost-plugin"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "camino",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "ost-runtime"
-version = "0.23.14"
+version = "0.23.15"
 dependencies = [
  "anyhow",
  "camino",

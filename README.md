@@ -31,11 +31,11 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.23.14** — renderer view/viewport sessions compose
-additional plugins, preserve explicit adapter options, and isolate named workflow
-builds. Renderer validation distinguishes completion-bound and external evidence.
-Runtime publishers retain previous manifest pins and journal replacements; see the
-[release record](docs/releases/v0.23.14.md).
+The current release is **v0.23.15** — library dependencies distinguish installed,
+build and test requirements, and bundle-free workspaces can package tools.
+Generated source CI supports reusable workflows and validates workspace matrix
+expressions. The lookdev producer matrix adds Linux and Windows Vulkan leaves;
+see the [release record](docs/releases/v0.23.15.md).
 Formation accepts packaged renderer and
 plugin targets, renderer packages preserve named build intents and installed
 plugin paths, and secondary profiles have separate runtime locks. `usd-imaging` bundles use the resolved
