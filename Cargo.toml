@@ -57,7 +57,7 @@ crc32fast = "=1.5.3"
 flate2 = "=1.1.10"
 tar = "=0.4.46"
 zstd = { version = "=0.14.3", features = ["zstdmt"] }
-ureq = "=3.4.2"
+ureq = "=3.5.0"
 
 # The profile that 'dist' will build with
 [profile.dist]
