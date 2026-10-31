@@ -31,10 +31,10 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.23.17** — installed library consumers resolve a
-Linux runtime's declared X11/Xt host dependencies while preserving package
-closure isolation and recording the allowed host target paths;
-see the [release record](docs/releases/v0.23.17.md).
+The current release is **v0.23.18** — installed library consumers can declare
+X11/Xt host dependencies for published runtimes without changing their pinned
+identity, while preserving package closure isolation;
+see the [release record](docs/releases/v0.23.18.md).
 Formation accepts packaged renderer and
 plugin targets, renderer packages preserve named build intents and installed
 plugin paths, and secondary profiles have separate runtime locks. `usd-imaging` bundles use the resolved

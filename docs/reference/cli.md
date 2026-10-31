@@ -854,6 +854,7 @@ Build, install, and link a generated consumer against the declared package closu
 | `--cc <CC>` | C compiler path (implies `--compiler explicit`) |
 | `--compiler <COMPILER>` | Compiler policy: `host` (default), `runtime`, or `explicit` |
 | `--cxx <CXX>` | C++ compiler path (implies `--compiler explicit`) |
+| `--host-package <MANAGER:PACKAGE>` | Additional host dependency for this check, as apt:PACKAGE or brew:FORMULA. Repeatable; does not modify the runtime or install packages |
 | `--ninja <NINJA>` | Path to the Ninja executable if it is not on PATH |
 | `--profile <PROFILE>` | Runtime profile. Defaults to the enclosing project's profile |
 | `--target <TARGET>` | Platform target, e.g. `cy2026`. Defaults to the enclosing project's |
