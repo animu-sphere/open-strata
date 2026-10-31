@@ -917,6 +917,7 @@ fn verify_consumer(
         &resolved.prefix,
     )?;
     let compiler_record = library_compiler_record(&library, &target_id)?;
+    let python = ost_build::resolve_for_runtime(&resolved.artifact_prefix, &target.python_version);
     let prerequisites =
         plugin::selected_workspace_libraries_for_library_mode(&library, LibraryClosure::Consumer)?;
     let mut closure = prerequisites
@@ -1017,6 +1018,26 @@ fn verify_consumer(
         "-DOST_CONSUMER_RUNTIME_PREFIX={}",
         portable(&resolved.prefix)
     ));
+    if let Some(python) = &python {
+        for (key, value) in [
+            ("EXECUTABLE", &python.executable),
+            ("INCLUDE_DIR", &python.include_dir),
+            ("LIBRARY", &python.library),
+        ] {
+            if value.contains(';') {
+                return Err(Error::precondition(
+                    "consumer Python paths containing ';' are not supported by CMake list arguments",
+                ));
+            }
+            configure_args.push(format!(
+                "-DOST_CONSUMER_PYTHON_{key}={}",
+                value.replace('\\', "/")
+            ));
+        }
+        if let Some(library) = consumer_python_runtime_library(python) {
+            configure_args.push(format!("-DOST_CONSUMER_PYTHON_RUNTIME_LIBRARY={library}"));
+        }
+    }
     if let Some(cxx) = &compiler_record.cxx {
         configure_args.push(format!("-DCMAKE_CXX_COMPILER={cxx}"));
     }
@@ -1036,6 +1057,7 @@ fn verify_consumer(
         contract,
         &closure,
         &resolved.prefix,
+        python.as_ref(),
         &compiler_record,
         &matched_public_headers,
         &source_dir,
@@ -1067,6 +1089,7 @@ fn verify_consumer(
         contract,
         &closure,
         &resolved.prefix,
+        python.as_ref(),
         &compiler_record,
         &matched_public_headers,
         &source_dir,
@@ -1135,6 +1158,22 @@ if(DEFINED OST_CONSUMER_RUNTIME_PREFIX)
   list(APPEND _ost_allowed_prefixes "${{_ost_runtime_prefix}}")
 endif()
 
+# Pin the same ABI-matched development artifacts as the library build. Keep
+# these separate from package prefixes: a Python library may live in /usr/lib.
+if(DEFINED OST_CONSUMER_PYTHON_EXECUTABLE)
+  file(REAL_PATH "${{OST_CONSUMER_PYTHON_INCLUDE_DIR}}" _ost_python_include)
+  file(REAL_PATH "${{OST_CONSUMER_PYTHON_LIBRARY}}" _ost_python_library)
+  cmake_path(GET _ost_python_library PARENT_PATH _ost_python_library_dir)
+  foreach(_ost_python IN ITEMS Python3 Python)
+    set(${{_ost_python}}_EXECUTABLE "${{OST_CONSUMER_PYTHON_EXECUTABLE}}")
+    set(${{_ost_python}}_INCLUDE_DIR "${{OST_CONSUMER_PYTHON_INCLUDE_DIR}}")
+    set(${{_ost_python}}_LIBRARY "${{OST_CONSUMER_PYTHON_LIBRARY}}")
+  endforeach()
+endif()
+if(DEFINED OST_CONSUMER_PYTHON_RUNTIME_LIBRARY)
+  file(REAL_PATH "${{OST_CONSUMER_PYTHON_RUNTIME_LIBRARY}}" _ost_python_runtime_library)
+endif()
+
 function(_ost_assert_allowed_path owner value)
   if("${{value}}" MATCHES "\\$<BUILD_INTERFACE:")
     message(FATAL_ERROR "${{owner}} exposes a BUILD_INTERFACE path: ${{value}}")
@@ -1155,6 +1194,17 @@ function(_ost_assert_allowed_path owner value)
       return()
     endif()
   endforeach()
+  if(DEFINED _ost_python_include)
+    cmake_path(IS_PREFIX _ost_python_include "${{_ost_candidate}}" NORMALIZE _ost_python_header)
+    if(_ost_python_header OR "${{_ost_candidate}}" STREQUAL "${{_ost_python_library}}" OR
+        "${{_ost_candidate}}" STREQUAL "${{_ost_python_runtime_library}}")
+      return()
+    endif()
+    if("${{owner}}" MATCHES "\\.INTERFACE_LINK_DIRECTORIES$" AND
+        "${{_ost_candidate}}" STREQUAL "${{_ost_python_library_dir}}")
+      return()
+    endif()
+  endif()
   message(FATAL_ERROR "${{owner}} exposes path outside the declared closure and selected runtime: ${{value}}")
 endfunction()
 
@@ -1282,6 +1332,20 @@ fn consumer_msvc_env(os: ost_core::host::Os) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+// FindPython exposes both the import library and the DLL on Windows. Admit
+// only the matching DLL beside the resolved interpreter, never its whole root.
+fn consumer_python_runtime_library(python: &ost_build::PythonHints) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let executable = python.executable.replace('\\', "/");
+    let library = python.library.replace('\\', "/");
+    let dll = Utf8Path::new(&executable)
+        .parent()?
+        .join(format!("{}.dll", Utf8Path::new(&library).file_stem()?));
+    dll.is_file().then(|| dll.to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn consumer_report(
     library: &Library,
@@ -1289,6 +1353,7 @@ fn consumer_report(
     contract: &ost_plugin::LibraryPackageContract,
     closure: &[(String, Utf8PathBuf)],
     runtime_prefix: &Utf8Path,
+    python: Option<&ost_build::PythonHints>,
     compiler: &ost_build::LockCompiler,
     matched_public_headers: &[String],
     source_dir: &Utf8Path,
@@ -1315,6 +1380,17 @@ fn consumer_report(
         "compiler": compiler,
         "closure": closure.iter().map(|(id, prefix)| serde_json::json!({"id": id, "prefix": prefix})).collect::<Vec<_>>(),
         "runtime_prefix": runtime_prefix,
+        "runtime_python": python.map(|python| serde_json::json!({
+            "version": python.version,
+            "source": match python.source {
+                ost_build::PythonSource::RuntimePrefix => "runtime-prefix",
+                ost_build::PythonSource::Host => "host",
+            },
+            "executable": python.executable,
+            "include_dir": python.include_dir,
+            "library": python.library,
+            "runtime_library": consumer_python_runtime_library(python),
+        })),
         "build_record_sha256": file_digest(&build_record_path(library, target_id)).ok().map(|value| value.0),
         "source_dir": source_dir,
         "build_dir": build_dir,

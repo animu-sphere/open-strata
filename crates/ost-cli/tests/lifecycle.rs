@@ -1416,6 +1416,86 @@ fn workspace_test_json_attributes_cases_and_warns_on_an_empty_member() {
 }
 
 #[test]
+fn library_consumer_allows_runtime_python_without_opening_its_install_prefix() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping library_consumer_python: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("library-consumer-python");
+    let Some(python) = ost_build::resolve_python_hints(
+        &Utf8PathBuf::from_path_buf(sb.home.clone()).unwrap(),
+        None,
+    ) else {
+        eprintln!("skipping library_consumer_python: no Python development artifacts");
+        return;
+    };
+    let init = sb.ost(&["init", "--platform", "cy2026"]);
+    assert!(init.status.success(), "{}", out_text(&init));
+    let pull = sb.ost(&["--json", "runtime", "pull", "cy2026", "--profile", "usd"]);
+    assert!(pull.status.success(), "{}", out_text(&pull));
+    let pulled: serde_json::Value = serde_json::from_slice(&pull.stdout).unwrap();
+    let runtime = PathBuf::from(pulled["data"]["prefix"].as_str().unwrap());
+    // Use the host's available minor so this fixture runs on Linux/macOS as
+    // well as Windows. Real runtimes provide this requirement in pxrConfig.
+    let pxr = format!(
+        "include(CMakeFindDependencyMacro)\nfind_dependency(Python3 \"{}\" EXACT COMPONENTS Development)\nadd_library(gf INTERFACE IMPORTED)\ncmake_path(GET Python3_LIBRARY PARENT_PATH _python_library_dir)\nset_target_properties(gf PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \"${{Python3_INCLUDE_DIRS}}\" INTERFACE_LINK_LIBRARIES Python3::Python INTERFACE_LINK_DIRECTORIES \"${{_python_library_dir}}\")\n",
+        python.version,
+    );
+    std::fs::write(runtime.join("pxrConfig.cmake"), &pxr).unwrap();
+    let config_path = sb.work_file("cmake/WorkConfig.cmake.in");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        format!("{config}\ninclude(CMakeFindDependencyMacro)\nfind_dependency(pxr CONFIG)\nset_property(TARGET Work::work APPEND PROPERTY INTERFACE_LINK_LIBRARIES gf)\n"),
+    ).unwrap();
+    let consumer = sb.ost(&["--json", "library", "verify-consumer", "."]);
+    assert!(consumer.status.success(), "{}", out_text(&consumer));
+    let value: serde_json::Value = serde_json::from_slice(&consumer.stdout).unwrap();
+    assert_eq!(
+        value["data"]["runtime_python"]["include_dir"],
+        python.include_dir
+    );
+    assert_eq!(value["data"]["runtime_python"]["library"], python.library);
+    assert_eq!(value["data"]["runtime_python"]["version"], python.version);
+    assert_eq!(value["data"]["runtime_python"]["source"], "host");
+    assert_eq!(value["data"]["closure"].as_array().unwrap().len(), 1);
+    assert_eq!(value["data"]["checks"]["link"]["status"], "pass");
+
+    // A sibling of Python's library is not part of its development contract.
+    // In particular, resolving /usr/lib/libpython must not allow all /usr/lib.
+    let unrelated = Path::new(&python.library)
+        .parent()
+        .unwrap()
+        .join("ost-unrelated-library");
+    for (property, path) in [
+        ("INTERFACE_LINK_LIBRARIES", unrelated),
+        (
+            "INTERFACE_INCLUDE_DIRECTORIES",
+            Path::new(&python.include_dir)
+                .parent()
+                .unwrap()
+                .to_path_buf(),
+        ),
+    ] {
+        let escaped = format!(
+            "{pxr}\nset_property(TARGET gf APPEND PROPERTY {property} \"{}\")\n",
+            path.to_string_lossy().replace('\\', "/"),
+        );
+        std::fs::write(runtime.join("pxrConfig.cmake"), escaped).unwrap();
+        let refused = sb.ost(&["--json", "library", "verify-consumer", "."]);
+        assert!(
+            !refused.status.success(),
+            "unrelated Python path passed: {property}"
+        );
+        let value: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+        assert_eq!(value["error"]["code"], "LIBRARY_CONSUMER_CONFIGURE_FAILED");
+        assert!(out_text(&refused).contains("outside the declared closure"));
+        assert_eq!(value["data"]["runtime_python"]["library"], python.library);
+        assert_eq!(value["data"]["checks"]["link"]["status"], "not-run");
+    }
+}
+
+#[test]
 fn library_consumer_allows_selected_runtime_and_rejects_ambient_packages() {
     if let Err(reason) = native_lifecycle_ready() {
         eprintln!("skipping library_consumer_runtime: {reason}");
