@@ -98,6 +98,11 @@ jobs:
           tar -xzf actionlint.tar.gz actionlint
           echo "OST_TEST_ACTIONLINT=$RUNNER_TEMP/actionlint/actionlint" >> "$GITHUB_ENV"
 
+      - name: Install declared X11 host dependencies for consumer regression
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libx11-dev libxt-dev
+
       - name: cargo test (workspace)
         run: cargo test --workspace --locked
 

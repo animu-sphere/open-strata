@@ -1496,6 +1496,108 @@ fn library_consumer_allows_runtime_python_without_opening_its_install_prefix() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn library_consumer_allows_declared_host_x11_without_opening_system_prefixes() {
+    if let Err(reason) = native_lifecycle_ready() {
+        eprintln!("skipping library_consumer_x11: {reason}");
+        return;
+    }
+    let sb = Sandbox::new("library-consumer-x11");
+    let init = sb.ost(&["init", "--platform", "cy2026"]);
+    assert!(init.status.success(), "{}", out_text(&init));
+    let pull = sb.ost(&[
+        "--json",
+        "runtime",
+        "pull",
+        "cy2026",
+        "--profile",
+        "usd",
+        "--host-package",
+        "apt:libx11-dev",
+        "--host-package",
+        "apt:libxt-dev",
+    ]);
+    assert!(pull.status.success(), "{}", out_text(&pull));
+    let pulled: serde_json::Value = serde_json::from_slice(&pull.stdout).unwrap();
+    let runtime = PathBuf::from(pulled["data"]["prefix"].as_str().unwrap());
+    // Model Work -> pxr -> MaterialX -> host X11/Xt using real CMake FindX11,
+    // headers and libraries, including Xt's transitive ICE/SM targets.
+    let materialx = runtime.join("lib/cmake/MaterialX");
+    std::fs::create_dir_all(&materialx).unwrap();
+    std::fs::write(materialx.join("MaterialXConfig.cmake"),
+        "include(CMakeFindDependencyMacro)\nfind_dependency(X11 REQUIRED COMPONENTS Xt)\nadd_library(MaterialXRenderHw INTERFACE IMPORTED)\nset_property(TARGET MaterialXRenderHw PROPERTY INTERFACE_LINK_LIBRARIES X11::X11 X11::Xt)\n"
+    ).unwrap();
+    let pxr = "include(CMakeFindDependencyMacro)\nfind_dependency(MaterialX CONFIG)\nadd_library(gf INTERFACE IMPORTED)\nset_property(TARGET gf PROPERTY INTERFACE_LINK_LIBRARIES MaterialXRenderHw)\n";
+    std::fs::write(runtime.join("pxrConfig.cmake"), pxr).unwrap();
+    let config_path = sb.work_file("cmake/WorkConfig.cmake.in");
+    let config = format!("{}\ninclude(CMakeFindDependencyMacro)\nfind_dependency(pxr CONFIG)\nset_property(TARGET Work::work APPEND PROPERTY INTERFACE_LINK_LIBRARIES gf)\n",
+        std::fs::read_to_string(&config_path).unwrap());
+    std::fs::write(&config_path, &config).unwrap();
+    let consumer = sb.ost(&["--json", "library", "verify-consumer", "."]);
+    assert!(consumer.status.success(), "{}", out_text(&consumer));
+    let value: serde_json::Value = serde_json::from_slice(&consumer.stdout).unwrap();
+    assert_eq!(
+        value["data"]["runtime_host_requirements"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let paths = value["data"]["runtime_host_paths"].as_array().unwrap();
+    assert!(paths
+        .iter()
+        .any(|path| path["owner"] == "X11::Xt.IMPORTED_LOCATION"));
+    let include = paths
+        .iter()
+        .find(|path| path["owner"] == "X11::X11.INTERFACE_INCLUDE_DIRECTORIES")
+        .unwrap()["path"]
+        .as_str()
+        .unwrap();
+    assert_eq!(value["data"]["checks"]["link"]["status"], "pass");
+
+    for extra in [
+        // The same system header root is not allowed on a library target.
+        format!("set_property(TARGET gf APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES \"{include}\")"),
+        // Neither siblings of X11's library nor new X11 target paths qualify.
+        "set_property(TARGET X11::X11 APPEND PROPERTY INTERFACE_LINK_LIBRARIES /usr/lib/ost-unrelated-library)".into(),
+        "set_property(TARGET X11::X11 APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES /usr)".into(),
+    ] {
+        std::fs::write(runtime.join("pxrConfig.cmake"), format!("{pxr}\n{extra}\n")).unwrap();
+        let refused = sb.ost(&["--json", "library", "verify-consumer", "."]);
+        assert!(!refused.status.success(), "escaped host path passed: {extra}");
+        let failed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+        assert_eq!(failed["error"]["code"], "LIBRARY_CONSUMER_CONFIGURE_FAILED");
+        let diagnostic = failed["data"]["checks"]["configure"]["stderr"]
+            .as_str().unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(diagnostic.contains("outside the declared closure"), "{diagnostic}");
+        assert!(!failed["data"]["runtime_host_paths"].as_array().unwrap().is_empty());
+    }
+    std::fs::write(runtime.join("pxrConfig.cmake"), pxr).unwrap();
+    let ambient = sb.work_file("ambient");
+    std::fs::create_dir_all(ambient.join("lib/cmake/Undeclared")).unwrap();
+    std::fs::write(
+        ambient.join("lib/cmake/Undeclared/UndeclaredConfig.cmake"),
+        "# must not be loaded\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &config_path,
+        format!(
+            "{config}\nset(CMAKE_SYSTEM_PREFIX_PATH \"{}\")\nfind_dependency(Undeclared CONFIG)\n",
+            ambient.display()
+        ),
+    )
+    .unwrap();
+    let refused = sb.ost(&["--json", "library", "verify-consumer", "."]);
+    assert!(!refused.status.success(), "ambient system package passed");
+    assert!(
+        out_text(&refused).contains("Undeclared"),
+        "{}",
+        out_text(&refused)
+    );
+}
+
+#[test]
 fn library_consumer_allows_selected_runtime_and_rejects_ambient_packages() {
     if let Err(reason) = native_lifecycle_ready() {
         eprintln!("skipping library_consumer_runtime: {reason}");

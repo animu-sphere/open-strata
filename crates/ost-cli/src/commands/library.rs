@@ -918,6 +918,13 @@ fn verify_consumer(
     )?;
     let compiler_record = library_compiler_record(&library, &target_id)?;
     let python = ost_build::resolve_for_runtime(&resolved.artifact_prefix, &target.python_version);
+    let runtime_manifest_path = resolved.prefix.join(MANIFEST_FILE);
+    let runtime_manifest = RuntimeManifest::from_json(
+        &std::fs::read_to_string(&runtime_manifest_path)
+            .map_err(|error| Error::io(runtime_manifest_path.to_string(), error))?,
+    )
+    .map_err(|error| Error::parse(runtime_manifest_path.to_string(), anyhow::Error::new(error)))?;
+    let host_x11 = consumer_host_x11(&runtime_manifest);
     let prerequisites =
         plugin::selected_workspace_libraries_for_library_mode(&library, LibraryClosure::Consumer)?;
     let mut closure = prerequisites
@@ -970,7 +977,7 @@ fn verify_consumer(
         .map_err(|error| Error::io(source_dir.to_string(), error))?;
     write_atomic(
         source_dir.join("CMakeLists.txt").as_std_path(),
-        consumer_cmake(contract, closure.len()).as_bytes(),
+        consumer_cmake(contract, closure.len(), host_x11).as_bytes(),
     )?;
     write_atomic(
         source_dir.join("main.cpp").as_std_path(),
@@ -1058,6 +1065,7 @@ fn verify_consumer(
         &closure,
         &resolved.prefix,
         python.as_ref(),
+        &runtime_manifest.host_requirements,
         &compiler_record,
         &matched_public_headers,
         &source_dir,
@@ -1090,6 +1098,7 @@ fn verify_consumer(
         &closure,
         &resolved.prefix,
         python.as_ref(),
+        &runtime_manifest.host_requirements,
         &compiler_record,
         &matched_public_headers,
         &source_dir,
@@ -1129,7 +1138,21 @@ fn verify_consumer(
     Ok(())
 }
 
-fn consumer_cmake(contract: &ost_plugin::LibraryPackageContract, closure_len: usize) -> String {
+fn consumer_host_x11(manifest: &RuntimeManifest) -> bool {
+    manifest.variant.os == ost_core::host::Os::Linux
+        && ["libx11-dev", "libxt-dev"].iter().all(|name| {
+            manifest.host_requirements.iter().any(|requirement| {
+                requirement.manager == ost_runtime::HostPackageManager::Apt
+                    && requirement.name == *name
+            })
+        })
+}
+
+fn consumer_cmake(
+    contract: &ost_plugin::LibraryPackageContract,
+    closure_len: usize,
+    host_x11: bool,
+) -> String {
     let prefix_variables = (0..closure_len)
         .map(|index| {
             format!(
@@ -1188,6 +1211,19 @@ function(_ost_assert_allowed_path owner value)
     return()
   endif()
   file(REAL_PATH "${{value}}" _ost_candidate)
+  # Host allowances are exact target/property/path tuples captured before any
+  # installed config is loaded. An X11 include root such as /usr/include must
+  # not admit unrelated paths or become an allowance for library targets.
+  string(SHA256 _ost_host_key "${{owner}}|${{_ost_candidate}}")
+  if(_ost_capture_host_paths)
+    set_property(GLOBAL APPEND PROPERTY OST_CONSUMER_HOST_PATH_KEYS "${{_ost_host_key}}")
+    file(APPEND "${{CMAKE_BINARY_DIR}}/runtime-host-paths.tsv" "${{owner}}\t${{_ost_candidate}}\n")
+    return()
+  endif()
+  get_property(_ost_host_keys GLOBAL PROPERTY OST_CONSUMER_HOST_PATH_KEYS)
+  if(_ost_host_key IN_LIST _ost_host_keys)
+    return()
+  endif()
   foreach(_ost_prefix IN LISTS _ost_allowed_prefixes)
     cmake_path(IS_PREFIX _ost_prefix "${{_ost_candidate}}" NORMALIZE _ost_inside)
     if(_ost_inside)
@@ -1261,6 +1297,30 @@ function(_ost_verify_target requested_target)
   endforeach()
 endfunction()
 
+# Resolve only the runtime's declared Linux X11/Xt host contract, using CMake's
+# built-in module rather than an ambient config or project-provided module.
+# System discovery is scoped to this function; package discovery stays closed.
+if({host_x11})
+  function(_ost_find_runtime_x11)
+    set(CMAKE_FIND_USE_CMAKE_SYSTEM_PATH TRUE)
+    set(CMAKE_FIND_USE_CMAKE_PATH FALSE)
+    set(CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH FALSE)
+    set(CMAKE_FIND_USE_PACKAGE_ROOT_PATH FALSE)
+    set(CMAKE_MODULE_PATH)
+    set(X11_FIND_REQUIRED TRUE)
+    set(X11_FIND_COMPONENTS Xt)
+    set(X11_FIND_REQUIRED_Xt TRUE)
+    include("${{CMAKE_ROOT}}/Modules/FindX11.cmake")
+  endfunction()
+  _ost_find_runtime_x11()
+  file(WRITE "${{CMAKE_BINARY_DIR}}/runtime-host-paths.tsv" "")
+  set(_ost_capture_host_paths TRUE)
+  _ost_verify_target(X11::X11)
+  _ost_verify_target(X11::Xt)
+  set(_ost_capture_host_paths FALSE)
+  set_property(GLOBAL PROPERTY OST_CONSUMER_SEEN_TARGETS "")
+endif()
+
 find_package({} CONFIG REQUIRED PATHS ${{CMAKE_PREFIX_PATH}} NO_DEFAULT_PATH)
 foreach(_ost_target IN ITEMS {})
   _ost_verify_target("${{_ost_target}}")
@@ -1271,7 +1331,8 @@ target_link_libraries(openstrata-consumer PRIVATE {})
 "#,
         contract.package_name,
         contract.exported_targets.join(" "),
-        contract.exported_targets.join(" ")
+        contract.exported_targets.join(" "),
+        host_x11 = if host_x11 { "TRUE" } else { "FALSE" },
     )
 }
 
@@ -1354,6 +1415,7 @@ fn consumer_report(
     closure: &[(String, Utf8PathBuf)],
     runtime_prefix: &Utf8Path,
     python: Option<&ost_build::PythonHints>,
+    host_requirements: &[ost_runtime::HostRequirement],
     compiler: &ost_build::LockCompiler,
     matched_public_headers: &[String],
     source_dir: &Utf8Path,
@@ -1380,6 +1442,12 @@ fn consumer_report(
         "compiler": compiler,
         "closure": closure.iter().map(|(id, prefix)| serde_json::json!({"id": id, "prefix": prefix})).collect::<Vec<_>>(),
         "runtime_prefix": runtime_prefix,
+        "runtime_host_requirements": host_requirements,
+        "runtime_host_paths": std::fs::read_to_string(build_dir.join("runtime-host-paths.tsv"))
+            .unwrap_or_default().lines().filter_map(|line| {
+                let (owner, path) = line.split_once('\t')?;
+                Some(serde_json::json!({"owner": owner, "path": path}))
+            }).collect::<Vec<_>>(),
         "runtime_python": python.map(|python| serde_json::json!({
             "version": python.version,
             "source": match python.source {
@@ -1901,13 +1969,49 @@ mod tests {
     }
 
     #[test]
+    fn host_x11_probe_requires_both_linux_runtime_declarations() {
+        let runtime =
+            ost_runtime::Runtime::resolve("cy2026", "usd", &ost_core::Host::detect(), "3.13");
+        let mut manifest = RuntimeManifest::build(
+            &runtime,
+            "3.13",
+            vec![],
+            vec![],
+            vec![],
+            0,
+            ost_runtime::RuntimeSource::Mock,
+        );
+        manifest.variant.os = ost_core::host::Os::Linux;
+        assert!(!consumer_host_x11(&manifest));
+        manifest
+            .host_requirements
+            .push(ost_runtime::HostRequirement {
+                manager: ost_runtime::HostPackageManager::Apt,
+                name: "libx11-dev".into(),
+            });
+        assert!(!consumer_host_x11(&manifest));
+        manifest
+            .host_requirements
+            .push(ost_runtime::HostRequirement {
+                manager: ost_runtime::HostPackageManager::Apt,
+                name: "libxt-dev".into(),
+            });
+        assert!(consumer_host_x11(&manifest));
+        manifest.variant.os = ost_core::host::Os::Macos;
+        assert!(!consumer_host_x11(&manifest));
+        manifest.variant.os = ost_core::host::Os::Linux;
+        manifest.host_requirements[0].manager = ost_runtime::HostPackageManager::Brew;
+        assert!(!consumer_host_x11(&manifest));
+    }
+
+    #[test]
     fn generated_consumer_uses_only_declared_prefix_variables() {
         let manifest = ost_plugin::LibraryManifest::parse(
             "schema: openstrata.library/v1alpha1\nlibrary: { id: sample, version: 1.0.0 }\ncmake: { package: Sample, target: 'Sample::sample' }\npackage: { standalone: true, aggregate_member: true }\npackage_contract:\n  package_name: Sample\n  exported_targets: ['Sample::sample']\n  consumer: { include: sample/sample.hpp, symbol: 'Sample::version' }\n",
         )
         .unwrap();
         let contract = manifest.package_contract.as_ref().unwrap();
-        let cmake = consumer_cmake(contract, 2);
+        let cmake = consumer_cmake(contract, 2, false);
         assert!(cmake.contains("OST_CONSUMER_PREFIX_0"));
         assert!(cmake.contains("OST_CONSUMER_PREFIX_1"));
         assert!(!cmake.contains("OST_CONSUMER_PREFIX_2"));
