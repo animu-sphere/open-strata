@@ -1496,8 +1496,68 @@ fn library_consumer_allows_runtime_python_without_opening_its_install_prefix() {
 }
 
 #[test]
+fn library_consumer_rejects_invalid_host_packages_before_building() {
+    let sb = Sandbox::new("library-consumer-host-packages");
+    for declaration in ["libx11-dev", "apt:-y", "apt:libxt-dev;id", "unknown:pkg"] {
+        let refused = sb.ost(&[
+            "library",
+            "verify-consumer",
+            ".",
+            "--host-package",
+            declaration,
+        ]);
+        assert!(!refused.status.success(), "accepted {declaration}");
+        assert!(
+            out_text(&refused).contains("invalid value"),
+            "{}",
+            out_text(&refused)
+        );
+    }
+    assert!(sb.ost(&["init", "--platform", "cy2026"]).status.success());
+    assert!(sb
+        .ost(&["runtime", "pull", "cy2026", "--profile", "usd"])
+        .status
+        .success());
+    let before = snapshot(&sb.work);
+    let wrong_manager = if cfg!(target_os = "linux") {
+        "brew:libx11"
+    } else {
+        "apt:libx11-dev"
+    };
+    let refused = sb.ost(&[
+        "library",
+        "verify-consumer",
+        ".",
+        "--host-package",
+        wrong_manager,
+    ]);
+    assert!(!refused.status.success());
+    assert!(
+        out_text(&refused).contains("does not apply to the runtime target"),
+        "{}",
+        out_text(&refused)
+    );
+    assert_eq!(
+        snapshot(&sb.work),
+        before,
+        "invalid declaration started a build"
+    );
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn library_consumer_allows_declared_host_x11_without_opening_system_prefixes() {
+    library_consumer_host_x11(true);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn library_consumer_allows_explicit_host_x11_without_changing_runtime_identity() {
+    library_consumer_host_x11(false);
+}
+
+#[cfg(target_os = "linux")]
+fn library_consumer_host_x11(runtime_declares: bool) {
     if let Err(reason) = native_lifecycle_ready() {
         eprintln!("skipping library_consumer_x11: {reason}");
         return;
@@ -1505,21 +1565,21 @@ fn library_consumer_allows_declared_host_x11_without_opening_system_prefixes() {
     let sb = Sandbox::new("library-consumer-x11");
     let init = sb.ost(&["init", "--platform", "cy2026"]);
     assert!(init.status.success(), "{}", out_text(&init));
-    let pull = sb.ost(&[
-        "--json",
-        "runtime",
-        "pull",
-        "cy2026",
-        "--profile",
-        "usd",
+    let mut pull_args = vec!["--json", "runtime", "pull", "cy2026", "--profile", "usd"];
+    let host_args = [
         "--host-package",
         "apt:libx11-dev",
         "--host-package",
         "apt:libxt-dev",
-    ]);
+    ];
+    if runtime_declares {
+        pull_args.extend(host_args);
+    }
+    let pull = sb.ost(&pull_args);
     assert!(pull.status.success(), "{}", out_text(&pull));
     let pulled: serde_json::Value = serde_json::from_slice(&pull.stdout).unwrap();
     let runtime = PathBuf::from(pulled["data"]["prefix"].as_str().unwrap());
+    let manifest_before = std::fs::read(runtime.join("runtime.json")).unwrap();
     // Model Work -> pxr -> MaterialX -> host X11/Xt using real CMake FindX11,
     // headers and libraries, including Xt's transitive ICE/SM targets.
     let materialx = runtime.join("lib/cmake/MaterialX");
@@ -1533,7 +1593,25 @@ fn library_consumer_allows_declared_host_x11_without_opening_system_prefixes() {
     let config = format!("{}\ninclude(CMakeFindDependencyMacro)\nfind_dependency(pxr CONFIG)\nset_property(TARGET Work::work APPEND PROPERTY INTERFACE_LINK_LIBRARIES gf)\n",
         std::fs::read_to_string(&config_path).unwrap());
     std::fs::write(&config_path, &config).unwrap();
-    let consumer = sb.ost(&["--json", "library", "verify-consumer", "."]);
+    let mut consumer_args = vec!["--json", "library", "verify-consumer", "."];
+    if !runtime_declares {
+        // A legacy runtime's empty declaration must not enable any host search.
+        // One package is insufficient; the pair is the bounded X11 contract.
+        for extra in [&[][..], &host_args[..2]] {
+            let refused = sb.ost(&[consumer_args.as_slice(), extra].concat());
+            assert!(!refused.status.success(), "undeclared X11 passed");
+            let failed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+            assert_eq!(failed["error"]["code"], "LIBRARY_CONSUMER_CONFIGURE_FAILED");
+            assert!(failed["data"]["runtime_host_paths"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+        }
+        consumer_args.extend(host_args);
+        // Duplicate declarations normalize without affecting the runtime.
+        consumer_args.extend(&host_args[..2]);
+    }
+    let consumer = sb.ost(&consumer_args);
     assert!(consumer.status.success(), "{}", out_text(&consumer));
     let value: serde_json::Value = serde_json::from_slice(&consumer.stdout).unwrap();
     assert_eq!(
@@ -1541,7 +1619,14 @@ fn library_consumer_allows_declared_host_x11_without_opening_system_prefixes() {
             .as_array()
             .unwrap()
             .len(),
-        2
+        if runtime_declares { 2 } else { 0 }
+    );
+    assert_eq!(
+        value["data"]["consumer_host_requirements"]
+            .as_array()
+            .unwrap()
+            .len(),
+        if runtime_declares { 0 } else { 2 }
     );
     let paths = value["data"]["runtime_host_paths"].as_array().unwrap();
     assert!(paths
@@ -1563,7 +1648,7 @@ fn library_consumer_allows_declared_host_x11_without_opening_system_prefixes() {
         "set_property(TARGET X11::X11 APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES /usr)".into(),
     ] {
         std::fs::write(runtime.join("pxrConfig.cmake"), format!("{pxr}\n{extra}\n")).unwrap();
-        let refused = sb.ost(&["--json", "library", "verify-consumer", "."]);
+        let refused = sb.ost(&consumer_args);
         assert!(!refused.status.success(), "escaped host path passed: {extra}");
         let failed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
         assert_eq!(failed["error"]["code"], "LIBRARY_CONSUMER_CONFIGURE_FAILED");
@@ -1588,12 +1673,16 @@ fn library_consumer_allows_declared_host_x11_without_opening_system_prefixes() {
         ),
     )
     .unwrap();
-    let refused = sb.ost(&["--json", "library", "verify-consumer", "."]);
+    let refused = sb.ost(&consumer_args);
     assert!(!refused.status.success(), "ambient system package passed");
     assert!(
         out_text(&refused).contains("Undeclared"),
         "{}",
         out_text(&refused)
+    );
+    assert_eq!(
+        std::fs::read(runtime.join("runtime.json")).unwrap(),
+        manifest_before
     );
 }
 
