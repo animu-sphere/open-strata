@@ -13,12 +13,13 @@
 //! model.
 
 use camino::{Utf8Path, Utf8PathBuf};
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 
 use ost_artifact::{ArtifactKind, ArtifactStore};
 use ost_ci::{
-    generate_github, starter_matrix, Lane, Publish, RequireEvidence, SupportDeclaration,
-    SupportMatrix, MATRIX_FILE, RELEASE_WORKFLOW_PATH, SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
+    generate_github, generate_github_with_source_mode, starter_matrix, Lane, Publish,
+    RequireEvidence, SourceWorkflowMode, SupportDeclaration, SupportMatrix, MATRIX_FILE,
+    RELEASE_WORKFLOW_PATH, SOURCE_WORKFLOW_PATH, WORKFLOW_PATH,
 };
 use ost_core::{Error, Result};
 
@@ -75,27 +76,35 @@ pub enum CiCmd {
 #[derive(Debug, Subcommand)]
 pub enum GenerateCmd {
     /// Emit a GitHub Actions workflow (one job per support cell).
-    Github {
-        /// Path to the matrix file. Defaults to ./openstrata.ci.yaml.
-        #[arg(long)]
-        matrix: Option<String>,
-        /// Output path. Defaults to .github/workflows/ost-support-matrix.yml.
-        #[arg(long)]
-        out: Option<String>,
-        /// Overwrite an existing workflow file.
-        #[arg(long)]
-        force: bool,
-        /// Print the workflow to stdout instead of writing a file.
-        #[arg(long)]
-        stdout: bool,
-        /// Render even if cells still carry the scaffold's all-zero
-        /// placeholder digests.
-        #[arg(long)]
-        allow_placeholders: bool,
-        /// Refuse generation when hosted claims exceed this support declaration.
-        #[arg(long)]
-        support: Option<String>,
-    },
+    Github(GenerateGithubArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct GenerateGithubArgs {
+    /// Path to the matrix file. Defaults to ./openstrata.ci.yaml.
+    #[arg(long)]
+    matrix: Option<String>,
+    /// Output path. Defaults to .github/workflows/ost-support-matrix.yml.
+    #[arg(long)]
+    out: Option<String>,
+    /// Overwrite an existing workflow file.
+    #[arg(long)]
+    force: bool,
+    /// Print the workflow to stdout instead of writing a file.
+    #[arg(long)]
+    stdout: bool,
+    /// Render even if cells still carry the scaffold's all-zero
+    /// placeholder digests.
+    #[arg(long)]
+    allow_placeholders: bool,
+    /// Refuse generation when hosted claims exceed this support declaration.
+    #[arg(long)]
+    support: Option<String>,
+    /// Emit source CI with workflow_call. PR callers run the PR lane,
+    /// pushes to main run the main lane, and manual callers run both.
+    /// Requires at least one source cell; other workflows keep their triggers.
+    #[arg(long)]
+    reusable_source: bool,
 }
 
 pub fn run(cmd: CiCmd, fmt: Format) -> Result<()> {
@@ -119,22 +128,7 @@ pub fn run(cmd: CiCmd, fmt: Format) -> Result<()> {
             github_output,
             fmt,
         ),
-        CiCmd::Generate(GenerateCmd::Github {
-            matrix,
-            out,
-            force,
-            stdout,
-            allow_placeholders,
-            support,
-        }) => generate(
-            matrix.as_deref(),
-            out.as_deref(),
-            force,
-            stdout,
-            allow_placeholders,
-            support.as_deref(),
-            fmt,
-        ),
+        CiCmd::Generate(GenerateCmd::Github(args)) => generate(args, fmt),
     }
 }
 
@@ -1303,18 +1297,15 @@ fn resolved_matrix(
     Ok(())
 }
 
-fn generate(
-    matrix_flag: Option<&str>,
-    out: Option<&str>,
-    force: bool,
-    to_stdout: bool,
-    allow_placeholders: bool,
-    support_flag: Option<&str>,
-    fmt: Format,
-) -> Result<()> {
-    let (path, matrix) = load_matrix(matrix_flag)?;
+fn generate(args: GenerateGithubArgs, fmt: Format) -> Result<()> {
+    let (path, matrix) = load_matrix(args.matrix.as_deref())?;
+    if args.reusable_source && matrix.source_cells().is_empty() {
+        return Err(Error::usage(
+            "--reusable-source requires at least one pull_request or main source cell",
+        ));
+    }
 
-    if let Some(flag) = support_flag {
+    if let Some(flag) = args.support.as_deref() {
         let support_path = Utf8PathBuf::from(flag);
         let src = std::fs::read_to_string(support_path.as_std_path())
             .map_err(|error| Error::io(support_path.to_string(), error))?;
@@ -1338,7 +1329,7 @@ fn generate(
     // (or worse, be committed as if it were a real support claim) — refuse
     // unless explicitly overridden.
     let placeholders = matrix.placeholder_digests();
-    if !placeholders.is_empty() && !allow_placeholders {
+    if !placeholders.is_empty() && !args.allow_placeholders {
         return Err(Error::coded(
             "CI_PLACEHOLDER_DIGESTS",
             ost_core::Category::Validation,
@@ -1365,7 +1356,12 @@ fn generate(
         .with_hint("set runners.<name>.billing.acknowledgement: required"));
     }
 
-    let workflows = generate_github(&matrix);
+    let source_mode = if args.reusable_source {
+        SourceWorkflowMode::Reusable
+    } else {
+        SourceWorkflowMode::Direct
+    };
+    let workflows = generate_github_with_source_mode(&matrix, source_mode);
     let stale_workflows = stale_generated_workflows(&path, &matrix);
 
     // Warn — do not fail — when a pin cannot satisfy the gate just rendered:
@@ -1374,7 +1370,7 @@ fn generate(
     let evidence_gaps = evidence_gate_gaps(&matrix);
     let host_requirement_gaps = host_requirement_gaps(&matrix);
 
-    if to_stdout {
+    if args.stdout {
         // The workflows themselves are the output; a multi-workflow matrix
         // prints a `---`-separated YAML stream (one document per workflow).
         let mut first = true;
@@ -1406,7 +1402,7 @@ fn generate(
     }
 
     // `--out` targets exactly one file, so it only fits a one-workflow matrix.
-    let out_paths: Vec<Utf8PathBuf> = match out {
+    let out_paths: Vec<Utf8PathBuf> = match args.out.as_deref() {
         Some(out) if workflows.len() > 1 => {
             return Err(Error::usage(format!(
                 "the matrix renders {} workflows (source/support/release lanes) — \
@@ -1423,7 +1419,7 @@ fn generate(
 
     // Check every destination before writing any, so --force is all-or-nothing.
     for out_path in &out_paths {
-        if out_path.as_std_path().exists() && !force {
+        if out_path.as_std_path().exists() && !args.force {
             return Err(Error::usage(format!(
                 "'{out_path}' already exists (pass --force to regenerate over it)"
             )));

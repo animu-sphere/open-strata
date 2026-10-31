@@ -327,6 +327,7 @@ Emit a GitHub Actions workflow (one job per support cell)
 | `--force` | Overwrite an existing workflow file |
 | `--matrix <MATRIX>` | Path to the matrix file. Defaults to ./openstrata.ci.yaml |
 | `--out <OUT>` | Output path. Defaults to .github/workflows/ost-support-matrix.yml |
+| `--reusable-source` | Emit source CI with workflow_call. PR callers run the PR lane, pushes to main run the main lane, and manual callers run both. Requires at least one source cell; other workflows keep their triggers |
 | `--stdout` | Print the workflow to stdout instead of writing a file |
 | `--support <SUPPORT>` | Refuse generation when hosted claims exceed this support declaration |
 

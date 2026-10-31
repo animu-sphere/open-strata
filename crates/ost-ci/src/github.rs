@@ -120,10 +120,31 @@ pub struct GeneratedWorkflow {
     pub yaml: String,
 }
 
+/// How source CI is invoked. Support and trusted-release workflows retain
+/// their own triggers in either mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SourceWorkflowMode {
+    #[default]
+    Direct,
+    /// Called by a downstream dispatcher. PRs select the PR lane, pushes to
+    /// main select the main lane, and manual dispatch runs all source lanes.
+    Reusable,
+}
+
 /// Render the matrix into its workflows (support, source CI, then release).
 /// Lanes with no cells render nothing; a non-empty matrix always yields at
 /// least one workflow.
 pub fn generate_github(matrix: &SupportMatrix) -> Vec<GeneratedWorkflow> {
+    generate_github_with_source_mode(matrix, SourceWorkflowMode::Direct)
+}
+
+/// Render workflows with an explicit source invocation mode. Matrix entries,
+/// verification steps, and support/release workflows are shared with the
+/// default direct-trigger renderer.
+pub fn generate_github_with_source_mode(
+    matrix: &SupportMatrix,
+    source_mode: SourceWorkflowMode,
+) -> Vec<GeneratedWorkflow> {
     let mut out = Vec::new();
     if let Some(yaml) = generate_support(matrix) {
         out.push(GeneratedWorkflow {
@@ -131,7 +152,7 @@ pub fn generate_github(matrix: &SupportMatrix) -> Vec<GeneratedWorkflow> {
             yaml,
         });
     }
-    if let Some(yaml) = generate_source(matrix) {
+    if let Some(yaml) = generate_source_with_mode(matrix, source_mode) {
         out.push(GeneratedWorkflow {
             path: SOURCE_WORKFLOW_PATH,
             yaml,
@@ -158,7 +179,7 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
         .runner
         .as_deref()
         .map(|name| format!("            runner_profile: {name}\n"))
-        .unwrap_or_default();
+        .unwrap_or_else(|| "            runner_profile: \"\"\n".into());
     let openusd_flags = cell
         .require_openusd
         .as_ref()
@@ -207,9 +228,9 @@ fn include_entry(matrix: &SupportMatrix, cell: &SupportCell, extra: &str) -> Str
         lane = cell.lane.as_str(),
         platform = cell.platform,
         profile = cell.profile,
-        // Bundle cells always run a pyramid. Workspace pyramid/package cells
-        // add this key through `workspace_include_keys`; lower workspace rungs
-        // omit it so the generated contract contains no unread value.
+        // Bundle cells always run a pyramid. Runtime-backed workspace jobs
+        // add this key through `workspace_include_keys`, including lower rungs:
+        // skipped steps still need statically valid matrix references.
         up_to = if cell.is_workspace() {
             String::new()
         } else {
@@ -928,24 +949,20 @@ fn source_build_include_keys(cell: &SupportCell) -> String {
 }
 
 /// The include keys a **workspace** cell needs: the same build prerequisites,
-/// plus the rung later steps are gated on. Pyramid/package cells also carry the
-/// level passed to the workspace pyramid. It deliberately defines no `bundle`
+/// plus the rung later steps are gated on. Every entry carries a pyramid level
+/// so the conditional step's matrix reference is valid even in test-only jobs.
+/// The level is only consumed by pyramid/package cells. It defines no `bundle`
 /// key — nothing in a workspace job addresses one.
 fn workspace_include_keys(cell: &SupportCell) -> String {
     let intent_flags = cell
         .intent
         .as_ref()
         .map_or_else(String::new, |intent| format!("--intent {intent}"));
-    let up_to = matches!(
-        cell.verify(),
-        WorkspaceVerify::Pyramid | WorkspaceVerify::Package
-    )
-    .then(|| format!("            up_to: {}\n", cell.up_to()))
-    .unwrap_or_default();
     format!(
-        "            verify: {}\n            intent_flags: \"{}\"\n{up_to}{}",
+        "            verify: {}\n            intent_flags: \"{}\"\n            up_to: {}\n{}",
         cell.verify().as_str(),
         intent_flags,
+        cell.up_to(),
         prerequisite_include_keys(cell)
     )
 }
@@ -1035,7 +1052,7 @@ fn job_shape(cell: &SupportCell) -> JobShape {
 fn source_job(
     matrix: &SupportMatrix,
     id: &str,
-    event: &str,
+    condition: &str,
     shape: JobShape,
     cells: &[&SupportCell],
 ) -> String {
@@ -1062,7 +1079,7 @@ fn source_job(
     format!(
         "\
 \x20 {id}:
-    if: github.event_name == '{event}'
+    if: {condition}
     name: ${{{{ matrix.name }}}}
     runs-on: ${{{{ matrix.runs_on }}}}
 {env}{ost_home}
@@ -1085,6 +1102,18 @@ fn source_job(
 /// Render the source-CI workflow (`pull_request`/`main` cells), or `None`
 /// when the matrix declares no source cells.
 pub fn generate_source(matrix: &SupportMatrix) -> Option<String> {
+    generate_source_with_mode(matrix, SourceWorkflowMode::Direct)
+}
+
+fn source_caller_condition(lane: Lane) -> &'static str {
+    match lane {
+        Lane::PullRequest => "github.event_name == 'pull_request'",
+        Lane::Main => "(github.event_name == 'push' && github.ref == 'refs/heads/main')",
+        _ => unreachable!("source lanes only"),
+    }
+}
+
+fn generate_source_with_mode(matrix: &SupportMatrix, mode: SourceWorkflowMode) -> Option<String> {
     let source = matrix.source_cells();
     if source.is_empty() {
         return None;
@@ -1110,6 +1139,7 @@ pub fn generate_source(matrix: &SupportMatrix) -> Option<String> {
 
     let mut on = String::new();
     let mut jobs = String::new();
+    let mut supported_callers = vec!["github.event_name == 'workflow_dispatch'"];
     for (lane, prefix, event) in lanes {
         let mut lane_has_cells = false;
         for (suffix, shape) in shapes {
@@ -1118,15 +1148,23 @@ pub fn generate_source(matrix: &SupportMatrix) -> Option<String> {
                 continue;
             }
             lane_has_cells = true;
+            let condition = match mode {
+                SourceWorkflowMode::Direct => format!("github.event_name == '{event}'"),
+                SourceWorkflowMode::Reusable => format!(
+                    "{} || github.event_name == 'workflow_dispatch'",
+                    source_caller_condition(lane)
+                ),
+            };
             jobs.push_str(&source_job(
                 matrix,
                 &format!("{prefix}{suffix}"),
-                event,
+                &condition,
                 shape,
                 &cells,
             ));
         }
         if lane_has_cells {
+            supported_callers.push(source_caller_condition(lane));
             on.push_str(match lane {
                 Lane::PullRequest => "  pull_request:\n",
                 _ => "  push:\n    branches: [main]\n",
@@ -1134,10 +1172,46 @@ pub fn generate_source(matrix: &SupportMatrix) -> Option<String> {
         }
     }
 
+    let regenerate = match mode {
+        SourceWorkflowMode::Direct => {
+            "# Regenerate after editing the matrix; do not edit the jobs by hand."
+        }
+        SourceWorkflowMode::Reusable => {
+            on = "  workflow_call:\n".into();
+            // Reuse a declared runner so an air-gapped/self-hosted matrix
+            // never acquires a new hosted-runner requirement. This job only
+            // runs if no source job can accept the caller's event/ref. Keeping
+            // a failing job prevents unsupported calls from succeeding with
+            // every coverage job skipped. Source failures propagate normally.
+            let runs_on = matrix
+                .runs_on(source[0])
+                .into_iter()
+                .map(|label| format!("\"{label}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            jobs.push_str(&format!(
+                "\
+\x20 reject-unsupported-caller:
+    if: ${{{{ !({condition}) }}}}
+    runs-on: [{runs_on}]
+    timeout-minutes: 5
+    steps:
+      - name: Reject a caller with no matching source lane
+        shell: bash
+        run: |
+          echo \"::error::Unsupported source CI caller. Use pull_request with a PR lane, push to main with a main lane, or workflow_dispatch for all source lanes.\" >&2
+          exit 1
+",
+                condition = supported_callers.join(" || "),
+            ));
+            "# Regenerate with `ost ci generate github --reusable-source`; do not edit the jobs by hand."
+        }
+    };
+
     Some(format!(
         "\
 # Generated by `ost ci generate github` from openstrata.ci.yaml.
-# Regenerate after editing the matrix; do not edit the jobs by hand.
+{regenerate}
 #
 # Source CI: each job checks out the repo, obtains a digest-pinned runtime
 # SDK artifact, and builds/tests/packages the bundle from source. On
@@ -1774,10 +1848,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["name"], "workspace-pr-linux");
         assert_eq!(entries[0]["verify"], "test");
-        assert!(
-            entries[0].get("up_to").is_none(),
-            "lower workspace rungs must not expose an unread pyramid level"
-        );
+        assert_eq!(entries[0]["up_to"], crate::matrix::DEFAULT_UP_TO);
         assert!(
             entries[0].get("bundle").is_none(),
             "a workspace cell addresses no bundle"
@@ -1801,6 +1872,205 @@ mod tests {
             .any(|r| r.contains("ost plugin test --workspace --graph-only")));
         assert!(runs.iter().any(|r| r.starts_with("ost build --target")));
         assert!(runs.iter().any(|r| r.starts_with("ost test --target")));
+    }
+
+    /// YAML parsing does not type-check expressions. Check the property names
+    /// used by each job against its own include entries (including skipped
+    /// steps), rather than merely asserting that the document parses (#275).
+    fn assert_matrix_references_exist(document: &serde_yaml::Value) {
+        for (id, job) in document["jobs"].as_mapping().unwrap() {
+            let Some(entries) = job["strategy"]["matrix"]["include"].as_sequence() else {
+                continue;
+            };
+            let yaml = serde_yaml::to_string(job).unwrap();
+            for reference in yaml.split("matrix.").skip(1) {
+                let property = reference
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap();
+                assert!(
+                    entries.iter().all(|entry| entry.get(property).is_some()),
+                    "job {id:?} references undefined matrix.{property}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reusable_source_preserves_every_job_shape_and_rejects_unsupported_callers() {
+        let mut matrix = lanes_matrix();
+        let main = SupportCell {
+            name: "main-bundle".into(),
+            lane: Lane::Main,
+            ..matrix.cells[0].clone()
+        };
+        matrix.cells.push(main);
+        for verify in [WorkspaceVerify::Graph, WorkspaceVerify::Test] {
+            matrix.cells.push(SupportCell {
+                kind: CellKind::Workspace,
+                lane: Lane::PullRequest,
+                plugin_artifact: None,
+                runtime_artifact: (verify != WorkspaceVerify::Graph)
+                    .then(|| format!("sha256:{}", "ab".repeat(32))),
+                up_to: None,
+                verify: Some(verify),
+                host: HostSpec {
+                    os: HostOs::Linux,
+                    labels: vec!["self-hosted".into(), "linux".into()],
+                },
+                ..cell(&format!("workspace-{}", verify.as_str()))
+            });
+        }
+        matrix.cells.push(SupportCell {
+            kind: CellKind::Workspace,
+            lane: Lane::PullRequest,
+            runner: Some("windows-hosted".into()),
+            runtime_artifact: None,
+            plugin_artifact: None,
+            up_to: None,
+            verify: Some(WorkspaceVerify::Test),
+            ..cell("runtime-free")
+        });
+        matrix.validate().unwrap();
+
+        let direct = generate_github(&matrix);
+        let reusable = generate_github_with_source_mode(&matrix, SourceWorkflowMode::Reusable);
+        assert_eq!(
+            reusable,
+            generate_github_with_source_mode(&matrix, SourceWorkflowMode::Reusable),
+            "deterministic"
+        );
+        assert_eq!(direct[0], reusable[0], "support workflow is unchanged");
+        let direct: serde_yaml::Value = serde_yaml::from_str(&direct[1].yaml).unwrap();
+        let callable: serde_yaml::Value = serde_yaml::from_str(&reusable[1].yaml).unwrap();
+        assert_eq!(callable["on"].as_mapping().unwrap().len(), 1);
+        assert!(callable["on"].get("workflow_call").is_some());
+        assert_eq!(callable["permissions"], direct["permissions"]);
+        assert_matrix_references_exist(&callable);
+        for (id, job) in direct["jobs"].as_mapping().unwrap() {
+            let mut expected = job.clone();
+            let guard = if id.as_str().unwrap().starts_with("pr") {
+                "github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'"
+            } else {
+                "(github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'"
+            };
+            expected["if"] = guard.into();
+            assert_eq!(
+                callable["jobs"][id], expected,
+                "all steps/inputs for {id:?}"
+            );
+            assert!(callable["jobs"][id].get("continue-on-error").is_none());
+        }
+        let reject = &callable["jobs"]["reject-unsupported-caller"];
+        assert_eq!(
+            reject["if"],
+            "${{ !(github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}"
+        );
+        assert_eq!(reject["runs-on"][0], "windows-2022");
+        assert!(reject["steps"][0]["run"]
+            .as_str()
+            .unwrap()
+            .ends_with("exit 1\n"));
+        assert!(!reusable[1].yaml.contains("secrets."));
+        assert!(!reusable[1].yaml.contains("plugin publish"));
+        assert!(!reusable[1].yaml.contains("continue-on-error"));
+    }
+
+    #[test]
+    fn reusable_source_rejects_a_caller_whose_lane_is_missing() {
+        for (lane, expected) in [
+            (Lane::PullRequest, "${{ !(github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') }}"),
+            (Lane::Main, "${{ !(github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}"),
+        ] {
+            let mut matrix = lanes_matrix();
+            matrix.cells.retain(|cell| cell.lane.is_source());
+            matrix.cells[0].lane = lane;
+            matrix.validate().unwrap();
+            let yaml = generate_source_with_mode(&matrix, SourceWorkflowMode::Reusable).unwrap();
+            let document: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(document["jobs"]["reject-unsupported-caller"]["if"], expected);
+        }
+    }
+
+    #[test]
+    fn reusable_source_does_not_change_the_trusted_release_workflow() {
+        let matrix = release_matrix();
+        let direct = generate_github(&matrix);
+        let reusable = generate_github_with_source_mode(&matrix, SourceWorkflowMode::Reusable);
+        for workflow in direct
+            .iter()
+            .filter(|workflow| workflow.path != SOURCE_WORKFLOW_PATH)
+        {
+            assert_eq!(
+                reusable.iter().find(|other| other.path == workflow.path),
+                Some(workflow)
+            );
+        }
+        assert_eq!(
+            generate_github(&self::matrix()),
+            generate_github_with_source_mode(&self::matrix(), SourceWorkflowMode::Reusable),
+            "no source cells, no reusable workflow"
+        );
+    }
+
+    #[test]
+    fn workspace_matrix_expressions_are_defined_for_lower_and_mixed_rungs() {
+        for rungs in [
+            vec![(WorkspaceVerify::Test, None)],
+            vec![(WorkspaceVerify::Build, None)],
+            vec![
+                (WorkspaceVerify::Test, None),
+                (WorkspaceVerify::Pyramid, Some(4)),
+                (WorkspaceVerify::Package, Some(6)),
+            ],
+        ] {
+            let mut matrix = lanes_matrix();
+            matrix.cells = rungs
+                .iter()
+                .map(|&(verify, up_to)| SupportCell {
+                    kind: CellKind::Workspace,
+                    lane: Lane::PullRequest,
+                    plugin_artifact: None,
+                    up_to,
+                    verify: Some(verify),
+                    host: HostSpec {
+                        os: HostOs::Linux,
+                        labels: vec!["self-hosted".into(), "linux".into()],
+                    },
+                    ..cell(&format!("workspace-{}", verify.as_str()))
+                })
+                .collect();
+            matrix.validate().unwrap();
+            let document: serde_yaml::Value =
+                serde_yaml::from_str(&generate_source(&matrix).unwrap()).unwrap();
+            assert_matrix_references_exist(&document);
+            let job = &document["jobs"]["pr-workspace"];
+            for (entry, &(_, level)) in job["strategy"]["matrix"]["include"]
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .zip(&rungs)
+            {
+                assert_eq!(
+                    entry["up_to"],
+                    level.unwrap_or(crate::matrix::DEFAULT_UP_TO)
+                );
+            }
+            let steps = job["steps"].as_sequence().unwrap();
+            assert!(steps.iter().any(|step| {
+                step["run"]
+                    .as_str()
+                    .is_some_and(|run| run.starts_with("ost test --target"))
+                    && step["if"] == "${{ matrix.verify != 'build' }}"
+            }));
+            assert!(steps.iter().any(|step| {
+                step["run"]
+                    .as_str()
+                    .is_some_and(|run| run.contains("--up-to ${{ matrix.up_to }}"))
+                    && step["if"]
+                        == "${{ matrix.verify == 'pyramid' || matrix.verify == 'package' }}"
+            }));
+        }
     }
 
     #[test]
