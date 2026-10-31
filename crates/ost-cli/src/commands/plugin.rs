@@ -117,8 +117,8 @@ pub enum PluginCmd {
     Package {
         /// Path to the bundle directory (omit with --workspace).
         bundle: Option<String>,
-        /// Package every discovered bundle, in dependency order, using the same
-        /// validated graph `plugin test --workspace` checks.
+        /// Package every discovered bundle and tool, using the validated
+        /// workspace graph. A workspace may contain tools without any bundles.
         #[arg(long)]
         workspace: bool,
         /// Also emit one aggregate product artifact containing the exact member
@@ -714,7 +714,19 @@ fn build(
         );
     };
     let dependencies = dependencies_from_workspace(&primary, &workspace)?;
-    let libraries = libraries_from_workspace(&primary, &workspace)?;
+    let consumer_libraries = libraries_from_workspace(&primary, &workspace)?;
+    let mut libraries = Vec::new();
+    let mut seen = BTreeSet::new();
+    for library in consumer_libraries {
+        for prerequisite in selected_workspace_libraries_for_library(&library)?
+            .into_iter()
+            .chain(std::iter::once(library))
+        {
+            if seen.insert(prerequisite.id().to_string()) {
+                libraries.push(prerequisite);
+            }
+        }
+    }
     if dependencies.is_empty() && libraries.is_empty() {
         return build_one(
             bundle_path,
@@ -773,6 +785,7 @@ fn build(
             &prefix,
             &[],
             false,
+            false,
         )?;
     }
     for dependency in &dependencies {
@@ -820,6 +833,7 @@ pub(crate) fn build_library_one(
     install_prefix: &Utf8Path,
     dependency_prefixes: &[Utf8PathBuf],
     quiet: bool,
+    tests: bool,
 ) -> Result<()> {
     let (platform, profile) = selection(target, profile).ok_or_else(|| {
         Error::usage(
@@ -837,7 +851,17 @@ pub(crate) fn build_library_one(
                 .map_err(|error| Error::io(path.to_string(), error))?,
         )
         .map_err(|error| Error::parse(path.to_string(), anyhow::Error::new(error)))?;
-        selected_external_libraries_for_library(library, &id, &manifest.id, &manifest.digest)?
+        selected_external_libraries_for_library_mode(
+            library,
+            &id,
+            &manifest.id,
+            &manifest.digest,
+            if tests {
+                LibraryClosure::Test
+            } else {
+                LibraryClosure::Build
+            },
+        )?
     };
     let compiler = resolve_plugin_compiler(&library.root, &compiler_opts)?;
     let (project_root, build_intent) = scoped_build_intent(&library.root)?;
@@ -872,6 +896,10 @@ pub(crate) fn build_library_one(
             );
         }
     }
+    configure_args.push(format!(
+        "-DBUILD_TESTING={}",
+        if tests { "ON" } else { "OFF" }
+    ));
     let build_args = vec!["--build".to_string(), cmake_path(&build_dir)];
     let install_args = vec![
         "--install".to_string(),
@@ -3394,12 +3422,11 @@ fn package_workspace(
     fmt: Format,
 ) -> Result<()> {
     let members = discover_workspace_members(Utf8Path::new("."))?;
-    if members.bundles.is_empty() {
-        return Err(
-            Error::precondition("no plugin bundles found in the workspace member set").with_hint(
-                "run from the workspace root, or pass a bundle path instead of --workspace",
-            ),
-        );
+    if members.bundles.is_empty() && members.tools.is_empty() {
+        return Err(Error::precondition(
+            "no plugin bundles or tools found in the workspace member set",
+        )
+        .with_hint("run from the workspace root, or pass a bundle path instead of --workspace"));
     }
     let bundles = members
         .bundles
@@ -8134,7 +8161,25 @@ fn source_workspace_for(primary: &Bundle) -> Result<Option<SourceWorkspace>> {
 /// behavior above. Once an edge is declared, the complete workspace is loaded
 /// fail-closed and the exact graph accepted by validation supplies build order.
 pub(crate) fn selected_workspace_libraries_for_library(primary: &Library) -> Result<Vec<Library>> {
-    if primary.manifest.requires.libraries.is_empty() {
+    selected_workspace_libraries_for_library_mode(primary, LibraryClosure::Build)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum LibraryClosure {
+    Consumer,
+    Build,
+    Test,
+}
+
+pub(crate) fn selected_workspace_libraries_for_library_mode(
+    primary: &Library,
+    mode: LibraryClosure,
+) -> Result<Vec<Library>> {
+    let requires = &primary.manifest.requires;
+    if requires.libraries.is_empty()
+        && (matches!(mode, LibraryClosure::Consumer) || requires.build_libraries.is_empty())
+        && (!matches!(mode, LibraryClosure::Test) || requires.test_libraries.is_empty())
+    {
         return Ok(Vec::new());
     }
 
@@ -8194,18 +8239,21 @@ pub(crate) fn selected_workspace_libraries_for_library(primary: &Library) -> Res
             "fix the named library descriptors or [workspace].members, then rerun the library command",
         ));
     }
-    let order = graph
-        .library_prerequisite_order(primary.id())
-        .ok_or_else(|| {
-            Error::coded(
-                "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
-                Category::Validation,
-                format!(
-                    "library '{}' is absent from the validated workspace graph at '{root}'",
-                    primary.id()
-                ),
-            )
-        })?;
+    let order = match mode {
+        LibraryClosure::Consumer => graph.library_consumer_order(primary.id()),
+        LibraryClosure::Build => graph.library_prerequisite_order(primary.id()),
+        LibraryClosure::Test => graph.library_build_order(primary.id(), true),
+    }
+    .ok_or_else(|| {
+        Error::coded(
+            "WORKSPACE_DEPENDENCY_GRAPH_INVALID",
+            Category::Validation,
+            format!(
+                "library '{}' is absent from the validated workspace graph at '{root}'",
+                primary.id()
+            ),
+        )
+    })?;
     let by_id = libraries
         .into_iter()
         .map(|library| (library.id().to_string(), library))
@@ -8556,13 +8604,14 @@ fn selected_external_libraries(
     Ok(external)
 }
 
-pub(crate) fn selected_external_libraries_for_library(
+pub(crate) fn selected_external_libraries_for_library_mode(
     primary: &Library,
     target: &str,
     runtime_id: &str,
     runtime_digest: &str,
+    mode: LibraryClosure,
 ) -> Result<Vec<ExternalLibrary>> {
-    let prerequisites = selected_workspace_libraries_for_library(primary)?;
+    let prerequisites = selected_workspace_libraries_for_library_mode(primary, mode)?;
     let root = find_project_root(primary.root.as_std_path())
         .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
         .or_else(|| primary.root.parent().map(Utf8Path::to_path_buf))
@@ -8573,7 +8622,21 @@ pub(crate) fn selected_external_libraries_for_library(
     for dependency in prerequisites
         .iter()
         .chain(std::iter::once(primary))
-        .flat_map(|library| library.manifest.requires.libraries.iter())
+        .flat_map(|library| {
+            let requires = &library.manifest.requires;
+            requires
+                .libraries
+                .iter()
+                .chain(
+                    requires
+                        .build_libraries
+                        .iter()
+                        .filter(move |_| !matches!(mode, LibraryClosure::Consumer)),
+                )
+                .chain(requires.test_libraries.iter().filter(move |_| {
+                    matches!(mode, LibraryClosure::Test) && library.root == primary.root
+                }))
+        })
         .filter(|dependency| dependency.artifact.is_some())
     {
         if let Some(previous) = dependencies.insert(dependency.id.clone(), dependency.clone()) {
@@ -8796,7 +8859,7 @@ fn external_artifact_pins(
         .chain(
             libraries
                 .iter()
-                .flat_map(|library| library.manifest.requires.libraries.iter()),
+                .flat_map(|library| library.manifest.requires.all_dependencies()),
         )
         .chain(
             tools
@@ -11550,7 +11613,10 @@ fn finish(report: &DoctorReport) -> Result<()> {
 ///
 /// `usdGenSchema` writes files through Python's text encoders, so force UTF-8 for
 /// schema builds regardless of the host locale (notably Japanese Windows cp932).
-fn compose_build_env(msvc_env: &[(String, String)], session: &EnvSet) -> Vec<(String, String)> {
+pub(super) fn compose_build_env(
+    msvc_env: &[(String, String)],
+    session: &EnvSet,
+) -> Vec<(String, String)> {
     let mut base: std::collections::HashMap<String, String> = std::env::vars().collect();
     for (k, v) in msvc_env {
         // Drop any case-variant of this key first so the case-folding lookup in

@@ -83,6 +83,16 @@
         "libraries": {
           "type": "array",
           "items": { "$ref": "#/definitions/libraryDependency" }
+        },
+        "build_libraries": {
+          "description": "Build provenance only; excluded from installed consumer dependencies.",
+          "type": "array",
+          "items": { "$ref": "#/definitions/libraryDependency" }
+        },
+        "test_libraries": {
+          "description": "Only for a directly selected library build/test, never inherited by prerequisites or consumers.",
+          "type": "array",
+          "items": { "$ref": "#/definitions/libraryDependency" }
         }
       }
     },
