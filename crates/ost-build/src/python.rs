@@ -129,8 +129,8 @@ pub enum PythonSource {
 pub struct PythonHints {
     /// Interpreter path (native separators; the renderer normalizes).
     pub executable: String,
-    /// Import/embed library (`pythonXY.lib` on Windows, `libpythonX.Y.so`
-    /// elsewhere). Required: without it `Development` resolution falls back
+    /// Import/embed library (`pythonXY.lib` on Windows, `libpythonX.Y.so` or
+    /// a macOS framework binary). Required: without it `Development` resolution falls back
     /// to whatever the config package baked.
     pub library: String,
     /// Directory containing `Python.h`.
@@ -627,30 +627,15 @@ fn tool_cache_pythons(cache: &Utf8Path, required: &str) -> Vec<Utf8PathBuf> {
 /// (e.g. embeddable distributions) — pinning those would only move the
 /// failure.
 fn probe(argv: &[String], source: PythonSource) -> Option<PythonHints> {
-    // Flat (no indented blocks): the whole thing is one -c argument, and any
-    // indentation would risk breakage across how shells/launchers forward it.
-    // Everything is expressed with ternaries so each statement stands alone.
-    let script = [
-        "import os, sys, sysconfig",
-        "print(sys.executable)",
-        "print('%d.%d' % sys.version_info[:2])",
-        "print(sysconfig.get_path('include') or '')",
-        "v = '%d%d' % sys.version_info[:2]",
-        "nt = os.path.join(sys.base_prefix, 'libs', 'python' + v + '.lib')",
-        "d = sysconfig.get_config_var('LIBDIR') or ''",
-        "n = sysconfig.get_config_var('LDLIBRARY') or ''",
-        "posix = os.path.join(d, n) if d and n else ''",
-        "ma = sysconfig.get_config_var('MULTIARCH') or ''",
-        "alt = os.path.join(d, ma, n) if ma and d and n else ''",
-        "posix = alt if (posix and not os.path.exists(posix) and alt and os.path.exists(alt)) else posix",
-        "print(nt if os.name == 'nt' else posix)",
-    ]
-    .join("\n");
+    // Pass the embedded script directly as one -c argument (no shell). Keeping
+    // it in a Python file lets the platform-layout regressions execute the
+    // exact same probe as the shipped binary.
+    let script = include_str!("python_probe.py");
     let (head, rest) = argv.split_first()?;
     let out = Command::new(head)
         .args(rest)
         .arg("-c")
-        .arg(&script)
+        .arg(script)
         .output()
         .ok()?;
     if !out.status.success() {

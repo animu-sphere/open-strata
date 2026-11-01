@@ -1418,6 +1418,10 @@ fn workspace_test_json_attributes_cases_and_warns_on_an_empty_member() {
 #[test]
 fn library_consumer_allows_runtime_python_without_opening_its_install_prefix() {
     if let Err(reason) = native_lifecycle_ready() {
+        assert!(
+            std::env::var_os("OST_TEST_REQUIRE_SDK_TOOLS").is_none(),
+            "runtime Python consumer CI requires native tools: {reason}"
+        );
         eprintln!("skipping library_consumer_python: {reason}");
         return;
     }
@@ -1426,6 +1430,10 @@ fn library_consumer_allows_runtime_python_without_opening_its_install_prefix() {
         &Utf8PathBuf::from_path_buf(sb.home.clone()).unwrap(),
         None,
     ) else {
+        assert!(
+            std::env::var_os("OST_TEST_REQUIRE_SDK_TOOLS").is_none(),
+            "runtime Python consumer CI requires Python development artifacts"
+        );
         eprintln!("skipping library_consumer_python: no Python development artifacts");
         return;
     };
