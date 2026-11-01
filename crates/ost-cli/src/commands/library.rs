@@ -130,6 +130,15 @@ pub enum LibraryCmd {
         #[arg(long)]
         profile: Option<String>,
 
+        /// Additional host dependency for this check, as apt:PACKAGE or brew:FORMULA.
+        /// Repeatable; does not modify the runtime or install packages.
+        #[arg(
+            long = "host-package",
+            value_name = "MANAGER:PACKAGE",
+            value_parser = super::runtime::parse_host_requirement
+        )]
+        host_requirements: Vec<ost_runtime::HostRequirement>,
+
         /// Path to the Ninja executable if it is not on PATH.
         #[arg(long)]
         ninja: Option<String>,
@@ -236,9 +245,18 @@ pub fn run(cmd: LibraryCmd, fmt: Format) -> Result<()> {
             library,
             target,
             profile,
+            host_requirements,
             ninja,
             compiler,
-        } => verify_consumer(&library, target, profile, ninja, compiler, fmt),
+        } => verify_consumer(
+            &library,
+            target,
+            profile,
+            host_requirements,
+            ninja,
+            compiler,
+            fmt,
+        ),
     }
 }
 
@@ -861,6 +879,7 @@ fn verify_consumer(
     root: &Utf8Path,
     target: Option<String>,
     profile: Option<String>,
+    mut host_requirements: Vec<ost_runtime::HostRequirement>,
     ninja: Option<String>,
     compiler: CompilerOpts,
     fmt: Format,
@@ -891,13 +910,20 @@ fn verify_consumer(
         )
     })?;
 
+    let (platform, profile) = selection(target, profile)?;
+    let (target, resolved) = build_target(&platform, &profile)?;
+    let target_id = target.id();
+    super::runtime::validate_host_requirement_targets(&host_requirements, target.os())?;
+    host_requirements.sort();
+    host_requirements.dedup();
+
     // `verify-consumer` owns the complete lifecycle: refresh the selected
     // library and its declared closure before creating an unrelated consumer
     // build tree. Suppress the nested build renderer so JSON remains one value.
     build_inner(
         root,
-        target.clone(),
-        profile.clone(),
+        Some(platform),
+        Some(profile),
         false,
         ninja.clone(),
         compiler,
@@ -906,9 +932,6 @@ fn verify_consumer(
         false,
     )?;
 
-    let (platform, profile) = selection(target, profile)?;
-    let (target, resolved) = build_target(&platform, &profile)?;
-    let target_id = target.id();
     validated_build_record(
         &library,
         &target_id,
@@ -924,7 +947,7 @@ fn verify_consumer(
             .map_err(|error| Error::io(runtime_manifest_path.to_string(), error))?,
     )
     .map_err(|error| Error::parse(runtime_manifest_path.to_string(), anyhow::Error::new(error)))?;
-    let host_x11 = consumer_host_x11(&runtime_manifest);
+    let host_x11 = consumer_host_x11(&runtime_manifest, &host_requirements);
     let prerequisites =
         plugin::selected_workspace_libraries_for_library_mode(&library, LibraryClosure::Consumer)?;
     let mut closure = prerequisites
@@ -1066,6 +1089,7 @@ fn verify_consumer(
         &resolved.prefix,
         python.as_ref(),
         &runtime_manifest.host_requirements,
+        &host_requirements,
         &compiler_record,
         &matched_public_headers,
         &source_dir,
@@ -1099,6 +1123,7 @@ fn verify_consumer(
         &resolved.prefix,
         python.as_ref(),
         &runtime_manifest.host_requirements,
+        &host_requirements,
         &compiler_record,
         &matched_public_headers,
         &source_dir,
@@ -1138,13 +1163,20 @@ fn verify_consumer(
     Ok(())
 }
 
-fn consumer_host_x11(manifest: &RuntimeManifest) -> bool {
+fn consumer_host_x11(
+    manifest: &RuntimeManifest,
+    additional: &[ost_runtime::HostRequirement],
+) -> bool {
     manifest.variant.os == ost_core::host::Os::Linux
         && ["libx11-dev", "libxt-dev"].iter().all(|name| {
-            manifest.host_requirements.iter().any(|requirement| {
-                requirement.manager == ost_runtime::HostPackageManager::Apt
-                    && requirement.name == *name
-            })
+            manifest
+                .host_requirements
+                .iter()
+                .chain(additional)
+                .any(|requirement| {
+                    requirement.manager == ost_runtime::HostPackageManager::Apt
+                        && requirement.name == *name
+                })
         })
 }
 
@@ -1416,6 +1448,7 @@ fn consumer_report(
     runtime_prefix: &Utf8Path,
     python: Option<&ost_build::PythonHints>,
     host_requirements: &[ost_runtime::HostRequirement],
+    consumer_host_requirements: &[ost_runtime::HostRequirement],
     compiler: &ost_build::LockCompiler,
     matched_public_headers: &[String],
     source_dir: &Utf8Path,
@@ -1443,6 +1476,7 @@ fn consumer_report(
         "closure": closure.iter().map(|(id, prefix)| serde_json::json!({"id": id, "prefix": prefix})).collect::<Vec<_>>(),
         "runtime_prefix": runtime_prefix,
         "runtime_host_requirements": host_requirements,
+        "consumer_host_requirements": consumer_host_requirements,
         "runtime_host_paths": std::fs::read_to_string(build_dir.join("runtime-host-paths.tsv"))
             .unwrap_or_default().lines().filter_map(|line| {
                 let (owner, path) = line.split_once('\t')?;
@@ -1982,26 +2016,33 @@ mod tests {
             ost_runtime::RuntimeSource::Mock,
         );
         manifest.variant.os = ost_core::host::Os::Linux;
-        assert!(!consumer_host_x11(&manifest));
+        assert!(!consumer_host_x11(&manifest, &[]));
         manifest
             .host_requirements
             .push(ost_runtime::HostRequirement {
                 manager: ost_runtime::HostPackageManager::Apt,
                 name: "libx11-dev".into(),
             });
-        assert!(!consumer_host_x11(&manifest));
+        assert!(!consumer_host_x11(&manifest, &[]));
         manifest
             .host_requirements
             .push(ost_runtime::HostRequirement {
                 manager: ost_runtime::HostPackageManager::Apt,
                 name: "libxt-dev".into(),
             });
-        assert!(consumer_host_x11(&manifest));
+        assert!(consumer_host_x11(&manifest, &[]));
+        let additional = manifest.host_requirements.split_off(1);
+        assert!(consumer_host_x11(&manifest, &additional));
+        let runtime_requirements = std::mem::take(&mut manifest.host_requirements);
+        assert!(!consumer_host_x11(&manifest, &additional));
+        let additional = [runtime_requirements, additional].concat();
+        assert!(consumer_host_x11(&manifest, &additional));
+        manifest.host_requirements = additional;
         manifest.variant.os = ost_core::host::Os::Macos;
-        assert!(!consumer_host_x11(&manifest));
+        assert!(!consumer_host_x11(&manifest, &[]));
         manifest.variant.os = ost_core::host::Os::Linux;
         manifest.host_requirements[0].manager = ost_runtime::HostPackageManager::Brew;
-        assert!(!consumer_host_x11(&manifest));
+        assert!(!consumer_host_x11(&manifest, &[]));
     }
 
     #[test]

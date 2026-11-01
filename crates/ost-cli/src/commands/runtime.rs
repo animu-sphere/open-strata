@@ -495,7 +495,7 @@ fn layout_dirs(python_version: &str, has_usd: bool) -> Vec<String> {
 /// Parse a declared native package without ever passing user input through a
 /// shell. Keeping the accepted alphabet aligned with CI's `host_packages`
 /// contract makes the runtime declaration directly renderable there.
-fn parse_host_requirement(value: &str) -> std::result::Result<HostRequirement, String> {
+pub(super) fn parse_host_requirement(value: &str) -> std::result::Result<HostRequirement, String> {
     let (manager, name) = value.split_once(':').ok_or_else(|| {
         format!("invalid host package '{value}' (expected apt:PACKAGE or brew:FORMULA)")
     })?;
@@ -520,7 +520,10 @@ fn parse_host_requirement(value: &str) -> std::result::Result<HostRequirement, S
     })
 }
 
-fn validate_host_requirement_targets(requirements: &[HostRequirement], os: Os) -> Result<()> {
+pub(super) fn validate_host_requirement_targets(
+    requirements: &[HostRequirement],
+    os: Os,
+) -> Result<()> {
     for requirement in requirements {
         let valid = matches!(
             (os, requirement.manager),

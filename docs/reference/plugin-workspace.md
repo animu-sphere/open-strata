@@ -293,7 +293,7 @@ graph rather than asking each caller to restate it:
   pinned for CMake discovery: its include tree, exact library file and matching
   Windows runtime DLL are allowed. Its library directory may be an
   `INTERFACE_LINK_DIRECTORIES` entry, without permitting unrelated files beneath
-  it. Linux runtimes declaring both `apt:libx11-dev` and `apt:libxt-dev` also
+  it. On Linux, declarations of both `apt:libx11-dev` and `apt:libxt-dev` also
   resolve X11/Xt through CMake's built-in FindX11 before loading installed
   package configs. System search is enabled only for this host probe. The
   resolved X11/Xt targets and their transitive target dependencies receive
@@ -305,7 +305,8 @@ graph rather than asking each caller to restate it:
   `closure`. `runtime_python` contains the resolved version, source, executable,
   include directory, library and optional runtime DLL, or is `null` when Python
   development artifacts cannot be resolved. `runtime_host_requirements` records
-  the runtime's host package declarations, and `runtime_host_paths` records
+  the runtime's host package declarations, `consumer_host_requirements` records
+  additional packages explicitly declared for this check, and `runtime_host_paths` records
   the resolved X11 target property paths (each entry has `owner` and `path`),
   including when a later consumer configuration fails. Other host packages do
   not automatically gain discovery or imported-path allowances;
@@ -318,6 +319,24 @@ graph rather than asking each caller to restate it:
   do not gain a second, manually maintained `with:` list;
 - explicit `--with` remains additive for external or ad-hoc bundles and keeps
   its existing caller-defined ordering.
+
+For a published runtime whose host declarations are empty, declare the consuming
+host's X11/Xt dependencies on the check itself:
+
+```bash
+ost library verify-consumer libs/avatarVrmSession \
+  --host-package apt:libx11-dev --host-package apt:libxt-dev
+```
+
+These repeatable options supplement the runtime declarations without modifying
+its manifest, digest, lock or pinned library artifacts. The X11 pair can be split
+between the runtime and the command. Provision the packages beforehand; the
+command does not install them. In CI, declare the same packages under the Linux
+source cell's `host_packages.apt` for provisioning and pass these options to the
+consumer check. `verify-consumer` does not infer a cell from `openstrata.ci.yaml`.
+Package syntax and target OS are validated (`apt` for Linux, `brew` for macOS;
+Windows has no supported package manager). Packages other than the X11/Xt pair
+do not enable additional host discovery or path allowances.
 
 Plain-library descriptors distinguish installed consumer requirements from
 build and test requirements:
