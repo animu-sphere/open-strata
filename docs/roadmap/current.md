@@ -1,16 +1,18 @@
 # Current
 
-The v0.23.18 delivery is recorded in the
-[release record](../releases/v0.23.18.md). This page tracks the remaining
+The v0.23.19 delivery is recorded in the
+[release record](../releases/v0.23.19.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.18 evidence
+## Post-release v0.23.19 evidence
 
 - Restore the downstream `avatarVrmSession` package contract and run hosted
   installed consumers with the locked OpenUSD runtime and its resolved host
   Python development artifacts and explicit Linux X11/Xt consumer host dependencies
   using `verify-consumer --host-package` with the existing runtime digest,
-  including Linux and Windows evidence.
+  including Linux and Windows evidence. Repeat the macOS libraries whose public
+  closure reaches `gf` with framework Python and v0.23.19's corrected library
+  resolution, retaining a non-null `runtime_python` record.
 
 - Re-run downstream library builds, tests and installed consumers with the
   published scoped dependency support; verify bundle-free tool artifacts through

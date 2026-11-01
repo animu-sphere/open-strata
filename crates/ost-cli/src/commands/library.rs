@@ -1218,7 +1218,11 @@ endif()
 if(DEFINED OST_CONSUMER_PYTHON_EXECUTABLE)
   file(REAL_PATH "${{OST_CONSUMER_PYTHON_INCLUDE_DIR}}" _ost_python_include)
   file(REAL_PATH "${{OST_CONSUMER_PYTHON_LIBRARY}}" _ost_python_library)
-  cmake_path(GET _ost_python_library PARENT_PATH _ost_python_library_dir)
+  # A framework's versioned dylib may be a symlink to ../Python. Preserve the
+  # selected library directory for link-directory checks, resolving that
+  # directory itself rather than taking the resolved binary's parent.
+  cmake_path(GET OST_CONSUMER_PYTHON_LIBRARY PARENT_PATH _ost_python_library_dir)
+  file(REAL_PATH "${{_ost_python_library_dir}}" _ost_python_library_dir)
   foreach(_ost_python IN ITEMS Python3 Python)
     set(${{_ost_python}}_EXECUTABLE "${{OST_CONSUMER_PYTHON_EXECUTABLE}}")
     set(${{_ost_python}}_INCLUDE_DIR "${{OST_CONSUMER_PYTHON_INCLUDE_DIR}}")
