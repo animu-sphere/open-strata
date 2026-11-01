@@ -291,7 +291,9 @@ graph rather than asking each caller to restate it:
   selected runtime prefix (including its OpenUSD package when provided by the
   profile). Python development artifacts resolved for that runtime are also
   pinned for CMake discovery: its include tree, exact library file and matching
-  Windows runtime DLL are allowed. Its library directory may be an
+  Windows runtime DLL are allowed. macOS framework Python libraries are resolved
+  using their declared framework prefix when needed; only the selected library
+  file and Python include tree receive allowances. Its library directory may be an
   `INTERFACE_LINK_DIRECTORIES` entry, without permitting unrelated files beneath
   it. On Linux, declarations of both `apt:libx11-dev` and `apt:libxt-dev` also
   resolve X11/Xt through CMake's built-in FindX11 before loading installed
