@@ -22,6 +22,12 @@ else:
     if libdir and name and multiarch:
         candidates.append(os.path.join(libdir, multiarch, name))
     if framework and framework_prefix:
+        # FindPython derives the library version from its basename. Prefer
+        # the framework's versioned dylib alias to the bare `Python` binary.
+        if libdir:
+            candidates.append(os.path.join(
+                libdir, 'libpython' + version + (sysconfig.get_config_var('ABIFLAGS') or '') + '.dylib'
+            ))
         # Framework LDLIBRARY may be relative to the framework's parent,
         # rather than LIBDIR (which is inside Versions/X.Y/lib).
         if name:

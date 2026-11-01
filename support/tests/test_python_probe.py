@@ -41,6 +41,11 @@ class PythonProbeTests(unittest.TestCase):
                 'PYTHONFRAMEWORKPREFIX': root,
             }
             self.assertEqual(self.probe(config), os.path.join(root, relative))
+            alias = library.parent / 'lib' / f'libpython{version}.dylib'
+            alias.parent.mkdir()
+            alias.touch()
+            self.assertEqual(Path(self.probe(config)), alias)
+            alias.unlink()
             # Some framework builds report just the binary's basename.
             config['LDLIBRARY'] = 'Python'
             self.assertEqual(Path(self.probe(config)), library)
