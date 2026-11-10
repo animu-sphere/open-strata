@@ -1,10 +1,10 @@
 # Current
 
-The v0.23.19 delivery is recorded in the
-[release record](../releases/v0.23.19.md). This page tracks the remaining
+The v0.23.20 delivery is recorded in the
+[release record](../releases/v0.23.20.md). This page tracks the remaining
 acceptance and the next feature work.
 
-## Post-release v0.23.19 evidence
+## Post-release evidence
 
 - Restore the downstream `avatarVrmSession` package contract and run hosted
   installed consumers with the locked OpenUSD runtime and its resolved host
