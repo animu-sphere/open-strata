@@ -20,7 +20,7 @@ not edit by hand.
 ## Apache License 2.0
 
 Used by:
-- ureq-proto 0.6.5 — https://github.com/algesten/ureq-proto
+- ureq-proto 0.7.1 — https://github.com/algesten/ureq-proto
 - zeroize 1.9.0 — https://github.com/RustCrypto/utils
 
 ```
@@ -663,7 +663,7 @@ Used by:
 - anstyle 1.0.14 — https://github.com/rust-cli/anstyle.git
 - clap_lex 1.1.0 — https://github.com/clap-rs/clap
 - colorchoice 1.0.5 — https://github.com/rust-cli/anstyle.git
-- crc32fast 1.5.3 — https://github.com/srijs/rust-crc32fast
+- crc32fast 1.5.4 — https://github.com/srijs/rust-crc32fast
 - is_terminal_polyfill 1.70.2 — https://github.com/polyfill-rs/is_terminal_polyfill
 - once_cell_polyfill 1.70.2 — https://github.com/polyfill-rs/once_cell_polyfill
 - serde_spanned 1.1.1 — https://github.com/toml-rs/toml
@@ -2749,7 +2749,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- ureq 3.5.0 — https://github.com/algesten/ureq
+- ureq 3.5.1 — https://github.com/algesten/ureq
 
 ```
 MIT License
