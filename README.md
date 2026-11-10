@@ -31,10 +31,9 @@ artifact registry, plugin publishing, artifact-backed runtime pulls (local and
 read/write OCI transport), and GitHub support-matrix generation are in, along with
 a portable CI contract (runner profiles, lanes, digest-pinned hosted source-CI).
 
-The current release is **v0.23.19** — macOS framework Python development
-artifacts resolve for installed library consumers, preserving exact path
-allowances and package closure isolation;
-see the [release record](docs/releases/v0.23.19.md).
+The current release is **v0.23.20**. The plugin viewer commands register
+installed outputs for the selected target. See the
+[release record](docs/releases/v0.23.20.md).
 Formation accepts packaged renderer and
 plugin targets, renderer packages preserve named build intents and installed
 plugin paths, and secondary profiles have separate runtime locks. `usd-imaging` bundles use the resolved

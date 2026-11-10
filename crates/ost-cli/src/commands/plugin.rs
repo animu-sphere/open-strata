@@ -9501,19 +9501,17 @@ fn merge_composed_bundles(
     Ok(merged)
 }
 
-/// `ost plugin view` — open a fixture in usdview inside the runtime session.
-fn view(
+fn resolve_view_session(
     bundle_path: &str,
     with_paths: &[String],
-    fixture: &str,
     target: Option<String>,
     profile: Option<String>,
-) -> Result<()> {
+    os: Os,
+) -> Result<(Bundle, crate::commands::Resolved, EnvSet)> {
     let bundle = load_bundle(bundle_path)?;
     let dependencies = selected_workspace_dependencies(&bundle)?;
     let explicit = load_with_bundles(with_paths)?;
     let mut with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
-    let host = Host::detect();
     let capabilities = session_capabilities(&bundle, &with_bundles, true);
     let (platform, profile) = selection_for_capabilities(target, profile, &capabilities)?;
     let r = require_real_runtime(Some(platform), Some(profile))?;
@@ -9527,6 +9525,34 @@ fn view(
     )?;
     let library_dirs = selected_workspace_library_runtime_dirs(&bundle, &r, true)?;
 
+    let id = runtime_target_id(&r);
+    let bundle = managed_bundle_stage(bundle, &id)?;
+    let with_bundles = with_bundles
+        .into_iter()
+        .map(|companion| managed_bundle_stage(companion, &id))
+        .collect::<Result<Vec<_>>>()?;
+    let contributing = std::iter::once(&bundle)
+        .chain(with_bundles.iter())
+        .collect::<Vec<_>>();
+    let library_dirs = library_dirs
+        .iter()
+        .map(Utf8PathBuf::as_path)
+        .collect::<Vec<_>>();
+    let session =
+        ost_plugin::session_env_from_with_library_dirs(&r.env, &contributing, &library_dirs, os);
+    Ok((bundle, r, session))
+}
+
+/// `ost plugin view` — open a fixture in usdview inside the runtime session.
+fn view(
+    bundle_path: &str,
+    with_paths: &[String],
+    fixture: &str,
+    target: Option<String>,
+    profile: Option<String>,
+) -> Result<()> {
+    let (bundle, r, session) =
+        resolve_view_session(bundle_path, with_paths, target, profile, Host::detect().os)?;
     let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"])
         .ok_or_else(|| {
             Error::coded(
@@ -9537,19 +9563,6 @@ fn view(
         })?;
     let fixture_identifier = fixture_identifier(&bundle, fixture);
 
-    let mut contributing = Vec::with_capacity(with_bundles.len() + 1);
-    contributing.push(&bundle);
-    contributing.extend(with_bundles.iter());
-    let library_dirs = library_dirs
-        .iter()
-        .map(Utf8PathBuf::as_path)
-        .collect::<Vec<_>>();
-    let session = ost_plugin::session_env_from_with_library_dirs(
-        &r.env,
-        &contributing,
-        &library_dirs,
-        host.os,
-    );
     let mut cmd = Command::new(&usdview);
     cmd.arg(&fixture_identifier);
     session.apply(&mut cmd); // overlay the session env, no global mutation
@@ -9571,37 +9584,9 @@ fn test_view(
     profile: Option<String>,
     fmt: Format,
 ) -> Result<()> {
-    let bundle = load_bundle(bundle_path)?;
-    let dependencies = selected_workspace_dependencies(&bundle)?;
-    let explicit = load_with_bundles(with_paths)?;
-    let mut with_bundles = merge_composed_bundles(&bundle, dependencies, explicit)?;
     let host = Host::detect();
-    let capabilities = session_capabilities(&bundle, &with_bundles, true);
-    let (platform, profile) = selection_for_capabilities(target, profile, &capabilities)?;
-    let r = require_real_runtime(Some(platform), Some(profile))?;
-    with_bundles = merge_composed_bundles(
-        &bundle,
-        with_bundles,
-        selected_external_bundles(&bundle, &r)?
-            .into_iter()
-            .map(|(bundle, _)| bundle)
-            .collect(),
-    )?;
-    let library_dirs = selected_workspace_library_runtime_dirs(&bundle, &r, true)?;
-
-    let mut contributing = Vec::with_capacity(with_bundles.len() + 1);
-    contributing.push(&bundle);
-    contributing.extend(with_bundles.iter());
-    let library_dirs = library_dirs
-        .iter()
-        .map(Utf8PathBuf::as_path)
-        .collect::<Vec<_>>();
-    let session = ost_plugin::session_env_from_with_library_dirs(
-        &r.env,
-        &contributing,
-        &library_dirs,
-        host.os,
-    );
+    let (bundle, r, session) =
+        resolve_view_session(bundle_path, with_paths, target, profile, host.os)?;
     let probe = ProcessProbe::new(session.resolve());
     let usdview = locate_runtime_tool(Some(&r), &["usdview.cmd", "usdview.exe", "usdview"]);
     let sess = Session {

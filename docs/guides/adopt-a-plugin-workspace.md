@@ -319,8 +319,9 @@ A workspace stays dual-mode: the same tree builds with `ost` and with plain
 CMake. Do not let OpenStrata-specific files break a direct `cmake` build; the
 reference projects build both ways in CI. `ost plugin build <bundle>` installs
 an installable bundle to `<bundle>/.strata/targets/<target>/bundle-stage/`.
-`plugin test`, `run`, and `package` use its installed `plugInfo.json`, `lib/`,
-and `python/`; fixtures, notices, and the manifest remain source inputs.
+`plugin test`, `run`, `view`, `test-view`, and `package` use its installed
+`plugInfo.json`, `lib/`, and `python/`. Fixtures, notices, and the manifest
+remain source inputs.
 Install rules should put `lib/` beside the manifest's `usd.plug_info` path.
 Bundles without install rules keep their source output layout. Root `ost build`
 still records package-relevant workspace bundle bytes in its managed
