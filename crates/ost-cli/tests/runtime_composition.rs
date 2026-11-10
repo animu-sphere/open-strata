@@ -40,7 +40,12 @@ impl Sandbox {
     }
 
     fn ost(&self, args: &[&str]) -> Output {
-        Command::new(ost_bin())
+        self.command(args).output().expect("spawn ost")
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(ost_bin());
+        command
             .args(args)
             .current_dir(&self.base)
             .env("OST_HOME", &self.home)
@@ -48,9 +53,8 @@ impl Sandbox {
             .env_remove("OST_USD_SRC")
             .env_remove("OST_USD_DEPS")
             .env_remove("PYTHONDONTWRITEBYTECODE")
-            .env_remove("PYTHONPYCACHEPREFIX")
-            .output()
-            .expect("spawn ost")
+            .env_remove("PYTHONPYCACHEPREFIX");
+        command
     }
 
     fn runtime_prefix(&self) -> PathBuf {
@@ -153,6 +157,122 @@ fn json(output: Output) -> serde_json::Value {
 
 fn path(path: &Path) -> &str {
     path.to_str().unwrap()
+}
+
+#[test]
+fn plugin_view_commands_use_target_stages_with_source_fixtures() {
+    let sandbox = Sandbox::new();
+    json(sandbox.ost(&[
+        "--json",
+        "runtime",
+        "pull",
+        "cy2026",
+        "--profile",
+        "lookdev",
+    ]));
+    sandbox.promote_runtime_with_python_dir("lib/python");
+    let prefix = sandbox.runtime_prefix();
+    let manifest = ost_runtime::RuntimeManifest::from_json(
+        &std::fs::read_to_string(prefix.join("runtime.json")).unwrap(),
+    )
+    .unwrap();
+    let target = format!("cy2026-{}-lookdev", manifest.variant.short_slug());
+    let stage = format!(".strata/targets/{target}/bundle-stage");
+    let mut expected_paths = Vec::new();
+    for (name, managed) in [("primary", true), ("companion", true), ("legacy", false)] {
+        let root = sandbox.base.join(name);
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("openstrata.plugin.yaml"),
+            format!(
+                "plugin: {{ name: {name}, version: 0.1.0, kind: usd-fileformat }}\n\
+                 runtime: {{ openusd: '>=25.05,<26.0' }}\n\
+                 usd: {{ plug_info: plugin/plugInfo.json }}\n"
+            ),
+        )
+        .unwrap();
+        let outputs = if managed { root.join(&stage) } else { root };
+        let plugins = outputs.join("plugin");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(plugins.join("plugInfo.json"), "{}").unwrap();
+        if managed {
+            std::fs::write(outputs.join(".openstrata-bundle-stage"), &target).unwrap();
+        }
+        expected_paths.push(plugins.strip_prefix(&sandbox.base).unwrap().to_path_buf());
+    }
+    let fixture = sandbox.base.join("primary/fixture.toy");
+    std::fs::write(&fixture, "fixture").unwrap();
+    let capture = sandbox.base.join("viewer-session.txt");
+    let (viewer, script) = if cfg!(windows) {
+        (
+            "usdview.cmd",
+            "@echo off\r\n>viewer-session.txt echo %PXR_PLUGINPATH_NAME%\r\n>>viewer-session.txt echo %~1\r\n",
+        )
+    } else {
+        (
+            "usdview",
+            "#!/bin/sh\nprintf '%s\\n' \"$PXR_PLUGINPATH_NAME\" \"$1\" > viewer-session.txt\n",
+        )
+    };
+    let viewer = prefix.join("bin").join(viewer);
+    std::fs::write(&viewer, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&viewer, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    for command in ["view", "test-view"] {
+        let output = sandbox
+            .command(&[
+                "--json",
+                "plugin",
+                command,
+                "primary",
+                "fixture.toy",
+                "--target",
+                "cy2026",
+                "--profile",
+                "lookdev",
+                "--with",
+                "companion",
+                "--with",
+                "legacy",
+            ])
+            .env("DISPLAY", ":0")
+            .env_remove("PXR_PLUGINPATH_NAME")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{command}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let session = std::fs::read_to_string(&capture).unwrap();
+        std::fs::remove_file(&capture).unwrap();
+        let mut lines = session.lines();
+        let paths = std::env::split_paths(lines.next().unwrap()).collect::<Vec<_>>();
+        assert!(paths.len() >= expected_paths.len(), "{command}: {paths:?}");
+        for (actual, expected) in paths.iter().zip(&expected_paths) {
+            assert!(actual.ends_with(expected), "{command}: {paths:?}");
+            assert!(actual.join("plugInfo.json").is_file(), "{actual:?}");
+        }
+        let opened = Path::new(lines.next().unwrap());
+        assert_eq!(
+            opened.canonicalize().unwrap(),
+            fixture.canonicalize().unwrap()
+        );
+        if command == "test-view" {
+            let report = json(output);
+            assert_eq!(report["data"]["diagnostics"][0]["status"], "pass");
+            let report_dir = Path::new(report["data"]["report_dir"].as_str().unwrap());
+            assert!(report_dir
+                .parent()
+                .unwrap()
+                .ends_with("primary/.strata/reports/primary"));
+        }
+    }
 }
 
 fn path_with_ost() -> std::ffi::OsString {
