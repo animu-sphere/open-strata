@@ -226,7 +226,7 @@ fn level2_imaging(bundle: &Bundle, session: &Session) -> Diagnostic {
             ),
         )
     } else {
-        Diagnostic::fail(ID, 2, format!("UsdImaging registry check failed: {}", tail(&out.stderr)),
+        Diagnostic::fail(ID, 2, format!("UsdImaging registry check failed: {}", failure_detail(&out)),
             vec!["check the imaging SDK/compiler, schema bundle dependencies, adapter factories, and USDIMAGING_ENABLE_PLUGINS".into()])
             .with_probe_output(out.code, &out.stdout, &out.stderr)
     }
@@ -323,7 +323,7 @@ fn level2_usdview_plugin_registration(bundle: &Bundle, session: &Session) -> Dia
             2,
             format!(
                 "usdview add-on '{name}' failed to load: {}",
-                tail(&out.stderr)
+                failure_detail(&out)
             ),
             vec!["check the packaged Python ABI, PYTHONPATH, and native extension closure".into()],
         )
@@ -657,7 +657,7 @@ fn level2_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnosti
     let uri = format!("{scheme}://openstrata.invalid/__ost_resolver_probe__");
     let uri_literal = serde_json::to_string(&uri).unwrap_or_else(|_| "\"\"".into());
     let script = format!(
-        "import sys\nfrom pxr import Ar\np = Ar.GetResolver().CreateIdentifier({uri_literal})\nsys.exit(0 if p else 7)"
+        "import sys\nfrom pxr import Ar\np = Ar.GetResolver().CreateIdentifier({uri_literal})\nif not p:\n    sys.stderr.write('CreateIdentifier returned an empty identifier for ' + {uri_literal})\nsys.exit(0 if p else 7)"
     );
     let out = session
         .probe
@@ -683,11 +683,7 @@ fn level2_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnosti
             2,
             format!(
                 "resolver registration or dispatch failed: {}",
-                tail(if out.stderr.trim().is_empty() {
-                    &out.stdout
-                } else {
-                    &out.stderr
-                })
+                failure_detail(&out)
             ),
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
@@ -819,7 +815,7 @@ sys.exit(0)
             2,
             format!(
                 "package resolver registration failed: {}",
-                tail(&out.stderr)
+                failure_detail(&out)
             ),
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
@@ -897,7 +893,7 @@ sys.exit(0 if not missing else 7)
         Diagnostic::fail(
             ID,
             2,
-            format!("schema types not registered: {}", tail(&out.stderr)),
+            format!("schema types not registered: {}", failure_detail(&out)),
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
                 "verify plugInfo.json declares the schema `Types` (run `usdGenSchema`)".into(),
@@ -965,7 +961,7 @@ fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnost
         Diagnostic::fail(
             ID,
             4,
-            format!("schema apply/round-trip failed: {}", tail(&out.stderr)),
+            format!("schema apply/round-trip failed: {}", failure_detail(&out)),
             vec![
                 "confirm the fixture's `apiSchemas` names a registered schema (Level 2)".into(),
                 "check the applied attributes are declared by the schema".into(),
@@ -1084,7 +1080,7 @@ fn level2_discovery(bundle: &Bundle, session: &Session) -> Diagnostic {
             2,
             format!(
                 "USD does not recognize '.{ext}' (discovery failed): {}",
-                tail(&out.stderr)
+                failure_detail(&out)
             ),
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
@@ -1134,7 +1130,10 @@ fn level3_usdcat(bundle: &Bundle, session: &Session) -> Diagnostic {
         Diagnostic::fail(
             ID,
             3,
-            format!("usdcat could not read the fixture: {}", tail(&out.stderr)),
+            format!(
+                "usdcat could not read the fixture: {}",
+                failure_detail(&out)
+            ),
             vec!["confirm the plugin is discovered (Level 2) and CanRead accepts the file".into()],
         )
     }
@@ -1178,7 +1177,7 @@ fn level4_stage_open(bundle: &Bundle, session: &Session) -> Diagnostic {
         Diagnostic::fail(
             ID,
             4,
-            format!("Usd.Stage.Open() failed: {}", tail(&out.stderr)),
+            format!("Usd.Stage.Open() failed: {}", failure_detail(&out)),
             vec!["check the plugin's Read() authors a valid layer".into()],
         )
     }
@@ -1347,7 +1346,7 @@ fn level5_golden_fixture(
         return Diagnostic::fail(
             ID,
             5,
-            format!("usdcat --flatten failed: {}", tail(&out.stderr)),
+            format!("usdcat --flatten failed: {}", failure_detail(&out)),
             vec![],
         );
     }
@@ -1459,7 +1458,7 @@ fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> 
             6,
             format!(
                 "usdview failed to launch/open the stage: {}",
-                tail(&out.stderr)
+                failure_detail(&out)
             ),
             vec!["run `ost plugin view` to see the full usdview output".into()],
         )
@@ -1596,6 +1595,27 @@ fn bounded_diff(expected: &str, actual: &str) -> String {
 }
 
 /// The last non-empty line of tool stderr, for a compact failure summary.
+/// The most useful one-line reason a probe failed: the last stderr line, else
+/// the last stdout line, else the exit status. A probe that dies inside plugin
+/// code (a stack overflow or access violation) prints nothing, and an empty
+/// reason would hide that it crashed.
+fn failure_detail(out: &ToolOutput) -> String {
+    let line = tail(&out.stderr);
+    if !line.is_empty() {
+        return line;
+    }
+    let line = tail(&out.stdout);
+    if !line.is_empty() {
+        return line;
+    }
+    match out.code {
+        Some(code) => format!(
+            "probe exited with code {code} ({code:#X}) and no output; it likely crashed inside the plugin"
+        ),
+        None => "probe was terminated without an exit code or output".into(),
+    }
+}
+
 fn tail(stderr: &str) -> String {
     stderr
         .lines()
@@ -1823,6 +1843,26 @@ tests: { smoke: [tests/fixtures/basic.usda] }
             output_root: None,
         };
         (dir, bundle)
+    }
+
+    #[test]
+    fn failure_detail_reports_a_silent_crash_by_exit_code() {
+        let out = |code, stdout: &str, stderr: &str| ToolOutput {
+            code,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        };
+        assert_eq!(
+            failure_detail(&out(Some(1), "x\n", "first\nlast\n\n")),
+            "last"
+        );
+        assert_eq!(
+            failure_detail(&out(Some(1), "only stdout\n", " \n")),
+            "only stdout"
+        );
+        let crash = failure_detail(&out(Some(-1073741571), "", ""));
+        assert!(crash.contains("0xC00000FD"), "{crash}");
+        assert!(crash.contains("crashed inside the plugin"), "{crash}");
     }
 
     #[test]

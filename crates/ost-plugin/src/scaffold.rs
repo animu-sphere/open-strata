@@ -1701,6 +1701,11 @@ mod tests {
         assert!(source.contains("AR_DEFINE_RESOLVER(StudioAssetsResolver, ArResolver)"));
         assert!(source.contains("SchemePrefix = \"studio:\""));
         assert!(!source.contains("{{"));
+        // Inside the resolver's members an unqualified `CreateIdentifier(...)`
+        // binds to the base ArResolver::CreateIdentifier, which dispatches back
+        // to _CreateIdentifier: unbounded recursion and a stack overflow.
+        assert!(source.contains("return MakeSchemeIdentifier(assetPath, anchorAssetPath);"));
+        assert!(!source.contains("return CreateIdentifier("));
 
         let cmake = std::fs::read_to_string(dir.join("CMakeLists.txt").as_std_path()).unwrap();
         assert!(cmake.contains("openstrata_link_openusd"));
