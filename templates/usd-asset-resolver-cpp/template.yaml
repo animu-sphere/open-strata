@@ -1,7 +1,7 @@
 schema: openstrata.template/v1alpha1
 template:
   id: usd-asset-resolver-cpp
-  version: 0.3.1
+  version: 0.3.2
   maturity: skeleton
   artifact_kind: plugin
 plugin_kind: usd-asset-resolver

@@ -10381,7 +10381,7 @@ fn verify_target_library_suffix(bundle: &Bundle, os: Os) -> Result<()> {
                 os.as_str()
             ))
             .with_hint(format!(
-                "regenerate plugInfo.json for the {} target (ship a `plugInfo.json.in` configured with @CMAKE_SHARED_LIBRARY_SUFFIX@), so `LibraryPath` ends in {expected}",
+                "regenerate plugInfo.json for the {} target (ship a `plugInfo.json.in` whose `LibraryPath` is @OPENSTRATA_PLUGIN_LIBRARY_PATH@ or uses @CMAKE_SHARED_LIBRARY_SUFFIX@), so `LibraryPath` ends in {expected}",
                 os.as_str()
             ))
             .with_phase(PHASE_PLUGIN_DISCOVERY));

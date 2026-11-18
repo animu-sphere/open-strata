@@ -850,7 +850,7 @@ fn check_plug_info_library_paths(
                             "regenerate plugInfo.json for the {} target so `LibraryPath` ends in {expected}",
                             os.as_str()
                         ),
-                        "for source bundles, keep `plugInfo.json.in` and configure `LibraryPath` with `@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@` plus `@CMAKE_SHARED_LIBRARY_SUFFIX@`".into(),
+                        "for source bundles, keep `plugInfo.json.in` and set `LibraryPath` to `@OPENSTRATA_PLUGIN_LIBRARY_PATH@` (helper 1.2+; the CMake target's real filename) or `@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@` plus `@CMAKE_SHARED_LIBRARY_SUFFIX@`".into(),
                     ],
                 );
             }

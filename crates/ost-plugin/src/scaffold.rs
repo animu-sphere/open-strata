@@ -833,7 +833,14 @@ pub fn scaffold_with_template_inputs(
         // `*.in` files (for example installed package configs) remain inputs.
         if let Some(concrete_rel) = concrete_scaffold_output(&rel) {
             let concrete_abs = dest.join(&concrete_rel);
-            let resolved = contents
+            let mut resolved = contents.clone();
+            if resolved.contains(LIBRARY_PATH_TOKEN) {
+                resolved = resolved.replace(
+                    LIBRARY_PATH_TOKEN,
+                    &preview_library_path(&concrete_rel, &contents)?,
+                );
+            }
+            let resolved = resolved
                 .replace("@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@", "lib")
                 .replace(
                     "@CMAKE_SHARED_LIBRARY_SUFFIX@",
@@ -937,6 +944,43 @@ fn planned_outputs(files: &[TemplateFile], vars: &Vars) -> Result<Vec<Utf8PathBu
     }
     planned.push(SCAFFOLD_PROVENANCE.into());
     Ok(planned)
+}
+
+/// `plugInfo.json.in` token the copied CMake helper expands to the bundle's
+/// relative `lib/` plus `$<TARGET_FILE_NAME:target>`, evaluated at generate time.
+const LIBRARY_PATH_TOKEN: &str = "@OPENSTRATA_PLUGIN_LIBRARY_PATH@";
+
+/// The scaffold-time stand-in for [`LIBRARY_PATH_TOKEN`] in the pre-build
+/// `plugInfo.json` that `inspect`/`doctor` read before CMake has run. It mirrors
+/// the helper's defaults (`lib` prefix, host suffix, library in the bundle's
+/// `lib/`) and takes the target name from the plugin entry's `Name`, the
+/// templates' convention. CMake overwrites the file with the real target
+/// filename at the first configure.
+fn preview_library_path(plug_info: &Utf8Path, contents: &str) -> Result<String> {
+    let invalid = |why: &str| Error::InvalidManifest(format!("template '{plug_info}.in': {why}"));
+    let doc: serde_json::Value = serde_json::from_str(contents)
+        .map_err(|e| invalid(&format!("plugInfo template is not JSON: {e}")))?;
+    let names: Vec<&str> = doc
+        .get("Plugins")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|p| {
+            p.get("LibraryPath").and_then(serde_json::Value::as_str) == Some(LIBRARY_PATH_TOKEN)
+        })
+        .filter_map(|p| p.get("Name").and_then(serde_json::Value::as_str))
+        .collect();
+    let [name] = names.as_slice() else {
+        return Err(invalid(&format!(
+            "{LIBRARY_PATH_TOKEN} must be the LibraryPath of exactly one named plugin (one CMake target per plugInfo.json)"
+        )));
+    };
+    let depth = plug_info.parent().map_or(0, |p| p.components().count());
+    Ok(format!(
+        "{}lib/lib{name}{}",
+        "../".repeat(depth),
+        std::env::consts::DLL_SUFFIX
+    ))
 }
 
 fn concrete_scaffold_output(path: &Utf8Path) -> Option<Utf8PathBuf> {
@@ -1337,6 +1381,45 @@ mod tests {
     }
 
     #[test]
+    fn library_path_preview_tracks_plug_info_depth_and_plugin_name() {
+        let template = r#"{"Plugins": [{"Type": "library", "Name": "ToyFileFormat",
+            "LibraryPath": "@OPENSTRATA_PLUGIN_LIBRARY_PATH@"}]}"#;
+        let suffix = std::env::consts::DLL_SUFFIX;
+        assert_eq!(
+            preview_library_path(
+                Utf8Path::new("plugin/resources/toy/plugInfo.json"),
+                template
+            )
+            .unwrap(),
+            format!("../../../lib/libToyFileFormat{suffix}")
+        );
+        // The depth follows wherever `usd.plug_info` lives, so a
+        // plugin/<name>/resources/ layout at another depth stays correct.
+        assert_eq!(
+            preview_library_path(Utf8Path::new("resources/plugInfo.json"), template).unwrap(),
+            format!("../lib/libToyFileFormat{suffix}")
+        );
+    }
+
+    #[test]
+    fn library_path_preview_requires_exactly_one_named_plugin() {
+        let path = Utf8Path::new("plugin/resources/toy/plugInfo.json");
+        assert!(preview_library_path(path, "not json").is_err());
+        assert!(preview_library_path(
+            path,
+            r#"{"Plugins": [{"LibraryPath": "@OPENSTRATA_PLUGIN_LIBRARY_PATH@"}]}"#
+        )
+        .is_err());
+        assert!(preview_library_path(
+            path,
+            r#"{"Plugins": [
+                {"Name": "A", "LibraryPath": "@OPENSTRATA_PLUGIN_LIBRARY_PATH@"},
+                {"Name": "B", "LibraryPath": "@OPENSTRATA_PLUGIN_LIBRARY_PATH@"}]}"#
+        )
+        .is_err());
+    }
+
+    #[test]
     fn rejects_path_like_extensions() {
         // The extension is substituted into generated file paths, so anything
         // path-like must be rejected to prevent escaping the destination.
@@ -1419,8 +1502,19 @@ mod tests {
             helper,
             include_str!("../../../templates/_shared/cmake/OpenStrataPlugin.cmake")
         );
-        assert!(helper.contains("OPENSTRATA_PLUGIN_CMAKE_HELPER_VERSION \"1.1.0\""));
+        assert!(helper.contains("OPENSTRATA_PLUGIN_CMAKE_HELPER_VERSION \"1.2.0\""));
         assert!(!helper.contains("templates/_shared"));
+        // The library filename comes from the CMake target, not from a
+        // re-assembled prefix + name + suffix.
+        let template = std::fs::read_to_string(
+            dir.join("plugin/resources/toy/plugInfo.json.in")
+                .as_std_path(),
+        )
+        .unwrap();
+        assert!(template.contains(r#""LibraryPath": "@OPENSTRATA_PLUGIN_LIBRARY_PATH@""#));
+        assert!(!template.contains("ToyFileFormat@CMAKE_SHARED_LIBRARY_SUFFIX@"));
+        assert!(helper.contains("$<TARGET_FILE_NAME:${ARG_TARGET}>"));
+        assert!(helper.contains("file(GENERATE"));
 
         let provenance: ScaffoldProvenance = serde_yaml::from_str(
             &std::fs::read_to_string(dir.join(SCAFFOLD_PROVENANCE).as_std_path()).unwrap(),
