@@ -1128,9 +1128,14 @@ fn check_schema_library_prefix(bundle: &Bundle) -> Option<Diagnostic> {
         return None;
     }
 
+    // usdGenSchema composes the C++/TfType name as `libraryPrefix + className`,
+    // where `className` defaults to the class prim name. A prim named
+    // `<Prefix>API` with `className = "API"` is the idiomatic way to make the
+    // schema identifier match the TfType name, not a doubled prefix.
     let prefixed_classes: Vec<String> = extract_usda_class_names(&src)
         .into_iter()
-        .filter(|name| name.starts_with(&prefix))
+        .filter(|(_, class_name)| class_name.starts_with(&prefix))
+        .map(|(name, _)| name)
         .collect();
     if prefixed_classes.is_empty() {
         return None;
@@ -1165,18 +1170,33 @@ fn extract_usda_string_assignment(src: &str, key: &str) -> Option<String> {
     None
 }
 
-fn extract_usda_class_names(src: &str) -> Vec<String> {
-    let mut names = Vec::new();
+/// `(prim name, effective className)` for each `class "<name>"` in a schema
+/// layer. The effective class name is the `className` customData authored in
+/// the class's metadata block (before its `{` body), else the prim name.
+fn extract_usda_class_names(src: &str) -> Vec<(String, String)> {
+    let mut classes: Vec<(String, String)> = Vec::new();
+    let mut in_metadata = false;
     for line in src.lines() {
-        let line = strip_usda_comment(line).trim_start();
-        let Some(rest) = line.strip_prefix("class") else {
+        let line = strip_usda_comment(line).trim();
+        if let Some(rest) = line.strip_prefix("class") {
+            if let Some(name) = extract_quoted(rest.trim_start()) {
+                classes.push((name.clone(), name));
+                in_metadata = true;
+                continue;
+            }
+        }
+        if !in_metadata {
             continue;
-        };
-        if let Some(name) = extract_quoted(rest.trim_start()) {
-            names.push(name);
+        }
+        if line == "{" || line.starts_with("{ ") {
+            in_metadata = false;
+        } else if let Some(class_name) = extract_usda_string_assignment(line, "className") {
+            if let Some(last) = classes.last_mut() {
+                last.1 = class_name;
+            }
         }
     }
-    names
+    classes
 }
 
 fn extract_quoted(s: &str) -> Option<String> {
@@ -1692,6 +1712,49 @@ class "FooBarAPI" (
             .suggested_actions
             .iter()
             .any(|a| a.contains("libraryPrefix + class")));
+    }
+
+    #[test]
+    fn schema_library_prefix_hint_follows_class_name_custom_data() {
+        let (dir, bundle) = codeless_schema_bundle(r#"{ "FooAPI": { "bases": [] } }"#, None);
+        let schema = |class_name: &str| {
+            format!(
+                r#"
+over "GLOBAL" (
+    customData = {{
+        string libraryPrefix = "Foo"
+    }}
+)
+{{
+}}
+
+class "FooAPI" (
+    inherits = </APISchemaBase>
+    customData = {{
+        token apiSchemaType = "singleApply"
+        string className = "{class_name}"
+    }}
+)
+{{
+    uniform token foo:example = "" (
+        doc = "className here is attribute metadata, not the class's."
+    )
+}}
+"#
+            )
+        };
+        let hint = |src: String| {
+            std::fs::write(dir.path.join("schema.usda").as_std_path(), src).unwrap();
+            diagnose(&bundle, &RuntimeContext::default(), 0)
+                .diagnostics
+                .into_iter()
+                .find(|d| d.id == "schema.library_prefix")
+        };
+        // Identifier `FooAPI` + className `API` composes `FooAPI`: no doubling.
+        assert!(hint(schema("API")).is_none());
+        // A className that repeats the prefix composes `FooFooAPI`.
+        let doubled = hint(schema("FooAPI")).expect("hint for doubled className");
+        assert!(doubled.observed.contains("FooAPI"));
     }
 
     #[test]

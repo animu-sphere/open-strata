@@ -480,6 +480,25 @@ fn smoke_fixture(bundle: &Bundle) -> Option<ResolvedFixture<'_>> {
     })
 }
 
+/// Every declared smoke fixture, or the legacy single fallback when the
+/// manifest declares none.
+fn smoke_fixtures(bundle: &Bundle) -> Vec<ResolvedFixture<'_>> {
+    if bundle.manifest.tests.smoke.is_empty() {
+        return smoke_fixture(bundle).into_iter().collect();
+    }
+    bundle
+        .manifest
+        .tests
+        .smoke
+        .iter()
+        .map(|source| ResolvedFixture {
+            relative: source.path(),
+            path: bundle.path(source.path()),
+            source: Some(source),
+        })
+        .collect()
+}
+
 /// Resolve a caller-selected fixture back to its manifest declaration when
 /// possible. Canonical comparison covers an absolute spelling of the same
 /// bundle-relative fixture and normalizes platform-specific path details.
@@ -832,12 +851,21 @@ fn level2_schema_registration(bundle: &Bundle, session: &Session) -> Diagnostic 
 
     // Ask USD's schema registry whether each declared type is known. Codeless
     // schemas register here too (that is the point — no C++ required).
+    // `provides: usd-schema:<T>` names the TfType, while the registry's name
+    // lookups take the schema *identifier* (the class prim name), which differs
+    // whenever usdGenSchema composed the type as `libraryPrefix + className`.
+    // Resolve the TfType first (after the registry has registered plugins), and
+    // fall back to treating the name as an identifier.
     let script = format!(
         r#"import sys
-from pxr import Usd
+from pxr import Tf, Usd
 names = {names}
+Usd.SchemaRegistry()
 def known(n):
     try:
+        t = Tf.Type.FindByName(n)
+        if not t.isUnknown and Usd.SchemaRegistry.GetSchemaKind(t) != Usd.SchemaKind.Invalid:
+            return True
         return Usd.SchemaRegistry.GetSchemaKind(n) != Usd.SchemaKind.Invalid
     except Exception:
         return False
@@ -887,31 +915,40 @@ fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnost
     let Some(python) = &session.python else {
         return Diagnostic::skip(ID, 4, "no python interpreter on the session PATH");
     };
-    let Some(fixture) = smoke_fixture(bundle) else {
+    // Every smoke fixture is a candidate: a co-hosting bundle's first fixture
+    // is usually its own file format, which need not carry `apiSchemas`.
+    let fixtures = smoke_fixtures(bundle);
+    if fixtures.is_empty() {
         return Diagnostic::skip(ID, 4, "no smoke fixture declared");
-    };
-    if !fixture.path.as_std_path().is_file() {
+    }
+    if let Some(missing) = fixtures.iter().find(|f| !f.path.as_std_path().is_file()) {
         return Diagnostic::fail(
             ID,
             4,
-            format!("fixture '{}' is missing", fixture.path),
+            format!("fixture '{}' is missing", missing.path),
             vec![],
         );
     }
 
-    // Open the fixture, find a prim with one of the schema APIs applied, snapshot
-    // its authored attributes, flatten the stage, re-open, and assert the API is
-    // still applied and the attribute values are unchanged. `__NAMES__`/
-    // `__FIXTURE__` are substituted (not `format!`-interpolated) so the script's
-    // Python dict/set literals keep their braces.
-    let path = serde_json::to_string(&fixture.path.to_string().replace('\\', "/"))
-        .unwrap_or_else(|_| "\"\"".into());
-    let arguments =
-        serde_json::to_string(fixture.file_format_arguments()).unwrap_or_else(|_| "{}".into());
-    let identifier = format!("Sdf.Layer.CreateIdentifier({path}, {arguments})");
+    // Open each fixture until one has a prim with one of the schema APIs
+    // applied, snapshot its authored attributes, flatten the stage, re-open,
+    // and assert the API is still applied and the attribute values are
+    // unchanged. `__NAMES__`/`__FIXTURES__` are substituted (not
+    // `format!`-interpolated) so the script's Python dict/set literals keep
+    // their braces.
+    let identifiers: Vec<String> = fixtures
+        .iter()
+        .map(|fixture| {
+            let path = serde_json::to_string(&fixture.path.to_string().replace('\\', "/"))
+                .unwrap_or_else(|_| "\"\"".into());
+            let arguments = serde_json::to_string(fixture.file_format_arguments())
+                .unwrap_or_else(|_| "{}".into());
+            format!("Sdf.Layer.CreateIdentifier({path}, {arguments})")
+        })
+        .collect();
     let script = SCHEMA_ROUNDTRIP_PY
         .replace("__NAMES__", &py_name_list(&names))
-        .replace("__FIXTURE__", &identifier);
+        .replace("__FIXTURES__", &format!("[{}]", identifiers.join(", ")));
     let out = session
         .probe
         .run(python, &["-c", &with_dll_preamble(&script)]);
@@ -940,19 +977,33 @@ fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnost
 /// Python for L4: apply-and-round-trip. Markers are substituted before running.
 const SCHEMA_ROUNDTRIP_PY: &str = r#"
 import sys
-from pxr import Sdf, Usd
-names = __NAMES__
-stage = Usd.Stage.Open(__FIXTURE__)
-if not stage:
-    sys.stderr.write('could not open the fixture stage')
-    sys.exit(8)
+from pxr import Sdf, Tf, Usd
+declared = __NAMES__
+# Applied schemas are reported by identifier; accept a declared TfType name's
+# identifier as well as the name itself.
+Usd.SchemaRegistry()
+names = set(declared)
+for n in declared:
+    t = Tf.Type.FindByName(n)
+    if not t.isUnknown:
+        identifier = Usd.SchemaRegistry.GetSchemaTypeName(t)
+        if identifier:
+            names.add(identifier)
+stage = None
 target = None
-for prim in stage.Traverse():
-    if any(n in prim.GetAppliedSchemas() for n in names):
-        target = prim
+for fixture in __FIXTURES__:
+    stage = Usd.Stage.Open(fixture)
+    if not stage:
+        sys.stderr.write('could not open the fixture stage ' + fixture)
+        sys.exit(8)
+    for prim in stage.Traverse():
+        if any(n in prim.GetAppliedSchemas() for n in names):
+            target = prim
+            break
+    if target is not None:
         break
 if target is None:
-    sys.stderr.write('no prim applies any of: ' + ', '.join(names))
+    sys.stderr.write('no prim in any smoke fixture applies any of: ' + ', '.join(declared))
     sys.exit(9)
 before = {a.GetName(): a.Get() for a in target.GetAttributes() if a.HasAuthoredValue()}
 flat = stage.Flatten()

@@ -25,11 +25,28 @@ manifest *textually* (your comments survive): each schema type is added to
 `provides:` as `usd-schema:<Type>`, and the bundle-relative source path is
 recorded as `schema.source`. The public type name is composed as
 `<PascalBundleName><Class>` (`--class`, default `API`): bundle `toy` + class
-`MetadataAPI` → `ToyMetadataAPI`. Keep the *source* class name free of the
-bundle name — `usdGenSchema` prepends `libraryPrefix` itself, and a class that
-already carries it doubles up (`ToyToyMetadataAPI`). `ost plugin doctor` emits
-a non-failing `schema.library_prefix` hint if an edited `schema.usda`
-reintroduces that shape.
+`MetadataAPI` → `ToyMetadataAPI`.
+
+The scaffold writes that name twice, for two different usdGenSchema rules:
+
+- **The class prim** (`class "ToyMetadataAPI"`) is the schema *identifier*.
+  Fixtures list it in `apiSchemas`, and OpenUSD requires it to be unique across
+  every loaded plugin.
+- **`customData = { string className = "MetadataAPI" }`** sets the C++/TfType
+  name, which usdGenSchema composes as `libraryPrefix + className`. That makes
+  the TfType name match the identifier.
+
+A bare `class "API"` would register the identifier `API`. Any two bundles built
+that way then fail to load together: OpenUSD rejects duplicate schema
+identifiers. Keep `className` free of the bundle name. usdGenSchema prepends
+`libraryPrefix` itself, so a `className` that already carries it doubles up
+(`ToyToyMetadataAPI`). `ost plugin doctor` emits a non-failing
+`schema.library_prefix` hint for that shape.
+
+`schema add` also writes `tests/fixtures/<Type>.usda`, which applies the
+schema, and appends it to `tests.smoke`. L4 searches every smoke fixture for a
+prim that applies a declared schema, because a file format's own fixture
+usually cannot carry `apiSchemas`.
 
 If the bundle already has a hand-authored `schema.usda`, skip the scaffold and
 wire the manifest by hand:
@@ -62,7 +79,10 @@ source, `ost plugin build`:
 3. **merges** the generated schema `Types` into the bundle's existing
    `plugInfo.json` — preserving the `SdfFileFormat` (or resolver) entry that a
    raw `usdGenSchema` run would clobber — and copies `generatedSchema.usda`
-   beside it;
+   beside it, then beside the installed `plugInfo.json` in the bundle stage
+   (and therefore the package). The bundle's own install rules do not list
+   that file. Without it OpenUSD still registers the schema type, but with no
+   properties;
 4. falls back to the resource-only merge when the schema is codeless
    (`skipCodeGeneration`) or emits no C++.
 
@@ -100,9 +120,14 @@ ost plugin test <bundle> --up-to 4    # or: ost plugin test --workspace
 ```
 
 A bundle declaring `usd-schema:<Type>` runs the schema contract *alongside*
-its primary-kind levels: **L2 `schema.registration`** (each provided type is
-known to `Usd.SchemaRegistry`) and **L4 `schema.apply_roundtrip`** (an `*API`
-applies and its authored attributes survive a flatten round-trip). The gate is
+its primary-kind levels:
+
+- **L2 `schema.registration`:** each provided TfType is known to
+  `Usd.SchemaRegistry`, resolved through its schema identifier.
+- **L4 `schema.apply_roundtrip`:** some smoke fixture applies an `*API`, and
+  its authored attributes survive a flatten round-trip.
+
+The gate is
 the explicit `provides:` entry — a file format's own type is never mistaken
 for a schema.
 

@@ -1022,6 +1022,10 @@ pub struct AddedSchema {
     /// Bundle-relative path of the written `schema.usda` source.
     pub source: Utf8PathBuf,
     pub codeless: bool,
+    /// Bundle-relative smoke fixture that applies the schema, when `schema add`
+    /// wrote and wired it into `tests.smoke` (`None` if the fixture path was
+    /// already taken or the manifest could not be edited safely).
+    pub fixture: Option<Utf8PathBuf>,
 }
 
 /// Add a co-located schema to an *existing* non-schema bundle: write a starter
@@ -1136,6 +1140,27 @@ pub fn add_cohosted_schema(
     let provides_entry = format!("usd-schema:{schema_type}");
     let edited = append_schema_source(&insert_provides_entry(&original, &provides_entry), source);
 
+    // 3. A smoke fixture that applies the schema, so L4 can exercise it. A
+    // file-format bundle's own fixture is usually not a USDA layer that can
+    // carry `apiSchemas`. Wired only when the edit verifiably round-trips;
+    // otherwise the schema itself is still added.
+    let fixture_rel = format!("tests/fixtures/{schema_type}.usda");
+    let fixture_abs = bundle.path(&fixture_rel);
+    let fixture_free = !fixture_abs.as_std_path().exists()
+        && !manifest.all_fixtures().contains(&fixture_rel.as_str());
+    let with_fixture = fixture_free
+        .then(|| append_smoke_fixture(&edited, &fixture_rel))
+        .filter(|text| {
+            crate::PluginManifest::parse(text).is_ok_and(|m| {
+                m.tests.smoke.iter().any(|f| f.path() == fixture_rel)
+                    && m.tests.smoke.len() == manifest.tests.smoke.len() + 1
+            })
+        });
+    let (edited, fixture) = match with_fixture {
+        Some(text) => (text, Some(Utf8PathBuf::from(&fixture_rel))),
+        None => (edited, None),
+    };
+
     let reparsed = crate::PluginManifest::parse(&edited).map_err(|e| {
         Error::config(format!(
             "could not update {} automatically ({e}); add by hand:\n\
@@ -1152,6 +1177,17 @@ pub fn add_cohosted_schema(
             crate::PLUGIN_MANIFEST
         )));
     }
+    if fixture.is_some() {
+        if let Some(parent) = fixture_abs.parent() {
+            std::fs::create_dir_all(parent.as_std_path())
+                .map_err(|e| Error::io(parent.to_string(), e))?;
+        }
+        std::fs::write(
+            fixture_abs.as_std_path(),
+            cohosted_schema_fixture(&vars, &schema_type),
+        )
+        .map_err(|e| Error::io(fixture_abs.to_string(), e))?;
+    }
     std::fs::write(manifest_path.as_std_path(), edited)
         .map_err(|e| Error::io(manifest_path.to_string(), e))?;
 
@@ -1159,6 +1195,7 @@ pub fn add_cohosted_schema(
         schema_type,
         source: Utf8PathBuf::from(source),
         codeless,
+        fixture,
     })
 }
 
@@ -1220,10 +1257,11 @@ over \"GLOBAL\" (
 {{
 }}
 
-class \"{class}\" (
+class \"{{{{Name}}}}{class}\" (
     inherits = </APISchemaBase>
     customData = {{
         token apiSchemaType = \"singleApply\"
+        string className = \"{class}\"
     }}
     doc = \"\"\"A single-apply API schema. Replace the example property with the
     real data contract this schema defines.\"\"\"
@@ -1273,6 +1311,103 @@ fn insert_provides_entry(src: &str, entry: &str) -> String {
         out.push_str(&format!("provides:\n  - {entry}\n"));
     }
     out
+}
+
+/// The starter smoke fixture for a co-located schema: one prim applying it
+/// with the starter example attribute authored.
+fn cohosted_schema_fixture(vars: &Vars, schema_type: &str) -> String {
+    vars.apply(&format!(
+        "#usda 1.0
+(
+    doc = \"Schema smoke fixture: applies {schema_type} to a prim and authors its property.\"
+)
+
+def Xform \"Root\" (
+    prepend apiSchemas = [\"{schema_type}\"]
+)
+{{
+    uniform token {{{{ident}}}}:example = \"hello\"
+}}
+"
+    ))
+}
+
+/// Append `fixture` to the manifest's `tests.smoke` list, textually: extend an
+/// inline `smoke: [..]` or block `smoke:` list, add `smoke:` to an existing
+/// top-level `tests:` block, or append a `tests:` block. Callers re-parse the
+/// result before trusting it.
+fn append_smoke_fixture(src: &str, fixture: &str) -> String {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 2);
+    let mut in_tests = false;
+    let mut done = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let top_level = !line.starts_with([' ', '\t']) && !line.trim().is_empty();
+        if top_level && !line.trim_start().starts_with('#') {
+            if in_tests && !done {
+                // Leaving `tests:` without having seen `smoke:`.
+                out.push(format!("  smoke: [{fixture}]"));
+                done = true;
+            }
+            in_tests = line.starts_with("tests:");
+        }
+        if in_tests && !done {
+            let trimmed = line.trim_start();
+            let indent = &line[..line.len() - trimmed.len()];
+            if let Some(rest) = trimmed.strip_prefix("smoke:") {
+                let rest = rest.trim();
+                if let Some(inner) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+                    let inner = inner.trim();
+                    let items = if inner.is_empty() {
+                        fixture.to_string()
+                    } else {
+                        format!("{inner}, {fixture}")
+                    };
+                    out.push(format!("{indent}smoke: [{items}]"));
+                    done = true;
+                    i += 1;
+                    continue;
+                }
+                if rest.is_empty() {
+                    // Block list: copy its items, then append one more with
+                    // the same item indentation.
+                    out.push(line.to_string());
+                    i += 1;
+                    let mut item_indent = format!("{indent}  ");
+                    while i < lines.len() {
+                        let item = lines[i];
+                        let item_trimmed = item.trim_start();
+                        let item_indent_len = item.len() - item_trimmed.len();
+                        if item_trimmed.is_empty() || item_indent_len <= indent.len() {
+                            break;
+                        }
+                        if item_trimmed.starts_with('-') {
+                            item_indent = item[..item_indent_len].to_string();
+                        }
+                        out.push(item.to_string());
+                        i += 1;
+                    }
+                    out.push(format!("{item_indent}- {fixture}"));
+                    done = true;
+                    continue;
+                }
+            }
+        }
+        out.push(line.to_string());
+        i += 1;
+    }
+    if in_tests && !done {
+        out.push(format!("  smoke: [{fixture}]"));
+        done = true;
+    }
+    if !done {
+        out.push(format!("tests:\n  smoke: [{fixture}]"));
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
 }
 
 /// Declare `schema.source` in the manifest text: extend an existing top-level
@@ -1863,14 +1998,22 @@ mod tests {
 
         // The starter schema avoids non-ASCII prose so a fresh scaffold does not
         // trigger locale-sensitive usdGenSchema failures before users edit it.
-        // It also avoids repeating `libraryPrefix` in the class name: usdGenSchema
-        // composes those into the public schema type, so this source class still
-        // generates `VrmSchemaAPI` without tripping the doctor hint.
+        // The class prim (the schema identifier the fixture applies) matches the
+        // committed resources, `VrmSchemaAPI`; `className = "API"` keeps
+        // usdGenSchema's composed type `libraryPrefix + className` the same
+        // name without repeating the prefix (no doctor hint). A bare `API`
+        // prim would regenerate the identifier `API` on every build.
         let schema = std::fs::read_to_string(dir.join("schema.usda").as_std_path()).unwrap();
         assert!(schema.is_ascii());
         assert!(schema.contains("string libraryPrefix    = \"VrmSchema\""));
-        assert!(schema.contains("class \"API\""));
-        assert!(!schema.contains("class \"VrmSchemaAPI\""));
+        assert!(schema.contains("class \"VrmSchemaAPI\""));
+        assert!(schema.contains("string className = \"API\""));
+        let generated = std::fs::read_to_string(
+            dir.join("plugin/resources/vrm-schema/generatedSchema.usda")
+                .as_std_path(),
+        )
+        .unwrap();
+        assert!(generated.contains("class \"VrmSchemaAPI\""));
 
         // The scaffolded bundle passes the static L0 diagnostics.
         let report = crate::diagnose(&bundle, &crate::RuntimeContext::default(), 0);
@@ -2053,8 +2196,28 @@ mod tests {
         let schema = std::fs::read_to_string(src.as_std_path()).unwrap();
         assert!(schema.contains("bool skipCodeGeneration = false"));
         assert!(schema.contains("string libraryPrefix    = \"Toy\""));
-        assert!(schema.contains("class \"API\""));
+        // The class prim is the schema identifier; `className` keeps the C++ /
+        // TfType name `libraryPrefix + class`, so identifier == type name and
+        // two bundles never both register the identifier `API`.
+        assert!(schema.contains("class \"ToyAPI\""));
+        assert!(schema.contains("string className = \"API\""));
         assert!(schema.is_ascii());
+        let fixture = added.fixture.as_ref().expect("schema fixture wired");
+        assert_eq!(fixture, "tests/fixtures/ToyAPI.usda");
+        let fixture_src = std::fs::read_to_string(dir.join(fixture).as_std_path()).unwrap();
+        assert!(fixture_src.contains("prepend apiSchemas = [\"ToyAPI\"]"));
+        assert!(fixture_src.contains("uniform token toy:example = \"hello\""));
+        let smoke: Vec<&str> = bundle
+            .manifest
+            .tests
+            .smoke
+            .iter()
+            .map(|f| f.path())
+            .collect();
+        assert_eq!(
+            smoke,
+            ["tests/fixtures/basic.toy", "tests/fixtures/ToyAPI.usda"]
+        );
         assert!(!schema.contains("{{"), "placeholder left in schema.usda");
 
         // Idempotence: the same type cannot be added twice.
@@ -2062,6 +2225,44 @@ mod tests {
         assert!(err.to_string().contains("already provides"), "{err}");
 
         std::fs::remove_dir_all(dir.as_std_path()).ok();
+    }
+
+    #[test]
+    fn append_smoke_fixture_handles_each_manifest_shape() {
+        let add = |src: &str| {
+            let text = append_smoke_fixture(src, "tests/fixtures/X.usda");
+            let manifest = crate::PluginManifest::parse(&format!(
+                "plugin: {{ name: toy, version: 0.1.0, kind: usd-fileformat }}\n\
+                 runtime: {{ openusd: '>=25.05,<27.0' }}\n{text}"
+            ))
+            .expect("reparses");
+            manifest
+                .tests
+                .smoke
+                .iter()
+                .map(|f| f.path().to_string())
+                .collect::<Vec<_>>()
+        };
+        // Inline list, with a later top-level key kept intact.
+        assert_eq!(
+            add("tests:\n  smoke: [a.toy]\n  negative: [b.toy]\nusd:\n  plug_info: p.json\n"),
+            ["a.toy", "tests/fixtures/X.usda"]
+        );
+        // Block list.
+        assert_eq!(
+            add("tests:\n  smoke:\n    - a.toy\n    - c.toy\n  negative: [b.toy]\nusd:\n  plug_info: p.json\n"),
+            ["a.toy", "c.toy", "tests/fixtures/X.usda"]
+        );
+        // `tests:` without `smoke:`, followed by a comment and another block.
+        assert_eq!(
+            add("tests:\n  negative: [b.toy]\n# trailing comment\nusd:\n  plug_info: p.json\n"),
+            ["tests/fixtures/X.usda"]
+        );
+        // No `tests:` block at all.
+        assert_eq!(
+            add("usd:\n  plug_info: p.json\n"),
+            ["tests/fixtures/X.usda"]
+        );
     }
 
     #[test]

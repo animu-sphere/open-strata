@@ -26,10 +26,11 @@ over "GLOBAL" (
 {
 }
 
-class "API" (
+class "{{Name}}API" (
     inherits = </APISchemaBase>
     customData = {
         token apiSchemaType = "singleApply"
+        string className = "API"
     }
     doc = """A single-apply API schema. Replace the example property with the
     real data contract this schema defines."""
