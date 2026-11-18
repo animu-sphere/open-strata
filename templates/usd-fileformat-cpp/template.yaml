@@ -32,4 +32,4 @@ verification:
   assertions: [deterministic-generation, install-tree-discovery]
 compatibility:
   ost: ">=0.13,<1.0"
-  openusd: ">=25.05,<26.0"
+  openusd: ">=25.05,<27.0"
