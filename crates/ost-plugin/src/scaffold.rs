@@ -1222,6 +1222,10 @@ fn validate_class(class: &str) -> Result<()> {
 /// The starter `schema.usda` for a co-located schema.
 fn cohosted_schema_starter(vars: &Vars, class: &str, codeless: bool) -> String {
     let skip = if codeless { "true" } else { "false" };
+    // usdGenSchema names the class's files `_CamelCase(className)`; for the
+    // default class `API` that is `aPI.h`, the same file as its export header
+    // `api.h` on Windows/macOS. Name them after the full type instead.
+    let file_name = lowercase_first(&format!("{}{class}", vars.pascal));
     let mode = if codeless {
         "Because skipCodeGeneration = true, the build merges only the generated\n    \
          resources (plugInfo.json Types + generatedSchema.usda); no C++ is added."
@@ -1262,6 +1266,7 @@ class \"{{{{Name}}}}{class}\" (
     customData = {{
         token apiSchemaType = \"singleApply\"
         string className = \"{class}\"
+        string fileName = \"{file_name}\"
     }}
     doc = \"\"\"A single-apply API schema. Replace the example property with the
     real data contract this schema defines.\"\"\"
@@ -2201,6 +2206,8 @@ mod tests {
         // two bundles never both register the identifier `API`.
         assert!(schema.contains("class \"ToyAPI\""));
         assert!(schema.contains("string className = \"API\""));
+        assert!(schema.contains("string fileName = \"toyAPI\""));
+        assert!(crate::schema_generated_file_collisions(&schema).is_empty());
         assert!(schema.is_ascii());
         let fixture = added.fixture.as_ref().expect("schema fixture wired");
         assert_eq!(fixture, "tests/fixtures/ToyAPI.usda");

@@ -35,6 +35,13 @@ The scaffold writes that name twice, for two different usdGenSchema rules:
 - **`customData = { string className = "MetadataAPI" }`** sets the C++/TfType
   name, which usdGenSchema composes as `libraryPrefix + className`. That makes
   the TfType name match the identifier.
+- **`string fileName = "toyMetadataAPI"`** names the generated `.h`/`.cpp`.
+  Without it, usdGenSchema names them after `className` with its first letter
+  lowercased. For class `API` that gives `aPI.h`, which is the same file as
+  usdGenSchema's export header `api.h` on Windows and default macOS. The export
+  macros are then lost and the compile fails. `ost plugin doctor`
+  (`schema.generated_file_names`) and `ost plugin build` reject such names up
+  front.
 
 A bare `class "API"` would register the identifier `API`. Any two bundles built
 that way then fail to load together: OpenUSD rejects duplicate schema

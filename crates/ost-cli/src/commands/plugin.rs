@@ -10270,6 +10270,20 @@ fn prepare_cohosted_schema(
         clear_cohosted_schema_compile_state(compiled_dir, cmake_fragment)?;
         return Ok(None); // no schema source to regenerate from
     }
+    // A class whose generated header case-folds onto usdGenSchema's export
+    // header (`API` → `aPI.h` vs `api.h`) silently overwrites it on Windows and
+    // default macOS, and the compile then fails deep inside generated code.
+    let schema_text = std::fs::read_to_string(schema_src.as_std_path())
+        .map_err(|e| Error::io(schema_src.to_string(), e))?;
+    if let Some((class, stem, library)) = ost_plugin::schema_generated_file_collisions(&schema_text)
+        .into_iter()
+        .next()
+    {
+        return Err(Error::config(format!(
+            "schema class \"{class}\" in {schema_src} generates {stem}.h, which is the same file as usdGenSchema's {library}.h on a case-insensitive filesystem"
+        ))
+        .with_hint(ost_plugin::schema_file_collision_hint(&class)));
+    }
     // The usdGenSchema *script* in the runtime bin is a Python script with no
     // executable bit / `.cmd` wrapper, so it must be run *through* an interpreter.
     let gen_script = artifact_prefix.join("bin/usdGenSchema");
