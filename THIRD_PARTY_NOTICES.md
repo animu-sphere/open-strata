@@ -663,7 +663,7 @@ Used by:
 - anstyle 1.0.14 — https://github.com/rust-cli/anstyle.git
 - clap_lex 1.1.0 — https://github.com/clap-rs/clap
 - colorchoice 1.0.5 — https://github.com/rust-cli/anstyle.git
-- crc32fast 1.5.4 — https://github.com/srijs/rust-crc32fast
+- crc32fast 1.5.5 — https://github.com/srijs/rust-crc32fast
 - is_terminal_polyfill 1.70.2 — https://github.com/polyfill-rs/is_terminal_polyfill
 - once_cell_polyfill 1.70.2 — https://github.com/polyfill-rs/once_cell_polyfill
 - serde_spanned 1.1.1 — https://github.com/toml-rs/toml
@@ -1520,7 +1520,7 @@ Used by:
 - errno 0.3.14 — https://github.com/lambda-fairy/rust-errno
 - filetime 0.2.29 — https://github.com/alexcrichton/filetime
 - find-msvc-tools 0.1.9 — https://github.com/rust-lang/cc-rs
-- flate2 1.1.10 — https://github.com/rust-lang/flate2-rs
+- flate2 1.1.11 — https://github.com/rust-lang/flate2-rs
 - hashbrown 0.17.1 — https://github.com/rust-lang/hashbrown
 - heck 0.5.0 — https://github.com/withoutboats/heck
 - httparse 1.10.1 — https://github.com/seanmonstar/httparse
