@@ -226,7 +226,7 @@ fn level2_imaging(bundle: &Bundle, session: &Session) -> Diagnostic {
             ),
         )
     } else {
-        Diagnostic::fail(ID, 2, format!("UsdImaging registry check failed: {}", tail(&out.stderr)),
+        Diagnostic::fail(ID, 2, format!("UsdImaging registry check failed: {}", failure_detail(&out)),
             vec!["check the imaging SDK/compiler, schema bundle dependencies, adapter factories, and USDIMAGING_ENABLE_PLUGINS".into()])
             .with_probe_output(out.code, &out.stdout, &out.stderr)
     }
@@ -323,7 +323,7 @@ fn level2_usdview_plugin_registration(bundle: &Bundle, session: &Session) -> Dia
             2,
             format!(
                 "usdview add-on '{name}' failed to load: {}",
-                tail(&out.stderr)
+                failure_detail(&out)
             ),
             vec!["check the packaged Python ABI, PYTHONPATH, and native extension closure".into()],
         )
@@ -478,6 +478,25 @@ fn smoke_fixture(bundle: &Bundle) -> Option<ResolvedFixture<'_>> {
         path: bundle.path(relative),
         source: None,
     })
+}
+
+/// Every declared smoke fixture, or the legacy single fallback when the
+/// manifest declares none.
+fn smoke_fixtures(bundle: &Bundle) -> Vec<ResolvedFixture<'_>> {
+    if bundle.manifest.tests.smoke.is_empty() {
+        return smoke_fixture(bundle).into_iter().collect();
+    }
+    bundle
+        .manifest
+        .tests
+        .smoke
+        .iter()
+        .map(|source| ResolvedFixture {
+            relative: source.path(),
+            path: bundle.path(source.path()),
+            source: Some(source),
+        })
+        .collect()
 }
 
 /// Resolve a caller-selected fixture back to its manifest declaration when
@@ -638,7 +657,7 @@ fn level2_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnosti
     let uri = format!("{scheme}://openstrata.invalid/__ost_resolver_probe__");
     let uri_literal = serde_json::to_string(&uri).unwrap_or_else(|_| "\"\"".into());
     let script = format!(
-        "import sys\nfrom pxr import Ar\np = Ar.GetResolver().CreateIdentifier({uri_literal})\nsys.exit(0 if p else 7)"
+        "import sys\nfrom pxr import Ar\np = Ar.GetResolver().CreateIdentifier({uri_literal})\nif not p:\n    sys.stderr.write('CreateIdentifier returned an empty identifier for ' + {uri_literal})\nsys.exit(0 if p else 7)"
     );
     let out = session
         .probe
@@ -664,11 +683,7 @@ fn level2_resolver_registration(bundle: &Bundle, session: &Session) -> Diagnosti
             2,
             format!(
                 "resolver registration or dispatch failed: {}",
-                tail(if out.stderr.trim().is_empty() {
-                    &out.stdout
-                } else {
-                    &out.stderr
-                })
+                failure_detail(&out)
             ),
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
@@ -800,7 +815,7 @@ sys.exit(0)
             2,
             format!(
                 "package resolver registration failed: {}",
-                tail(&out.stderr)
+                failure_detail(&out)
             ),
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
@@ -832,12 +847,21 @@ fn level2_schema_registration(bundle: &Bundle, session: &Session) -> Diagnostic 
 
     // Ask USD's schema registry whether each declared type is known. Codeless
     // schemas register here too (that is the point — no C++ required).
+    // `provides: usd-schema:<T>` names the TfType, while the registry's name
+    // lookups take the schema *identifier* (the class prim name), which differs
+    // whenever usdGenSchema composed the type as `libraryPrefix + className`.
+    // Resolve the TfType first (after the registry has registered plugins), and
+    // fall back to treating the name as an identifier.
     let script = format!(
         r#"import sys
-from pxr import Usd
+from pxr import Tf, Usd
 names = {names}
+Usd.SchemaRegistry()
 def known(n):
     try:
+        t = Tf.Type.FindByName(n)
+        if not t.isUnknown and Usd.SchemaRegistry.GetSchemaKind(t) != Usd.SchemaKind.Invalid:
+            return True
         return Usd.SchemaRegistry.GetSchemaKind(n) != Usd.SchemaKind.Invalid
     except Exception:
         return False
@@ -869,7 +893,7 @@ sys.exit(0 if not missing else 7)
         Diagnostic::fail(
             ID,
             2,
-            format!("schema types not registered: {}", tail(&out.stderr)),
+            format!("schema types not registered: {}", failure_detail(&out)),
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
                 "verify plugInfo.json declares the schema `Types` (run `usdGenSchema`)".into(),
@@ -887,31 +911,40 @@ fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnost
     let Some(python) = &session.python else {
         return Diagnostic::skip(ID, 4, "no python interpreter on the session PATH");
     };
-    let Some(fixture) = smoke_fixture(bundle) else {
+    // Every smoke fixture is a candidate: a co-hosting bundle's first fixture
+    // is usually its own file format, which need not carry `apiSchemas`.
+    let fixtures = smoke_fixtures(bundle);
+    if fixtures.is_empty() {
         return Diagnostic::skip(ID, 4, "no smoke fixture declared");
-    };
-    if !fixture.path.as_std_path().is_file() {
+    }
+    if let Some(missing) = fixtures.iter().find(|f| !f.path.as_std_path().is_file()) {
         return Diagnostic::fail(
             ID,
             4,
-            format!("fixture '{}' is missing", fixture.path),
+            format!("fixture '{}' is missing", missing.path),
             vec![],
         );
     }
 
-    // Open the fixture, find a prim with one of the schema APIs applied, snapshot
-    // its authored attributes, flatten the stage, re-open, and assert the API is
-    // still applied and the attribute values are unchanged. `__NAMES__`/
-    // `__FIXTURE__` are substituted (not `format!`-interpolated) so the script's
-    // Python dict/set literals keep their braces.
-    let path = serde_json::to_string(&fixture.path.to_string().replace('\\', "/"))
-        .unwrap_or_else(|_| "\"\"".into());
-    let arguments =
-        serde_json::to_string(fixture.file_format_arguments()).unwrap_or_else(|_| "{}".into());
-    let identifier = format!("Sdf.Layer.CreateIdentifier({path}, {arguments})");
+    // Open each fixture until one has a prim with one of the schema APIs
+    // applied, snapshot its authored attributes, flatten the stage, re-open,
+    // and assert the API is still applied and the attribute values are
+    // unchanged. `__NAMES__`/`__FIXTURES__` are substituted (not
+    // `format!`-interpolated) so the script's Python dict/set literals keep
+    // their braces.
+    let identifiers: Vec<String> = fixtures
+        .iter()
+        .map(|fixture| {
+            let path = serde_json::to_string(&fixture.path.to_string().replace('\\', "/"))
+                .unwrap_or_else(|_| "\"\"".into());
+            let arguments = serde_json::to_string(fixture.file_format_arguments())
+                .unwrap_or_else(|_| "{}".into());
+            format!("Sdf.Layer.CreateIdentifier({path}, {arguments})")
+        })
+        .collect();
     let script = SCHEMA_ROUNDTRIP_PY
         .replace("__NAMES__", &py_name_list(&names))
-        .replace("__FIXTURE__", &identifier);
+        .replace("__FIXTURES__", &format!("[{}]", identifiers.join(", ")));
     let out = session
         .probe
         .run(python, &["-c", &with_dll_preamble(&script)]);
@@ -928,7 +961,7 @@ fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnost
         Diagnostic::fail(
             ID,
             4,
-            format!("schema apply/round-trip failed: {}", tail(&out.stderr)),
+            format!("schema apply/round-trip failed: {}", failure_detail(&out)),
             vec![
                 "confirm the fixture's `apiSchemas` names a registered schema (Level 2)".into(),
                 "check the applied attributes are declared by the schema".into(),
@@ -940,19 +973,33 @@ fn level4_schema_apply_roundtrip(bundle: &Bundle, session: &Session) -> Diagnost
 /// Python for L4: apply-and-round-trip. Markers are substituted before running.
 const SCHEMA_ROUNDTRIP_PY: &str = r#"
 import sys
-from pxr import Sdf, Usd
-names = __NAMES__
-stage = Usd.Stage.Open(__FIXTURE__)
-if not stage:
-    sys.stderr.write('could not open the fixture stage')
-    sys.exit(8)
+from pxr import Sdf, Tf, Usd
+declared = __NAMES__
+# Applied schemas are reported by identifier; accept a declared TfType name's
+# identifier as well as the name itself.
+Usd.SchemaRegistry()
+names = set(declared)
+for n in declared:
+    t = Tf.Type.FindByName(n)
+    if not t.isUnknown:
+        identifier = Usd.SchemaRegistry.GetSchemaTypeName(t)
+        if identifier:
+            names.add(identifier)
+stage = None
 target = None
-for prim in stage.Traverse():
-    if any(n in prim.GetAppliedSchemas() for n in names):
-        target = prim
+for fixture in __FIXTURES__:
+    stage = Usd.Stage.Open(fixture)
+    if not stage:
+        sys.stderr.write('could not open the fixture stage ' + fixture)
+        sys.exit(8)
+    for prim in stage.Traverse():
+        if any(n in prim.GetAppliedSchemas() for n in names):
+            target = prim
+            break
+    if target is not None:
         break
 if target is None:
-    sys.stderr.write('no prim applies any of: ' + ', '.join(names))
+    sys.stderr.write('no prim in any smoke fixture applies any of: ' + ', '.join(declared))
     sys.exit(9)
 before = {a.GetName(): a.Get() for a in target.GetAttributes() if a.HasAuthoredValue()}
 flat = stage.Flatten()
@@ -1033,7 +1080,7 @@ fn level2_discovery(bundle: &Bundle, session: &Session) -> Diagnostic {
             2,
             format!(
                 "USD does not recognize '.{ext}' (discovery failed): {}",
-                tail(&out.stderr)
+                failure_detail(&out)
             ),
             vec![
                 "check PXR_PLUGINPATH_NAME points at the bundle's plugInfo root".into(),
@@ -1083,7 +1130,10 @@ fn level3_usdcat(bundle: &Bundle, session: &Session) -> Diagnostic {
         Diagnostic::fail(
             ID,
             3,
-            format!("usdcat could not read the fixture: {}", tail(&out.stderr)),
+            format!(
+                "usdcat could not read the fixture: {}",
+                failure_detail(&out)
+            ),
             vec!["confirm the plugin is discovered (Level 2) and CanRead accepts the file".into()],
         )
     }
@@ -1127,7 +1177,7 @@ fn level4_stage_open(bundle: &Bundle, session: &Session) -> Diagnostic {
         Diagnostic::fail(
             ID,
             4,
-            format!("Usd.Stage.Open() failed: {}", tail(&out.stderr)),
+            format!("Usd.Stage.Open() failed: {}", failure_detail(&out)),
             vec!["check the plugin's Read() authors a valid layer".into()],
         )
     }
@@ -1296,7 +1346,7 @@ fn level5_golden_fixture(
         return Diagnostic::fail(
             ID,
             5,
-            format!("usdcat --flatten failed: {}", tail(&out.stderr)),
+            format!("usdcat --flatten failed: {}", failure_detail(&out)),
             vec![],
         );
     }
@@ -1408,7 +1458,7 @@ fn level6_usdview(bundle: &Bundle, session: &Session, fixture: Option<&str>) -> 
             6,
             format!(
                 "usdview failed to launch/open the stage: {}",
-                tail(&out.stderr)
+                failure_detail(&out)
             ),
             vec!["run `ost plugin view` to see the full usdview output".into()],
         )
@@ -1545,6 +1595,27 @@ fn bounded_diff(expected: &str, actual: &str) -> String {
 }
 
 /// The last non-empty line of tool stderr, for a compact failure summary.
+/// The most useful one-line reason a probe failed: the last stderr line, else
+/// the last stdout line, else the exit status. A probe that dies inside plugin
+/// code (a stack overflow or access violation) prints nothing, and an empty
+/// reason would hide that it crashed.
+fn failure_detail(out: &ToolOutput) -> String {
+    let line = tail(&out.stderr);
+    if !line.is_empty() {
+        return line;
+    }
+    let line = tail(&out.stdout);
+    if !line.is_empty() {
+        return line;
+    }
+    match out.code {
+        Some(code) => format!(
+            "probe exited with code {code} ({code:#X}) and no output; it likely crashed inside the plugin"
+        ),
+        None => "probe was terminated without an exit code or output".into(),
+    }
+}
+
 fn tail(stderr: &str) -> String {
     stderr
         .lines()
@@ -1772,6 +1843,26 @@ tests: { smoke: [tests/fixtures/basic.usda] }
             output_root: None,
         };
         (dir, bundle)
+    }
+
+    #[test]
+    fn failure_detail_reports_a_silent_crash_by_exit_code() {
+        let out = |code, stdout: &str, stderr: &str| ToolOutput {
+            code,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        };
+        assert_eq!(
+            failure_detail(&out(Some(1), "x\n", "first\nlast\n\n")),
+            "last"
+        );
+        assert_eq!(
+            failure_detail(&out(Some(1), "only stdout\n", " \n")),
+            "only stdout"
+        );
+        let crash = failure_detail(&out(Some(-1073741571), "", ""));
+        assert!(crash.contains("0xC00000FD"), "{crash}");
+        assert!(crash.contains("crashed inside the plugin"), "{crash}");
     }
 
     #[test]

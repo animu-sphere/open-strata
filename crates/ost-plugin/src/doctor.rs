@@ -410,6 +410,11 @@ fn level0(bundle: &Bundle, target_os: Option<Os>) -> Vec<Diagnostic> {
     if let Some(hint) = check_schema_library_prefix(bundle) {
         diags.push(hint);
     }
+    // schema.generated_file_names — a class whose generated C++ file stem
+    // case-folds onto usdGenSchema's `api.h`/`tokens.h` breaks Windows/macOS.
+    if let Some(fail) = check_schema_generated_file_names(bundle) {
+        diags.push(fail);
+    }
 
     // session.plugin_path — the discovery root the session would set is present.
     let pxr_root = bundle.plug_info_root();
@@ -850,7 +855,7 @@ fn check_plug_info_library_paths(
                             "regenerate plugInfo.json for the {} target so `LibraryPath` ends in {expected}",
                             os.as_str()
                         ),
-                        "for source bundles, keep `plugInfo.json.in` and configure `LibraryPath` with `@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@` plus `@CMAKE_SHARED_LIBRARY_SUFFIX@`".into(),
+                        "for source bundles, keep `plugInfo.json.in` and set `LibraryPath` to `@OPENSTRATA_PLUGIN_LIBRARY_PATH@` (helper 1.2+; the CMake target's real filename) or `@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@` plus `@CMAKE_SHARED_LIBRARY_SUFFIX@`".into(),
                     ],
                 );
             }
@@ -1128,9 +1133,14 @@ fn check_schema_library_prefix(bundle: &Bundle) -> Option<Diagnostic> {
         return None;
     }
 
-    let prefixed_classes: Vec<String> = extract_usda_class_names(&src)
+    // usdGenSchema composes the C++/TfType name as `libraryPrefix + className`,
+    // where `className` defaults to the class prim name. A prim named
+    // `<Prefix>API` with `className = "API"` is the idiomatic way to make the
+    // schema identifier match the TfType name, not a doubled prefix.
+    let prefixed_classes: Vec<String> = extract_usda_classes(&src)
         .into_iter()
-        .filter(|name| name.starts_with(&prefix))
+        .filter(|class| class.class_name.starts_with(&prefix))
+        .map(|class| class.prim_name)
         .collect();
     if prefixed_classes.is_empty() {
         return None;
@@ -1165,18 +1175,131 @@ fn extract_usda_string_assignment(src: &str, key: &str) -> Option<String> {
     None
 }
 
-fn extract_usda_class_names(src: &str) -> Vec<String> {
-    let mut names = Vec::new();
+/// A `class "<name>"` in a schema layer, with the usdGenSchema naming
+/// customData authored in its metadata block (before its `{` body).
+struct UsdaClass {
+    prim_name: String,
+    /// `className` customData, else the prim name.
+    class_name: String,
+    /// `fileName` customData, if authored.
+    file_name: Option<String>,
+}
+
+impl UsdaClass {
+    /// usdGenSchema's generated header/source stem:
+    /// `customData.get('fileName', _CamelCase(className))`, where `_CamelCase`
+    /// lowercases only the first character.
+    fn file_stem(&self) -> String {
+        self.file_name.clone().unwrap_or_else(|| {
+            let mut chars = self.class_name.chars();
+            chars
+                .next()
+                .map(|first| first.to_ascii_lowercase().to_string() + chars.as_str())
+                .unwrap_or_default()
+        })
+    }
+}
+
+fn extract_usda_classes(src: &str) -> Vec<UsdaClass> {
+    let mut classes: Vec<UsdaClass> = Vec::new();
+    let mut in_metadata = false;
     for line in src.lines() {
-        let line = strip_usda_comment(line).trim_start();
-        let Some(rest) = line.strip_prefix("class") else {
+        let line = strip_usda_comment(line).trim();
+        if let Some(rest) = line.strip_prefix("class") {
+            if let Some(name) = extract_quoted(rest.trim_start()) {
+                classes.push(UsdaClass {
+                    prim_name: name.clone(),
+                    class_name: name,
+                    file_name: None,
+                });
+                in_metadata = true;
+                continue;
+            }
+        }
+        if !in_metadata {
+            continue;
+        }
+        let Some(last) = classes.last_mut() else {
             continue;
         };
-        if let Some(name) = extract_quoted(rest.trim_start()) {
-            names.push(name);
+        if line == "{" || line.starts_with("{ ") {
+            in_metadata = false;
+        } else if let Some(class_name) = extract_usda_string_assignment(line, "className") {
+            last.class_name = class_name;
+        } else if let Some(file_name) = extract_usda_string_assignment(line, "fileName") {
+            last.file_name = Some(file_name);
         }
     }
-    names
+    classes
+}
+
+/// File stems usdGenSchema writes once per library, beside the per-class files.
+const GENERATED_LIBRARY_STEMS: &[&str] = &["api", "tokens", "module", "moduleDeps", "wrapTokens"];
+
+/// Schema classes whose generated C++ file stem equals one of usdGenSchema's
+/// per-library files except for letter case, as `(prim name, stem, library
+/// file)`. Such a pair is one file on a case-insensitive filesystem (Windows,
+/// default macOS): class `API` generates `aPI.h`, which overwrites the export
+/// macro header `api.h`, so the compile fails on undefined `<PREFIX>_API`.
+/// Empty for a codeless schema (`skipCodeGeneration = true`), which writes no
+/// C++.
+pub fn schema_generated_file_collisions(src: &str) -> Vec<(String, String, String)> {
+    let codeless = src.lines().any(|line| {
+        let line = strip_usda_comment(line).trim();
+        line.contains("skipCodeGeneration")
+            && line
+                .split_once('=')
+                .is_some_and(|(_, value)| value.trim().eq_ignore_ascii_case("true"))
+    });
+    if codeless {
+        return Vec::new();
+    }
+    extract_usda_classes(src)
+        .into_iter()
+        .filter_map(|class| {
+            let stem = class.file_stem();
+            GENERATED_LIBRARY_STEMS
+                .iter()
+                .find(|library| library.eq_ignore_ascii_case(&stem))
+                .map(|library| (class.prim_name, stem, (*library).to_string()))
+        })
+        .collect()
+}
+
+/// The fix text for a [`schema_generated_file_collisions`] entry.
+pub fn schema_file_collision_hint(prim_name: &str) -> String {
+    let mut chars = prim_name.chars();
+    let suggested = chars
+        .next()
+        .map(|first| first.to_ascii_lowercase().to_string() + chars.as_str())
+        .unwrap_or_default();
+    format!("add `string fileName = \"{suggested}\"` to the customData of class \"{prim_name}\"")
+}
+
+fn check_schema_generated_file_names(bundle: &Bundle) -> Option<Diagnostic> {
+    const ID: &str = "schema.generated_file_names";
+    let (schema, _) = bundle.schema_source();
+    let src = std::fs::read_to_string(schema.as_std_path()).ok()?;
+    let collisions = schema_generated_file_collisions(&src);
+    if collisions.is_empty() {
+        return None;
+    }
+    Some(Diagnostic::fail(
+        ID,
+        0,
+        format!(
+            "schema class file name(s) collide with usdGenSchema library files on case-insensitive filesystems: {}",
+            collisions
+                .iter()
+                .map(|(class, stem, library)| format!("{class} → {stem}.h vs {library}.h"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        collisions
+            .iter()
+            .map(|(class, _, _)| schema_file_collision_hint(class))
+            .collect(),
+    ))
 }
 
 fn extract_quoted(s: &str) -> Option<String> {
@@ -1692,6 +1815,91 @@ class "FooBarAPI" (
             .suggested_actions
             .iter()
             .any(|a| a.contains("libraryPrefix + class")));
+    }
+
+    #[test]
+    fn schema_library_prefix_hint_follows_class_name_custom_data() {
+        let (dir, bundle) = codeless_schema_bundle(r#"{ "FooAPI": { "bases": [] } }"#, None);
+        let schema = |class_name: &str| {
+            format!(
+                r#"
+over "GLOBAL" (
+    customData = {{
+        string libraryPrefix = "Foo"
+    }}
+)
+{{
+}}
+
+class "FooAPI" (
+    inherits = </APISchemaBase>
+    customData = {{
+        token apiSchemaType = "singleApply"
+        string className = "{class_name}"
+    }}
+)
+{{
+    uniform token foo:example = "" (
+        doc = "className here is attribute metadata, not the class's."
+    )
+}}
+"#
+            )
+        };
+        let hint = |src: String| {
+            std::fs::write(dir.path.join("schema.usda").as_std_path(), src).unwrap();
+            diagnose(&bundle, &RuntimeContext::default(), 0)
+                .diagnostics
+                .into_iter()
+                .find(|d| d.id == "schema.library_prefix")
+        };
+        // Identifier `FooAPI` + className `API` composes `FooAPI`: no doubling.
+        assert!(hint(schema("API")).is_none());
+        // A className that repeats the prefix composes `FooFooAPI`.
+        let doubled = hint(schema("FooAPI")).expect("hint for doubled className");
+        assert!(doubled.observed.contains("FooAPI"));
+    }
+
+    #[test]
+    fn schema_generated_file_collisions_case_fold_onto_library_files() {
+        let schema = |skip: &str, custom: &str| {
+            format!(
+                "over \"GLOBAL\" (\n    customData = {{\n        bool skipCodeGeneration = {skip}\n    }}\n)\n{{\n}}\n\n\
+                 class \"ToyAPI\" (\n    customData = {{\n{custom}    }}\n)\n{{\n}}\n\n\
+                 class \"ContractAPI\" (\n)\n{{\n}}\n"
+            )
+        };
+        // `API` → `aPI.h`, which is `api.h` on a case-insensitive filesystem.
+        let collisions = schema_generated_file_collisions(&schema(
+            "false",
+            "        string className = \"API\"\n",
+        ));
+        assert_eq!(
+            collisions,
+            [("ToyAPI".to_string(), "aPI".to_string(), "api".to_string())]
+        );
+        assert!(schema_file_collision_hint("ToyAPI").contains("string fileName = \"toyAPI\""));
+        // `className = "Tokens"` → `tokens.h`.
+        assert_eq!(
+            schema_generated_file_collisions(&schema(
+                "false",
+                "        string className = \"Tokens\"\n"
+            ))
+            .len(),
+            1
+        );
+        // An explicit fileName, a codeless schema, and distinct names are clean.
+        assert!(schema_generated_file_collisions(&schema(
+            "false",
+            "        string className = \"API\"\n        string fileName = \"toyAPI\"\n"
+        ))
+        .is_empty());
+        assert!(schema_generated_file_collisions(&schema(
+            "true",
+            "        string className = \"API\"\n"
+        ))
+        .is_empty());
+        assert!(schema_generated_file_collisions(&schema("false", "")).is_empty());
     }
 
     #[test]

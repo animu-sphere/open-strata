@@ -87,7 +87,9 @@ self-contained copy of the shared mechanics for:
 - selecting a default single-config build type;
 - linking the OpenUSD monolith or declared discrete components;
 - using a bundle-local, multi-config-safe shared-library output directory;
-- configuring `plugInfo.json` with the target platform's library name; and
+- generating `plugInfo.json` whose `LibraryPath` names the file the CMake target
+  actually builds (see [plugInfo.json layout and library naming](#pluginfojson-layout-and-library-naming));
+  and
 - installing the library, plugin resources, manifests, provenance, and fixtures;
 - optionally exporting a compiled target for installed C++ consumers.
 
@@ -106,6 +108,65 @@ The canonical helper lives at `templates/_shared/cmake/OpenStrataPlugin.cmake`.
 Changing it requires a template-version bump for every catalog entry that copies
 the new bytes. Existing generated projects keep their pinned copy; updates are
 reviewed as template migrations rather than applied silently.
+
+## plugInfo.json layout and library naming
+
+The manifest's `usd.plug_info` is the only path contract. `ost` puts the
+directory that contains it on `PXR_PLUGINPATH_NAME`, so `ost` itself does not
+fix a resource layout. C++ templates generate
+`plugin/resources/<name>/plugInfo.json`. A bundle may move it, for example to
+OpenUSD's per-plugin `plugin/<name>/resources/plugInfo.json`, by changing
+`usd.plug_info` and its CMake paths together. Both layouts are three
+directories below the bundle root, so the same `LibraryPath` works for either.
+
+Native OpenUSD discovery was checked without `ost` on an extracted
+`usd-fileformat-cpp` package, with the source tree removed. `PlugRegistry`
+registered and loaded the library, `SdfFileFormat` resolved the extension, and
+`UsdStage::Open` read the fixture. Both layouts behaved the same when
+`PXR_PLUGINPATH_NAME` named the `plugInfo.json` directory (with or without a
+trailing `/`), the file itself, a wildcard, or a parent `plugInfo.json` with
+`Includes` (`resources/*/` or `*/resources/`). Neither layout is found from a
+bare parent directory with no `Includes`. The current layout has no defect, so
+the templates keep it.
+
+`plugInfo.json.in` spells the library as `@OPENSTRATA_PLUGIN_LIBRARY_PATH@`
+(helper 1.2.0, used by `usd-fileformat-cpp` 1.3.0). The helper expands that to
+the relative path from the `plugInfo.json` directory to the bundle `lib/`, plus
+`$<TARGET_FILE_NAME:target>`. `file(GENERATE)` evaluates the result at generate
+time, which comes after configure. `OUTPUT_NAME`, `PREFIX`, `SUFFIX` and
+`DEBUG_POSTFIX` set on the target are therefore always reflected. On Windows
+the name is the DLL, never the import `.lib`.
+
+- **Before the first build.** `ost plugin new` writes a host-specific preview
+  (`lib<Name>` plus the host suffix, with `<Name>` taken from the plugin entry)
+  so `inspect` and L0 `doctor` work. The first configure overwrites it.
+- **Per configuration.** Every configuration gets
+  `<build>/openstrata/<target>/<config>/plugInfo.json`. The source-tree file
+  that `usd.plug_info` names holds only the primary configuration: the build
+  type, or `Release` (overridable with `OPENSTRATA_PLUGIN_PRIMARY_CONFIG`) for
+  multi-config generators. Two configurations therefore never write different
+  content to one path.
+- **Schema Types.** `ost plugin build` still merges co-hosted schema `Types`
+  into the source-tree file.
+- **Install.** `cmake --install --config <config>` installs the source-tree file
+  for the primary configuration and the matching build-tree copy for any other
+  configuration. Configure fails if the install `RESOURCE_DESTINATION` is at a
+  different depth than the source `plugInfo.json` directory, because then one
+  relative `LibraryPath` cannot resolve in both trees.
+
+Inputs that use the legacy `@OPENSTRATA_PLUGIN_LIBRARY_PREFIX@` and
+`@CMAKE_SHARED_LIBRARY_SUFFIX@` tokens resolve exactly as before.
+`crates/ost-plugin/tests/cmake_helper.rs` tests the helper with real CMake.
+
+**Migrating an existing bundle** is opt-in; `ost` never rewrites a scaffold.
+
+1. Copy helper 1.2.0 over `cmake/OpenStrataPlugin.cmake`.
+2. Replace the hand-assembled `LibraryPath` in `plugInfo.json.in` with
+   `@OPENSTRATA_PLUGIN_LIBRARY_PATH@`.
+3. Reconfigure.
+
+The `plugInfo.json` path, the manifest and the install layout stay the same.
+Bundles that keep the 1.1.0 helper keep working unchanged.
 
 ## UsdImaging adapters
 

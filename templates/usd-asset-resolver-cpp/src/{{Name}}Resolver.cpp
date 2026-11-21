@@ -38,8 +38,11 @@ NormalizeLocalPath(const std::string& assetPath, const ArResolvedPath& anchor) {
   return path.lexically_normal();
 }
 
+// Named so it cannot be confused with ArResolver::CreateIdentifier: inside a
+// member function, unqualified lookup finds the base-class member first, and
+// calling that from _CreateIdentifier would recurse until the stack overflows.
 std::string
-CreateIdentifier(const std::string& assetPath, const ArResolvedPath& anchor) {
+MakeSchemeIdentifier(const std::string& assetPath, const ArResolvedPath& anchor) {
   const std::filesystem::path path = NormalizeLocalPath(assetPath, anchor);
   return path.empty() ? std::string() : std::string(SchemePrefix) + path.generic_string();
 }
@@ -50,14 +53,14 @@ std::string
 {{Name}}Resolver::_CreateIdentifier(
     const std::string& assetPath,
     const ArResolvedPath& anchorAssetPath) const {
-  return CreateIdentifier(assetPath, anchorAssetPath);
+  return MakeSchemeIdentifier(assetPath, anchorAssetPath);
 }
 
 std::string
 {{Name}}Resolver::_CreateIdentifierForNewAsset(
     const std::string& assetPath,
     const ArResolvedPath& anchorAssetPath) const {
-  return CreateIdentifier(assetPath, anchorAssetPath);
+  return MakeSchemeIdentifier(assetPath, anchorAssetPath);
 }
 
 ArResolvedPath

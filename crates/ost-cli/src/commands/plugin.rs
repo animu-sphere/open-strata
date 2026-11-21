@@ -494,6 +494,7 @@ fn schema_add(bundle: &str, class: &str, source: &str, codeless: bool, fmt: Form
             "provides": format!("usd-schema:{}", added.schema_type),
             "source": added.source.to_string(),
             "codeless": added.codeless,
+            "fixture": added.fixture.as_ref().map(ToString::to_string),
         }));
         return Ok(());
     }
@@ -511,6 +512,16 @@ fn schema_add(bundle: &str, class: &str, source: &str, codeless: bool, fmt: Form
         "  manifest wired: provides usd-schema:{} + schema.source",
         added.schema_type
     );
+    match &added.fixture {
+        Some(fixture) => println!(
+            "  smoke fixture:  {fixture} (applies {})",
+            added.schema_type
+        ),
+        None => println!(
+            "  smoke fixture:  not added; add a USDA fixture applying {} to `tests.smoke` for L4",
+            added.schema_type
+        ),
+    }
     println!("\nNext steps:");
     println!("  1. edit {} (the real properties)", added.source);
     println!("  2. ost plugin build {bundle}   # usdGenSchema + Types merge + link");
@@ -1391,6 +1402,15 @@ fn build_one(
             "Release".to_string(),
         ];
         run_step("bundle-stage-install", &cmake, &stage_args, &build_env)?;
+    }
+    if let Some(schema) = &cohosted_schema {
+        let installed_prefixes = install_prefix
+            .into_iter()
+            .chain(install_to_workspace.then_some(bundle_stage.as_path()));
+        for prefix in installed_prefixes {
+            install_cohosted_schema_resources(&bundle, schema, prefix)
+                .map_err(|e| in_phase(PHASE_SCHEMA_MERGE, e))?;
+        }
     }
 
     // An installable bundle has a target-local output tree. Legacy bundles
@@ -10250,6 +10270,20 @@ fn prepare_cohosted_schema(
         clear_cohosted_schema_compile_state(compiled_dir, cmake_fragment)?;
         return Ok(None); // no schema source to regenerate from
     }
+    // A class whose generated header case-folds onto usdGenSchema's export
+    // header (`API` → `aPI.h` vs `api.h`) silently overwrites it on Windows and
+    // default macOS, and the compile then fails deep inside generated code.
+    let schema_text = std::fs::read_to_string(schema_src.as_std_path())
+        .map_err(|e| Error::io(schema_src.to_string(), e))?;
+    if let Some((class, stem, library)) = ost_plugin::schema_generated_file_collisions(&schema_text)
+        .into_iter()
+        .next()
+    {
+        return Err(Error::config(format!(
+            "schema class \"{class}\" in {schema_src} generates {stem}.h, which is the same file as usdGenSchema's {library}.h on a case-insensitive filesystem"
+        ))
+        .with_hint(ost_plugin::schema_file_collision_hint(&class)));
+    }
     // The usdGenSchema *script* in the runtime bin is a Python script with no
     // executable bit / `.cmd` wrapper, so it must be run *through* an interpreter.
     let gen_script = artifact_prefix.join("bin/usdGenSchema");
@@ -10355,6 +10389,38 @@ fn merge_cohosted_schema_resources(
     Ok(())
 }
 
+/// Copy a co-hosted schema's `generatedSchema.usda` beside the `plugInfo.json`
+/// a CMake install placed under `prefix`.
+///
+/// `ost` writes that file into the source plugInfo directory after configure,
+/// so a bundle's install rules (which list only its own resources, typically
+/// just `plugInfo.json`) never ship it. Without it the installed `plugInfo.json`
+/// declares schema `Types` that OpenUSD cannot register, in the bundle stage
+/// and therefore in the package. The merged `plugInfo.json` itself is already
+/// installed, because the merge runs before install. A prefix without an
+/// installed plugInfo (a legacy bundle without install rules) is left alone.
+fn install_cohosted_schema_resources(
+    bundle: &Bundle,
+    generated: &CohostedSchemaGeneration,
+    prefix: &Utf8Path,
+) -> Result<()> {
+    if generated.generated_schema.is_none() {
+        return Ok(());
+    }
+    let source = bundle.plug_info_root().join("generatedSchema.usda");
+    let installed_plug_info = prefix.join(&bundle.manifest.usd.plug_info);
+    let Some(installed_root) = installed_plug_info.parent() else {
+        return Ok(());
+    };
+    if !installed_plug_info.as_std_path().is_file() || !source.as_std_path().is_file() {
+        return Ok(());
+    }
+    let dest = installed_root.join("generatedSchema.usda");
+    std::fs::copy(source.as_std_path(), dest.as_std_path())
+        .map_err(|e| Error::io(dest.to_string(), e))?;
+    Ok(())
+}
+
 /// Fail early (with the doctor hint's exact fix) if the bundle's committed
 /// `plugInfo.json` names a library with the wrong platform suffix for the target
 /// being built — so a cross-platform-committed `.dll` on macOS surfaces here as
@@ -10381,7 +10447,7 @@ fn verify_target_library_suffix(bundle: &Bundle, os: Os) -> Result<()> {
                 os.as_str()
             ))
             .with_hint(format!(
-                "regenerate plugInfo.json for the {} target (ship a `plugInfo.json.in` configured with @CMAKE_SHARED_LIBRARY_SUFFIX@), so `LibraryPath` ends in {expected}",
+                "regenerate plugInfo.json for the {} target (ship a `plugInfo.json.in` whose `LibraryPath` is @OPENSTRATA_PLUGIN_LIBRARY_PATH@ or uses @CMAKE_SHARED_LIBRARY_SUFFIX@), so `LibraryPath` ends in {expected}",
                 os.as_str()
             ))
             .with_phase(PHASE_PLUGIN_DISCOVERY));
@@ -13680,6 +13746,28 @@ schema: { codeless: true, contract: 1 }
             .join("generatedSchema.usda")
             .as_std_path()
             .is_file());
+
+        // An install tree that carries the merged plugInfo.json also needs the
+        // generated schema beside it, or OpenUSD cannot register the Types.
+        let stage = root.join(".strata/targets/t/bundle-stage");
+        let legacy = root.join(".strata/targets/t/no-install-rules");
+        write_test_file(
+            &stage.join("plugin/resources/toy/plugInfo.json"),
+            target_plug_info,
+        );
+        std::fs::create_dir_all(legacy.as_std_path()).unwrap();
+        install_cohosted_schema_resources(&bundle, &generated, &stage).expect("stages schema");
+        install_cohosted_schema_resources(&bundle, &generated, &legacy).expect("no-op");
+        assert_eq!(
+            std::fs::read_to_string(
+                stage
+                    .join("plugin/resources/toy/generatedSchema.usda")
+                    .as_std_path()
+            )
+            .unwrap(),
+            "#usda 1.0\n"
+        );
+        assert!(!legacy.join("plugin").as_std_path().exists());
 
         std::fs::remove_dir_all(root.as_std_path()).ok();
     }

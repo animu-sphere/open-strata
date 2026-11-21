@@ -18,6 +18,28 @@ OpenStrata checkout nor `ost` at build time. Keep bundle-specific targets,
 components, resources, and tests in `CMakeLists.txt`; update helper mechanics by
 reviewing a newer template rather than linking to the generator source tree.
 
+## plugInfo.json and the library name
+
+Edit `plugin/resources/{{name}}/plugInfo.json.in`; `plugInfo.json` beside it is
+generated. Its `LibraryPath` is `@OPENSTRATA_PLUGIN_LIBRARY_PATH@`, which the
+helper expands to `../../../lib/$<TARGET_FILE_NAME:{{Name}}FileFormat>` and
+CMake evaluates at generate time. The registered filename is therefore always
+the one the target actually builds, including any `OUTPUT_NAME`, `PREFIX`,
+`SUFFIX` or `DEBUG_POSTFIX` you set on the target.
+
+- `ost plugin new` writes a host-specific preview (`lib{{Name}}FileFormat` plus
+  this host's suffix) so `inspect` and `doctor` work before the first build.
+  CMake overwrites it at the first configure.
+- Each configuration also gets
+  `<build>/openstrata/{{Name}}FileFormat/<config>/plugInfo.json`. The
+  source-tree file holds the primary configuration (the build type, or
+  `Release` for multi-config generators; set `OPENSTRATA_PLUGIN_PRIMARY_CONFIG`
+  to change it). `cmake --install --config <config>` installs the matching
+  copy.
+- The installed `plugin/resources/{{name}}/` must stay at the same depth as the
+  source one, so the same relative `LibraryPath` resolves in both trees.
+  Configure fails if it does not.
+
 ## Workflow
 
 ```sh

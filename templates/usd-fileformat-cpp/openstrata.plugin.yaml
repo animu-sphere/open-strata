@@ -11,7 +11,7 @@ license: Apache-2.0
 runtime:
   # The OpenUSD version range this plugin tolerates. The runtime supplies the
   # certified point within it.
-  openusd: ">=25.05,<26.0"
+  openusd: ">=25.05,<27.0"
   # Source bundles do not hard-code C++ ABI; `ost plugin doctor` compares the
   # resolved target/runtime ABI when a built or packaged manifest records one.
   # To pin it, `cxx_abi` accepts a scalar (`msvc143`), the `inherit` sentinel
