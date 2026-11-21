@@ -1,10 +1,14 @@
 # Current
 
-The v0.23.20 delivery is recorded in the
-[release record](../releases/v0.23.20.md). This page tracks the remaining
+The v0.23.21 delivery is recorded in the
+[release record](../releases/v0.23.21.md). This page tracks the remaining
 acceptance and the next feature work.
 
 ## Post-release evidence
+
+- Run `usd-exec-cpp` and `usd-imaging-cpp` scaffolds with helper 1.2.0
+  through build, test and package against an OpenUSD runtime, and repeat the
+  v0.23.21 template checks on Linux and macOS runtimes.
 
 - Restore the downstream `avatarVrmSession` package contract and run hosted
   installed consumers with the locked OpenUSD runtime and its resolved host
@@ -61,6 +65,9 @@ acceptance and the next feature work.
   published v0.23.4 executable with a deliberately stale runtime cache.
 
 ## Next feature work
+
+- Reject `ost plugin new` names that collide with OpenUSD classes (for
+  example, an asset resolver named `ar` generates `ArResolver`).
 
 - Complete Maya/Houdini host add-on packaging, headless smoke suites,
   capability SKIPs and the host/OS/OpenUSD/Python matrix with pinned runtime and
